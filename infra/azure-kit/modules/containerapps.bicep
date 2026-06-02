@@ -17,9 +17,9 @@ param namePrefix string
 param location string
 param tags object
 
-param logAnalyticsCustomerId string
-@secure()
-param logAnalyticsPrimarySharedKey string
+// Managed environment is created by containerappsenv.bicep so the redis
+// Container App can share it. Pass its id here.
+param environmentId string
 
 param keyVaultName string
 param keyVaultId string
@@ -28,29 +28,13 @@ param keyVaultId string
 param backendImage string
 param workerImage string
 
+// `host:port` for KEDA's redis-streams scaler (it can't parse a redis://
+// URL; addressFromEnv must be plain host:port).
+param redisHostPort string
+
 param anthropicModel string = 'claude-opus-4-7'
 @allowed([ 'anthropic', 'openai', 'azure' ])
 param llmProvider string = 'anthropic'
-
-// ---------------------------------------------------------------------------
-// Managed environment
-// ---------------------------------------------------------------------------
-
-resource env 'Microsoft.App/managedEnvironments@2024-03-01' = {
-  name: '${namePrefix}-cae'
-  location: location
-  tags: tags
-  properties: {
-    appLogsConfiguration: {
-      destination: 'log-analytics'
-      logAnalyticsConfiguration: {
-        customerId: logAnalyticsCustomerId
-        sharedKey: logAnalyticsPrimarySharedKey
-      }
-    }
-    zoneRedundant: false
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Role assignment IDs
@@ -104,6 +88,10 @@ var sharedEnv = [
   { name: 'ENV', value: 'prod' }
   { name: 'DATABASE_URL', secretRef: 'database-url' }
   { name: 'REDIS_URL', secretRef: 'redis-url' }
+  // KEDA's redis-streams scaler reads this via addressFromEnv — it expects
+  // `host:port`, not a URL, so we set both REDIS_URL (for app code) and
+  // REDIS_HOST_PORT (for the scaler).
+  { name: 'REDIS_HOST_PORT', value: redisHostPort }
   { name: 'LLM_PROVIDER', value: llmProvider }
   { name: 'ANTHROPIC_API_KEY', secretRef: 'anthropic-api-key' }
   { name: 'ANTHROPIC_MODEL', value: anthropicModel }
@@ -124,7 +112,7 @@ resource backend 'Microsoft.App/containerApps@2024-03-01' = {
   tags: tags
   identity: { type: 'SystemAssigned' }
   properties: {
-    environmentId: env.id
+    environmentId: environmentId
     configuration: {
       ingress: {
         external: true
@@ -144,9 +132,21 @@ resource backend 'Microsoft.App/containerApps@2024-03-01' = {
           env: sharedEnv
           probes: [
             {
+              // Startup gives uvicorn + the DB/Redis pings time to settle
+              // before liveness takes over (Container Apps' default 1s
+              // timeout kills /health mid-DB-roundtrip).
+              type: 'Startup'
+              httpGet: { path: '/health', port: 8000 }
+              initialDelaySeconds: 10
+              periodSeconds: 5
+              timeoutSeconds: 5
+              failureThreshold: 12
+            }
+            {
               type: 'Liveness'
               httpGet: { path: '/health', port: 8000 }
               periodSeconds: 30
+              timeoutSeconds: 5
               failureThreshold: 3
             }
           ]
@@ -177,7 +177,7 @@ resource worker 'Microsoft.App/containerApps@2024-03-01' = {
   tags: tags
   identity: { type: 'SystemAssigned' }
   properties: {
-    environmentId: env.id
+    environmentId: environmentId
     configuration: {
       secrets: secretsFromKeyVault
     }
@@ -200,7 +200,7 @@ resource worker 'Microsoft.App/containerApps@2024-03-01' = {
             custom: {
               type: 'redis-streams'
               metadata: {
-                addressFromEnv: 'REDIS_URL'
+                addressFromEnv: 'REDIS_HOST_PORT'
                 stream: 'runs:in'
                 consumerGroup: 'osint-workers'
                 pendingEntriesCount: '5'
@@ -227,7 +227,6 @@ resource workerKvSecrets 'Microsoft.Authorization/roleAssignments@2022-04-01' = 
 // Outputs
 // ---------------------------------------------------------------------------
 
-output environmentId string = env.id
 output backendFqdn string = backend.properties.configuration.ingress.fqdn
 output backendName string = backend.name
 output workerName string = worker.name

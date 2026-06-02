@@ -158,7 +158,21 @@ echo "    key vault:       $KV_NAME"
 # Wait for backend health
 # ---------------------------------------------------------------------------
 
-bold "[5/6] Waiting for the backend container to come healthy…"
+# Container Apps' first revision races the system-assigned identity's role
+# propagation to Entra. The result is "secret capp-<appname> not found" on
+# the first revision because KV refs return 403 before the role lands. By
+# now (post-Bicep) the role has propagated; force a new revision so it
+# refetches secrets with the now-authorized identity.
+bold "[5/6] Forcing fresh revisions + waiting for the backend to come healthy…"
+echo "    (the first revision races KV identity propagation; bumping forces a fresh one)"
+REV_BUMP="$(date +%s)"
+WORKER_NAME="$(echo "$OUTPUTS" | python3 -c 'import sys,json;print(json.load(sys.stdin)["workerName"]["value"])')"
+az containerapp update -n "$BACKEND_NAME" -g "$RG_OUT" \
+    --set-env-vars "RTD_REVISION_BUMP=$REV_BUMP" --only-show-errors -o none
+az containerapp update -n "$WORKER_NAME" -g "$RG_OUT" \
+    --set-env-vars "RTD_REVISION_BUMP=$REV_BUMP" --only-show-errors -o none
+
+
 for i in {1..40}; do
     if curl -sf "https://$BACKEND_FQDN/health" >/dev/null 2>&1; then
         green "    backend is up."

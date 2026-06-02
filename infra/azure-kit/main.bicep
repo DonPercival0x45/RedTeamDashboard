@@ -3,9 +3,11 @@
 // Provisions, in one resource group, the per-tenant backend an operator owns:
 //   - Log Analytics workspace
 //   - Postgres Flexible Server (Burstable B1ms)
-//   - Azure Cache for Redis (Basic C0)
+//   - Container Apps Environment (shared by redis + backend + worker)
+//   - Self-hosted Redis Container App (internal-only TCP ingress on 6379;
+//     Azure Cache for Redis is retired for new deployments)
 //   - Key Vault (RBAC mode) with seeded secrets
-//   - Container Apps Environment + backend + worker (images pulled from GHCR)
+//   - Backend + worker Container Apps (images pulled from public GHCR)
 //
 // What's NOT here:
 //   - The viewer: hosted centrally; the operator plugs in this deployment's
@@ -89,6 +91,34 @@ module postgres 'modules/postgres.bicep' = {
   }
 }
 
+// VNet for the Container Apps env. Plain Consumption envs without a custom
+// VNet route HTTP between apps but NOT TCP — we need TCP to reach the
+// self-hosted Redis Container App.
+module vnet 'modules/vnet.bicep' = {
+  name: 'vnet'
+  scope: rg
+  params: {
+    namePrefix: namePrefix
+    location: location
+    tags: tags
+  }
+}
+
+// Container Apps env is shared by the self-hosted redis + backend + worker.
+// Deployed after vnet so it can drop into the delegated subnet.
+module caenv 'modules/containerappsenv.bicep' = {
+  name: 'containerappsenv'
+  scope: rg
+  params: {
+    namePrefix: namePrefix
+    location: location
+    tags: tags
+    logAnalyticsCustomerId: logs.outputs.customerId
+    logAnalyticsPrimarySharedKey: logs.outputs.primarySharedKey
+    infrastructureSubnetId: vnet.outputs.caeSubnetId
+  }
+}
+
 module redis 'modules/redis.bicep' = {
   name: 'redis'
   scope: rg
@@ -96,6 +126,7 @@ module redis 'modules/redis.bicep' = {
     namePrefix: namePrefix
     location: location
     tags: tags
+    environmentId: caenv.outputs.id
   }
 }
 
@@ -123,12 +154,12 @@ module apps 'modules/containerapps.bicep' = {
     namePrefix: namePrefix
     location: location
     tags: tags
-    logAnalyticsCustomerId: logs.outputs.customerId
-    logAnalyticsPrimarySharedKey: logs.outputs.primarySharedKey
+    environmentId: caenv.outputs.id
     keyVaultName: kv.outputs.name
     keyVaultId: kv.outputs.id
     backendImage: backendImage
     workerImage: workerImage
+    redisHostPort: redis.outputs.hostPort
     llmProvider: llmProvider
     anthropicModel: anthropicModel
   }
@@ -141,4 +172,5 @@ output workerName string = apps.outputs.workerName
 output keyVaultName string = kv.outputs.name
 output postgresFqdn string = postgres.outputs.fqdn
 output redisHostName string = redis.outputs.hostName
+output redisInternalUrl string = redis.outputs.url
 output privateNetworkingEnabled bool = enablePrivateNetworking

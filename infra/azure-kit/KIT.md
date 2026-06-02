@@ -10,13 +10,19 @@ In one resource group (`rtd-<env>`):
 | Resource                 | Purpose                                            | ~Monthly |
 |--------------------------|----------------------------------------------------|----------|
 | Log Analytics workspace  | Container Apps logs                                | $0       |
+| VNet (/16) + /23 subnet  | Internal TCP between Container Apps                | $0       |
 | Postgres Flexible Server | App data: engagements, findings, approvals, audit  | $15      |
-| Azure Cache for Redis    | Run streams + pub/sub                              | $16      |
+| Container Apps env + 3   | `redis`, `backend` (FastAPI), `worker` (LangGraph) | $20–35   |
 | Key Vault (RBAC)         | Secrets: DB pw, Redis url, LLM keys, admin key     | $0       |
-| Container Apps env + 2   | `backend` (FastAPI) + `worker` (LangGraph)         | $15–30   |
 
-**Floor ~$50/mo**. No ACR (images come from public GHCR). No viewer (use the
+**Floor ~$35/mo**. Redis is self-hosted as a Container App (Azure Cache for
+Redis is retired for new deployments; Azure Managed Redis is overkill for a
+single-user tool). No ACR (images come from public GHCR). No viewer (use the
 central one).
+
+The Container Apps env runs with a custom VNet so the internal-only TCP
+ingress on the Redis Container App is reachable from backend/worker
+(Consumption-only envs without a VNet don't route internal TCP between apps).
 
 ## Prerequisites
 
@@ -25,9 +31,14 @@ Already done if you followed the bootstrap walkthrough:
 - Azure CLI installed and `az login` complete
 - An Azure subscription selected: `az account set --subscription <name>`
 - Resource providers registered in that subscription:
-  `Microsoft.App`, `Microsoft.DBforPostgreSQL`, `Microsoft.Cache`,
+  `Microsoft.App`, `Microsoft.DBforPostgreSQL`, `Microsoft.Network`,
   `Microsoft.KeyVault`, `Microsoft.OperationalInsights`,
   `Microsoft.ManagedIdentity`
+- Postgres Flexible Server availability in your chosen region. Some
+  subscription offers (especially free trial / Azure for Students) restrict
+  Postgres Flex in popular regions like `eastus2` and `eastus`; `centralus`
+  usually works. If you hit `LocationIsOfferRestricted`, retry with
+  `--location centralus` or `--location westus3`.
 - Bicep CLI: `az bicep install`
 
 ## Install
@@ -134,7 +145,9 @@ infra/azure-kit/
 │   ├── keyvault.bicep            RBAC vault; seeds DB / LLM / admin-key slots
 │   ├── loganalytics.bicep        workspace for Container Apps logs
 │   ├── postgres.bicep            Flexible Server (B1ms) with Azure-services firewall
-│   └── redis.bicep               Cache for Redis (Basic C0)
+│   ├── redis.bicep               Self-hosted Redis Container App (TCP/6379)
+│   ├── containerappsenv.bicep    Container Apps env (VNet-integrated)
+│   └── vnet.bicep                VNet + delegated subnet for the CAE
 └── scripts/
     ├── install.sh                deploy driver
     └── uninstall.sh              group + KV purge

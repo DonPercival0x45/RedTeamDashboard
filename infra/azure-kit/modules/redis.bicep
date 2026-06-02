@@ -1,44 +1,58 @@
-// Azure Cache for Redis — Streams + pub/sub for runs:* keys.
+// Self-hosted Redis as a Container App.
 //
-// Basic C0 is the cheapest tier (~$16/mo) and gives us 250 MB. Phase 0
-// stream traffic is tiny so this is plenty. Bump to Standard for HA.
+// Azure Cache for Redis (Microsoft.Cache/Redis) was retired for new
+// deployments; Azure Managed Redis starts ~$50-100/mo for the cheapest
+// SKU. For a single-user red-team tool whose Redis use is a job queue +
+// LangGraph checkpointer + pub/sub of ephemeral run events, a Container
+// App running redis:7-alpine costs ~$10/mo and matches the docker-compose
+// layout exactly.
 //
-// SSL-only (port 6380). No firewall rule needed — auth is by primary key.
+// Persistence: disabled (`--save '' --appendonly no`). On restart the
+// queue + in-flight checkpoints are lost. Acceptable trade-off given
+// runs are short-lived and re-submittable from the CLI.
+//
+// Ingress: internal-only TCP on 6379. Reachable from sibling apps in the
+// same env via `<app-name>.internal.<envDefaultDomain>`. No auth — the
+// env's internal network is the security boundary.
 
 targetScope = 'resourceGroup'
 
 param namePrefix string
 param location string
 param tags object
-param skuName string = 'Basic'
-param skuFamily string = 'C'
-param skuCapacity int = 0  // C0 = 250 MB
+param environmentId string
 
-var cacheName = '${namePrefix}-redis'
-
-resource cache 'Microsoft.Cache/Redis@2024-11-01' = {
-  name: cacheName
+resource redis 'Microsoft.App/containerApps@2024-03-01' = {
+  name: '${namePrefix}-redis'
   location: location
   tags: tags
   properties: {
-    sku: {
-      name: skuName
-      family: skuFamily
-      capacity: skuCapacity
+    environmentId: environmentId
+    configuration: {
+      ingress: {
+        external: false
+        targetPort: 6379
+        exposedPort: 6379
+        transport: 'tcp'
+      }
     }
-    enableNonSslPort: false
-    minimumTlsVersion: '1.2'
-    redisVersion: '6'
-    publicNetworkAccess: 'Enabled'
+    template: {
+      containers: [
+        {
+          name: 'redis'
+          image: 'redis:7-alpine'
+          command: [ 'redis-server', '--save', '', '--appendonly', 'no' ]
+          resources: { cpu: json('0.25'), memory: '0.5Gi' }
+        }
+      ]
+      scale: { minReplicas: 1, maxReplicas: 1 }
+    }
   }
 }
 
-output id string = cache.id
-output name string = cache.name
-output hostName string = cache.properties.hostName
-@secure()
-output primaryKey string = cache.listKeys().primaryKey
-// Carries the primary key; @secure() keeps it out of deployment-history
-// outputs. Consumed only by the Key Vault module's @secure() redisUrl param.
-@secure()
-output url string = 'rediss://:${cache.listKeys().primaryKey}@${cache.properties.hostName}:6380/0'
+// Internal-only Container App FQDN (e.g. rtd-prod-redis.internal.<domain>).
+// `ingress.fqdn` is populated by Azure post-deploy and is the right
+// hostname for sibling apps in the same env to connect to.
+output hostName string = redis.properties.configuration.ingress.fqdn
+output url string = 'redis://${redis.properties.configuration.ingress.fqdn}:6379/0'
+output hostPort string = '${redis.properties.configuration.ingress.fqdn}:6379'
