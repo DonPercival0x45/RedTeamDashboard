@@ -56,6 +56,11 @@ jobs:
     env:
       DATABASE_URL: postgresql+psycopg://rtd:rtd@localhost:5432/rtd
       REDIS_URL: redis://localhost:6379/0
+      # Ollama has no API-key precheck; matches the local .env default and
+      # lets run-start tests exercise the default-fallback path without
+      # plumbing an Anthropic key into CI. Per-run model selection (Phase 4)
+      # is still tested explicitly via monkeypatched settings.
+      LLM_PROVIDER: ollama
     steps:
       - uses: actions/checkout@v4
 

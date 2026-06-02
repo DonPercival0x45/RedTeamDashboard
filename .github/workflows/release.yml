@@ -87,6 +87,8 @@ jobs:
     env:
       DATABASE_URL: postgresql+psycopg://rtd:rtd@localhost:5432/rtd
       REDIS_URL: redis://localhost:6379/0
+      # See ci.yml for why ollama is the default here.
+      LLM_PROVIDER: ollama
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
