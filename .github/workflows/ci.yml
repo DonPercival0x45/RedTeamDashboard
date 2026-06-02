@@ -141,28 +141,10 @@ jobs:
         run: npm run lint
 
   # ---------------------------------------------------------------------------
-  # CodeQL — python + TS in parallel. Report-only on PRs.
+  # CodeQL is handled by GitHub's default setup (configured via the
+  # `code-scanning/default-setup` API). Default setup and custom workflow
+  # uploads can't coexist, so we don't run it from this workflow.
   # ---------------------------------------------------------------------------
-  codeql:
-    name: CodeQL (${{ matrix.language }})
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        language: [python, javascript-typescript]
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@v3
-        with:
-          languages: ${{ matrix.language }}
-          queries: security-and-quality
-
-      - name: Analyze
-        uses: github/codeql-action/analyze@v3
-        with:
-          category: /language:${{ matrix.language }}
 
   # ---------------------------------------------------------------------------
   # Trivy filesystem scan — surfaces dependency CVEs without building images.

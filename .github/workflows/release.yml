@@ -1,8 +1,9 @@
 # Release pipeline — runs ONLY on `v*` tag pushes.
 #
-# Strict gating per the locked design: any CRITICAL/HIGH Trivy finding fails
-# the publish; a tag never produces images that haven't been scanned clean.
-# CodeQL runs in strict mode too (security-and-quality, no continue-on-error).
+# Strict gating: any CRITICAL/HIGH Trivy finding fails the publish; a tag
+# never produces images that haven't been scanned clean. CodeQL runs out-of-
+# band via GitHub's default setup (default setup and custom-workflow uploads
+# can't coexist on the same repo).
 #
 # What gets published per release `v0.1.0`:
 #   - ghcr.io/<owner>/rtd-backend:0.1.0  (+ :latest)
@@ -139,28 +140,11 @@ jobs:
         run: npm run lint
 
   # ---------------------------------------------------------------------------
-  # CodeQL on the tagged commit — STRICT. A high+ severity finding fails the
-  # release. (CI's CodeQL is report-only; this is the gate.)
+  # CodeQL runs via GitHub's default setup (enabled at the repo level) — it
+  # scans on push/PR/schedule independently. Default setup and custom workflow
+  # uploads can't coexist, so we don't gate the release on CodeQL here. Trivy
+  # below still STRICT-gates the image publish on CRITICAL/HIGH CVEs.
   # ---------------------------------------------------------------------------
-  codeql:
-    name: CodeQL strict (${{ matrix.language }})
-    runs-on: ubuntu-latest
-    needs: test
-    strategy:
-      fail-fast: true
-      matrix:
-        language: [python, javascript-typescript]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: github/codeql-action/init@v3
-        with:
-          languages: ${{ matrix.language }}
-          queries: security-and-quality
-      - uses: github/codeql-action/analyze@v3
-        with:
-          category: /language:${{ matrix.language }}
-          # Fail the step if any error-severity alerts are introduced.
-          upload: true
 
   # ---------------------------------------------------------------------------
   # Build, Trivy-scan, and push each image. Matrix so backend + viewer run in
@@ -169,7 +153,7 @@ jobs:
   publish:
     name: Build + scan + publish ${{ matrix.image.name }}
     runs-on: ubuntu-latest
-    needs: [version, test, codeql]
+    needs: [version, test]
     strategy:
       fail-fast: true
       matrix:
