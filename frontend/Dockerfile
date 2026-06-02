@@ -30,6 +30,10 @@ FROM node:22-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
+# Next.js standalone runs `node server.js` directly — npm is never invoked
+# at runtime. Removing the bundled global npm eliminates a CVE surface
+# (CVE-2026-33671 in npm's bundled picomatch, etc.) and shrinks the image.
+RUN rm -rf /usr/local/lib/node_modules /usr/local/bin/npm /usr/local/bin/npx
 COPY --from=builder /app/public ./public
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
