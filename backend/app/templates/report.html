@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>{{ engagement.name }} — Red Team Report</title>
+    <style>
+      @page {
+        size: Letter;
+        margin: 0.75in;
+        @bottom-right {
+          content: "Page " counter(page) " of " counter(pages);
+          font-size: 9px;
+          color: #6b7280;
+        }
+        @bottom-left {
+          content: "Red Team Dashboard · {{ engagement.slug }}";
+          font-size: 9px;
+          color: #6b7280;
+        }
+      }
+      body {
+        font-family: "DejaVu Sans", sans-serif;
+        font-size: 10pt;
+        color: #111827;
+        line-height: 1.45;
+      }
+      h1 {
+        font-size: 20pt;
+        margin: 0 0 4px 0;
+      }
+      h2 {
+        font-size: 13pt;
+        margin: 24px 0 8px 0;
+        padding-bottom: 4px;
+        border-bottom: 1px solid #d1d5db;
+      }
+      .meta {
+        color: #6b7280;
+        font-size: 9pt;
+      }
+      .badge {
+        display: inline-block;
+        padding: 1px 6px;
+        font-size: 8pt;
+        border-radius: 3px;
+        background: #e5e7eb;
+        color: #111827;
+        text-transform: uppercase;
+      }
+      .badge.passive { background: #d1fae5; color: #065f46; }
+      .badge.active { background: #fef3c7; color: #92400e; }
+      .badge.destructive { background: #fee2e2; color: #991b1b; }
+      .badge.approved { background: #d1fae5; color: #065f46; }
+      .badge.edited { background: #dbeafe; color: #1e40af; }
+      .badge.denied { background: #fee2e2; color: #991b1b; }
+      .badge.pending { background: #e5e7eb; color: #374151; }
+      .badge.exclude { background: #fee2e2; color: #991b1b; }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 9pt;
+      }
+      th, td {
+        text-align: left;
+        padding: 4px 6px;
+        border-bottom: 1px solid #e5e7eb;
+        vertical-align: top;
+      }
+      th {
+        background: #f3f4f6;
+        font-weight: 600;
+        color: #374151;
+      }
+      .mono {
+        font-family: "DejaVu Sans Mono", monospace;
+        font-size: 8.5pt;
+      }
+      .empty {
+        color: #9ca3af;
+        font-style: italic;
+      }
+      .summary-grid {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 12px;
+        margin: 12px 0;
+      }
+      .summary-grid .cell {
+        border: 1px solid #e5e7eb;
+        border-radius: 4px;
+        padding: 8px 10px;
+      }
+      .summary-grid .label {
+        font-size: 8pt;
+        color: #6b7280;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      .summary-grid .value {
+        font-size: 18pt;
+        font-weight: 600;
+        color: #111827;
+      }
+      pre {
+        margin: 0;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>{{ engagement.name }}</h1>
+    <p class="meta">
+      slug <span class="mono">{{ engagement.slug }}</span> ·
+      status <span class="mono">{{ engagement.status.value }}</span> ·
+      created {{ engagement.created_at.strftime("%Y-%m-%d") }} ·
+      generated {{ generated_at.strftime("%Y-%m-%d %H:%M UTC") }}
+    </p>
+
+    <div class="summary-grid">
+      <div class="cell">
+        <div class="label">Scope items</div>
+        <div class="value">{{ scope_items|length }}</div>
+      </div>
+      <div class="cell">
+        <div class="label">Findings</div>
+        <div class="value">{{ findings|length }}</div>
+      </div>
+      <div class="cell">
+        <div class="label">Approvals</div>
+        <div class="value">{{ approvals|length }}</div>
+      </div>
+      <div class="cell">
+        <div class="label">Audit events</div>
+        <div class="value">{{ audit|length }}</div>
+      </div>
+    </div>
+
+    <h2>Scope</h2>
+    {% if scope_items %}
+    <table>
+      <thead>
+        <tr>
+          <th style="width: 80px">Kind</th>
+          <th>Value</th>
+          <th style="width: 80px">Exclude?</th>
+          <th>Note</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in scope_items %}
+        <tr>
+          <td><span class="badge">{{ item.kind.value }}</span></td>
+          <td class="mono">{{ item.value }}</td>
+          <td>
+            {% if item.is_exclusion %}<span class="badge exclude">exclude</span>{% endif %}
+          </td>
+          <td>{{ item.note or "" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="empty">No scope items.</p>
+    {% endif %}
+
+    <h2>Findings</h2>
+    {% if findings %}
+    <table>
+      <thead>
+        <tr>
+          <th style="width: 110px">Tool</th>
+          <th style="width: 170px">Target</th>
+          <th>Details</th>
+          <th style="width: 110px">When</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for finding in findings %}
+        <tr>
+          <td class="mono">{{ finding.source_tool }}</td>
+          <td class="mono">{{ finding.target or "—" }}</td>
+          <td class="mono"><pre>{{ finding.details | tojson(indent=2) }}</pre></td>
+          <td class="meta">{{ finding.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="empty">No findings recorded.</p>
+    {% endif %}
+
+    <h2>Approvals</h2>
+    {% if approvals %}
+    <table>
+      <thead>
+        <tr>
+          <th>Tool</th>
+          <th>Args</th>
+          <th>Risk</th>
+          <th>Decision</th>
+          <th>Decided</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for approval in approvals %}
+        <tr>
+          <td class="mono">{{ approval.tool_name }}</td>
+          <td class="mono"><pre>{{ approval.tool_args | tojson }}</pre></td>
+          <td><span class="badge {{ approval.risk.value }}">{{ approval.risk.value }}</span></td>
+          <td><span class="badge {{ approval.status.value }}">{{ approval.status.value }}</span></td>
+          <td class="meta">
+            {% if approval.decided_at %}
+              {{ approval.decided_at.strftime("%Y-%m-%d %H:%M") }}
+              {% if approval.decided_by %}<br/>by {{ approval.decided_by }}{% endif %}
+            {% else %}—{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="empty">No approvals recorded.</p>
+    {% endif %}
+
+    <h2>Audit timeline</h2>
+    {% if audit %}
+    <table>
+      <thead>
+        <tr>
+          <th style="width: 120px">When</th>
+          <th style="width: 80px">Actor</th>
+          <th style="width: 140px">Event</th>
+          <th>Payload</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for entry in audit %}
+        <tr>
+          <td class="meta mono">{{ entry.created_at.strftime("%Y-%m-%d %H:%M:%S") }}</td>
+          <td class="mono">{{ entry.actor_type.value }}{% if entry.actor_id %}:{{ entry.actor_id }}{% endif %}</td>
+          <td class="mono">{{ entry.event_type }}</td>
+          <td class="mono"><pre>{{ entry.payload | tojson }}</pre></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="empty">No audit entries.</p>
+    {% endif %}
+  </body>
+</html>

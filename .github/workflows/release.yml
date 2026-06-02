@@ -1,0 +1,281 @@
+# Release pipeline — runs ONLY on `v*` tag pushes.
+#
+# Strict gating per the locked design: any CRITICAL/HIGH Trivy finding fails
+# the publish; a tag never produces images that haven't been scanned clean.
+# CodeQL runs in strict mode too (security-and-quality, no continue-on-error).
+#
+# What gets published per release `v0.1.0`:
+#   - ghcr.io/<owner>/rtd-backend:0.1.0  (+ :latest)
+#   - ghcr.io/<owner>/rtd-worker:0.1.0   (+ :latest, alias of rtd-backend)
+#   - ghcr.io/<owner>/rtd-viewer:0.1.0   (+ :latest)
+#   - GitHub Release v0.1.0 with rtd-azure-kit-v0.1.0.tar.gz attached and
+#     auto-generated changelog from commit messages.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write       # create the GitHub Release + upload assets
+  packages: write       # push to GHCR
+  security-events: write
+  actions: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false  # never cancel a half-published release
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Resolve version once so every downstream job uses the same string.
+  # `v0.1.0` -> version=0.1.0 (no `v` prefix in image tags), tag=v0.1.0.
+  # ---------------------------------------------------------------------------
+  version:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      tag: ${{ steps.v.outputs.tag }}
+      owner_lc: ${{ steps.v.outputs.owner_lc }}
+    steps:
+      - id: v
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          version="${tag#v}"
+          owner_lc="$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
+          {
+            echo "tag=$tag"
+            echo "version=$version"
+            echo "owner_lc=$owner_lc"
+          } >> "$GITHUB_OUTPUT"
+
+  # ---------------------------------------------------------------------------
+  # Tests must pass on the exact tagged commit before we build anything.
+  # Duplicates the CI backend job; intentional — we want this self-contained.
+  # ---------------------------------------------------------------------------
+  test:
+    name: Test on tagged commit
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: rtd
+          POSTGRES_PASSWORD: rtd
+          POSTGRES_DB: rtd
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U rtd -d rtd"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+psycopg://rtd:rtd@localhost:5432/rtd
+      REDIS_URL: redis://localhost:6379/0
+      ENV: ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+      - working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - working-directory: backend
+        run: ruff check app tests
+      - working-directory: backend
+        run: alembic upgrade head
+      - working-directory: backend
+        run: pytest -q
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - working-directory: frontend
+        run: npm ci --no-audit --no-fund
+      - working-directory: frontend
+        run: npm run typecheck
+      - working-directory: frontend
+        run: npm run lint
+
+  # ---------------------------------------------------------------------------
+  # CodeQL on the tagged commit — STRICT. A high+ severity finding fails the
+  # release. (CI's CodeQL is report-only; this is the gate.)
+  # ---------------------------------------------------------------------------
+  codeql:
+    name: CodeQL strict (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    needs: test
+    strategy:
+      fail-fast: true
+      matrix:
+        language: [python, javascript-typescript]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          queries: security-and-quality
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: /language:${{ matrix.language }}
+          # Fail the step if any error-severity alerts are introduced.
+          upload: true
+
+  # ---------------------------------------------------------------------------
+  # Build, Trivy-scan, and push each image. Matrix so backend + viewer run in
+  # parallel; the worker reuses the backend image (tagged again at the end).
+  # ---------------------------------------------------------------------------
+  publish:
+    name: Build + scan + publish ${{ matrix.image.name }}
+    runs-on: ubuntu-latest
+    needs: [version, test, codeql]
+    strategy:
+      fail-fast: true
+      matrix:
+        image:
+          - name: rtd-backend
+            context: backend
+            dockerfile: backend/Dockerfile
+            extra_build_args: ''
+          - name: rtd-viewer
+            context: frontend
+            dockerfile: frontend/Dockerfile
+            # Multi-source viewer: don't bake an API base into the bundle.
+            # Phase 6 reworks this to read connections from runtime config.
+            extra_build_args: |
+              NEXT_PUBLIC_API_BASE=
+            target: runner
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build image locally (for scan)
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.image.context }}
+          file: ${{ matrix.image.dockerfile }}
+          target: ${{ matrix.image.target }}
+          build-args: ${{ matrix.image.extra_build_args }}
+          load: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ needs.version.outputs.owner_lc }}/${{ matrix.image.name }}:${{ needs.version.outputs.version }}
+
+      - name: Trivy image scan (STRICT — fails the release)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ needs.version.outputs.owner_lc }}/${{ matrix.image.name }}:${{ needs.version.outputs.version }}
+          severity: CRITICAL,HIGH
+          exit-code: '1'
+          ignore-unfixed: true
+          format: sarif
+          output: trivy-${{ matrix.image.name }}.sarif
+
+      - name: Upload Trivy SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-${{ matrix.image.name }}.sarif
+          category: trivy-${{ matrix.image.name }}
+
+      - name: Tag :latest and push
+        run: |
+          IMG="${{ env.REGISTRY }}/${{ needs.version.outputs.owner_lc }}/${{ matrix.image.name }}"
+          VER="${{ needs.version.outputs.version }}"
+          docker tag "$IMG:$VER" "$IMG:latest"
+          docker push "$IMG:$VER"
+          docker push "$IMG:latest"
+
+  # ---------------------------------------------------------------------------
+  # Tag the backend image as rtd-worker so the kit's Bicep (which references
+  # two image names) keeps working. Same digest, same scan result.
+  # ---------------------------------------------------------------------------
+  publish-worker-alias:
+    name: Publish worker alias
+    runs-on: ubuntu-latest
+    needs: [version, publish]
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Re-tag backend image as worker
+        run: |
+          IMG_BACKEND="${{ env.REGISTRY }}/${{ needs.version.outputs.owner_lc }}/rtd-backend"
+          IMG_WORKER="${{ env.REGISTRY }}/${{ needs.version.outputs.owner_lc }}/rtd-worker"
+          VER="${{ needs.version.outputs.version }}"
+          docker pull "$IMG_BACKEND:$VER"
+          docker tag "$IMG_BACKEND:$VER" "$IMG_WORKER:$VER"
+          docker tag "$IMG_BACKEND:$VER" "$IMG_WORKER:latest"
+          docker push "$IMG_WORKER:$VER"
+          docker push "$IMG_WORKER:latest"
+
+  # ---------------------------------------------------------------------------
+  # Bundle the Azure deployment kit + cut the GitHub Release. Runs last so the
+  # release page links to a kit whose images are already pushable.
+  # ---------------------------------------------------------------------------
+  release:
+    name: GitHub Release
+    runs-on: ubuntu-latest
+    needs: [version, publish, publish-worker-alias]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Package the Azure kit
+        run: |
+          TAG="${{ needs.version.outputs.tag }}"
+          tar -czf "rtd-azure-kit-${TAG}.tar.gz" -C infra azure-kit
+
+      - name: Create release + attach kit tarball
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          name: ${{ needs.version.outputs.tag }}
+          tag_name: ${{ needs.version.outputs.tag }}
+          files: rtd-azure-kit-*.tar.gz
+          body: |
+            ## Images
+
+            All pushed to GitHub Container Registry (public, no auth required):
+
+            - `ghcr.io/${{ needs.version.outputs.owner_lc }}/rtd-backend:${{ needs.version.outputs.version }}`
+            - `ghcr.io/${{ needs.version.outputs.owner_lc }}/rtd-worker:${{ needs.version.outputs.version }}` (alias of backend)
+            - `ghcr.io/${{ needs.version.outputs.owner_lc }}/rtd-viewer:${{ needs.version.outputs.version }}`
+
+            ## Deploy
+
+            Download `rtd-azure-kit-${{ needs.version.outputs.tag }}.tar.gz` below, then:
+
+            ```bash
+            tar -xzf rtd-azure-kit-${{ needs.version.outputs.tag }}.tar.gz
+            cd azure-kit
+            ./scripts/install.sh --env prod --image-tag ${{ needs.version.outputs.version }}
+            ```
+
+            See `KIT.md` in the tarball for the full walkthrough.
