@@ -212,6 +212,11 @@ jobs:
           ignore-unfixed: true
           format: sarif
           output: trivy-${{ matrix.image.name }}.sarif
+          # Without this, format=sarif forces trivy to scan ALL severities
+          # and the exit-code check fires on any finding — defeating the
+          # CRITICAL/HIGH gate. With this on, severity filter applies to
+          # both SARIF contents and the exit-code calculation.
+          limit-severities-for-sarif: 'true'
 
       - name: Upload Trivy SARIF
         if: always()
