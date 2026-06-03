@@ -197,16 +197,18 @@ done
 # Deploy the viewer static bundle to the Static Web App
 # ---------------------------------------------------------------------------
 #
-# We download the prebuilt viewer bundle from this release's GitHub assets
-# and upload it via the SWA deployment token. No npm / build pipeline
-# needed on the operator's machine — just `unzip` and the SWA CLI (npx).
+# Download the prebuilt viewer bundle from this release's GitHub assets and
+# upload it via the SWA deployment token. The SWA CLI ships only via npm,
+# so we run it from a Docker node:lts container — keeps the operator's
+# prereqs to `docker + az + python3 + openssl` instead of also Node.js.
+# Alpine doesn't work (the StaticSitesClient binary needs glibc).
 #
-# Skipped when --image-tag is `latest` and we have no way to know which
-# release's bundle to fetch: operator can re-run with --image-tag <ver>
-# after picking a version.
+# Skipped when --image-tag is `latest` because we don't know which release
+# to fetch; operator should re-run pinned to a version.
 bold "[5.5/6] Deploying viewer to Static Web App…"
-if ! command -v npx >/dev/null 2>&1; then
-    red "    skipped — npx not on PATH; install Node.js 18+ then re-run"
+SWA_SKIPPED=false
+if ! command -v docker >/dev/null 2>&1; then
+    red "    skipped — docker not on PATH; install Docker then re-run"
     red "    or deploy manually: SWA name=$VIEWER_NAME, see docs/DEPLOY.md"
     SWA_SKIPPED=true
 elif [[ "$IMAGE_TAG" == "latest" ]]; then
@@ -214,7 +216,6 @@ elif [[ "$IMAGE_TAG" == "latest" ]]; then
     red "    version (e.g. --image-tag v0.2.0) to fetch the matching viewer bundle."
     SWA_SKIPPED=true
 else
-    SWA_SKIPPED=false
     BUNDLE_TAG="$IMAGE_TAG"
     [[ "$BUNDLE_TAG" != v* ]] && BUNDLE_TAG="v$BUNDLE_TAG"
     BUNDLE_URL="https://github.com/DonPercival0x45/RedTeamDashboard/releases/download/$BUNDLE_TAG/rtd-viewer-static-$BUNDLE_TAG.zip"
@@ -228,96 +229,23 @@ else
     else
         unzip -q "$TMP_DIR/viewer.zip" -d "$TMP_DIR/viewer"
         DEPLOY_TOKEN="$(az staticwebapp secrets list -n "$VIEWER_NAME" -g "$RG_OUT" --query 'properties.apiKey' -o tsv)"
-        # SWA CLI ships standalone via npm; npx fetches it on first run.
-        SWA_CLI_TELEMETRY_OPTOUT=1 npx -y @azure/static-web-apps-cli@latest \
-            deploy "$TMP_DIR/viewer" \
-            --deployment-token "$DEPLOY_TOKEN" \
-            --env production \
-            --no-use-keychain
+        # Run the SWA CLI from /tmp inside the container so its cwd isn't
+        # the artifact dir (the CLI refuses that). Mount the bundle under
+        # /work; pass /work as the deploy target.
+        docker run --rm -v "$TMP_DIR/viewer:/work" node:lts sh -c \
+            "cd /tmp && SWA_CLI_TELEMETRY_OPTOUT=1 npx -y @azure/static-web-apps-cli@latest \
+                deploy /work --deployment-token $DEPLOY_TOKEN \
+                --env production --no-use-keychain"
         green "    viewer deployed."
     fi
     rm -rf "$TMP_DIR"
 fi
 
-# ---------------------------------------------------------------------------
-# Configure Entra ID sign-in for the Static Web App
-# ---------------------------------------------------------------------------
-#
-# Static Web Apps' auth runtime reads AAD_CLIENT_ID + AAD_CLIENT_SECRET
-# from app settings and uses them to broker the Entra login. The kit
-# creates a per-tenant app registration scoped to AzureADMyOrg so only
-# users in the customer's tenant can sign in (defense-in-depth on top of
-# the per-source API key).
-#
-# Requires the operator to have AAD app-create permission in their tenant
-# (default for Members; restricted only when the tenant explicitly locks
-# it down). On failure we fall back to manual instructions instead of
-# blocking the rest of the install.
-bold "[5.6/6] Configuring Entra ID sign-in for the viewer…"
-
-AAD_CONFIGURED=false
-if [[ "$SWA_SKIPPED" == "true" ]]; then
-    echo "    skipped — viewer wasn't deployed"
-else
-    AAD_DISPLAY_NAME="rtd-${ENV_NAME}-viewer"
-    AAD_REDIRECT_URI="${VIEWER_URL}/.auth/login/aad/callback"
-
-    # Reuse an existing app registration if the operator re-ran install.sh.
-    EXISTING_APP_ID="$(az ad app list --display-name "$AAD_DISPLAY_NAME" --query '[0].appId' -o tsv 2>/dev/null || true)"
-
-    if [[ -n "$EXISTING_APP_ID" ]]; then
-        echo "    reusing existing app registration '$AAD_DISPLAY_NAME' (appId=$EXISTING_APP_ID)"
-        AAD_CLIENT_ID="$EXISTING_APP_ID"
-        if ! az ad app update --id "$AAD_CLIENT_ID" \
-            --web-redirect-uris "$AAD_REDIRECT_URI" \
-            --sign-in-audience AzureADMyOrg \
-            --only-show-errors -o none 2>/tmp/aad-err; then
-            red "    couldn't update redirect URI on existing app — see /tmp/aad-err"
-        fi
-    else
-        echo "    creating app registration '$AAD_DISPLAY_NAME'…"
-        if AAD_CLIENT_ID="$(az ad app create \
-            --display-name "$AAD_DISPLAY_NAME" \
-            --sign-in-audience AzureADMyOrg \
-            --web-redirect-uris "$AAD_REDIRECT_URI" \
-            --query 'appId' -o tsv 2>/tmp/aad-err)"; then
-            true
-        else
-            AAD_CLIENT_ID=""
-            red "    couldn't create app registration. Your tenant may restrict"
-            red "    app-create to admins; ask one to run:"
-            blue "        az ad app create --display-name $AAD_DISPLAY_NAME \\"
-            blue "            --sign-in-audience AzureADMyOrg \\"
-            blue "            --web-redirect-uris $AAD_REDIRECT_URI"
-            red "    Then set AAD_CLIENT_ID + AAD_CLIENT_SECRET on the SWA:"
-            blue "        az staticwebapp appsettings set -n $VIEWER_NAME -g $RG_OUT \\"
-            blue "            --setting-names AAD_CLIENT_ID=<appId> AAD_CLIENT_SECRET=<secret>"
-        fi
-    fi
-
-    if [[ -n "$AAD_CLIENT_ID" ]]; then
-        echo "    rotating client secret (2-year lifetime)…"
-        SECRET_LABEL="kit-install-$(date +%s)"
-        AAD_CLIENT_SECRET="$(az ad app credential reset \
-            --id "$AAD_CLIENT_ID" \
-            --display-name "$SECRET_LABEL" \
-            --years 2 \
-            --query 'password' -o tsv 2>/tmp/aad-err)" || true
-
-        if [[ -n "${AAD_CLIENT_SECRET:-}" ]]; then
-            az staticwebapp appsettings set \
-                --name "$VIEWER_NAME" \
-                --resource-group "$RG_OUT" \
-                --setting-names "AAD_CLIENT_ID=$AAD_CLIENT_ID" "AAD_CLIENT_SECRET=$AAD_CLIENT_SECRET" \
-                --only-show-errors -o none && AAD_CONFIGURED=true
-            if [[ "$AAD_CONFIGURED" == "true" ]]; then
-                green "    Entra sign-in wired up (appId=$AAD_CLIENT_ID, tenant-scoped)."
-            fi
-        else
-            red "    couldn't generate client secret — see /tmp/aad-err"
-        fi
-    fi
-fi
+# Note: SWA Free SKU doesn't support the `auth` config block — that requires
+# Standard ($9/mo). The kit ships the viewer on Free; the API key is the
+# only security boundary. The viewer's static shell has no secrets. Operators
+# who want page-load gating can upgrade the SWA SKU and add an `auth` block
+# (see docs/DEPLOY.md).
 
 # ---------------------------------------------------------------------------
 # Manual post-deploy steps
@@ -356,14 +284,6 @@ echo "  Tenant:           $TENANT_ID"
 echo "  Postgres pw saved in KV at: secret/postgres-password"
 echo
 if [[ "$SWA_SKIPPED" != "true" ]]; then
-    if [[ "$AAD_CONFIGURED" == "true" ]]; then
-        echo "Viewer sign-in: Entra ID (scoped to tenant $TENANT_ID — only your"
-        echo "                directory members can load the page)."
-    else
-        echo "Viewer sign-in: NOT configured — see the [5.6] output above for"
-        echo "                manual setup steps."
-    fi
-    echo
     # Magic link: pre-fills the URL + name in the viewer's /sources form
     # so the operator only pastes their API key. Share this with teammates.
     ENC_URL="$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1], safe=''))" "https://$APP_FQDN")"
@@ -371,7 +291,7 @@ if [[ "$SWA_SKIPPED" != "true" ]]; then
     echo "Quick-start link for testers (pre-fills the source form):"
     blue "  $VIEWER_URL/sources?url=$ENC_URL&name=$ENC_NAME"
     echo
-    echo "Each tester also needs their own scoped API key — mint one with:"
+    echo "Each tester needs their own scoped API key — mint one with:"
     echo "  az containerapp exec -n $APP_NAME -g $RG_OUT --container backend \\"
     echo "      --command 'python -m app.scripts.mint_api_key --name <tester> --scope cli'"
 else

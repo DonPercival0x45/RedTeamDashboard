@@ -180,10 +180,9 @@ rtd tail acme-q3-pentest              # late-join an in-flight stream
 
 ### Viewer (browser GUI — full CLI parity)
 
-The kit provisions an **Azure Static Web App** in your RG and pushes the
-viewer bundle to it. The SWA is Entra-ID-gated by default — anonymous
-visitors get bounced to your tenant's AAD login before they can load the
-page. The viewer's URL is printed at the end of `install.sh`:
+The kit provisions an **Azure Static Web App (Free SKU)** in your RG and
+pushes the viewer bundle to it. The viewer's URL is printed at the end of
+`install.sh`:
 
 ```
 Viewer URL:  https://rtd-<env>-viewer-<hash>.<region>.azurestaticapps.net
@@ -213,26 +212,29 @@ Tester opens the magic link, signs into Entra in YOUR tenant, pastes
 their key → engagement list renders, scope-aware buttons reflect their
 key's permissions.
 
-**Two layers of auth, intentionally separated:**
+**Security model:** the **backend API key** is the only auth layer. The
+viewer's static shell has nothing sensitive in it — no API keys, no
+tenant data, no secrets baked into the JS bundle. Loading the page only
+gives you a "Add a source" form. You can't read findings, scope, or
+events without pasting a valid API key.
 
-| Layer | Controls |
-|---|---|
-| Entra ID (SWA-level) | Who can *load* the viewer at all |
-| API key in localStorage (backend-level) | What data the page can read/mutate |
+This is the same model most modern SPAs use (auth at the API layer, not
+at the static-content layer). Trade-off: anyone with the URL can load
+the empty viewer shell. They can't *do* anything without a key minted by
+you.
 
-A signed-in Entra user still needs a valid API key to see any tenant
-data. Revoking either layer cuts access independently.
+**Want page-load gating via Entra ID?** SWA's custom-auth block requires
+the **Standard SKU (~$9/mo per deployment)**, not Free. To upgrade:
 
-**Auto-provisioned Entra app registration.** `install.sh` creates an AAD
-app registration named `rtd-<env>-viewer` scoped to `AzureADMyOrg` (only
-users in your tenant can sign in), wires its `appId` + a fresh 2-year
-client secret into the SWA's app settings, and sets the SWA's redirect
-URI to `<viewer-url>/.auth/login/aad/callback`. Re-running install.sh
-reuses the existing app registration and rotates the secret.
+1. In `infra/azure-kit/modules/viewer.bicep`, set `sku.name = 'Standard'`
+   and `sku.tier = 'Standard'`.
+2. Restore an `auth` block to `frontend/public/staticwebapp.config.json`
+   (see git history pre-`v0.2.0` for the previous shape).
+3. Run `az ad app create` + `az staticwebapp appsettings set` to wire
+   the AAD app registration (see git history of `install.sh` for the
+   automation we had before).
 
-If your tenant restricts app-create to admins, install.sh prints the
-exact `az ad app create` + `az staticwebapp appsettings set` commands an
-admin needs to run; the rest of the install still completes.
+That gives you tenant-scoped Entra sign-in *on top of* the API key.
 
 **Local development.** For hacking on the viewer itself:
 
