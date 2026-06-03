@@ -2,6 +2,20 @@
 
 export type EngagementStatus = "active" | "archived" | "flushed";
 
+export type APIKeyScope = "viewer" | "cli" | "admin";
+
+// What GET /api-keys/me returns. The viewer calls this per Source to learn
+// the key's scope so it can render mutation surfaces conditionally.
+export interface APIKeyInfo {
+  id: string;
+  name: string;
+  scope: APIKeyScope;
+  created_by: string | null;
+  revoked_at: string | null;
+  last_used_at: string | null;
+  created_at: string;
+}
+
 // Per-(engagement, tool) standing session grant. A row with revoked_at=null is
 // active and the gate auto-approves matching active calls.
 export interface Authorization {

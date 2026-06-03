@@ -170,12 +170,15 @@ export default function SourcesPage() {
                     className="flex items-center justify-between gap-3 py-3"
                   >
                     <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
                         <span className="truncate font-medium">
                           {source.name}
                         </span>
                         {isDefault && (
                           <Badge variant="secondary">default</Badge>
+                        )}
+                        {source.scope && (
+                          <Badge variant="outline">{source.scope}</Badge>
                         )}
                       </div>
                       <p className="truncate text-xs text-muted-foreground">

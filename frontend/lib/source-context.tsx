@@ -12,6 +12,7 @@ import {
   useMemo,
   useState,
 } from "react";
+import { getMyApiKey } from "@/lib/api";
 import {
   type Source,
   type SourceStore,
@@ -56,6 +57,45 @@ export function SourceProvider({ children }: { children: React.ReactNode }) {
     setStore(next);
     saveStore(next);
   }, []);
+
+  // Background-refresh scope per source after hydration. If a key was added
+  // before we tracked scope, or if it's been revoked/rotated, this corrects
+  // the cached value. Failures are silent — the UI falls back to the
+  // most-permissive view and lets the backend 403 if needed.
+  useEffect(() => {
+    if (!ready || store.sources.length === 0) return;
+    let cancelled = false;
+    Promise.all(
+      store.sources.map(async (source): Promise<Source | null> => {
+        try {
+          const info = await getMyApiKey(source);
+          if (info.scope === source.scope) return null;
+          return { ...source, scope: info.scope };
+        } catch {
+          return null;
+        }
+      }),
+    ).then((results) => {
+      if (cancelled) return;
+      const updates: Source[] = results.filter(
+        (r): r is Source => r !== null,
+      );
+      if (updates.length === 0) return;
+      setStore((prev) => {
+        const next: SourceStore = {
+          sources: prev.sources.map(
+            (s) => updates.find((u) => u.id === s.id) ?? s,
+          ),
+          defaultId: prev.defaultId,
+        };
+        saveStore(next);
+        return next;
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [ready, store.sources]);
 
   const selectSource = useCallback(
     (id: string) => {

@@ -6,6 +6,8 @@
 // the key as `X-API-Key`. Nothing leaves the browser except direct calls
 // to the user's own tenant (no proxy, no viewer-side DB).
 
+import type { APIKeyScope } from "@/lib/types";
+
 const STORAGE_KEY = "rtd.sources.v1";
 
 export interface Source {
@@ -13,6 +15,11 @@ export interface Source {
   name: string;
   url: string;
   apiKey: string;
+  // Resolved by calling /api-keys/me after the source is added. Optional
+  // because older entries (pre-this-version) won't have it until the
+  // context refreshes them on next boot. When undefined the UI assumes
+  // the most-permissive scope and lets the backend 403 anything wrong.
+  scope?: APIKeyScope;
 }
 
 export interface SourceStore {

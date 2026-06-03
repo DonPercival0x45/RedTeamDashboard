@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
@@ -10,14 +11,20 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { listEngagements } from "@/lib/api";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { createEngagement, listEngagements } from "@/lib/api";
 import { useSources } from "@/lib/source-context";
 import type { Engagement } from "@/lib/types";
 
 export default function EngagementListPage() {
   const { current } = useSources();
+  const canWrite = current?.scope !== "viewer";
   const [engagements, setEngagements] = useState<Engagement[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [name, setName] = useState("");
+  const [slug, setSlug] = useState("");
+  const [creating, setCreating] = useState(false);
 
   const reload = useCallback(async () => {
     if (!current) return;
@@ -29,12 +36,30 @@ export default function EngagementListPage() {
     }
   }, [current]);
 
-  // Reset + refetch every time the source changes so we never render stale
-  // data for the wrong tenant.
   useEffect(() => {
     setEngagements(null);
     reload();
   }, [reload, current?.id]);
+
+  const onCreate = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!current) return;
+    if (!name.trim()) return;
+    setCreating(true);
+    try {
+      await createEngagement(current, {
+        name: name.trim(),
+        slug: slug.trim() || undefined,
+      });
+      setName("");
+      setSlug("");
+      await reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCreating(false);
+    }
+  };
 
   if (!current) {
     return (
@@ -46,12 +71,49 @@ export default function EngagementListPage() {
 
   return (
     <div className="space-y-6">
+      {canWrite && (
+        <Card>
+          <CardHeader>
+            <CardTitle>New engagement</CardTitle>
+            <CardDescription>
+              Slug auto-generates from the name if you leave it blank.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <form onSubmit={onCreate} className="grid gap-4 sm:grid-cols-3 sm:items-end">
+              <div className="space-y-2 sm:col-span-2">
+                <Label htmlFor="name">Name</Label>
+                <Input
+                  id="name"
+                  value={name}
+                  onChange={(event) => setName(event.target.value)}
+                  placeholder="Acme Q1 Pentest"
+                  required
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="slug">Slug (optional)</Label>
+                <Input
+                  id="slug"
+                  value={slug}
+                  onChange={(event) => setSlug(event.target.value)}
+                  placeholder="acme-q1-pentest"
+                />
+              </div>
+              <Button type="submit" className="sm:col-span-3" disabled={creating}>
+                {creating ? "Creating…" : "Create engagement"}
+              </Button>
+            </form>
+          </CardContent>
+        </Card>
+      )}
+
       <Card>
         <CardHeader>
           <CardTitle>Engagements</CardTitle>
           <CardDescription>
-            Read-only view from <code>{current.name}</code>. Create and
-            archive engagements via <code>rtd engagement create</code>.
+            Source <code>{current.name}</code>
+            {current.scope ? ` · key scope: ${current.scope}` : ""}
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -63,8 +125,8 @@ export default function EngagementListPage() {
           )}
           {engagements && engagements.length === 0 && (
             <p className="text-sm text-muted-foreground">
-              No engagements yet. Create one with{" "}
-              <code>rtd engagement create &quot;Acme Q1&quot;</code>.
+              No engagements yet
+              {canWrite ? " — create one above." : "."}
             </p>
           )}
           {engagements && engagements.length > 0 && (

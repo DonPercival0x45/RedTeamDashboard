@@ -1,9 +1,7 @@
 "use client";
 
-// Read-only list of active per-(engagement, tool) session grants. Revoke
-// happens via `rtd grants revoke <id>` against the same backend.
-
 import { useCallback, useEffect, useState } from "react";
+import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
@@ -11,22 +9,28 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { listAuthorizations } from "@/lib/api";
+import { listAuthorizations, revokeAuthorization } from "@/lib/api";
 import { useSources } from "@/lib/source-context";
 import type { Authorization } from "@/lib/types";
 
 interface GrantsCardProps {
   engagementId: string;
-  // Bumping this triggers a refetch — parent does so when SSE surfaces a new
-  // tool.auto_approved (a fresh grant may have appeared this session).
+  // Bumping this triggers a refetch — parent does so after a "remember"
+  // approval (a new grant may have appeared) and after this card revokes one.
   refreshKey: number;
+  canRevoke: boolean;
 }
 
-export function GrantsCard({ engagementId, refreshKey }: GrantsCardProps) {
+export function GrantsCard({
+  engagementId,
+  refreshKey,
+  canRevoke,
+}: GrantsCardProps) {
   const { current } = useSources();
   const [grants, setGrants] = useState<Authorization[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
     if (!current) return;
@@ -46,13 +50,34 @@ export function GrantsCard({ engagementId, refreshKey }: GrantsCardProps) {
     reload();
   }, [reload, refreshKey]);
 
+  const onRevoke = async (grant: Authorization) => {
+    if (!current) return;
+    if (
+      !window.confirm(
+        `Revoke session grant for ${grant.tool_name}? Future calls will prompt for approval again.`,
+      )
+    ) {
+      return;
+    }
+    setBusyId(grant.id);
+    try {
+      await revokeAuthorization(current, grant.id);
+      await reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   return (
     <Card>
       <CardHeader>
         <CardTitle>Session grants</CardTitle>
         <CardDescription>
-          Active per-tool standing approvals. Revoke via{" "}
-          <code>rtd grants revoke &lt;id&gt;</code>.
+          Per-tool standing approvals. While active, in-scope calls to that tool
+          auto-run instead of prompting.
+          {canRevoke ? " Revoke to require approval again." : null}
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -63,22 +88,32 @@ export function GrantsCard({ engagementId, refreshKey }: GrantsCardProps) {
           <p className="text-sm text-muted-foreground">Loading grants…</p>
         ) : grants.length === 0 ? (
           <p className="text-sm text-muted-foreground">
-            No active session grants.
+            No active session grants. Approve an active tool with “Remember for
+            this session” to create one.
           </p>
         ) : (
           <ul className="space-y-2">
             {grants.map((grant) => (
               <li
                 key={grant.id}
-                className="space-y-1 rounded border bg-muted/40 px-3 py-2 text-sm"
+                className="flex items-center justify-between rounded border bg-muted/40 px-3 py-2"
               >
-                <div className="font-mono">{grant.tool_name}</div>
-                <div className="flex flex-wrap gap-x-3 text-xs text-muted-foreground">
-                  <span>
+                <div className="text-sm">
+                  <div className="font-mono">{grant.tool_name}</div>
+                  <div className="text-xs text-muted-foreground">
                     granted {new Date(grant.created_at).toLocaleString()}
-                  </span>
-                  <code>{grant.id}</code>
+                  </div>
                 </div>
+                {canRevoke && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={busyId === grant.id}
+                    onClick={() => onRevoke(grant)}
+                  >
+                    {busyId === grant.id ? "Revoking…" : "Revoke"}
+                  </Button>
+                )}
               </li>
             ))}
           </ul>

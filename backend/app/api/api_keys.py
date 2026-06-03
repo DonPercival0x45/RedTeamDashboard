@@ -18,7 +18,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 
-from app.api.deps import CurrentUser, DbSession, RequireScope, hash_api_key
+from app.api.deps import CurrentAPIKey, CurrentUser, DbSession, RequireScope, hash_api_key
 from app.models import ActorType, APIKey, APIKeyScope, AuditLog
 from app.schemas.api_key import APIKeyCreate, APIKeyMintResponse, APIKeyRead
 
@@ -32,6 +32,20 @@ _KEY_PREFIX = "rtd_"
 def _generate_key() -> str:
     """Return a fresh 32-byte URL-safe random token, prefixed for identification."""
     return _KEY_PREFIX + secrets.token_urlsafe(32)
+
+
+@router.get(
+    "/api-keys/me",
+    response_model=APIKeyRead,
+)
+def my_api_key(api_key: CurrentAPIKey) -> APIKey:
+    """Return the metadata of the calling key.
+
+    Lets clients (e.g. the viewer) learn their own scope so they can render
+    UI conditionally instead of trial-and-erroring 403s. No additional scope
+    is required beyond a valid X-API-Key.
+    """
+    return api_key
 
 
 @router.post(

@@ -8,12 +8,16 @@
 
 import type { Source } from "@/lib/sources";
 import type {
+  APIKeyInfo,
   Approval,
   ApprovalStatus,
   Authorization,
   Engagement,
   EngagementStatus,
   Finding,
+  RunModel,
+  RunStartResponse,
+  ScopeKind,
 } from "@/lib/types";
 
 function headers(source: Source, extra?: HeadersInit): HeadersInit {
@@ -42,6 +46,14 @@ async function request<T>(
 }
 
 // ---------------------------------------------------------------------------
+// API key self-introspection
+// ---------------------------------------------------------------------------
+
+export function getMyApiKey(source: Source): Promise<APIKeyInfo> {
+  return request<APIKeyInfo>(source, "/api-keys/me");
+}
+
+// ---------------------------------------------------------------------------
 // Engagements
 // ---------------------------------------------------------------------------
 
@@ -60,8 +72,31 @@ export function getEngagement(
   return request<Engagement>(source, `/engagements/${slug}`);
 }
 
+export function createEngagement(
+  source: Source,
+  body: { name: string; slug?: string },
+): Promise<Engagement> {
+  return request<Engagement>(source, "/engagements", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function archiveEngagement(
+  source: Source,
+  slug: string,
+): Promise<Engagement> {
+  return request<Engagement>(source, `/engagements/${slug}`, {
+    method: "DELETE",
+  });
+}
+
+export function flushEngagement(source: Source, slug: string): Promise<void> {
+  return request<void>(source, `/engagements/${slug}/flush`, { method: "POST" });
+}
+
 // ---------------------------------------------------------------------------
-// Scope (read-only)
+// Scope
 // ---------------------------------------------------------------------------
 
 export function listScope(source: Source, slug: string) {
@@ -69,6 +104,33 @@ export function listScope(source: Source, slug: string) {
     source,
     `/engagements/${slug}/scope`,
   );
+}
+
+export function createScopeItem(
+  source: Source,
+  slug: string,
+  body: {
+    kind: ScopeKind;
+    value: string;
+    is_exclusion?: boolean;
+    note?: string | null;
+  },
+) {
+  return request<import("@/lib/types").ScopeItem>(
+    source,
+    `/engagements/${slug}/scope`,
+    { method: "POST", body: JSON.stringify(body) },
+  );
+}
+
+export function deleteScopeItem(
+  source: Source,
+  slug: string,
+  scopeId: string,
+): Promise<void> {
+  return request<void>(source, `/engagements/${slug}/scope/${scopeId}`, {
+    method: "DELETE",
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -80,7 +142,22 @@ export function listFindings(source: Source, slug: string): Promise<Finding[]> {
 }
 
 // ---------------------------------------------------------------------------
-// Approvals (read-only — decisions go through `rtd approve`)
+// Runs
+// ---------------------------------------------------------------------------
+
+export function startRun(
+  source: Source,
+  slug: string,
+  body: { prompt: string; model?: RunModel },
+): Promise<RunStartResponse> {
+  return request<RunStartResponse>(source, `/engagements/${slug}/runs`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Approvals
 // ---------------------------------------------------------------------------
 
 export function listApprovals(
@@ -92,8 +169,24 @@ export function listApprovals(
   return request<Approval[]>(source, `/engagements/${slug}/approvals${q}`);
 }
 
+export function decideApproval(
+  source: Source,
+  approvalId: string,
+  body: {
+    approved: boolean;
+    edited_args?: Record<string, unknown>;
+    reason?: string;
+    remember_for_session?: boolean;
+  },
+): Promise<Approval> {
+  return request<Approval>(source, `/approvals/${approvalId}/decision`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
 // ---------------------------------------------------------------------------
-// Authorizations (read-only — revoke goes through `rtd grants revoke`)
+// Authorizations
 // ---------------------------------------------------------------------------
 
 export function listAuthorizations(
@@ -105,6 +198,17 @@ export function listAuthorizations(
   return request<Authorization[]>(
     source,
     `/engagements/${engagementId}/authorizations${q}`,
+  );
+}
+
+export function revokeAuthorization(
+  source: Source,
+  authorizationId: string,
+): Promise<Authorization> {
+  return request<Authorization>(
+    source,
+    `/authorizations/${authorizationId}/revoke`,
+    { method: "POST" },
   );
 }
 

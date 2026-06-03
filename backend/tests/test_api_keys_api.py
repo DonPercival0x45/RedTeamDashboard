@@ -153,6 +153,38 @@ def test_mint_rejected_without_any_key(client: TestClient) -> None:
 
 
 # ---------------------------------------------------------------------------
+# GET /api-keys/me — clients learn their own scope (no admin required)
+# ---------------------------------------------------------------------------
+
+
+def test_me_returns_calling_key_metadata(client: TestClient, db: Session) -> None:
+    user = _seed_user(db, "viewer-me@example.com")
+    row, token = _seed_key(
+        db, name="viewer-laptop", scope=APIKeyScope.viewer, created_by=user
+    )
+
+    response = client.get("/api-keys/me", headers={"X-API-Key": token})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["id"] == str(row.id)
+    assert body["name"] == "viewer-laptop"
+    assert body["scope"] == "viewer"
+    assert "key" not in body  # plaintext never returned
+
+
+def test_me_rejects_unknown_key(client: TestClient) -> None:
+    response = client.get(
+        "/api-keys/me", headers={"X-API-Key": "rtd_does-not-exist"}
+    )
+    assert response.status_code == 401
+
+
+def test_me_rejects_missing_key(client: TestClient) -> None:
+    response = client.get("/api-keys/me")
+    assert response.status_code == 401
+
+
+# ---------------------------------------------------------------------------
 # Revoke
 # ---------------------------------------------------------------------------
 

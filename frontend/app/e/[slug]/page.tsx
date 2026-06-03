@@ -2,13 +2,17 @@
 
 import Link from "next/link";
 import { use, useCallback, useEffect, useRef, useState } from "react";
+import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { ApprovalsList } from "@/components/approvals-list";
+import {
+  ApprovalsModal,
+  type PendingApproval,
+} from "@/components/approvals-modal";
 import { DownloadReport } from "@/components/download-report";
 import { EventLog, type LoggedEvent } from "@/components/event-log";
 import {
@@ -16,8 +20,9 @@ import {
   type FindingRow,
 } from "@/components/findings-table";
 import { GrantsCard } from "@/components/grants-card";
-import { ScopeList } from "@/components/scope-list";
-import { getEngagement, listFindings } from "@/lib/api";
+import { RunPrompt } from "@/components/run-prompt";
+import { ScopeEditor } from "@/components/scope-editor";
+import { archiveEngagement, getEngagement, listFindings } from "@/lib/api";
 import { subscribeToEvents } from "@/lib/events";
 import { useSources } from "@/lib/source-context";
 import type { Engagement } from "@/lib/types";
@@ -29,17 +34,18 @@ export default function EngagementDetailPage({
 }) {
   const { slug } = use(params);
   const { current } = useSources();
+  const canWrite = current?.scope !== "viewer";
 
   const [engagement, setEngagement] = useState<Engagement | null>(null);
   const [events, setEvents] = useState<LoggedEvent[]>([]);
   const [findings, setFindings] = useState<FindingRow[]>([]);
+  const [pending, setPending] = useState<PendingApproval | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [streamState, setStreamState] = useState<
     "connecting" | "open" | "closed"
   >("connecting");
-  // Bumped on approval.pending / tool.auto_approved so the read-only
-  // approvals + grants cards refetch (they don't subscribe to SSE directly).
-  const [approvalsRefreshKey, setApprovalsRefreshKey] = useState(0);
+  // Bumped after the approval modal closes (a new grant may have been created
+  // via "remember") so the grants card refetches.
   const [grantsRefreshKey, setGrantsRefreshKey] = useState(0);
 
   const seenSseIds = useRef<Set<string>>(new Set());
@@ -53,7 +59,6 @@ export default function EngagementDetailPage({
     }
   }, [current, slug]);
 
-  // Source switch resets engagement + findings + events; nothing carries over.
   useEffect(() => {
     setEngagement(null);
     setFindings([]);
@@ -62,9 +67,6 @@ export default function EngagementDetailPage({
     reload();
   }, [reload, current?.id]);
 
-  // Hydrate findings from the DB on load. The SSE stream only delivers events
-  // created after connect, so persisted findings would otherwise vanish on
-  // reload.
   useEffect(() => {
     if (!current) return;
     let cancelled = false;
@@ -132,10 +134,16 @@ export default function EngagementDetailPage({
               ...prev,
             ];
           });
-        } else if (event.type === "approval.pending") {
-          setApprovalsRefreshKey((k) => k + 1);
-        } else if (event.type === "tool.auto_approved") {
-          setGrantsRefreshKey((k) => k + 1);
+        } else if (event.type === "approval.pending" && canWrite) {
+          setPending({
+            approval_id: event.approval_id,
+            thread_id: event.thread_id,
+            tool: event.tool,
+            args: event.args,
+            risk: event.risk,
+            scope: event.scope,
+            tool_call_id: event.tool_call_id,
+          });
         }
       },
     }).catch((err) => {
@@ -146,7 +154,18 @@ export default function EngagementDetailPage({
     return () => {
       controller.abort();
     };
-  }, [current, slug]);
+  }, [current, slug, canWrite]);
+
+  const onArchive = async () => {
+    if (!current || !engagement) return;
+    if (!window.confirm(`Archive ${engagement.slug}? Stops new runs.`)) return;
+    try {
+      await archiveEngagement(current, slug);
+      await reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
 
   if (!current) {
     return (
@@ -183,7 +202,14 @@ export default function EngagementDetailPage({
               <code>{current.name}</code>
             </p>
           </div>
-          <DownloadReport slug={slug} />
+          <div className="flex items-start gap-2">
+            <DownloadReport slug={slug} />
+            {canWrite && engagement.status === "active" && (
+              <Button variant="outline" size="sm" onClick={onArchive}>
+                Archive
+              </Button>
+            )}
+          </div>
         </CardHeader>
         {error && (
           <CardContent>
@@ -192,17 +218,34 @@ export default function EngagementDetailPage({
         )}
       </Card>
 
-      <ScopeList slug={slug} />
+      <ScopeEditor slug={slug} canWrite={canWrite} />
 
       <GrantsCard
         engagementId={engagement.id}
         refreshKey={grantsRefreshKey}
+        canRevoke={canWrite}
       />
 
-      <ApprovalsList slug={slug} refreshKey={approvalsRefreshKey} />
+      {canWrite && engagement.status === "active" ? (
+        <RunPrompt slug={slug} />
+      ) : engagement.status !== "active" ? (
+        <p className="text-sm text-muted-foreground">
+          This engagement is {engagement.status}; runs are disabled.
+        </p>
+      ) : null}
 
       <FindingsTable findings={findings} />
       <EventLog events={events} />
+
+      {canWrite && (
+        <ApprovalsModal
+          pending={pending}
+          onResolved={() => {
+            setPending(null);
+            setGrantsRefreshKey((k) => k + 1);
+          }}
+        />
+      )}
     </div>
   );
 }
