@@ -1,0 +1,262 @@
+# Red Team Dashboard — Deploy & Operate
+
+How the system is wired, how to stand up a fresh environment in your own
+Azure tenant, and how to use it day-to-day. Verified end-to-end on
+2026-06-03 against `rtd-personal` / `centralus`.
+
+## Architecture in one picture
+
+```
+Your laptop (operator)
+├─ rtd-cli  ──── HTTPS+X-API-Key ───┐
+└─ viewer   ──── HTTPS+X-API-Key ───┤
+                                    ▼
+   ┌──────────────────────────────────────────────┐
+   │  Azure RG: rtd-<env>  (one per deployment)   │
+   │                                              │
+   │  Container App: rtd-<env>-app                │
+   │  ┌─────────┐  ┌─────────┐  ┌──────────────┐  │
+   │  │ backend │  │ worker  │  │ redis:7      │  │
+   │  │ uvicorn │  │ langgr. │  │ localhost    │  │
+   │  │ :8000   │  │         │  │ :6379        │  │
+   │  └────┬────┘  └────┬────┘  └──────┬───────┘  │
+   │       │ 127.0.0.1 between all three          │
+   │       │                                      │
+   │       ▼               ▼                      │
+   │  Postgres FS     Key Vault (RBAC)            │
+   │  (public + AZ    pg pw, db url,              │
+   │   firewall rule) LLM keys, admin key         │
+   │                                              │
+   │  Log Analytics  +  CAE (no VNet)             │
+   └──────────────────────────────────────────────┘
+```
+
+**Why one app with three containers:** Container Apps' internal env VIP
+only routes 80/443 — it can't carry TCP/6379 between sibling apps, even
+with VNet integration. Colocation in the same pod means
+backend/worker/redis talk via `127.0.0.1` and never need env routing. The
+trade-off: single replica only.
+
+## Prereqs (one-time on your machine)
+
+```bash
+# Azure CLI + Bicep
+az --version              # any 2.50+
+az bicep install
+az login                  # opens browser
+az account set --subscription rtd-personal   # whatever your sub is named
+
+# Other tools
+openssl version           # for the install script to generate the pg pw
+python3 --version         # install.sh uses python3 for JSON parsing
+gh --version              # only needed if you'll cut releases
+
+# Pin your subscription so you don't accidentally deploy elsewhere
+az account show --query 'name'
+```
+
+## Deploy a fresh environment in ~8 minutes
+
+```bash
+git clone https://github.com/DonPercival0x45/RedTeamDashboard.git
+cd RedTeamDashboard
+
+./infra/azure-kit/scripts/install.sh --env prod --location centralus --yes
+```
+
+That's the whole thing. Flags:
+
+- `--env <name>` — becomes the resource prefix (`rtd-<env>-app`,
+  `rtd-<env>-kv`, RG `rtd-<env>`). Defaults to `prod`.
+- `--location centralus` — required on Pay-As-You-Go / personal subs.
+  `eastus2` and `eastus` hit `LocationIsOfferRestricted` on Postgres
+  Flexible Server.
+- `--image-tag latest` — defaults to `:latest`, pulls
+  `ghcr.io/donpercival0x45/rtd-{backend,worker}:latest`. Pin a version
+  in production.
+- `--image-repo-owner <gh-user>` — override if you forked and republish.
+- `--yes` skips the confirmation prompt.
+
+What it does (~8 min wall-clock):
+
+1. Generates a random Postgres admin password.
+2. `az deployment sub create` against `infra/azure-kit/main.bicep` —
+   provisions RG, Log Analytics, Postgres Flexible Server (Burstable B1ms,
+   public + AllowAzureServices firewall), Container Apps Env
+   (Consumption-only), Key Vault (RBAC mode), and the one Container App
+   with three containers.
+3. Forces a fresh revision — the first revision races KV→AAD identity
+   propagation and KV refs return 403; bumping makes the second revision
+   pick up the now-propagated identity.
+4. Curls `/health` every 6s for 240s — exits 0 when
+   `{"db":true,"redis":true}`.
+5. Prints the manual bootstrap commands.
+
+## Bootstrap (4 paste-able command groups)
+
+The install script prints these at the end with the right names filled in.
+The pattern:
+
+```bash
+# 1. Apply migrations (3 of them; idempotent)
+script -qc "az containerapp exec \
+    -n rtd-prod-app -g rtd-prod --container backend \
+    --command 'alembic upgrade head'" /dev/null
+
+# 2. Mint your bootstrap admin key — COPY THE rtd_… TOKEN. It cannot be
+#    retrieved again.
+script -qc "az containerapp exec \
+    -n rtd-prod-app -g rtd-prod --container backend \
+    --command 'python -m app.scripts.mint_api_key --name bootstrap --scope admin'" /dev/null
+
+# 3. One-time per RG: grant YOURSELF data-plane access to the new Key Vault.
+#    (Subscription Owner doesn't auto-inherit KV data-plane in RBAC mode.)
+ME=$(az ad signed-in-user show --query id -o tsv)
+KV_ID=$(az keyvault show -n rtd-prod-kv --query id -o tsv)
+az role assignment create --role "Key Vault Secrets Officer" --assignee "$ME" --scope "$KV_ID"
+sleep 60  # AAD propagation
+
+# 4. Stash the admin key + your LLM key(s) in KV
+az keyvault secret set --vault-name rtd-prod-kv --name admin-api-key      --value 'rtd_…paste…'
+az keyvault secret set --vault-name rtd-prod-kv --name anthropic-api-key  --value 'sk-ant-…'
+
+# 5. Restart so the new LLM key gets picked up
+REV=$(az containerapp revision list -n rtd-prod-app -g rtd-prod \
+    --query '[?properties.active].name | [0]' -o tsv)
+az containerapp revision restart -n rtd-prod-app -g rtd-prod --revision "$REV"
+```
+
+The `script -qc "..." /dev/null` wrapper gives `az containerapp exec` a
+TTY — without it you get `Inappropriate ioctl for device`.
+
+After step 5, `/health` is green and the worker has a valid LLM key.
+Operational.
+
+## Day-to-day operation
+
+### CLI (preferred for mutations)
+
+The CLI isn't on PyPI yet (Trusted Publisher setup pending). Install from
+source:
+
+```bash
+pip install -e ./cli   # or: pipx install ./cli
+rtd --version
+```
+
+```bash
+# Save a profile (URL + API key) — auto-persists to ~/.config/rtd/config.toml (0600)
+rtd login --profile prod \
+  --url https://rtd-prod-app.<env-suffix>.<region>.azurecontainerapps.io \
+  --key rtd_yourtoken \
+  --default
+
+# Day-to-day flow
+rtd engagement create "Acme Q3 Pentest"
+rtd engagement scope add acme-q3-pentest --kind domain --value acme.com
+rtd run start acme-q3-pentest -p "Run passive OSINT on acme.com" --tail
+#  ↑ --tail streams SSE events to your terminal until the run completes
+
+# When an active-tool approval prompt arrives:
+rtd approve <approval-id>             # approve as-is
+rtd approve <approval-id> --remember  # approve + create a session grant
+rtd approve <approval-id> --deny --reason "out of scope"
+rtd approve <approval-id> --edit port=8443  # edit args then approve
+
+rtd grants list acme-q3-pentest       # see active session grants
+rtd grants revoke <grant-id>          # revoke one
+
+rtd findings list acme-q3-pentest --severity high
+rtd tail acme-q3-pentest              # late-join an in-flight stream
+```
+
+### Viewer (read-only browser UI)
+
+Two ways to run it:
+
+**Locally** (single operator, your laptop):
+
+```bash
+cd RedTeamDashboard
+docker compose -f infra/docker-compose.yml up -d frontend
+# Browser → http://localhost:3001
+```
+
+Mint a viewer-scoped key first so the viewer only gets read perms:
+
+```bash
+script -qc "az containerapp exec -n rtd-prod-app -g rtd-prod --container backend \
+  --command 'python -m app.scripts.mint_api_key --name viewer-laptop --scope viewer'" /dev/null
+```
+
+Then in the viewer: **Add a source** → paste the URL + the viewer key →
+engagements/scope/findings/events render.
+
+**Centrally hosted** (team-shared, anyone on a known origin):
+
+Deploy `ghcr.io/donpercival0x45/rtd-viewer:<ver>` anywhere (Vercel, Azure
+Static Web Apps, another Container App). It's pure Next.js with no
+backend of its own. The viewer's URL goes into the kit's
+`corsAllowOrigins` param so the tenant backend accepts it:
+
+```bash
+# Edit infra/azure-kit/main.bicepparam:
+#   param corsAllowOrigins = 'https://viewer.example.com,http://localhost:3001'
+# Then re-run the installer to apply (Bicep is idempotent):
+./infra/azure-kit/scripts/install.sh --env prod --location centralus --yes
+```
+
+## Operations / troubleshooting
+
+```bash
+# Backend logs (last 60 lines from the active replica)
+script -qc "az containerapp logs show -n rtd-prod-app -g rtd-prod \
+    --container backend --tail 60 --format text" /dev/null
+
+# Worker logs — same pattern with --container worker
+# Redis logs — same with --container redis
+
+# Force a fresh revision after rotating a KV secret
+REV=$(az containerapp revision list -n rtd-prod-app -g rtd-prod \
+    --query '[?properties.active].name | [0]' -o tsv)
+az containerapp revision restart -n rtd-prod-app -g rtd-prod --revision "$REV"
+
+# Re-deploy the same kit (idempotent — Bicep no-ops anything unchanged)
+./infra/azure-kit/scripts/install.sh --env prod --location centralus --yes \
+    --image-tag v0.2.0     # roll to a new image
+
+# Tear it all down — single command, no leftovers
+az group delete -n rtd-prod -y
+```
+
+## Costs you should expect
+
+| Resource | ~Monthly |
+|---|---|
+| Postgres Flexible Server B1ms | $13 |
+| Container App (0.75 vCPU / 2 GiB total, 1 replica) | $10–15 |
+| Key Vault (Standard) | <$1 |
+| Log Analytics (low ingest) | $1–5 |
+| **Total per deployment** | **~$25–35/mo** |
+
+Postgres is the floor. If you blow away the RG between engagements you save
+it, but you also lose history.
+
+## Things to know before you do this in earnest
+
+- **Single replica is non-negotiable** with this architecture. If you
+  outgrow it, the answer is Azure Managed Redis as a separate resource
+  (~$50/mo) and unfreezing `minReplicas`.
+- **Persistence is off** for the in-pod Redis
+  (`--save '' --appendonly no`). On revision restarts the job queue + run
+  checkpoints reset. Acceptable for one operator; not for shared multi-day
+  runs.
+- **CI does not deploy.** Releases tag GHCR images + the kit tarball; you
+  run the kit yourself. There is no central control plane that pushes to
+  your tenant.
+- **GHCR is public** so you don't need any registry credentials in the
+  kit. If you fork and republish under your own user, override
+  `--image-repo-owner <yourname>`.
+- **Default region in `main.bicep` is `eastus2`** but PAYG/personal subs
+  reject Postgres there. Use `--location centralus` until you're on an
+  EA/CSP sub.
