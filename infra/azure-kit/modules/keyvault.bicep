@@ -1,12 +1,11 @@
 // Key Vault — single source of truth for runtime secrets.
 //
-// RBAC mode (not access policies) so the container apps' system-assigned
-// identities can be granted `Key Vault Secrets User` post-hoc without
+// RBAC mode (not access policies) so the container app's system-assigned
+// identity can be granted `Key Vault Secrets User` post-hoc without
 // rewriting any access-policy block. Secrets seeded here:
 //
 //   - postgres-password            (admin password, written by main.bicep)
 //   - database-url                 (full SQLAlchemy URL with sslmode=require)
-//   - redis-url                    (rediss:// URL with primary key)
 //   - anthropic-api-key            (placeholder; rotate post-deploy)
 //   - openai-api-key               (placeholder; rotate post-deploy)
 //   - azure-openai-api-key         (placeholder; AOAI is optional)
@@ -31,8 +30,6 @@ param tenantId string = subscription().tenantId
 param postgresPassword string
 @secure()
 param databaseUrl string
-@secure()
-param redisUrl string
 
 // KV names must be 3-24 chars; trim if needed.
 var vaultName = take('${namePrefix}-kv', 24)
@@ -61,12 +58,6 @@ resource sDatabaseUrl 'Microsoft.KeyVault/vaults/secrets@2024-04-01-preview' = {
   parent: kv
   name: 'database-url'
   properties: { value: databaseUrl }
-}
-
-resource sRedisUrl 'Microsoft.KeyVault/vaults/secrets@2024-04-01-preview' = {
-  parent: kv
-  name: 'redis-url'
-  properties: { value: redisUrl }
 }
 
 resource sAnthropicKey 'Microsoft.KeyVault/vaults/secrets@2024-04-01-preview' = {

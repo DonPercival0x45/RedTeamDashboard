@@ -1,9 +1,8 @@
 // Container Apps managed environment.
 //
-// Split out from containerapps.bicep so the self-hosted Redis Container App
-// can share the same environment (cross-app internal DNS works only within
-// one env). Order: this module deploys first; redis.bicep + containerapps.bicep
-// both reference its envId.
+// Plain Consumption-only env — no VNet integration. With backend+worker+redis
+// colocated in a single Container App (siblings sharing localhost), there is
+// no cross-app internal TCP that would have needed VNet routing.
 
 targetScope = 'resourceGroup'
 
@@ -14,10 +13,6 @@ param tags object
 param logAnalyticsCustomerId string
 @secure()
 param logAnalyticsPrimarySharedKey string
-
-// VNet-integrated subnet enables internal TCP between apps in the env
-// (required for the self-hosted Redis Container App).
-param infrastructureSubnetId string
 
 resource env 'Microsoft.App/managedEnvironments@2024-03-01' = {
   name: '${namePrefix}-cae'
@@ -30,10 +25,6 @@ resource env 'Microsoft.App/managedEnvironments@2024-03-01' = {
         customerId: logAnalyticsCustomerId
         sharedKey: logAnalyticsPrimarySharedKey
       }
-    }
-    vnetConfiguration: {
-      infrastructureSubnetId: infrastructureSubnetId
-      internal: false
     }
     zoneRedundant: false
   }

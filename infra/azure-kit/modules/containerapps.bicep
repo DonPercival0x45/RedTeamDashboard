@@ -1,15 +1,19 @@
-// Container Apps Environment + two apps (backend, worker).
+// Single Container App with three colocated containers: backend, worker, redis.
 //
-// The viewer is NOT deployed here — it's a central instance the operator
-// points at this tenant's backend via API key. (Self-hosting the viewer in
-// your own tenant is also fine; pull `ghcr.io/.../rtd-viewer:<tag>` and add
-// another containerApps resource.)
+// Why one app, not three:
+//   Internal TCP routing on non-HTTP ports doesn't work in Consumption-profile
+//   Container Apps envs — even with VNet integration the env-VIP only routes
+//   80/443. Yesterday's three-app design (backend + worker + a self-hosted
+//   redis app) had backend timing out connecting to `redis.internal.<env>:6379`.
+//   Dedicated workload profiles fix it but cost ~$130-200/mo.
 //
-// Images come from GHCR (public). No registry credentials required.
+//   For a single-user red-team tool, colocating the three containers in ONE
+//   Container App lets them talk via `127.0.0.1` — no env routing involved.
+//   Trade-offs: single replica (minReplicas = maxReplicas = 1), no KEDA
+//   autoscaling on Redis Stream depth. Fine for one operator.
 //
-// - backend:  external ingress on 8000 -> 443. Pulls KV secrets via system identity.
-// - worker:   no ingress. Same image, different entrypoint. Scales 1-3 on
-//             Redis Stream depth (KEDA scaler).
+// Image: backend and worker share the same image; only the entrypoint
+// differs. Redis is `redis:7-alpine` with persistence off.
 
 targetScope = 'resourceGroup'
 
@@ -17,26 +21,20 @@ param namePrefix string
 param location string
 param tags object
 
-// Managed environment is created by containerappsenv.bicep so the redis
-// Container App can share it. Pass its id here.
 param environmentId string
 
 param keyVaultName string
 param keyVaultId string
 
-// Full image refs, e.g. `ghcr.io/donpercival/rtd-backend:0.1.0`.
+// Full image refs, e.g. `ghcr.io/donpercival0x45/rtd-backend:0.1.0`.
 param backendImage string
 param workerImage string
-
-// `host:port` for KEDA's redis-streams scaler (it can't parse a redis://
-// URL; addressFromEnv must be plain host:port).
-param redisHostPort string
 
 param anthropicModel string = 'claude-opus-4-7'
 @allowed([ 'anthropic', 'openai', 'azure' ])
 param llmProvider string = 'anthropic'
 
-@description('Comma-separated CORS allow-origins. Add the central viewer\'s URL here so the browser can call this tenant\'s backend (Phase 6).')
+@description('Comma-separated CORS allow-origins. Add the central viewer\'s URL so the browser can call this tenant\'s backend (Phase 6).')
 param corsAllowOrigins string = 'http://localhost:3001,http://127.0.0.1:3001'
 
 // ---------------------------------------------------------------------------
@@ -46,18 +44,13 @@ param corsAllowOrigins string = 'http://localhost:3001,http://127.0.0.1:3001'
 var kvSecretsUserRoleId = '4633458b-17de-408a-b874-0445c86b69e6'
 
 // ---------------------------------------------------------------------------
-// Secret refs + env (shared by backend and worker)
+// Secret refs + env (one shared app, one identity)
 // ---------------------------------------------------------------------------
 
 var secretsFromKeyVault = [
   {
     name: 'database-url'
     keyVaultUrl: 'https://${keyVaultName}${environment().suffixes.keyvaultDns}/secrets/database-url'
-    identity: 'system'
-  }
-  {
-    name: 'redis-url'
-    keyVaultUrl: 'https://${keyVaultName}${environment().suffixes.keyvaultDns}/secrets/redis-url'
     identity: 'system'
   }
   {
@@ -87,14 +80,13 @@ var secretsFromKeyVault = [
   }
 ]
 
-var sharedEnv = [
+// Shared between backend + worker (NOT redis — redis only needs its own env).
+var appEnv = [
   { name: 'ENV', value: 'prod' }
   { name: 'DATABASE_URL', secretRef: 'database-url' }
-  { name: 'REDIS_URL', secretRef: 'redis-url' }
-  // KEDA's redis-streams scaler reads this via addressFromEnv — it expects
-  // `host:port`, not a URL, so we set both REDIS_URL (for app code) and
-  // REDIS_HOST_PORT (for the scaler).
-  { name: 'REDIS_HOST_PORT', value: redisHostPort }
+  // Redis is a sibling container in the same pod; reachable via localhost.
+  { name: 'REDIS_URL', value: 'redis://127.0.0.1:6379/0' }
+  { name: 'REDIS_HOST_PORT', value: '127.0.0.1:6379' }
   { name: 'LLM_PROVIDER', value: llmProvider }
   { name: 'ANTHROPIC_API_KEY', secretRef: 'anthropic-api-key' }
   { name: 'ANTHROPIC_MODEL', value: anthropicModel }
@@ -107,11 +99,11 @@ var sharedEnv = [
 ]
 
 // ---------------------------------------------------------------------------
-// Backend
+// The one app — backend exposes external HTTPS; worker + redis are siblings
 // ---------------------------------------------------------------------------
 
-resource backend 'Microsoft.App/containerApps@2024-03-01' = {
-  name: '${namePrefix}-backend'
+resource app 'Microsoft.App/containerApps@2024-03-01' = {
+  name: '${namePrefix}-app'
   location: location
   tags: tags
   identity: { type: 'SystemAssigned' }
@@ -124,7 +116,6 @@ resource backend 'Microsoft.App/containerApps@2024-03-01' = {
         transport: 'auto'
         allowInsecure: false
       }
-      // No `registries` block: GHCR's public images need no auth.
       secrets: secretsFromKeyVault
     }
     template: {
@@ -133,12 +124,12 @@ resource backend 'Microsoft.App/containerApps@2024-03-01' = {
           name: 'backend'
           image: backendImage
           resources: { cpu: json('0.5'), memory: '1Gi' }
-          env: sharedEnv
+          env: appEnv
           probes: [
             {
               // Startup gives uvicorn + the DB/Redis pings time to settle
-              // before liveness takes over (Container Apps' default 1s
-              // timeout kills /health mid-DB-roundtrip).
+              // (Container Apps' default 1s liveness timeout kills /health
+              // mid-DB-roundtrip).
               type: 'Startup'
               httpGet: { path: '/health', port: 8000 }
               initialDelaySeconds: 10
@@ -155,73 +146,34 @@ resource backend 'Microsoft.App/containerApps@2024-03-01' = {
             }
           ]
         }
-      ]
-      scale: { minReplicas: 1, maxReplicas: 3 }
-    }
-  }
-}
-
-resource backendKvSecrets 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(keyVaultId, backend.id, 'KeyVaultSecretsUser')
-  scope: resourceGroup()
-  properties: {
-    principalId: backend.identity.principalId
-    principalType: 'ServicePrincipal'
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', kvSecretsUserRoleId)
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Worker — no ingress, scales on Redis Stream depth
-// ---------------------------------------------------------------------------
-
-resource worker 'Microsoft.App/containerApps@2024-03-01' = {
-  name: '${namePrefix}-worker'
-  location: location
-  tags: tags
-  identity: { type: 'SystemAssigned' }
-  properties: {
-    environmentId: environmentId
-    configuration: {
-      secrets: secretsFromKeyVault
-    }
-    template: {
-      containers: [
         {
           name: 'worker'
           image: workerImage
           command: [ 'python', '-m', 'app.worker.main' ]
-          resources: { cpu: json('0.5'), memory: '1Gi' }
-          env: sharedEnv
+          resources: { cpu: json('0.25'), memory: '0.5Gi' }
+          env: appEnv
+        }
+        {
+          name: 'redis'
+          image: 'redis:7-alpine'
+          // No persistence — queue + checkpoints are ephemeral by design.
+          command: [ 'redis-server', '--save', '', '--appendonly', 'no' ]
+          resources: { cpu: json('0.25'), memory: '0.5Gi' }
         }
       ]
-      scale: {
-        minReplicas: 1
-        maxReplicas: 3
-        rules: [
-          {
-            name: 'redis-stream-depth'
-            custom: {
-              type: 'redis-streams'
-              metadata: {
-                addressFromEnv: 'REDIS_HOST_PORT'
-                stream: 'runs:in'
-                consumerGroup: 'osint-workers'
-                pendingEntriesCount: '5'
-              }
-            }
-          }
-        ]
-      }
+      // Pinned to one replica: localhost sharing only works when backend +
+      // worker + redis all live in the SAME pod. Multiple replicas each get
+      // their own Redis and the queue fractures.
+      scale: { minReplicas: 1, maxReplicas: 1 }
     }
   }
 }
 
-resource workerKvSecrets 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(keyVaultId, worker.id, 'KeyVaultSecretsUser')
+resource appKvSecrets 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(keyVaultId, app.id, 'KeyVaultSecretsUser')
   scope: resourceGroup()
   properties: {
-    principalId: worker.identity.principalId
+    principalId: app.identity.principalId
     principalType: 'ServicePrincipal'
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', kvSecretsUserRoleId)
   }
@@ -231,6 +183,5 @@ resource workerKvSecrets 'Microsoft.Authorization/roleAssignments@2022-04-01' = 
 // Outputs
 // ---------------------------------------------------------------------------
 
-output backendFqdn string = backend.properties.configuration.ingress.fqdn
-output backendName string = backend.name
-output workerName string = worker.name
+output appFqdn string = app.properties.configuration.ingress.fqdn
+output appName string = app.name

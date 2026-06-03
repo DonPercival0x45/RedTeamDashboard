@@ -24,7 +24,7 @@ set -euo pipefail
 
 ENV_NAME="prod"
 LOCATION="eastus2"
-IMAGE_REPO_OWNER="donpercival"
+IMAGE_REPO_OWNER="donpercival0x45"
 IMAGE_TAG="latest"
 LLM_PROVIDER="anthropic"
 PG_PW=""
@@ -37,7 +37,7 @@ Usage: $0 [options]
 Options:
   --env NAME              Short env name; used in every resource name (default: prod)
   --location REGION       Azure region (default: eastus2)
-  --image-repo-owner OWNER GHCR owner where rtd-{backend,worker} are published (default: donpercival)
+  --image-repo-owner OWNER GHCR owner where rtd-{backend,worker} are published (default: donpercival0x45)
   --image-tag TAG         Image tag to deploy (default: latest)
   --llm-provider P        anthropic | openai | azure (default: anthropic)
   --postgres-password PW  Provide the postgres password; otherwise one is generated.
@@ -146,12 +146,12 @@ bold "[4/6] Capturing deployment outputs…"
 OUTPUTS="$(az deployment sub show -n "$DEPLOY_NAME" --query properties.outputs -o json)"
 
 RG_OUT="$(echo "$OUTPUTS" | python3 -c 'import sys,json;print(json.load(sys.stdin)["resourceGroupName"]["value"])')"
-BACKEND_FQDN="$(echo "$OUTPUTS" | python3 -c 'import sys,json;print(json.load(sys.stdin)["backendFqdn"]["value"])')"
-BACKEND_NAME="$(echo "$OUTPUTS" | python3 -c 'import sys,json;print(json.load(sys.stdin)["backendName"]["value"])')"
+APP_FQDN="$(echo "$OUTPUTS" | python3 -c 'import sys,json;print(json.load(sys.stdin)["appFqdn"]["value"])')"
+APP_NAME="$(echo "$OUTPUTS" | python3 -c 'import sys,json;print(json.load(sys.stdin)["appName"]["value"])')"
 KV_NAME="$(echo "$OUTPUTS" | python3 -c 'import sys,json;print(json.load(sys.stdin)["keyVaultName"]["value"])')"
 
 echo "    resource group:  $RG_OUT"
-echo "    backend FQDN:    https://$BACKEND_FQDN"
+echo "    app FQDN:        https://$APP_FQDN"
 echo "    key vault:       $KV_NAME"
 
 # ---------------------------------------------------------------------------
@@ -163,22 +163,24 @@ echo "    key vault:       $KV_NAME"
 # the first revision because KV refs return 403 before the role lands. By
 # now (post-Bicep) the role has propagated; force a new revision so it
 # refetches secrets with the now-authorized identity.
-bold "[5/6] Forcing fresh revisions + waiting for the backend to come healthy…"
+bold "[5/6] Forcing fresh revision + waiting for the app to come healthy…"
 echo "    (the first revision races KV identity propagation; bumping forces a fresh one)"
 REV_BUMP="$(date +%s)"
-WORKER_NAME="$(echo "$OUTPUTS" | python3 -c 'import sys,json;print(json.load(sys.stdin)["workerName"]["value"])')"
-az containerapp update -n "$BACKEND_NAME" -g "$RG_OUT" \
-    --set-env-vars "RTD_REVISION_BUMP=$REV_BUMP" --only-show-errors -o none
-az containerapp update -n "$WORKER_NAME" -g "$RG_OUT" \
+# --container-name required because the app has 3 containers (backend,
+# worker, redis); az otherwise refuses to know which container's env to
+# mutate. Bumping `backend` is sufficient — the new revision restarts all
+# siblings together.
+az containerapp update -n "$APP_NAME" -g "$RG_OUT" \
+    --container-name backend \
     --set-env-vars "RTD_REVISION_BUMP=$REV_BUMP" --only-show-errors -o none
 
 
 for i in {1..40}; do
-    if curl -sf "https://$BACKEND_FQDN/health" >/dev/null 2>&1; then
-        green "    backend is up."
+    if curl -sf "https://$APP_FQDN/health" >/dev/null 2>&1; then
+        green "    app is up."
         break
     fi
-    [[ $i -eq 40 ]] && die "backend never became healthy. Check 'az containerapp logs show -n $BACKEND_NAME -g $RG_OUT'."
+    [[ $i -eq 40 ]] && die "app never became healthy. Check 'az containerapp logs show -n $APP_NAME -g $RG_OUT'."
     sleep 6
 done
 
@@ -189,11 +191,11 @@ done
 bold "[6/6] One-time manual bootstrap — run these next (cannot be scripted yet — see follow-up):"
 echo
 blue "  # Apply database migrations"
-echo "  az containerapp exec -n $BACKEND_NAME -g $RG_OUT \\"
+echo "  az containerapp exec -n $APP_NAME -g $RG_OUT --container backend \\"
 echo "      --command 'alembic upgrade head'"
 echo
 blue "  # Mint the bootstrap admin API key (save the output — it can't be retrieved again)"
-echo "  az containerapp exec -n $BACKEND_NAME -g $RG_OUT \\"
+echo "  az containerapp exec -n $APP_NAME -g $RG_OUT --container backend \\"
 echo "      --command 'python -m app.scripts.mint_api_key --name bootstrap --scope admin'"
 echo
 blue "  # Stash that key into Key Vault so it's recoverable from the portal"
@@ -204,18 +206,18 @@ blue "  # Drop in your LLM provider key(s) — only the one(s) you'll use"
 echo "  az keyvault secret set --vault-name $KV_NAME --name anthropic-api-key  --value 'sk-ant-…'"
 echo "  az keyvault secret set --vault-name $KV_NAME --name openai-api-key     --value 'sk-…'"
 echo
-blue "  # Restart the apps so they pick up the rotated secrets"
-echo "  az containerapp revision restart -n $BACKEND_NAME -g $RG_OUT \\"
-echo "      --revision \$(az containerapp revision list -n $BACKEND_NAME -g $RG_OUT --query '[0].name' -o tsv)"
+blue "  # Restart the app so it picks up the rotated secrets"
+echo "  az containerapp revision restart -n $APP_NAME -g $RG_OUT \\"
+echo "      --revision \$(az containerapp revision list -n $APP_NAME -g $RG_OUT --query '[0].name' -o tsv)"
 echo
 
 green "Deploy complete. Summary:"
 echo
-echo "  API URL:          https://$BACKEND_FQDN"
+echo "  API URL:          https://$APP_FQDN"
 echo "  Resource group:   $RG_OUT"
 echo "  Key Vault:        $KV_NAME"
 echo "  Tenant:           $TENANT_ID"
 echo "  Postgres pw saved in KV at: secret/postgres-password"
 echo
 echo "Next: run the bootstrap commands above, then point the central viewer at"
-echo "      https://$BACKEND_FQDN with the admin API key you just minted."
+echo "      https://$APP_FQDN with the admin API key you just minted."

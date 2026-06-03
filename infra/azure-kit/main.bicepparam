@@ -20,17 +20,13 @@ param postgresAdminLogin = 'rtdadmin'
 
 // Image source — GHCR. Override `imageRepoOwner` if you forked the repo and
 // publish images under your own account.
-param imageRepoOwner = 'donpercival'
+param imageRepoOwner = 'donpercival0x45'
 param imageTag = 'latest'
 
 // Default model provider for runs that don't specify one. Per-run override
 // (via the CLI / API) always wins, so this is just the floor default.
 param llmProvider = 'anthropic'
 param anthropicModel = 'claude-opus-4-7'
-
-// MVP: keep public + Azure-services firewall. Flip to true once the VNet
-// modules land.
-param enablePrivateNetworking = false
 
 // Origins allowed to call this tenant's backend from the browser. Append
 // the central viewer's URL (e.g. "https://viewer.example.com") so the
