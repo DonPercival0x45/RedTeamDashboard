@@ -124,6 +124,12 @@ fi
 
 bold "[3/6] Running Bicep deploy '$DEPLOY_NAME'… (5-10 minutes for first run)"
 
+# release.yml strips the `v` prefix when tagging GHCR images
+# (`version="${tag#v}"`), so `:v0.2.0` doesn't exist — only `:0.2.0`.
+# Normalize so the operator can pass either form. Original IMAGE_TAG is
+# preserved for GH-release URL construction below (those keep the `v`).
+GHCR_IMAGE_TAG="${IMAGE_TAG#v}"
+
 az deployment sub create \
     --name "$DEPLOY_NAME" \
     --location "$LOCATION" \
@@ -132,7 +138,7 @@ az deployment sub create \
     --parameters location="$LOCATION" \
     --parameters postgresAdminPassword="$PG_PW" \
     --parameters imageRepoOwner="$IMAGE_REPO_OWNER" \
-    --parameters imageTag="$IMAGE_TAG" \
+    --parameters imageTag="$GHCR_IMAGE_TAG" \
     --parameters llmProvider="$LLM_PROVIDER" \
     --only-show-errors \
     -o none
