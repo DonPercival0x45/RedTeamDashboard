@@ -223,6 +223,17 @@ key's permissions.
 A signed-in Entra user still needs a valid API key to see any tenant
 data. Revoking either layer cuts access independently.
 
+**Auto-provisioned Entra app registration.** `install.sh` creates an AAD
+app registration named `rtd-<env>-viewer` scoped to `AzureADMyOrg` (only
+users in your tenant can sign in), wires its `appId` + a fresh 2-year
+client secret into the SWA's app settings, and sets the SWA's redirect
+URI to `<viewer-url>/.auth/login/aad/callback`. Re-running install.sh
+reuses the existing app registration and rotates the secret.
+
+If your tenant restricts app-create to admins, install.sh prints the
+exact `az ad app create` + `az staticwebapp appsettings set` commands an
+admin needs to run; the rest of the install still completes.
+
 **Local development.** For hacking on the viewer itself:
 
 ```bash
