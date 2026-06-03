@@ -31,3 +31,8 @@ param anthropicModel = 'claude-opus-4-7'
 // MVP: keep public + Azure-services firewall. Flip to true once the VNet
 // modules land.
 param enablePrivateNetworking = false
+
+// Origins allowed to call this tenant's backend from the browser. Append
+// the central viewer's URL (e.g. "https://viewer.example.com") so the
+// Phase 6 viewer can read findings/events/grants directly. Comma-separated.
+param corsAllowOrigins = 'http://localhost:3001,http://127.0.0.1:3001'

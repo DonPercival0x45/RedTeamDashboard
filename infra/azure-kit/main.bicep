@@ -56,6 +56,9 @@ param anthropicModel string = 'claude-opus-4-7'
 @description('Reserved for the future VNet path. Today only flips public/private network flags on the data plane — it does NOT wire up VNet + private endpoints (next iteration). Leave false for the MVP.')
 param enablePrivateNetworking bool = false
 
+@description('Comma-separated CORS allow-origins for the browser viewer. Set this to the central viewer\'s URL (e.g. "https://viewer.example.com") so the browser can call this tenant\'s backend (Phase 6).')
+param corsAllowOrigins string = 'http://localhost:3001,http://127.0.0.1:3001'
+
 var namePrefix = 'rtd-${env}'
 var tags = {
   app: 'red-team-dashboard'
@@ -162,6 +165,7 @@ module apps 'modules/containerapps.bicep' = {
     redisHostPort: redis.outputs.hostPort
     llmProvider: llmProvider
     anthropicModel: anthropicModel
+    corsAllowOrigins: corsAllowOrigins
   }
 }
 

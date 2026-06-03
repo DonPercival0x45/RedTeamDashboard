@@ -2,29 +2,25 @@
 
 import Link from "next/link";
 import { use, useCallback, useEffect, useRef, useState } from "react";
-import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { ApprovalsList } from "@/components/approvals-list";
+import { DownloadReport } from "@/components/download-report";
 import { EventLog, type LoggedEvent } from "@/components/event-log";
-import {
-  ApprovalsModal,
-  type PendingApproval,
-} from "@/components/approvals-modal";
 import {
   FindingsTable,
   type FindingRow,
 } from "@/components/findings-table";
-import { DownloadReport } from "@/components/download-report";
 import { GrantsCard } from "@/components/grants-card";
-import { RunPrompt } from "@/components/run-prompt";
-import { ScopeEditor } from "@/components/scope-editor";
-import { archiveEngagement, getEngagement, listFindings } from "@/lib/api";
+import { ScopeList } from "@/components/scope-list";
+import { getEngagement, listFindings } from "@/lib/api";
 import { subscribeToEvents } from "@/lib/events";
-import type { Engagement, RunEvent } from "@/lib/types";
+import { useSources } from "@/lib/source-context";
+import type { Engagement } from "@/lib/types";
 
 export default function EngagementDetailPage({
   params,
@@ -32,40 +28,47 @@ export default function EngagementDetailPage({
   params: Promise<{ slug: string }>;
 }) {
   const { slug } = use(params);
+  const { current } = useSources();
 
   const [engagement, setEngagement] = useState<Engagement | null>(null);
   const [events, setEvents] = useState<LoggedEvent[]>([]);
   const [findings, setFindings] = useState<FindingRow[]>([]);
-  const [pending, setPending] = useState<PendingApproval | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [streamState, setStreamState] = useState<"connecting" | "open" | "closed">(
-    "connecting",
-  );
-  // Bumped after an approval modal closes (a new grant may have been created
-  // with "remember") so the grants card refetches.
+  const [streamState, setStreamState] = useState<
+    "connecting" | "open" | "closed"
+  >("connecting");
+  // Bumped on approval.pending / tool.auto_approved so the read-only
+  // approvals + grants cards refetch (they don't subscribe to SSE directly).
+  const [approvalsRefreshKey, setApprovalsRefreshKey] = useState(0);
   const [grantsRefreshKey, setGrantsRefreshKey] = useState(0);
 
   const seenSseIds = useRef<Set<string>>(new Set());
 
   const reload = useCallback(async () => {
+    if (!current) return;
     try {
-      setEngagement(await getEngagement(slug));
+      setEngagement(await getEngagement(current, slug));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
-  }, [slug]);
+  }, [current, slug]);
 
+  // Source switch resets engagement + findings + events; nothing carries over.
   useEffect(() => {
+    setEngagement(null);
+    setFindings([]);
+    setEvents([]);
+    seenSseIds.current.clear();
     reload();
-  }, [reload]);
+  }, [reload, current?.id]);
 
   // Hydrate findings from the DB on load. The SSE stream only delivers events
-  // created after connect (server starts at `$`), so persisted findings would
-  // otherwise vanish on reload. Past (DB) and live (SSE) don't overlap; merge
-  // by id and keep any live findings that already arrived in front.
+  // created after connect, so persisted findings would otherwise vanish on
+  // reload.
   useEffect(() => {
+    if (!current) return;
     let cancelled = false;
-    listFindings(slug)
+    listFindings(current, slug)
       .then((rows) => {
         if (cancelled) return;
         const hydrated: FindingRow[] = rows.map((r) => ({
@@ -84,17 +87,19 @@ export default function EngagementDetailPage({
         });
       })
       .catch(() => {
-        // Non-fatal: the live stream still works; findings just won't backfill.
+        // Non-fatal: the live stream still works.
       });
     return () => {
       cancelled = true;
     };
-  }, [slug]);
+  }, [current, slug]);
 
   useEffect(() => {
+    if (!current) return;
     const controller = new AbortController();
     setStreamState("connecting");
     subscribeToEvents({
+      source: current,
       slug,
       signal: controller.signal,
       onOpen: () => setStreamState("open"),
@@ -111,8 +116,6 @@ export default function EngagementDetailPage({
 
         if (event.type === "finding.created") {
           setFindings((prev) => {
-            // Worker now stamps a finding_id; prefer it so the live row matches
-            // the eventual DB hydration and we don't double-render after reload.
             const rowId = event.finding_id || id;
             if (prev.some((f) => f.id === rowId)) return prev;
             return [
@@ -130,15 +133,9 @@ export default function EngagementDetailPage({
             ];
           });
         } else if (event.type === "approval.pending") {
-          setPending({
-            approval_id: event.approval_id,
-            thread_id: event.thread_id,
-            tool: event.tool,
-            args: event.args,
-            risk: event.risk,
-            scope: event.scope,
-            tool_call_id: event.tool_call_id,
-          });
+          setApprovalsRefreshKey((k) => k + 1);
+        } else if (event.type === "tool.auto_approved") {
+          setGrantsRefreshKey((k) => k + 1);
         }
       },
     }).catch((err) => {
@@ -149,18 +146,15 @@ export default function EngagementDetailPage({
     return () => {
       controller.abort();
     };
-  }, [slug]);
+  }, [current, slug]);
 
-  const onArchive = async () => {
-    if (!engagement) return;
-    if (!window.confirm(`Archive ${engagement.slug}? Stops new runs.`)) return;
-    try {
-      await archiveEngagement(slug);
-      await reload();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  };
+  if (!current) {
+    return (
+      <p className="text-sm text-muted-foreground">
+        Select a source to view this engagement.
+      </p>
+    );
+  }
 
   if (!engagement) {
     return (
@@ -185,17 +179,11 @@ export default function EngagementDetailPage({
             <p className="mt-1 text-xs text-muted-foreground">
               slug <code>{engagement.slug}</code> · status{" "}
               <code>{engagement.status}</code> · stream{" "}
-              <code>{streamState}</code>
+              <code>{streamState}</code> · source{" "}
+              <code>{current.name}</code>
             </p>
           </div>
-          <div className="flex items-start gap-2">
-            <DownloadReport slug={slug} />
-            {engagement.status === "active" && (
-              <Button variant="outline" size="sm" onClick={onArchive}>
-                Archive
-              </Button>
-            )}
-          </div>
+          <DownloadReport slug={slug} />
         </CardHeader>
         {error && (
           <CardContent>
@@ -204,28 +192,17 @@ export default function EngagementDetailPage({
         )}
       </Card>
 
-      <ScopeEditor slug={slug} />
+      <ScopeList slug={slug} />
 
-      <GrantsCard engagementId={engagement.id} refreshKey={grantsRefreshKey} />
+      <GrantsCard
+        engagementId={engagement.id}
+        refreshKey={grantsRefreshKey}
+      />
 
-      {engagement.status === "active" ? (
-        <RunPrompt slug={slug} />
-      ) : (
-        <p className="text-sm text-muted-foreground">
-          This engagement is {engagement.status}; runs are disabled.
-        </p>
-      )}
+      <ApprovalsList slug={slug} refreshKey={approvalsRefreshKey} />
 
       <FindingsTable findings={findings} />
       <EventLog events={events} />
-
-      <ApprovalsModal
-        pending={pending}
-        onResolved={() => {
-          setPending(null);
-          setGrantsRefreshKey((k) => k + 1);
-        }}
-      />
     </div>
   );
 }

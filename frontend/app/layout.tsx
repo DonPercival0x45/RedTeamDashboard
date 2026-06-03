@@ -1,11 +1,13 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { UserIdGate } from "@/components/user-id-gate";
+import { SourceGate } from "@/components/source-gate";
+import { SourceSwitcher } from "@/components/source-switcher";
+import { SourceProvider } from "@/lib/source-context";
 import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Red Team Dashboard",
-  description: "OSINT engagement console",
+  description: "Read-only viewer for self-hosted RTD deployments",
 };
 
 export default function RootLayout({
@@ -16,17 +18,19 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className="min-h-screen bg-background font-sans antialiased">
-        <header className="border-b">
-          <div className="container flex h-14 items-center justify-between">
-            <Link href="/" className="text-sm font-semibold">
-              Red Team Dashboard
-            </Link>
-            <span className="text-xs text-muted-foreground">phase 0</span>
-          </div>
-        </header>
-        <UserIdGate>
-          <main className="container py-6">{children}</main>
-        </UserIdGate>
+        <SourceProvider>
+          <header className="border-b">
+            <div className="container flex h-14 items-center justify-between">
+              <Link href="/" className="text-sm font-semibold">
+                Red Team Dashboard
+              </Link>
+              <SourceSwitcher />
+            </div>
+          </header>
+          <SourceGate>
+            <main className="container py-6">{children}</main>
+          </SourceGate>
+        </SourceProvider>
       </body>
     </html>
   );

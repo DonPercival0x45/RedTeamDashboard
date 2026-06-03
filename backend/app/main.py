@@ -17,14 +17,11 @@ configure_logging(settings.env)
 
 app = FastAPI(title="Red Team Dashboard API", version="0.0.1")
 
-# Phase 0: open CORS to the dev frontend origin so XHR + SSE work from the
-# browser. Production behind a single domain won't need this.
+# CORS for the browser viewer. Defaults cover local dev; Phase 6 central
+# viewer adds its origin via the CORS_ALLOW_ORIGINS env var (Bicep param).
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3001",
-        "http://127.0.0.1:3001",
-    ],
+    allow_origins=settings.cors_allow_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

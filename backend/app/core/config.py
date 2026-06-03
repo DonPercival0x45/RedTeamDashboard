@@ -1,4 +1,7 @@
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from typing import Annotated
+
+from pydantic import field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -7,6 +10,30 @@ class Settings(BaseSettings):
     env: str = "local"
     database_url: str = "postgresql+psycopg://rtd:rtd@postgres:5432/rtd"
     redis_url: str = "redis://redis:6379/0"
+
+    # CORS allow-origins for the browser viewer. Defaults cover local dev.
+    # Kit deploys override this with the central viewer's origin (Phase 6)
+    # so a browser there can call this tenant's API directly.
+    #
+    # NoDecode tells pydantic-settings *not* to JSON-decode the env var
+    # before the validator runs — without it, `list[str]` types are
+    # parsed as JSON first and a plain CSV value blows up.
+    cors_allow_origins: Annotated[list[str], NoDecode] = [
+        "http://localhost:3001",
+        "http://127.0.0.1:3001",
+    ]
+
+    @field_validator("cors_allow_origins", mode="before")
+    @classmethod
+    def _split_csv(cls, v: object) -> object:
+        if isinstance(v, str):
+            stripped = v.strip()
+            if stripped.startswith("["):
+                import json
+
+                return json.loads(stripped)
+            return [item.strip() for item in stripped.split(",") if item.strip()]
+        return v
 
     # Default LLM backend when a run doesn't specify one.
     # - "anthropic" → Claude API (paid, requires ANTHROPIC_API_KEY)

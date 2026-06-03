@@ -1,15 +1,15 @@
 // SSE wrapper around the backend's /engagements/{slug}/events feed.
 //
 // Uses @microsoft/fetch-event-source because the standard EventSource API
-// can't send custom headers (we need X-User-Id). fetch-event-source also
-// gives us cleaner reconnect + Last-Event-ID handling than rolling our own.
+// can't send custom headers (we need X-API-Key). fetch-event-source also
+// handles reconnect + Last-Event-ID for us.
 
 import { fetchEventSource } from "@microsoft/fetch-event-source";
-import { API_BASE } from "@/lib/api";
-import { getUserId } from "@/lib/user";
+import type { Source } from "@/lib/sources";
 import type { RunEvent } from "@/lib/types";
 
 export interface SubscribeOptions {
+  source: Source;
   slug: string;
   thread?: string;
   onEvent: (event: RunEvent, sseId: string | undefined) => void;
@@ -20,22 +20,16 @@ export interface SubscribeOptions {
 }
 
 export function subscribeToEvents(opts: SubscribeOptions): Promise<void> {
-  const userId = getUserId();
-  if (!userId) {
-    return Promise.reject(new Error("user id not set"));
-  }
-
-  const url = new URL(`${API_BASE}/engagements/${opts.slug}/events`);
+  const url = new URL(`${opts.source.url}/engagements/${opts.slug}/events`);
   if (opts.thread) url.searchParams.set("thread", opts.thread);
 
   return fetchEventSource(url.toString(), {
     method: "GET",
     headers: {
-      "X-User-Id": userId,
+      "X-API-Key": opts.source.apiKey,
       ...(opts.lastEventId ? { "Last-Event-ID": opts.lastEventId } : {}),
     },
     signal: opts.signal,
-    // Keep the connection alive across tab backgrounding.
     openWhenHidden: true,
     onopen: async (response) => {
       if (!response.ok) {
@@ -54,7 +48,6 @@ export function subscribeToEvents(opts: SubscribeOptions): Promise<void> {
     },
     onerror: (err) => {
       opts.onError?.(err);
-      // Let the library auto-reconnect (default behavior).
     },
   });
 }
