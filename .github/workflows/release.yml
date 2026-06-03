@@ -358,7 +358,11 @@ jobs:
   release:
     name: GitHub Release
     runs-on: ubuntu-latest
-    needs: [version, publish, publish-worker-alias, publish-cli, publish-viewer-static]
+    # NOTE: publish-cli is intentionally NOT in `needs`. PyPI Trusted
+    # Publisher setup is operator-side and lags the first releases; we
+    # let the CLI publish run in parallel and best-effort while the
+    # GitHub Release itself ships images + kit + viewer bundle.
+    needs: [version, publish, publish-worker-alias, publish-viewer-static]
     steps:
       - uses: actions/checkout@v4
 
