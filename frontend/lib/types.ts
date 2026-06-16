@@ -42,6 +42,7 @@ export interface Engagement {
   id: string;
   name: string;
   slug: string;
+  description: string | null;
   status: EngagementStatus;
   created_by: string | null;
   archived_at: string | null;
@@ -81,6 +82,19 @@ export interface Approval {
 
 export type Severity = "info" | "low" | "medium" | "high" | "critical";
 
+export type FindingPhase =
+  | "osint"
+  | "vuln_scan"
+  | "exploit"
+  | "phishing"
+  | "general";
+
+export type FindingValidationStatus =
+  | "pending_validation"
+  | "validated"
+  | "rejected"
+  | "false_positive";
+
 // Persisted finding as returned by GET /engagements/{slug}/findings. Mirrors
 // the SSE `finding.created` event's tool/args/data so the table can render
 // hydrated and live findings the same way.
@@ -93,7 +107,38 @@ export interface Finding {
   data: Record<string, unknown>;
   severity: Severity;
   title: string;
+  phase: FindingPhase;
+  status: FindingValidationStatus;
+  validated_at: string | null;
   created_at: string;
+}
+
+export type EntityType =
+  | "email"
+  | "ip"
+  | "cidr"
+  | "domain"
+  | "subdomain"
+  | "url"
+  | "host";
+
+export interface EntityFindingRef {
+  id: string;
+  title: string;
+  tool: string | null;
+  severity: Severity;
+  phase: FindingPhase;
+}
+
+// Correlated entity derived from findings (GET /engagements/{slug}/entities).
+export interface Entity {
+  type: string;
+  value: string;
+  count: number;
+  severity: Severity;
+  first_seen: string;
+  last_seen: string;
+  findings: EntityFindingRef[];
 }
 
 export type LLMProvider = "anthropic" | "openai" | "azure" | "ollama";
@@ -150,6 +195,8 @@ export type RunEvent =
       severity: Severity;
       title: string | null;
       finding_id: string;
+      phase: FindingPhase;
+      status: FindingValidationStatus;
     }
   | { type: "run.completed"; thread_id: string }
   | { type: "run.errored"; thread_id: string; error: string };

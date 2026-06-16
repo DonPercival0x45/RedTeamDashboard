@@ -95,6 +95,34 @@ def test_create_with_auto_generated_slug(
     assert body["created_by"] is not None
 
 
+def test_create_with_description_round_trips(
+    client: TestClient, cleanup_slugs: list[str]
+) -> None:
+    name = f"Described {uuid.uuid4().hex[:6]}"
+    desc = "Rules of engagement: passive OSINT first; no active without approval."
+    response = client.post(
+        "/engagements",
+        json={"name": name, "description": desc},
+        headers=_headers(),
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    cleanup_slugs.append(body["slug"])
+    assert body["description"] == desc
+
+    # And it comes back on read.
+    read = client.get(f"/engagements/{body['slug']}", headers=_headers()).json()
+    assert read["description"] == desc
+
+
+def test_create_without_description_is_null(
+    client: TestClient, cleanup_slugs: list[str]
+) -> None:
+    body = _create(client, f"NoDesc {uuid.uuid4().hex[:6]}")
+    cleanup_slugs.append(body["slug"])
+    assert body["description"] is None
+
+
 def test_create_with_explicit_slug(
     client: TestClient, cleanup_slugs: list[str]
 ) -> None:

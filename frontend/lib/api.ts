@@ -12,7 +12,10 @@ import type {
   Authorization,
   Engagement,
   EngagementStatus,
+  Entity,
   Finding,
+  FindingPhase,
+  FindingValidationStatus,
   RunModel,
   RunStartResponse,
   ScopeKind,
@@ -62,6 +65,7 @@ export function getEngagement(slug: string): Promise<Engagement> {
 export function createEngagement(body: {
   name: string;
   slug?: string;
+  description?: string;
 }): Promise<Engagement> {
   return request<Engagement>("/engagements", {
     method: "POST",
@@ -112,8 +116,37 @@ export function deleteScopeItem(slug: string, scopeId: string): Promise<void> {
 // Findings
 // ---------------------------------------------------------------------------
 
-export function listFindings(slug: string): Promise<Finding[]> {
-  return request<Finding[]>(`/engagements/${slug}/findings`);
+export function listFindings(
+  slug: string,
+  filters?: { phase?: FindingPhase; status?: FindingValidationStatus },
+): Promise<Finding[]> {
+  const q = new URLSearchParams();
+  if (filters?.phase) q.set("phase", filters.phase);
+  if (filters?.status) q.set("status", filters.status);
+  const suffix = q.toString() ? `?${q.toString()}` : "";
+  return request<Finding[]>(`/engagements/${slug}/findings${suffix}`);
+}
+
+export function listEntities(
+  slug: string,
+  filters?: { type?: string; q?: string },
+): Promise<Entity[]> {
+  const params = new URLSearchParams();
+  if (filters?.type) params.set("type", filters.type);
+  if (filters?.q) params.set("q", filters.q);
+  const suffix = params.toString() ? `?${params.toString()}` : "";
+  return request<Entity[]>(`/engagements/${slug}/entities${suffix}`);
+}
+
+export function validateFinding(
+  findingId: string,
+  decision: FindingValidationStatus,
+  reason?: string,
+): Promise<Finding> {
+  return request<Finding>(`/findings/${findingId}/validate`, {
+    method: "POST",
+    body: JSON.stringify({ decision, reason }),
+  });
 }
 
 // ---------------------------------------------------------------------------
