@@ -37,3 +37,23 @@ class FindingValidate(BaseModel):
     # report while keeping an audit trail.
     decision: FindingStatus = FindingStatus.validated
     reason: str | None = None
+
+
+class EntityFindingRef(BaseModel):
+    id: UUID
+    title: str
+    tool: str | None = None
+    severity: Severity
+    phase: FindingPhase
+
+
+class EntityRead(BaseModel):
+    """A correlated entity derived from findings (CHARTER Idea 4)."""
+
+    type: str  # email | ip | cidr | domain | subdomain | url | host
+    value: str
+    count: int
+    severity: Severity
+    first_seen: datetime
+    last_seen: datetime
+    findings: list[EntityFindingRef]

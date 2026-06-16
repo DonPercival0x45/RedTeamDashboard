@@ -12,6 +12,7 @@ import type {
   Authorization,
   Engagement,
   EngagementStatus,
+  Entity,
   Finding,
   FindingPhase,
   FindingValidationStatus,
@@ -124,6 +125,17 @@ export function listFindings(
   if (filters?.status) q.set("status", filters.status);
   const suffix = q.toString() ? `?${q.toString()}` : "";
   return request<Finding[]>(`/engagements/${slug}/findings${suffix}`);
+}
+
+export function listEntities(
+  slug: string,
+  filters?: { type?: string; q?: string },
+): Promise<Entity[]> {
+  const params = new URLSearchParams();
+  if (filters?.type) params.set("type", filters.type);
+  if (filters?.q) params.set("q", filters.q);
+  const suffix = params.toString() ? `?${params.toString()}` : "";
+  return request<Entity[]>(`/engagements/${slug}/entities${suffix}`);
 }
 
 export function validateFinding(

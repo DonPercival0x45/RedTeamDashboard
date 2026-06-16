@@ -62,7 +62,8 @@ from app.schemas.engagement import (
     ScopeItemRead,
     ScopeItemUpdate,
 )
-from app.schemas.finding import FindingRead, FindingValidate
+from app.schemas.finding import EntityRead, FindingRead, FindingValidate
+from app.services.entities import extract_entities
 
 router = APIRouter()
 
@@ -364,6 +365,28 @@ def list_findings(
         stmt = stmt.where(Finding.status == status)
     rows = session.execute(stmt.order_by(Finding.created_at.desc())).scalars()
     return [_finding_to_read(f) for f in rows]
+
+
+@router.get(
+    "/engagements/{slug}/entities",
+    response_model=list[EntityRead],
+)
+def list_entities(
+    slug: str,
+    session: DbSession,
+    type: Annotated[str | None, Query(description="Filter by entity type.")] = None,
+    q: Annotated[str | None, Query(description="Substring match on the value.")] = None,
+) -> list[dict[str, Any]]:
+    """Entities correlated across this engagement's findings (CHARTER Idea 4)."""
+    eng = _get_engagement_or_404(session, slug)
+    findings = list(
+        session.execute(
+            select(Finding)
+            .where(Finding.engagement_id == eng.id)
+            .order_by(Finding.created_at)
+        ).scalars()
+    )
+    return extract_entities(findings, type_filter=type, query=q)
 
 
 @router.post(

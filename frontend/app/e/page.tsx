@@ -20,6 +20,7 @@ import {
   EngagementNav,
   type EngagementView,
 } from "@/components/engagement-nav";
+import { EntitiesView } from "@/components/entities-view";
 import { FindingsView } from "@/components/findings-view";
 import { GrantsCard } from "@/components/grants-card";
 import { RunPrompt } from "@/components/run-prompt";
@@ -251,12 +252,7 @@ function EngagementDetail({ slug }: { slug: string }) {
             <FindingsView findings={findings} onUpdated={upsertFinding} />
           )}
 
-          {view === "entities" && (
-            <PlaceholderPanel
-              title="Entities"
-              roadmap="Entity correlation — emails, usernames, IPs, service accounts and more, extracted from findings, searchable + filterable. Coming in its own slice."
-            />
-          )}
+          {view === "entities" && <EntitiesView slug={slug} />}
 
           {view === "report" && (
             <Card>
