@@ -64,6 +64,7 @@ export function getEngagement(slug: string): Promise<Engagement> {
 export function createEngagement(body: {
   name: string;
   slug?: string;
+  description?: string;
 }): Promise<Engagement> {
   return request<Engagement>("/engagements", {
     method: "POST",

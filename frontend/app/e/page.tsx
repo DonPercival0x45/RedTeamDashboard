@@ -227,6 +227,11 @@ function EngagementDetail({ slug }: { slug: string }) {
           <p className="mt-1 font-mono text-xs text-muted-foreground">
             {engagement.slug} · {engagement.status} · stream {streamState}
           </p>
+          {engagement.description && (
+            <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
+              {engagement.description}
+            </p>
+          )}
         </div>
         {canWrite && engagement.status === "active" && (
           <Button variant="outline" size="sm" onClick={onArchive}>

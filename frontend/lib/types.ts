@@ -42,6 +42,7 @@ export interface Engagement {
   id: string;
   name: string;
   slug: string;
+  description: string | null;
   status: EngagementStatus;
   created_by: string | null;
   archived_at: string | null;

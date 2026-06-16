@@ -19,6 +19,9 @@ class EngagementCreate(BaseModel):
         max_length=200,
         description="Optional. Auto-generated from `name` if omitted.",
     )
+    description: str | None = Field(
+        default=None, description="Optional free-text engagement details."
+    )
 
 
 class EngagementUpdate(BaseModel):
@@ -38,6 +41,7 @@ class EngagementRead(BaseModel):
     id: UUID
     name: str
     slug: str
+    description: str | None = None
     status: EngagementStatus
     created_by: UUID | None
     archived_at: datetime | None

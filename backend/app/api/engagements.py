@@ -154,6 +154,7 @@ def create_engagement(
     eng = Engagement(
         name=body.name,
         slug=slug,
+        description=body.description,
         status=EngagementStatus.active,
         created_by=user.id,
     )
