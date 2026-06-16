@@ -34,7 +34,6 @@ import { RunPrompt } from "@/components/run-prompt";
 import { ScopeEditor } from "@/components/scope-editor";
 import { archiveEngagement, getEngagement, listFindings } from "@/lib/api";
 import { subscribeToEvents } from "@/lib/events";
-import { useSources } from "@/lib/source-context";
 import type { Engagement } from "@/lib/types";
 
 // Slug comes from `?slug=...` instead of a dynamic [slug] path segment so
@@ -82,8 +81,8 @@ function PhasePanel({
 function EngagementDetail({ slug }: { slug: string }) {
   const router = useRouter();
   const params = useSearchParams();
-  const { current } = useSources();
-  const canWrite = current?.scope !== "viewer";
+  // Single-tenant: any signed-in analyst can act on the engagement.
+  const canWrite = true;
 
   const tabParam = params.get("tab");
   const activeTab = tabParam && VALID_TABS.has(tabParam) ? tabParam : "osint";
@@ -109,13 +108,12 @@ function EngagementDetail({ slug }: { slug: string }) {
   const seenSseIds = useRef<Set<string>>(new Set());
 
   const reload = useCallback(async () => {
-    if (!current) return;
     try {
-      setEngagement(await getEngagement(current, slug));
+      setEngagement(await getEngagement(slug));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
-  }, [current, slug]);
+  }, [slug]);
 
   useEffect(() => {
     setEngagement(null);
@@ -123,12 +121,11 @@ function EngagementDetail({ slug }: { slug: string }) {
     setEvents([]);
     seenSseIds.current.clear();
     reload();
-  }, [reload, current?.id]);
+  }, [reload]);
 
   useEffect(() => {
-    if (!current) return;
     let cancelled = false;
-    listFindings(current, slug)
+    listFindings(slug)
       .then((rows) => {
         if (cancelled) return;
         const hydrated: FindingRow[] = rows.map((r) => ({
@@ -152,14 +149,12 @@ function EngagementDetail({ slug }: { slug: string }) {
     return () => {
       cancelled = true;
     };
-  }, [current, slug]);
+  }, [slug]);
 
   useEffect(() => {
-    if (!current) return;
     const controller = new AbortController();
     setStreamState("connecting");
     subscribeToEvents({
-      source: current,
       slug,
       signal: controller.signal,
       onOpen: () => setStreamState("open"),
@@ -211,26 +206,18 @@ function EngagementDetail({ slug }: { slug: string }) {
     return () => {
       controller.abort();
     };
-  }, [current, slug, canWrite]);
+  }, [slug, canWrite]);
 
   const onArchive = async () => {
-    if (!current || !engagement) return;
+    if (!engagement) return;
     if (!window.confirm(`Archive ${engagement.slug}? Stops new runs.`)) return;
     try {
-      await archiveEngagement(current, slug);
+      await archiveEngagement(slug);
       await reload();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
   };
-
-  if (!current) {
-    return (
-      <p className="text-sm text-muted-foreground">
-        Select a source to view this engagement.
-      </p>
-    );
-  }
 
   if (!engagement) {
     return (

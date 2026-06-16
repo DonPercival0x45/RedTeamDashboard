@@ -1,8 +1,8 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { SourceGate } from "@/components/source-gate";
-import { SourceSwitcher } from "@/components/source-switcher";
-import { SourceProvider } from "@/lib/source-context";
+import { AuthGate } from "@/components/auth-gate";
+import { IdentityMenu } from "@/components/identity-menu";
+import { AuthProvider } from "@/lib/auth";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -19,7 +19,7 @@ export default function RootLayout({
   return (
     <html lang="en" className="dark">
       <body className="min-h-screen bg-background font-sans text-foreground antialiased">
-        <SourceProvider>
+        <AuthProvider>
           <header className="sticky top-0 z-40 border-b border-border bg-background/80 backdrop-blur">
             <div className="container flex h-14 items-center justify-between">
               <Link href="/" className="group flex items-center gap-2.5">
@@ -29,13 +29,13 @@ export default function RootLayout({
                   Red Team Dashboard
                 </span>
               </Link>
-              <SourceSwitcher />
+              <IdentityMenu />
             </div>
           </header>
-          <SourceGate>
+          <AuthGate>
             <main className="container py-8">{children}</main>
-          </SourceGate>
-        </SourceProvider>
+          </AuthGate>
+        </AuthProvider>
       </body>
     </html>
   );

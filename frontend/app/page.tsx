@@ -14,7 +14,6 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { createEngagement, listEngagements } from "@/lib/api";
-import { useSources } from "@/lib/source-context";
 import type { Engagement } from "@/lib/types";
 
 function statusVariant(status: Engagement["status"]) {
@@ -24,8 +23,8 @@ function statusVariant(status: Engagement["status"]) {
 }
 
 export default function EngagementListPage() {
-  const { current } = useSources();
-  const canWrite = current?.scope !== "viewer";
+  // Single-tenant: any signed-in analyst can create/manage engagements.
+  const canWrite = true;
   const [engagements, setEngagements] = useState<Engagement[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [name, setName] = useState("");
@@ -33,27 +32,25 @@ export default function EngagementListPage() {
   const [creating, setCreating] = useState(false);
 
   const reload = useCallback(async () => {
-    if (!current) return;
     try {
       setError(null);
-      setEngagements(await listEngagements(current));
+      setEngagements(await listEngagements());
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
-  }, [current]);
+  }, []);
 
   useEffect(() => {
     setEngagements(null);
     reload();
-  }, [reload, current?.id]);
+  }, [reload]);
 
   const onCreate = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!current) return;
     if (!name.trim()) return;
     setCreating(true);
     try {
-      await createEngagement(current, {
+      await createEngagement({
         name: name.trim(),
         slug: slug.trim() || undefined,
       });
@@ -66,14 +63,6 @@ export default function EngagementListPage() {
       setCreating(false);
     }
   };
-
-  if (!current) {
-    return (
-      <p className="text-sm text-muted-foreground">
-        Select a source to view engagements.
-      </p>
-    );
-  }
 
   return (
     <div className="space-y-8">
