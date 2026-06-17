@@ -30,7 +30,7 @@ def upgrade() -> None:
         sa.Column("content", sa.Text(), nullable=False),
         sa.Column(
             "phase",
-            sa.Enum(
+            postgresql.ENUM(
                 "osint", "vuln_scan", "exploit", "phishing", "general",
                 name="finding_phase",
                 create_type=False,
