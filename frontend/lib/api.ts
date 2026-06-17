@@ -7,6 +7,8 @@
 import { API_BASE_URL, DEV_USER, ENTRA_ENABLED } from "@/lib/config";
 import { getAccessToken } from "@/lib/msal";
 import type {
+  AcceptSuggestionResponse,
+  AnalyzeFindingResponse,
   Approval,
   ApprovalStatus,
   Authorization,
@@ -20,6 +22,10 @@ import type {
   RunModel,
   RunStartResponse,
   ScopeKind,
+  Suggestion,
+  SuggestionStatus,
+  Task,
+  TaskStatus,
 } from "@/lib/types";
 
 // Auth-only headers (no Content-Type — request() adds that for JSON bodies).
@@ -233,6 +239,46 @@ export function revokeAuthorization(
   return request<Authorization>(`/authorizations/${authorizationId}/revoke`, {
     method: "POST",
   });
+}
+
+// ---------------------------------------------------------------------------
+// Orchestrator (Phase 9)
+// ---------------------------------------------------------------------------
+
+export function analyzeFinding(
+  findingId: string,
+): Promise<AnalyzeFindingResponse> {
+  return request<AnalyzeFindingResponse>(`/findings/${findingId}/analyze`, {
+    method: "POST",
+  });
+}
+
+export function listSuggestions(
+  slug: string,
+  status?: SuggestionStatus,
+): Promise<Suggestion[]> {
+  const q = status ? `?status=${status}` : "";
+  return request<Suggestion[]>(`/engagements/${slug}/suggestions${q}`);
+}
+
+export function acceptSuggestion(
+  suggestionId: string,
+): Promise<AcceptSuggestionResponse> {
+  return request<AcceptSuggestionResponse>(
+    `/suggestions/${suggestionId}/accept`,
+    { method: "POST" },
+  );
+}
+
+export function dismissSuggestion(suggestionId: string): Promise<Suggestion> {
+  return request<Suggestion>(`/suggestions/${suggestionId}/dismiss`, {
+    method: "POST",
+  });
+}
+
+export function listTasks(slug: string, _status?: TaskStatus): Promise<Task[]> {
+  // status filter accepted for symmetry but currently always lists all
+  return request<Task[]>(`/engagements/${slug}/tasks`);
 }
 
 // ---------------------------------------------------------------------------
