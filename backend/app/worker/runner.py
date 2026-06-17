@@ -132,16 +132,43 @@ class RunRunner:
         self._session_factory = session_factory
 
     def _resolve_graph(self, envelope: Mapping[str, Any]) -> Any:
-        """Static graph for tests; factory-built per-run graph in prod."""
+        """Static graph for tests; factory-built per-run graph in prod.
+
+        BYO-keys path: when ``acting_user_id`` is on the envelope, look up
+        the user's stored ``UserProviderKey`` for the chosen provider and
+        thread the decrypted api_key + endpoint into the model mapping so
+        ``graph_factory`` can pass them into ``make_llm``. NoProviderKeyError
+        bubbles up to ``handle()`` which surfaces it as a ``run.errored``.
+        """
         if self._graph is not None:
             return self._graph
         model_raw = envelope.get("model")
-        model: Mapping[str, str] | None = None
+        model: dict[str, str | None] | None = None
         if isinstance(model_raw, Mapping):
+            provider = str(model_raw.get("provider", ""))
             model = {
-                "provider": str(model_raw.get("provider", "")),
+                "provider": provider,
                 "name": str(model_raw.get("name", "")),
+                "api_key": None,
+                "endpoint": None,
             }
+            acting_user_id_raw = envelope.get("acting_user_id")
+            if acting_user_id_raw and provider:
+                import uuid as _uuid
+
+                from app.services.provider_key_resolver import resolve_for_user
+
+                session = self._session_factory()
+                try:
+                    resolved = resolve_for_user(
+                        session,
+                        user_id=_uuid.UUID(str(acting_user_id_raw)),
+                        provider=provider,
+                    )
+                    model["api_key"] = resolved.api_key
+                    model["endpoint"] = resolved.endpoint
+                finally:
+                    session.close()
         assert self._graph_factory is not None  # noqa: S101 — invariant of __init__
         return self._graph_factory(model)
 
