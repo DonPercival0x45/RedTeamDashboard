@@ -35,16 +35,16 @@ def get_current_key() -> APIKey:
     """Return the validated APIKey for the current MCP request."""
     try:
         return _current_key.get()
-    except LookupError:
-        raise RuntimeError("MCP auth context not set — is MCPAuthMiddleware installed?")
+    except LookupError as exc:
+        raise RuntimeError("MCP auth context not set — is MCPAuthMiddleware installed?") from exc
 
 
 def get_current_user() -> User:
     """Return the acting User for the current MCP request."""
     try:
         return _current_user.get()
-    except LookupError:
-        raise RuntimeError("MCP auth context not set — is MCPAuthMiddleware installed?")
+    except LookupError as exc:
+        raise RuntimeError("MCP auth context not set — is MCPAuthMiddleware installed?") from exc
 
 
 # ---------------------------------------------------------------------------

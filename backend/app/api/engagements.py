@@ -37,7 +37,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import select, text
 
 from app.api.deps import CurrentUser, DbSession, RedisClient, RequireScope
-from app.models.api_key import APIKeyScope
+from app.core.blob import upload_engagement_export
 from app.core.config import settings
 from app.models import (
     ActorType,
@@ -49,7 +49,7 @@ from app.models import (
     FindingStatus,
     ScopeItem,
 )
-from app.core.blob import upload_engagement_export
+from app.models.api_key import APIKeyScope
 from app.orchestrator.llm import default_provider_model
 from app.runs.events import encode_command
 from app.runs.streams import inbound_stream, outbound_stream, store_run_model
@@ -339,7 +339,11 @@ def flush_engagement(
         "slug": slug_val,
         "flushed": True,
         "blob_url": blob_url,
-        "note": "export stored in blob" if blob_url else "no blob storage configured — configure AZURE_STORAGE_ACCOUNT_NAME to retain exports",
+        "note": (
+            "export stored in blob"
+            if blob_url
+            else "no blob storage configured — set AZURE_STORAGE_ACCOUNT_NAME"
+        ),
     }
 
 

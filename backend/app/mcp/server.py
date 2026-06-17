@@ -22,7 +22,6 @@ same Postgres database. The viewer shows findings from both.
 """
 from __future__ import annotations
 
-import uuid
 from contextlib import contextmanager
 from typing import Any
 
@@ -38,7 +37,6 @@ from app.models import (
     Finding,
     FindingPhase,
     FindingStatus,
-    RiskLevel,
     ScopeItem,
     ScopeKind,
     Severity,
@@ -173,7 +171,8 @@ def _store_findings(
             sev = Severity.info
 
         title = f.get("title") or f"[{tool_name}] result"
-        details = {k: v for k, v in f.items() if k not in ("severity", "title", "target", "summary")}
+        skip = ("severity", "title", "target", "summary")
+        details = {k: v for k, v in f.items() if k not in skip}
 
         session.add(
             Finding(
@@ -547,10 +546,7 @@ def create_finding(
 
         try:
             parsed = _json.loads(details)
-            if isinstance(parsed, dict):
-                details_payload = parsed
-            else:
-                details_payload = {"raw": details}
+            details_payload = parsed if isinstance(parsed, dict) else {"raw": details}
         except ValueError:
             details_payload = {"raw": details}
 
@@ -1006,14 +1002,13 @@ def export_engagement(engagement_slug: str) -> dict:
     if not scope_satisfies(key.scope, _Scope.admin):
         return {"error": "requires admin scope to export engagements"}
 
-    from app.api.engagements import _build_export_payload, _get_engagement_or_404
+
+    from app.api.engagements import _build_export_payload
     from app.core.blob import upload_engagement_export
     from app.db.session import SessionLocal as _SL
-    from fastapi import HTTPException
 
     s = _SL()
     try:
-        from sqlalchemy.orm import Session
 
         class _FakeSession:
             def __init__(self, session):
@@ -1054,7 +1049,8 @@ def archive_engagement(engagement_slug: str) -> dict:
     if not scope_satisfies(key.scope, _Scope.admin):
         return {"error": "requires admin scope to archive engagements"}
 
-    from datetime import UTC, datetime as _dt
+    from datetime import UTC
+    from datetime import datetime as _dt
 
     from app.api.engagements import _build_export_payload
     from app.core.blob import upload_engagement_export
@@ -1146,5 +1142,9 @@ def flush_engagement_data(engagement_slug: str, confirmed: bool = False) -> dict
             "slug": engagement_slug,
             "flushed": True,
             "blob_url": blob_url,
-            "note": "export stored in blob before flush" if blob_url else "no blob storage configured",
+            "note": (
+                "export stored in blob before flush"
+                if blob_url
+                else "no blob storage configured"
+            ),
         }
