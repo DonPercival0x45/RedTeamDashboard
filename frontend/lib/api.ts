@@ -236,6 +236,48 @@ export function revokeAuthorization(
 }
 
 // ---------------------------------------------------------------------------
+// BYO provider keys (LLM + MCP)
+// ---------------------------------------------------------------------------
+
+export function listProviderKeys(): Promise<
+  import("@/lib/types").ProviderKey[]
+> {
+  return request<import("@/lib/types").ProviderKey[]>("/me/provider-keys");
+}
+
+export function createProviderKey(
+  body: import("@/lib/types").ProviderKeyEntry,
+): Promise<import("@/lib/types").ProviderKey> {
+  return request<import("@/lib/types").ProviderKey>("/me/provider-keys", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function importProviderKeys(
+  payload: import("@/lib/types").ProviderKeyImportPayload,
+): Promise<import("@/lib/types").ProviderKeyImportResult> {
+  return request<import("@/lib/types").ProviderKeyImportResult>(
+    "/me/provider-keys/import",
+    { method: "POST", body: JSON.stringify(payload) },
+  );
+}
+
+export function deleteProviderKey(keyId: string): Promise<void> {
+  return request<void>(`/me/provider-keys/${keyId}`, { method: "DELETE" });
+}
+
+export function updateProviderKey(
+  keyId: string,
+  body: Partial<import("@/lib/types").ProviderKeyEntry>,
+): Promise<import("@/lib/types").ProviderKey> {
+  return request<import("@/lib/types").ProviderKey>(
+    `/me/provider-keys/${keyId}`,
+    { method: "PATCH", body: JSON.stringify(body) },
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Reports (PDF export)
 // ---------------------------------------------------------------------------
 
