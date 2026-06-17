@@ -98,5 +98,14 @@ class Settings(BaseSettings):
     azure_storage_account_name: str = ""
     azure_storage_container_name: str = "engagement-exports"
 
+    # BYO provider keys (Phase: user-byo-keys). Fernet master key — analysts'
+    # uploaded LLM / MCP API keys are encrypted with this before they hit
+    # Postgres. Production must override via env / KV secret
+    # `provider-key-master`. Generate a real key with:
+    #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    # The default below is a deterministic dev-only Fernet key — NEVER USE
+    # IN PROD; rotating it loses access to every previously-uploaded key.
+    provider_key_master: str = "ZmVybmV0LWRldi1ub3QtZm9yLXByb2QtMzJieXRlc18="
+
 
 settings = Settings()
