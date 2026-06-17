@@ -149,6 +149,52 @@ export interface Observation {
   created_at: string;
 }
 
+// ─── BYO provider keys ─────────────────────────────────────────────────────
+
+export type ProviderKeyKind = "model_provider" | "mcp_server";
+
+export interface ProviderKey {
+  id: string;
+  user_id: string;
+  kind: ProviderKeyKind;
+  name: string;
+  provider: string;
+  is_local: boolean;
+  models: string[];
+  endpoint: string | null;
+  key_last4: string | null;
+  extra: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProviderKeyEntry {
+  name: string;
+  provider: string;
+  kind?: ProviderKeyKind;
+  models?: string[];
+  is_local?: boolean;
+  endpoint?: string | null;
+  api_key?: string | null;
+  extra?: Record<string, unknown>;
+}
+
+export interface ProviderKeyImportPayload {
+  providers: ProviderKeyEntry[];
+}
+
+export interface ProviderKeyImportErrorRow {
+  index: number;
+  name: string | null;
+  reason: string;
+}
+
+export interface ProviderKeyImportResult {
+  created: ProviderKey[];
+  errors: ProviderKeyImportErrorRow[];
+  duplicates: ProviderKeyImportErrorRow[];
+}
+
 export type LLMProvider = "anthropic" | "openai" | "azure" | "ollama";
 
 export interface RunModel {
