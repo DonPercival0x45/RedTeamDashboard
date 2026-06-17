@@ -93,9 +93,10 @@ class _StrategicProposal(BaseModel):
     )
 
 
-_SYSTEM_PROMPT = """You are the Strategic watcher in a red-team orchestrator. Your job is to read \
-one finding and propose what passive enumeration or active scan tasks would \
-develop it further.
+STRATEGIC_SYSTEM_PROMPT = (
+    """You are the Strategic watcher in a red-team orchestrator. \
+Your job is to read one finding and propose what passive enumeration or \
+active scan tasks would develop it further.
 
 HARD RULES (never break):
 - Agents scan, analysts exploit. NEVER propose exploit-kind tasks. Only \
@@ -112,6 +113,7 @@ Empty is fine.
 You are a pure observer. Your output is a recommendation; nothing runs until \
 the analyst accepts.
 """
+)
 
 
 def _scope_summary(scope_items: Iterable[ScopeItem]) -> str:
@@ -280,7 +282,7 @@ class StrategicAgent:
             execution.model_name = model_name
             structured = llm.with_structured_output(_StrategicProposal)
             messages = [
-                ("system", _SYSTEM_PROMPT),
+                ("system", STRATEGIC_SYSTEM_PROMPT),
                 ("user", prompt),
             ]
             raw_response: Any = structured.invoke(messages)
