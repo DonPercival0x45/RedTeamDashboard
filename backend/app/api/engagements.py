@@ -45,7 +45,6 @@ from sqlalchemy import select, text
 
 from app.api.deps import CurrentUser, DbSession, RedisClient, RequireScope
 from app.core.blob import upload_engagement_export
-from app.core.config import settings
 from app.models import (
     ActorType,
     AuditLog,
@@ -674,40 +673,31 @@ def import_findings(
 # ---------------------------------------------------------------------------
 
 
-def _check_provider_key_available(provider: str) -> None:
-    """Raise 400 if the provider's credentials aren't set.
+def _require_user_provider_key(
+    session: DbSession, *, user_id: uuid.UUID, provider: str
+) -> None:
+    """Raise 400 if the acting user has no ``UserProviderKey`` for ``provider``.
 
-    Container Apps populates env vars from Key Vault refs; if the operator
-    hasn't filled in the LLM key yet, the secret still reads as the
-    ``PLACEHOLDER-set-after-deploy`` string. Treat that as missing too.
+    Pre-Phase-9 the system fell back to ``settings.{provider}_api_key`` if the
+    user had nothing on file; the BYO charter explicitly drops that fallback
+    so the analyst stays in control. The hint in the error message points at
+    the Settings page so a fresh login knows where to go.
     """
-    def _looks_placeholder(value: str) -> bool:
-        return not value or value.startswith("PLACEHOLDER")
+    from app.services.provider_key_resolver import (
+        NoProviderKeyError,
+        resolve_for_user,
+    )
 
-    if provider == "anthropic":
-        if _looks_placeholder(settings.anthropic_api_key):
-            raise HTTPException(
-                status_code=400,
-                detail="ANTHROPIC_API_KEY not configured for this deployment.",
-            )
-    elif provider == "openai":
-        if _looks_placeholder(settings.openai_api_key):
-            raise HTTPException(
-                status_code=400,
-                detail="OPENAI_API_KEY not configured for this deployment.",
-            )
-    elif provider == "azure" and (
-        _looks_placeholder(settings.azure_openai_api_key)
-        or _looks_placeholder(settings.azure_openai_endpoint)
-    ):
+    try:
+        resolve_for_user(session, user_id=user_id, provider=provider)
+    except NoProviderKeyError as exc:
         raise HTTPException(
             status_code=400,
             detail=(
-                "AZURE_OPENAI_API_KEY + AZURE_OPENAI_ENDPOINT not configured "
-                "for this deployment."
+                f"no provider key configured for '{provider}'. "
+                "Upload one at /settings/keys before kicking off a run."
             ),
-        )
-    # ollama is local — no key precheck.
+        ) from exc
 
 
 @router.post(
@@ -737,7 +727,7 @@ def start_run(
         provider, model_name = body.model.provider, body.model.name
     else:
         provider, model_name = default_provider_model()
-    _check_provider_key_available(provider)
+    _require_user_provider_key(session, user_id=user.id, provider=provider)
     effective_model = RunModel(provider=provider, name=model_name)
 
     thread_id = uuid.uuid4()
@@ -750,6 +740,9 @@ def start_run(
         model_name=effective_model.name,
     )
 
+    # NB: we put ``acting_user_id`` on the envelope, NOT the decrypted key.
+    # The worker re-resolves at run-time via UserProviderKey lookup. This
+    # keeps plaintext API keys out of the Redis stream.
     redis_client.xadd(
         inbound_stream(eng.id),
         encode_command(
@@ -761,6 +754,7 @@ def start_run(
                     "provider": effective_model.provider,
                     "name": effective_model.name,
                 },
+                "acting_user_id": str(user.id),
             }
         ),
     )
