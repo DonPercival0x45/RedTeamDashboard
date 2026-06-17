@@ -293,9 +293,8 @@ def export_engagement(slug: str, session: DbSession) -> dict[str, Any]:
 @router.delete(
     "/engagements/{slug}",
     response_model=EngagementRead,
-    dependencies=[Depends(RequireScope(APIKeyScope.admin))],
 )
-def archive_engagement(slug: str, session: DbSession) -> Engagement:
+def archive_engagement(slug: str, session: DbSession, _user: CurrentUser) -> Engagement:
     eng = _get_engagement_or_404(session, slug)
     _reject_flushed(eng)
     if eng.status is not EngagementStatus.archived:
@@ -311,23 +310,21 @@ def archive_engagement(slug: str, session: DbSession) -> Engagement:
     return eng
 
 
-@router.post("/engagements/{slug}/flush", dependencies=[Depends(RequireScope(APIKeyScope.admin))])
+@router.post("/engagements/{slug}/flush", status_code=204)
 def flush_engagement(
     slug: str,
     session: DbSession,
     redis_client: RedisClient,
-) -> dict[str, Any]:
-    """Permanently delete all engagement data. Export to blob first, then purge.
-
-    Irreversible. Requires admin scope.
-    """
+    _user: CurrentUser,
+) -> Response:
+    """Permanently delete all engagement data. Export to blob first, then purge."""
     eng = _get_engagement_or_404(session, slug)
     eid = eng.id
     slug_val = eng.slug
 
     # Export before destroying — failure is logged but doesn't block the flush.
     payload = _build_export_payload(session, eng)
-    blob_url = upload_engagement_export(slug_val, payload)
+    upload_engagement_export(slug_val, payload)
 
     # The DB-side flush_engagement() handles audit_log + engagements (with
     # cascades to scope_items, findings, approvals). Streams aren't FKs, so we
@@ -335,16 +332,7 @@ def flush_engagement(
     session.execute(text("SELECT flush_engagement(:id)"), {"id": eid})
     session.commit()
     redis_client.delete(inbound_stream(eid), outbound_stream(eid))
-    return {
-        "slug": slug_val,
-        "flushed": True,
-        "blob_url": blob_url,
-        "note": (
-            "export stored in blob"
-            if blob_url
-            else "no blob storage configured — set AZURE_STORAGE_ACCOUNT_NAME"
-        ),
-    }
+    return Response(status_code=204)
 
 
 # ---------------------------------------------------------------------------
