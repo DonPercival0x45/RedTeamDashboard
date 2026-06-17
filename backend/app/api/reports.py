@@ -25,6 +25,7 @@ from app.models import (
     Engagement,
     Finding,
     FindingStatus,
+    Observation,
     ScopeItem,
 )
 
@@ -77,6 +78,13 @@ def engagement_report(
             .order_by(Approval.created_at.desc())
         ).scalars()
     )
+    observations = list(
+        session.execute(
+            select(Observation)
+            .where(Observation.engagement_id == eng.id)
+            .order_by(Observation.created_at)
+        ).scalars()
+    )
     audit = list(
         session.execute(
             select(AuditLog)
@@ -90,6 +98,7 @@ def engagement_report(
         engagement=eng,
         scope_items=scope_items,
         findings=findings,
+        observations=observations,
         approvals=approvals,
         audit=audit,
         generated_at=datetime.now(tz=UTC),

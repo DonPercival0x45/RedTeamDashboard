@@ -22,6 +22,7 @@ import {
 } from "@/components/engagement-nav";
 import { EntitiesView } from "@/components/entities-view";
 import { FindingsView } from "@/components/findings-view";
+import { ObservationsView } from "@/components/observations-view";
 import { GrantsCard } from "@/components/grants-card";
 import { RunPrompt } from "@/components/run-prompt";
 import { ScopeEditor } from "@/components/scope-editor";
@@ -36,6 +37,7 @@ import type { Engagement, Finding } from "@/lib/types";
 const VALID_VIEWS = new Set<EngagementView>([
   "findings",
   "entities",
+  "observations",
   "report",
   "costs",
   "scope",
@@ -253,6 +255,8 @@ function EngagementDetail({ slug }: { slug: string }) {
           )}
 
           {view === "entities" && <EntitiesView slug={slug} />}
+
+          {view === "observations" && <ObservationsView slug={slug} />}
 
           {view === "report" && (
             <Card>

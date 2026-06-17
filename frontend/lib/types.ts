@@ -141,6 +141,14 @@ export interface Entity {
   findings: EntityFindingRef[];
 }
 
+export interface Observation {
+  id: string;
+  content: string;
+  phase: FindingPhase | null;
+  created_by: string | null;
+  created_at: string;
+}
+
 export type LLMProvider = "anthropic" | "openai" | "azure" | "ollama";
 
 export interface RunModel {

@@ -16,6 +16,7 @@ import type {
   Finding,
   FindingPhase,
   FindingValidationStatus,
+  Observation,
   RunModel,
   RunStartResponse,
   ScopeKind,
@@ -147,6 +148,28 @@ export function validateFinding(
     method: "POST",
     body: JSON.stringify({ decision, reason }),
   });
+}
+
+// ---------------------------------------------------------------------------
+// Observations
+// ---------------------------------------------------------------------------
+
+export function listObservations(slug: string): Promise<Observation[]> {
+  return request<Observation[]>(`/engagements/${slug}/observations`);
+}
+
+export function createObservation(
+  slug: string,
+  body: { content: string; phase?: FindingPhase | null },
+): Promise<Observation> {
+  return request<Observation>(`/engagements/${slug}/observations`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function deleteObservation(observationId: string): Promise<void> {
+  return request<void>(`/observations/${observationId}`, { method: "DELETE" });
 }
 
 // ---------------------------------------------------------------------------

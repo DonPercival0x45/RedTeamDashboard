@@ -20,6 +20,12 @@ Endpoints::
 
     GET    /engagements/{slug}/findings                 -> list persisted findings
 
+    GET    /engagements/{slug}/observations              -> list observations
+    POST   /engagements/{slug}/observations              -> create observation
+    DELETE /observations/{observation_id}                -> delete observation
+
+    POST   /engagements/{slug}/findings/import           -> bulk import findings
+
     POST   /engagements/{slug}/runs                     -> enqueue run.start
 
 DELETE soft-archives the engagement (worker stops considering it for new runs
@@ -33,10 +39,12 @@ import uuid
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
-from fastapi import APIRouter, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from pydantic import BaseModel
 from sqlalchemy import select, text
 
-from app.api.deps import CurrentUser, DbSession, RedisClient
+from app.api.deps import CurrentUser, DbSession, RedisClient, RequireScope
+from app.core.blob import upload_engagement_export
 from app.core.config import settings
 from app.models import (
     ActorType,
@@ -46,8 +54,11 @@ from app.models import (
     Finding,
     FindingPhase,
     FindingStatus,
+    Observation,
     ScopeItem,
+    Severity,
 )
+from app.models.api_key import APIKeyScope
 from app.orchestrator.llm import default_provider_model
 from app.runs.events import encode_command
 from app.runs.streams import inbound_stream, outbound_stream, store_run_model
@@ -63,6 +74,7 @@ from app.schemas.engagement import (
     ScopeItemUpdate,
 )
 from app.schemas.finding import EntityRead, FindingRead, FindingValidate
+from app.schemas.observation import ObservationCreate, ObservationRead
 from app.services.entities import extract_entities
 
 router = APIRouter()
@@ -97,6 +109,77 @@ def _get_engagement_or_404(session: DbSession, slug: str) -> Engagement:
     if eng is None:
         raise HTTPException(status_code=404, detail="engagement not found")
     return eng
+
+
+def _build_export_payload(session: DbSession, eng: Engagement) -> dict[str, Any]:
+    """Assemble a complete engagement snapshot suitable for blob archiving."""
+    scope_items = list(
+        session.execute(select(ScopeItem).where(ScopeItem.engagement_id == eng.id)).scalars()
+    )
+    findings = list(
+        session.execute(select(Finding).where(Finding.engagement_id == eng.id)).scalars()
+    )
+    audit_rows = list(
+        session.execute(
+            select(AuditLog)
+            .where(AuditLog.engagement_id == eng.id)
+            .order_by(AuditLog.created_at)
+        ).scalars()
+    )
+    audit_summary: dict[str, Any] = {"count": len(audit_rows)}
+    if audit_rows:
+        audit_summary["first"] = str(audit_rows[0].created_at)
+        audit_summary["last"] = str(audit_rows[-1].created_at)
+
+    observations = list(
+        session.execute(
+            select(Observation)
+            .where(Observation.engagement_id == eng.id)
+            .order_by(Observation.created_at)
+        ).scalars()
+    )
+
+    return {
+        "version": "1",
+        "exported_at": str(datetime.now(tz=UTC)),
+        "engagement": {
+            "id": str(eng.id),
+            "slug": eng.slug,
+            "name": eng.name,
+            "status": eng.status,
+            "description": eng.description,
+            "created_at": str(eng.created_at),
+            "archived_at": str(eng.archived_at) if eng.archived_at else None,
+        },
+        "scope": [
+            {"kind": s.kind, "value": s.value, "is_exclusion": s.is_exclusion, "note": s.note}
+            for s in scope_items
+        ],
+        "findings": [
+            {
+                "id": str(f.id),
+                "title": f.title,
+                "severity": f.severity,
+                "status": f.status,
+                "target": f.target,
+                "source_tool": f.source_tool,
+                "phase": f.phase,
+                "summary": f.summary,
+                "details": f.details,
+                "created_at": str(f.created_at),
+            }
+            for f in findings
+        ],
+        "observations": [
+            {
+                "content": o.content,
+                "phase": o.phase,
+                "created_at": str(o.created_at),
+            }
+            for o in observations
+        ],
+        "audit_summary": audit_summary,
+    }
 
 
 def _reject_flushed(eng: Engagement) -> None:
@@ -217,30 +300,57 @@ def update_engagement(
     return eng
 
 
-@router.delete("/engagements/{slug}", response_model=EngagementRead)
-def archive_engagement(slug: str, session: DbSession) -> Engagement:
+@router.post("/engagements/{slug}/export", dependencies=[Depends(RequireScope(APIKeyScope.admin))])
+def export_engagement(slug: str, session: DbSession) -> dict[str, Any]:
+    """Export all engagement data (findings, scope, audit summary) to blob storage.
+
+    Returns the blob URL if storage is configured, or the full payload inline
+    if AZURE_STORAGE_ACCOUNT_NAME is unset (useful for local dev / manual backup).
+    Requires admin scope.
+    """
+    eng = _get_engagement_or_404(session, slug)
+    payload = _build_export_payload(session, eng)
+    blob_url = upload_engagement_export(slug, payload)
+    if blob_url:
+        return {"slug": slug, "blob_url": blob_url}
+    return {"slug": slug, "blob_url": None, "payload": payload}
+
+
+@router.delete(
+    "/engagements/{slug}",
+    response_model=EngagementRead,
+)
+def archive_engagement(slug: str, session: DbSession, _user: CurrentUser) -> Engagement:
     eng = _get_engagement_or_404(session, slug)
     _reject_flushed(eng)
     if eng.status is not EngagementStatus.archived:
         eng.status = EngagementStatus.archived
         eng.archived_at = datetime.now(tz=UTC)
-    session.commit()
-    session.refresh(eng)
+        session.commit()
+        session.refresh(eng)
+        # Export to blob; failure doesn't block the archive.
+        upload_engagement_export(slug, _build_export_payload(session, eng))
+    else:
+        session.commit()
+        session.refresh(eng)
     return eng
 
 
-@router.post(
-    "/engagements/{slug}/flush",
-    status_code=status.HTTP_204_NO_CONTENT,
-    response_class=Response,
-)
+@router.post("/engagements/{slug}/flush", status_code=204)
 def flush_engagement(
     slug: str,
     session: DbSession,
     redis_client: RedisClient,
+    _user: CurrentUser,
 ) -> Response:
+    """Permanently delete all engagement data. Export to blob first, then purge."""
     eng = _get_engagement_or_404(session, slug)
     eid = eng.id
+    slug_val = eng.slug
+
+    # Export before destroying — failure is logged but doesn't block the flush.
+    payload = _build_export_payload(session, eng)
+    upload_engagement_export(slug_val, payload)
 
     # The DB-side flush_engagement() handles audit_log + engagements (with
     # cascades to scope_items, findings, approvals). Streams aren't FKs, so we
@@ -248,7 +358,7 @@ def flush_engagement(
     session.execute(text("SELECT flush_engagement(:id)"), {"id": eid})
     session.commit()
     redis_client.delete(inbound_stream(eid), outbound_stream(eid))
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    return Response(status_code=204)
 
 
 # ---------------------------------------------------------------------------
@@ -430,6 +540,133 @@ def validate_finding(
     session.commit()
     session.refresh(finding)
     return _finding_to_read(finding)
+
+
+# ---------------------------------------------------------------------------
+# Observations
+# ---------------------------------------------------------------------------
+
+
+@router.get("/engagements/{slug}/observations", response_model=list[ObservationRead])
+def list_observations(slug: str, session: DbSession) -> list[Observation]:
+    eng = _get_engagement_or_404(session, slug)
+    return list(
+        session.execute(
+            select(Observation)
+            .where(Observation.engagement_id == eng.id)
+            .order_by(Observation.created_at)
+        ).scalars()
+    )
+
+
+@router.post(
+    "/engagements/{slug}/observations",
+    response_model=ObservationRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_observation(
+    slug: str,
+    body: ObservationCreate,
+    session: DbSession,
+    user: CurrentUser,
+) -> Observation:
+    eng = _get_engagement_or_404(session, slug)
+    _reject_flushed(eng)
+    obs = Observation(
+        engagement_id=eng.id,
+        content=body.content,
+        phase=body.phase,
+        created_by=user.id,
+    )
+    session.add(obs)
+    session.commit()
+    session.refresh(obs)
+    return obs
+
+
+@router.delete("/observations/{observation_id}", status_code=204)
+def delete_observation(
+    observation_id: uuid.UUID,
+    session: DbSession,
+    _user: CurrentUser,
+) -> Response:
+    obs = session.get(Observation, observation_id)
+    if obs is None:
+        raise HTTPException(status_code=404, detail="observation not found")
+    session.delete(obs)
+    session.commit()
+    return Response(status_code=204)
+
+
+# ---------------------------------------------------------------------------
+# Findings import
+# ---------------------------------------------------------------------------
+
+
+class FindingImport(BaseModel):
+    """Single finding in a bulk import payload."""
+
+    title: str
+    severity: Severity = Severity.info
+    phase: FindingPhase = FindingPhase.general
+    summary: str | None = None
+    target: str | None = None
+    source_tool: str | None = "import"
+    details: dict[str, Any] = {}
+
+
+@router.post(
+    "/engagements/{slug}/findings/import",
+    response_model=list[FindingRead],
+    status_code=status.HTTP_201_CREATED,
+)
+def import_findings(
+    slug: str,
+    body: list[FindingImport],
+    session: DbSession,
+    user: CurrentUser,
+) -> list[dict[str, Any]]:
+    """Bulk-import findings from an external source (scanner output, prior report, etc.).
+
+    All imported findings land as ``pending_validation`` so the analyst can
+    review before they become report-eligible. ``source_tool`` defaults to
+    ``'import'`` if omitted.
+    """
+    if not body:
+        return []
+
+    eng = _get_engagement_or_404(session, slug)
+    _reject_flushed(eng)
+
+    created: list[Finding] = []
+    for item in body:
+        f = Finding(
+            engagement_id=eng.id,
+            title=item.title,
+            severity=item.severity,
+            phase=item.phase,
+            summary=item.summary,
+            target=item.target,
+            source_tool=item.source_tool or "import",
+            details=item.details,
+            status=FindingStatus.pending_validation,
+        )
+        session.add(f)
+        created.append(f)
+
+    session.add(
+        AuditLog(
+            engagement_id=eng.id,
+            actor_type=ActorType.user,
+            actor_id=str(user.id),
+            event_type="findings.imported",
+            payload={"count": len(created), "source": "bulk_import"},
+        )
+    )
+    session.commit()
+    for f in created:
+        session.refresh(f)
+    return [_finding_to_read(f) for f in created]
 
 
 # ---------------------------------------------------------------------------
