@@ -75,6 +75,26 @@ def _create(client: TestClient, name: str, slug: str | None = None) -> dict[str,
     return response.json()
 
 
+def _seed_provider_key(client: TestClient, provider: str = "ollama") -> None:
+    """Ensure the test user has a BYO provider key for the chosen provider.
+
+    Phase: user-byo-keys-wireup made ``start_run`` require a UserProviderKey
+    on the acting user. Run tests need one seeded before they can enqueue
+    a run.start. Ollama (keyless local) is the cheapest seed.
+    """
+    body = {
+        "name": f"test-{provider}",
+        "provider": provider,
+        "kind": "model_provider",
+        "is_local": True,
+        "endpoint": "http://localhost:11434",
+        "models": ["llama3.1:8b"],
+    }
+    res = client.post("/me/provider-keys", json=body, headers=_headers())
+    # 201 on first call, 409 if a previous test already seeded — both fine.
+    assert res.status_code in (201, 409), res.text
+
+
 # ---------------------------------------------------------------------------
 # Engagement CRUD
 # ---------------------------------------------------------------------------
@@ -434,6 +454,7 @@ def test_run_endpoint_enqueues_run_start(
     redis_client: redis_lib.Redis,
     cleanup_slugs: list[str],
 ) -> None:
+    _seed_provider_key(client)
     eng = _create(client, "Runnable")
     cleanup_slugs.append(eng["slug"])
 
@@ -454,6 +475,10 @@ def test_run_endpoint_enqueues_run_start(
     assert payload["type"] == "run.start"
     assert payload["thread_id"] == body["thread_id"]
     assert payload["prompt"] == "enumerate acme.com"
+    # BYO-keys wireup: the envelope carries the acting user id (NOT plaintext
+    # api_key — that's resolved lazily by the worker via UserProviderKey).
+    assert "acting_user_id" in payload
+    assert "api_key" not in payload
 
 
 def test_run_endpoint_rejects_archived_engagement(
@@ -486,6 +511,7 @@ def test_run_endpoint_defaults_model_when_body_omits(
     cleanup_slugs: list[str],
 ) -> None:
     """Body without model => response + envelope echo the settings default."""
+    _seed_provider_key(client)
     eng = _create(client, "Default model")
     cleanup_slugs.append(eng["slug"])
 
@@ -510,6 +536,7 @@ def test_run_endpoint_passes_through_explicit_model(
     cleanup_slugs: list[str],
 ) -> None:
     """Body with model => envelope carries that exact model; redis cache populated."""
+    _seed_provider_key(client)
     eng = _create(client, "Explicit model")
     cleanup_slugs.append(eng["slug"])
 
@@ -532,21 +559,19 @@ def test_run_endpoint_passes_through_explicit_model(
     assert cached == chosen
 
 
-def test_run_endpoint_rejects_when_provider_key_missing(
+def test_run_endpoint_rejects_when_no_user_provider_key(
     client: TestClient,
     cleanup_slugs: list[str],
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Anthropic with no API key returns 400 before queueing."""
-    from app.api import engagements as engagements_api
+    """BYO-keys wireup: a provider the user has no key for returns 400.
 
-    # Patch the settings reference imported by the endpoint module so the
-    # precheck sees an empty key without us having to mutate the real env.
-    monkeypatch.setattr(
-        engagements_api.settings, "anthropic_api_key", "", raising=False
-    )
-
-    eng = _create(client, "Missing key")
+    The acting user (engagement-test@example.com) has an ``ollama`` row
+    seeded by ``_seed_provider_key`` in other tests; here we ask for
+    ``anthropic`` instead and expect the strict-mode refusal with a
+    pointer to /settings/keys.
+    """
+    _seed_provider_key(client)  # ollama row, NOT anthropic
+    eng = _create(client, "No anthropic key")
     cleanup_slugs.append(eng["slug"])
 
     response = client.post(
@@ -557,34 +582,7 @@ def test_run_endpoint_rejects_when_provider_key_missing(
         },
         headers=_headers(),
     )
-    assert response.status_code == 400
-    assert "ANTHROPIC_API_KEY" in response.json()["detail"]
-
-
-def test_run_endpoint_rejects_when_provider_key_is_placeholder(
-    client: TestClient,
-    cleanup_slugs: list[str],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Bicep-installed PLACEHOLDER value is treated as missing."""
-    from app.api import engagements as engagements_api
-
-    monkeypatch.setattr(
-        engagements_api.settings,
-        "anthropic_api_key",
-        "PLACEHOLDER-set-after-deploy",
-        raising=False,
-    )
-
-    eng = _create(client, "Placeholder key")
-    cleanup_slugs.append(eng["slug"])
-
-    response = client.post(
-        f"/engagements/{eng['slug']}/runs",
-        json={
-            "prompt": "go",
-            "model": {"provider": "anthropic", "name": "claude-opus-4-7"},
-        },
-        headers=_headers(),
-    )
-    assert response.status_code == 400
+    assert response.status_code == 400, response.text
+    detail = response.json()["detail"]
+    assert "anthropic" in detail.lower()
+    assert "/settings/keys" in detail
