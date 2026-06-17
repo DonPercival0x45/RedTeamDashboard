@@ -164,6 +164,30 @@
     <p class="empty">No scope items.</p>
     {% endif %}
 
+    <h2>Observations</h2>
+    {% if observations %}
+    <table>
+      <thead>
+        <tr>
+          <th style="width: 80px">Phase</th>
+          <th>Note</th>
+          <th style="width: 110px">When</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for obs in observations %}
+        <tr>
+          <td><span class="badge">{{ obs.phase.value if obs.phase else "—" }}</span></td>
+          <td>{{ obs.content }}</td>
+          <td class="meta">{{ obs.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="empty">No observations recorded.</p>
+    {% endif %}
+
     <h2>Findings</h2>
     {% if findings %}
     <table>

@@ -153,10 +153,17 @@ export function FindingsView({
                     {shortId(f.id)}
                   </td>
                   <td className="px-3 py-2.5">
-                    <div className="font-medium">{f.title}</div>
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium">{f.title}</span>
+                      {f.tool === "import" && (
+                        <span className="rounded border border-border px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
+                          imported
+                        </span>
+                      )}
+                    </div>
                     <div className="text-xs text-muted-foreground">
                       {PHASE_LABEL[f.phase]}
-                      {f.tool ? ` · ${f.tool}` : ""}
+                      {f.tool && f.tool !== "import" ? ` · ${f.tool}` : ""}
                     </div>
                   </td>
                   <td className="px-3 py-2.5 font-mono text-xs text-muted-foreground">
