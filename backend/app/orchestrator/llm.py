@@ -37,45 +37,70 @@ def tool_schemas(registry: Mapping[str, ToolSpec] | None = None) -> list[dict[st
     return schemas
 
 
-def make_llm(provider: str, model_name: str) -> Any:
+def make_llm(
+    provider: str,
+    model_name: str,
+    *,
+    api_key: str | None = None,
+    endpoint: str | None = None,
+) -> Any:
     """Return a tool-bound chat model for an explicit (provider, model_name).
 
     Client libs are imported lazily so swapping providers doesn't require
-    every other lib to be installed. Caller is responsible for ensuring the
-    relevant API key env var is set — the LLM constructors read it directly.
+    every other lib to be installed.
+
+    ``api_key`` / ``endpoint`` are the BYO-key wiring path: when present,
+    they override the env defaults (resolved per-run from the acting user's
+    UserProviderKey by ``app.services.provider_key_resolver``). When omitted,
+    the LLM constructors fall back to their library's env-var auto-detection
+    so the existing test paths + dev fallback still work.
     """
     provider = provider.lower()
 
     if provider == "anthropic":
         from langchain_anthropic import ChatAnthropic
 
-        llm = ChatAnthropic(model=model_name, max_tokens=4096)
+        kwargs: dict[str, Any] = {"model": model_name, "max_tokens": 4096}
+        if api_key:
+            kwargs["api_key"] = api_key
+        llm = ChatAnthropic(**kwargs)
     elif provider == "openai":
         from langchain_openai import ChatOpenAI
 
-        llm = ChatOpenAI(model=model_name)
+        kwargs = {"model": model_name}
+        if api_key:
+            kwargs["api_key"] = api_key
+        if endpoint:
+            kwargs["base_url"] = endpoint
+        llm = ChatOpenAI(**kwargs)
     elif provider == "ollama":
         from langchain_ollama import ChatOllama
 
         from app.core.config import settings
 
-        llm = ChatOllama(model=model_name, base_url=settings.ollama_host)
+        # Ollama is keyless; per-user endpoint override (analyst pointing at
+        # their own local box) wins over the deployment default.
+        llm = ChatOllama(
+            model=model_name,
+            base_url=endpoint or settings.ollama_host,
+        )
     elif provider == "azure":
         from langchain_openai import AzureChatOpenAI
 
         from app.core.config import settings
 
-        if not (settings.azure_openai_endpoint and settings.azure_openai_deployment):
+        resolved_endpoint = endpoint or settings.azure_openai_endpoint
+        resolved_key = api_key or settings.azure_openai_api_key or None
+        if not (resolved_endpoint and settings.azure_openai_deployment):
             raise RuntimeError(
-                "provider=azure requires AZURE_OPENAI_ENDPOINT and "
-                "AZURE_OPENAI_DEPLOYMENT to be set."
+                "provider=azure requires endpoint + AZURE_OPENAI_DEPLOYMENT to be set."
             )
         # `model_name` for Azure is the *deployment* — usually pinned at
         # deploy time. We accept the run-supplied name as the deployment to
         # talk to, falling back to the env default.
         llm = AzureChatOpenAI(
-            azure_endpoint=settings.azure_openai_endpoint,
-            api_key=settings.azure_openai_api_key or None,
+            azure_endpoint=resolved_endpoint,
+            api_key=resolved_key,
             azure_deployment=model_name or settings.azure_openai_deployment,
             api_version=settings.azure_openai_api_version,
         )
