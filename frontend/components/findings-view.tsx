@@ -4,13 +4,19 @@ import { useState } from "react";
 import { X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { validateFinding } from "@/lib/api";
+import {
+  acceptSuggestion,
+  analyzeFinding,
+  dismissSuggestion,
+  validateFinding,
+} from "@/lib/api";
 import { cn } from "@/lib/utils";
 import type {
   Finding,
   FindingPhase,
   FindingValidationStatus,
   Severity,
+  Suggestion,
 } from "@/lib/types";
 
 // ── display helpers ────────────────────────────────────────────────────────
@@ -269,6 +275,12 @@ function FindingSlideOver({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const [analyzing, setAnalyzing] = useState(false);
+  const [analyzeError, setAnalyzeError] = useState<string | null>(null);
+  const [suggestions, setSuggestions] = useState<Suggestion[] | null>(null);
+  const [dispatchedIds, setDispatchedIds] = useState<Set<string>>(new Set());
+  const [decidingId, setDecidingId] = useState<string | null>(null);
+
   const decide = async (decision: FindingValidationStatus) => {
     setBusy(true);
     setError(null);
@@ -283,6 +295,52 @@ function FindingSlideOver({
 
   // Agents may run scan/enum paths only — never exploitation (CHARTER decided).
   const agentAllowed = finding.phase !== "exploit";
+
+  const runAgent = async () => {
+    setAnalyzing(true);
+    setAnalyzeError(null);
+    try {
+      const res = await analyzeFinding(finding.id);
+      setSuggestions(res.suggestions);
+    } catch (err) {
+      setAnalyzeError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setAnalyzing(false);
+    }
+  };
+
+  const acceptOne = async (s: Suggestion) => {
+    setDecidingId(s.id);
+    setAnalyzeError(null);
+    try {
+      const res = await acceptSuggestion(s.id);
+      setSuggestions((prev) =>
+        prev?.map((x) => (x.id === s.id ? res.suggestion : x)) ?? null,
+      );
+      if (res.dispatched) {
+        setDispatchedIds((prev) => new Set(prev).add(s.id));
+      }
+    } catch (err) {
+      setAnalyzeError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDecidingId(null);
+    }
+  };
+
+  const dismissOne = async (s: Suggestion) => {
+    setDecidingId(s.id);
+    setAnalyzeError(null);
+    try {
+      const updated = await dismissSuggestion(s.id);
+      setSuggestions((prev) =>
+        prev?.map((x) => (x.id === s.id ? updated : x)) ?? null,
+      );
+    } catch (err) {
+      setAnalyzeError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDecidingId(null);
+    }
+  };
 
   return (
     <>
@@ -330,28 +388,35 @@ function FindingSlideOver({
           {JSON.stringify(finding.data, null, 2)}
         </pre>
 
-        {/* Suggested attack path — populated by the orchestrator in Phase 9. */}
+        {/* Suggested attack path — Strategic watcher (Phase 9). */}
         <div className="mt-6 rounded-md border border-dashed border-border p-4">
           <h3 className="text-sm font-medium">Suggested attack path</h3>
           <p className="mt-1 text-xs text-muted-foreground/70">
-            <span className="text-critical">●</span> Phase 9 — the Strategic
-            watcher generates named paths (each a set of tasks) here. Then:
+            Strategic proposes next-step tasks (scan / enum only). Accepting
+            agent-eligible tasks dispatches a worker run; active tools still
+            stop at the approval gate.
           </p>
           <div className="mt-3 flex gap-2">
-            <Button size="sm" variant="outline" disabled title="Phase 9">
+            <Button
+              size="sm"
+              variant="outline"
+              disabled
+              title="Analyst-driven attack path — coming next"
+            >
               Analyst (manual)
             </Button>
             <Button
               size="sm"
               variant="outline"
-              disabled
+              disabled={!agentAllowed || analyzing}
+              onClick={runAgent}
               title={
                 agentAllowed
-                  ? "Phase 9"
+                  ? "Ask Strategic to propose next steps"
                   : "Agents never run exploitation — analyst only"
               }
             >
-              Agent (automate)
+              {analyzing ? "Thinking…" : "Agent (automate)"}
             </Button>
           </div>
           {!agentAllowed && (
@@ -359,6 +424,68 @@ function FindingSlideOver({
               Exploitation is analyst-only — the Agent option is disabled for
               this phase.
             </p>
+          )}
+          {analyzeError && (
+            <p className="mt-2 text-xs text-critical">{analyzeError}</p>
+          )}
+          {suggestions !== null && suggestions.length === 0 && (
+            <p className="mt-3 text-xs text-muted-foreground/70">
+              Strategic had no follow-up tasks to propose.
+            </p>
+          )}
+          {suggestions !== null && suggestions.length > 0 && (
+            <ul className="mt-3 space-y-2">
+              {suggestions.map((s) => (
+                <li
+                  key={s.id}
+                  className="rounded-md border border-border bg-background p-3"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium leading-snug">
+                        {s.title}
+                      </p>
+                      {s.body && (
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          {s.body}
+                        </p>
+                      )}
+                      <p className="mt-1 font-mono text-[10px] uppercase tracking-wider text-muted-foreground/60">
+                        {String(s.payload.tool ?? "?")} →{" "}
+                        {String(s.payload.target ?? "?")}
+                        {" · "}
+                        {String(s.payload.task_kind ?? "?")}
+                      </p>
+                    </div>
+                    {s.status === "open" && (
+                      <div className="flex shrink-0 gap-1">
+                        <Button
+                          size="sm"
+                          disabled={decidingId === s.id}
+                          onClick={() => acceptOne(s)}
+                        >
+                          Accept
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={decidingId === s.id}
+                          onClick={() => dismissOne(s)}
+                        >
+                          Dismiss
+                        </Button>
+                      </div>
+                    )}
+                    {s.status !== "open" && (
+                      <span className="shrink-0 self-center text-xs text-muted-foreground capitalize">
+                        {s.status}
+                        {dispatchedIds.has(s.id) ? " · dispatched" : ""}
+                      </span>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ul>
           )}
         </div>
 
