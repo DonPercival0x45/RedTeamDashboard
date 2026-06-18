@@ -23,6 +23,7 @@ import {
 import { EntitiesView } from "@/components/entities-view";
 import { FindingsView } from "@/components/findings-view";
 import { ObservationsView } from "@/components/observations-view";
+import { CostsView } from "@/components/costs-view";
 import { GrantsCard } from "@/components/grants-card";
 import { RunPrompt } from "@/components/run-prompt";
 import { ScopeEditor } from "@/components/scope-editor";
@@ -42,21 +43,6 @@ const VALID_VIEWS = new Set<EngagementView>([
   "costs",
   "scope",
 ]);
-
-function PlaceholderPanel({ title, roadmap }: { title: string; roadmap: string }) {
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>{title}</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <p className="text-xs text-muted-foreground/70">
-          <span className="text-critical">●</span> {roadmap}
-        </p>
-      </CardContent>
-    </Card>
-  );
-}
 
 function EngagementDetail({ slug }: { slug: string }) {
   const router = useRouter();
@@ -274,12 +260,7 @@ function EngagementDetail({ slug }: { slug: string }) {
             </Card>
           )}
 
-          {view === "costs" && (
-            <PlaceholderPanel
-              title="Costs"
-              roadmap="Phase 11 — internal effort tracking: LLM spend + analyst labor (manual time logging) + infra, with a per-engagement rollup."
-            />
-          )}
+          {view === "costs" && <CostsView slug={slug} />}
 
           {view === "scope" && (
             <div className="space-y-6">

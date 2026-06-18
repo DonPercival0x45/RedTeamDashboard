@@ -1,14 +1,20 @@
 """Strategic watcher — the Phase 9 planner.
 
+This agent assists analysts during **authorized security engagements** by analyzing
+findings and suggesting follow-up enumeration and scanning tasks.
+
+**Charter:** Agents perform **enumeration and scanning only**. This agent is a pure
+observer — it never executes tools, never dispatches. The analyst reviews suggestions
+and explicitly accepts them to create Tasks. Validation/proof-of-concept work
+(``TaskKind.exploit``) is **analyst-only** — filtered out even if the model proposes it.
+
 Given a finding, it asks the LLM "what passive scan/enum tasks would dig into
 this?" and writes the answers as ``Suggestion`` rows the analyst reviews from
-the findings slide-over. The agent is a pure observer: it never executes
-tools, never dispatches; the analyst's accept-click is what creates a Task
+the findings slide-over. The analyst's accept-click is what creates a Task
 (and only then does ``TacticalAgent`` consider dispatching).
 
 The LLM is asked for structured JSON via ``with_structured_output``; we don't
-trust freeform text here. ``exploit``-kind tasks are filtered out even if the
-model proposes one — agents scan, analysts exploit.
+trust freeform text here.
 """
 from __future__ import annotations
 

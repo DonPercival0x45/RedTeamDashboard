@@ -1,5 +1,12 @@
 """Tactical manager — dispatches agent-eligible Tasks to the worker.
 
+This agent dispatches enumeration and scanning tasks during **authorized security
+engagements**. It enforces the charter invariant that **agents scan, analysts validate**.
+
+**Charter:** Only agent-eligible tasks (scan/enum) are dispatched. Validation and
+proof-of-concept work (``TaskKind.exploit``) is **analyst-only** — refused at the
+service boundary.
+
 Slice 1 (Phase 9): deterministic dispatcher. Pulls (tool, target) from
 ``task.payload`` (set by Strategic when the suggestion was accepted) and
 publishes a ``run.start`` envelope on the engagement's inbound stream. The

@@ -12,6 +12,7 @@ import type {
   Approval,
   ApprovalStatus,
   Authorization,
+  CostRollup,
   Engagement,
   EngagementStatus,
   Entity,
@@ -340,6 +341,14 @@ export function dismissSuggestion(suggestionId: string): Promise<Suggestion> {
 export function listTasks(slug: string, _status?: TaskStatus): Promise<Task[]> {
   // status filter accepted for symmetry but currently always lists all
   return request<Task[]>(`/engagements/${slug}/tasks`);
+}
+
+// ---------------------------------------------------------------------------
+// Costs (Phase 11)
+// ---------------------------------------------------------------------------
+
+export function getEngagementCosts(slug: string): Promise<CostRollup> {
+  return request<CostRollup>(`/engagements/${slug}/costs`);
 }
 
 // ---------------------------------------------------------------------------

@@ -1,5 +1,13 @@
 """HTTP surface for the Phase 9 orchestrator.
 
+This module provides the API for the Strategic and Tactical orchestrator agents
+that assist analysts during authorized security engagements.
+
+Agents perform **enumeration and scanning only**. They analyze findings and suggest
+tasks, but validation/proof-of-concept work (TaskKind.exploit) is **analyst-only**
+— the service layer refuses to dispatch such tasks to agents. All agent actions
+are audit-logged via AgentExecution records.
+
 Endpoints::
 
     POST   /findings/{finding_id}/analyze              -> Strategic on demand
@@ -17,6 +25,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query
@@ -25,8 +34,11 @@ from sqlalchemy.orm import Session
 
 from app.agents import StrategicAgent, TacticalAgent, TacticalRefusedExploit
 from app.api.deps import CurrentUser, DbSession, RedisClient
+from app.core import pricing
 from app.models import (
     ActorType,
+    AgentExecution,
+    AgentName,
     AgentTrigger,
     AuditLog,
     Engagement,
@@ -39,6 +51,7 @@ from app.models import (
     TaskKind,
     TaskStatus,
 )
+from app.schemas.cost import AgentCost, CostBucket, CostRollup, ModelCost
 from app.schemas.orchestrator import (
     AcceptSuggestionResponse,
     AnalyzeFindingResponse,
@@ -299,3 +312,90 @@ def list_tasks(
         stmt = stmt.where(Task.status == task_status)
     stmt = stmt.order_by(Task.created_at.desc())
     return list(session.execute(stmt).scalars())
+
+
+# ---------------------------------------------------------------------------
+# Costs (Phase 11) — per-engagement LLM spend roll-up over agent_executions
+# ---------------------------------------------------------------------------
+
+
+def _new_bucket() -> dict:
+    return {"executions": 0, "tokens_in": 0, "tokens_out": 0, "cost": Decimal(0)}
+
+
+def _as_bucket(acc: dict) -> CostBucket:
+    return CostBucket(
+        executions=acc["executions"],
+        tokens_in=acc["tokens_in"],
+        tokens_out=acc["tokens_out"],
+        cost_usd=float(acc["cost"]),
+    )
+
+
+@router.get("/engagements/{slug}/costs", response_model=CostRollup)
+def engagement_costs(
+    slug: str,
+    session: DbSession,
+    _user: CurrentUser,
+) -> CostRollup:
+    """Roll up every Strategic/Tactical LLM call for the engagement by agent and
+    by model, summing tokens and deriving USD via ``app.core.pricing``. Models
+    with no pricing entry are counted but contribute $0 and are surfaced in
+    ``unpriced_models`` so the UI can flag them."""
+    eng = _engagement_by_slug(session, slug)
+    rows = list(
+        session.execute(
+            select(AgentExecution).where(AgentExecution.engagement_id == eng.id)
+        ).scalars()
+    )
+
+    total = _new_bucket()
+    by_agent: dict[AgentName, dict] = {}
+    by_model: dict[tuple[str | None, str | None], dict] = {}
+    unpriced: set[str] = set()
+
+    for ex in rows:
+        used_in = ex.tokens_in or 0
+        used_out = ex.tokens_out or 0
+        derived = pricing.cost_usd(
+            ex.model_name, used_in, used_out, ex.model_provider
+        )
+        priced = derived is not None
+        cost = derived if priced else Decimal(0)
+        if not priced and ex.model_name and (used_in or used_out):
+            unpriced.add(ex.model_name)
+
+        agent_acc = by_agent.setdefault(ex.agent, _new_bucket())
+        model_acc = by_model.setdefault(
+            (ex.model_provider, ex.model_name), _new_bucket()
+        )
+        for acc in (total, agent_acc, model_acc):
+            acc["executions"] += 1
+            acc["tokens_in"] += used_in
+            acc["tokens_out"] += used_out
+            acc["cost"] += cost
+        model_acc["priced"] = priced
+
+    return CostRollup(
+        engagement_id=eng.id,
+        engagement_slug=eng.slug,
+        total=_as_bucket(total),
+        by_agent=[
+            AgentCost(agent=agent, **_as_bucket(acc).model_dump())
+            for agent, acc in sorted(
+                by_agent.items(), key=lambda kv: kv[1]["cost"], reverse=True
+            )
+        ],
+        by_model=[
+            ModelCost(
+                provider=key[0],
+                model=key[1],
+                priced=acc.get("priced", False),
+                **_as_bucket(acc).model_dump(),
+            )
+            for key, acc in sorted(
+                by_model.items(), key=lambda kv: kv[1]["cost"], reverse=True
+            )
+        ],
+        unpriced_models=sorted(unpriced),
+    )

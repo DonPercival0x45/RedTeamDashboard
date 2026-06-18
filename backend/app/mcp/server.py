@@ -58,7 +58,7 @@ from app.orchestrator.tools.runtime import run_tool
 # ---------------------------------------------------------------------------
 
 INSTRUCTIONS = """
-You are assisting red team analysts using the Red Team Dashboard (RTD).
+You are assisting security engagement analysts using the Red Team Dashboard (RTD).
 You have access to OSINT recon tools, engagement data, and findings storage.
 
 CORE RULES — always follow these without exception:
@@ -90,7 +90,7 @@ CORE RULES — always follow these without exception:
      info → informational (DNS records, certificates, open ports with known
              benign services)
      low  → minor exposure (non-critical services, informational leaks)
-     medium → moderate risk (potentially exploitable if combined)
+     medium → moderate risk (potentially actionable if combined)
      high → significant risk (exposed admin interfaces, weak configs)
      critical → immediate risk (unauthenticated RCE, credential exposure)
 
@@ -1023,7 +1023,7 @@ You are acting as Strategic for engagement '{engagement_slug}', finding
      - engagement_slug, finding_id
      - title (1 line)
      - body (the rationale shown to the analyst)
-     - task_kind ('scan' or 'enum' — NEVER 'exploit')
+     - task_kind ('scan' or 'enum' — NEVER propose validation/proof-of-concept tasks)
      - tool (registered name)
      - target
      - owner_eligibility ('agent' for safe-to-autodispatch, 'analyst' for
@@ -1038,7 +1038,7 @@ entirely. Empty is a valid answer.
 
 @mcp.prompt()
 def deep_dive(engagement_slug: str, finding_id: str) -> str:
-    """Drill into a specific finding to assess exploitability and impact."""
+    """Drill into a specific finding to assess validation potential and impact."""
     return f"""
 Investigate finding {finding_id} from engagement '{engagement_slug}'.
 
@@ -1049,7 +1049,7 @@ Steps:
 3. Based on the finding's target, tool source, and details, determine:
    - What is the actual risk? (Confirm the finding is real, not a false positive.)
    - What additional passive evidence would support or refute the severity?
-   - What active follow-up (if any) would confirm exploitability?
+   - What active follow-up (if any) would validate the finding?
 4. Run any passive tools that help (no active tools without confirmation).
 5. Summarize your assessment:
    - Confirmed / false positive / needs more investigation
