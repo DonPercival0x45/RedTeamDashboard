@@ -390,6 +390,44 @@ class StrategicAgent:
 
         return execution, suggestions
 
+    def provision_lease(
+        self,
+        session: Session,
+        *,
+        task: Any,
+        ttl_seconds: int = 3600,
+    ) -> Any:
+        """Stage 1 of per-task MCP composition: Strategic curates the
+        tool/context/prompt surface for one Execution Agent run via tool
+        packs keyed by ``task.kind``, then mints an active lease record.
+        The lease's id is the bearer token Tactical stamps on the worker
+        envelope. Caller commits the session.
+        """
+        # Local import keeps the orchestrator HTTP module from pulling the
+        # lease service in at import time.
+        from app.services import mcp_lease, tool_packs
+
+        return mcp_lease.mint(
+            session,
+            task=task,
+            allowed_tools=tool_packs.tools_for_task(task),
+            context=tool_packs.context_for_task(session, task),
+            prompt_keys=tool_packs.prompts_for_task(task),
+            ttl_seconds=ttl_seconds,
+        )
+
+    def release_lease(
+        self,
+        session: Session,
+        *,
+        lease_id: uuid.UUID,
+        reason: str,
+    ) -> None:
+        """Idempotent — safe to call on already-released or unknown leases."""
+        from app.services import mcp_lease
+
+        mcp_lease.release(session, lease_id=lease_id, reason=reason)
+
     def _persist_suggestions(
         self,
         session: Session,

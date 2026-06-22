@@ -21,7 +21,7 @@ import json
 from contextvars import ContextVar
 from datetime import UTC, datetime
 
-from app.models import APIKey, User
+from app.models import APIKey, MCPLease, User
 
 # ---------------------------------------------------------------------------
 # ContextVars — set by middleware, read by tool functions
@@ -29,6 +29,12 @@ from app.models import APIKey, User
 
 _current_key: ContextVar[APIKey] = ContextVar("mcp_current_key")
 _current_user: ContextVar[User] = ContextVar("mcp_current_user")
+# Optional lease — set only when the request carries a valid X-Lease-Token.
+# Stage 1 of per-task MCP composition: when present, the server filters every
+# tools/list, prompts/list, and tool invocation by the lease's allowed surface.
+_current_lease: ContextVar[MCPLease | None] = ContextVar(
+    "mcp_current_lease", default=None
+)
 
 
 def get_current_key() -> APIKey:
@@ -45,6 +51,23 @@ def get_current_user() -> User:
         return _current_user.get()
     except LookupError as exc:
         raise RuntimeError("MCP auth context not set — is MCPAuthMiddleware installed?") from exc
+
+
+def get_current_lease() -> MCPLease | None:
+    """Return the active MCPLease for the current request, or None when the
+    request didn't carry a lease token (legacy / non-task-bound calls)."""
+    return _current_lease.get()
+
+
+def set_current_lease_for_tests(lease: MCPLease | None) -> object:
+    """Test helper: set the lease ContextVar directly without going through
+    the middleware. Returns the token to pass back to reset()."""
+    return _current_lease.set(lease)
+
+
+def reset_current_lease_for_tests(token: object) -> None:
+    """Test helper: undo set_current_lease_for_tests."""
+    _current_lease.reset(token)  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
@@ -80,6 +103,9 @@ class MCPAuthMiddleware:
 
         headers = {k.lower(): v for k, v in scope.get("headers", [])}
         raw_key = headers.get(b"x-api-key", b"").decode("utf-8", errors="replace").strip()
+        raw_lease = (
+            headers.get(b"x-lease-token", b"").decode("utf-8", errors="replace").strip()
+        )
 
         if not raw_key:
             await _reject(send, 401, "X-API-Key header required")
@@ -89,6 +115,7 @@ class MCPAuthMiddleware:
 
         from app.db.session import SessionLocal
         from app.models import APIKey, User
+        from app.services import mcp_lease as lease_svc
 
         session = SessionLocal()
         try:
@@ -123,13 +150,25 @@ class MCPAuthMiddleware:
                     session.commit()
                     session.refresh(user)
 
+            # Optional lease — when present, it must be valid (active +
+            # unexpired). Invalid is a hard 401 so the Execution Agent doesn't
+            # silently fall through to the wider unscoped surface.
+            lease = None
+            if raw_lease:
+                lease = lease_svc.validate_token(session, raw_lease)
+                if lease is None:
+                    await _reject(send, 401, "invalid or expired lease token")
+                    return
+
             tok_key = _current_key.set(key)
             tok_user = _current_user.set(user)
+            tok_lease = _current_lease.set(lease)
             try:
                 await self._app(scope, receive, send)
             finally:
                 _current_key.reset(tok_key)
                 _current_user.reset(tok_user)
+                _current_lease.reset(tok_lease)
 
         except Exception:
             await _reject(send, 500, "authentication error")

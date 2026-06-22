@@ -30,7 +30,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.agents import StrategicAgent
-from app.models import AgentTrigger, Engagement, EngagementStatus, Finding
+from app.models import AgentTrigger, Engagement, EngagementStatus, Finding, Task
 from app.runs.streams import outbound_stream
 
 logger = structlog.get_logger(__name__)
@@ -152,19 +152,31 @@ class StrategicConsumer:
             if isinstance(raw, bytes):
                 raw = raw.decode("utf-8")
             envelope = json.loads(raw)
-            if envelope.get("type") != "finding.created":
-                # Other event types (run.started, approval.pending, etc.) are
-                # not interesting to Strategic. Skip silently.
+            event_type = envelope.get("type")
+            if event_type == "finding.created":
+                finding_id_raw = envelope.get("finding_id")
+                if not finding_id_raw:
+                    logger.warning(
+                        "strategic.finding_event_missing_id",
+                        stream=stream_name,
+                        msg_id=msg_id,
+                    )
+                    return
+                self._analyze(uuid.UUID(finding_id_raw))
                 return
-            finding_id_raw = envelope.get("finding_id")
-            if not finding_id_raw:
-                logger.warning(
-                    "strategic.finding_event_missing_id",
-                    stream=stream_name,
-                    msg_id=msg_id,
+            if event_type in ("run.completed", "run.errored"):
+                # Release any active MCP lease for the task this run dispatched.
+                # Idempotent — redelivered terminal events are safe.
+                thread_id_raw = envelope.get("thread_id")
+                if not thread_id_raw:
+                    return
+                self._release_lease_for_run(
+                    uuid.UUID(thread_id_raw), reason=event_type
                 )
                 return
-            self._analyze(uuid.UUID(finding_id_raw))
+            # Other event types (run.started, approval.pending, etc.) are
+            # not interesting to Strategic. Skip silently.
+            return
         except Exception:
             logger.exception(
                 "strategic.message_failed",
@@ -180,6 +192,41 @@ class StrategicConsumer:
                     stream=stream_name,
                     msg_id=msg_id,
                 )
+
+    def _release_lease_for_run(
+        self, thread_id: uuid.UUID, *, reason: str
+    ) -> None:
+        """Find the Task that this run dispatched (Task.run_id == thread_id)
+        and release any active lease tied to it. Idempotent."""
+        from sqlalchemy import select
+
+        from app.services import mcp_lease
+
+        session = self._session_factory()
+        try:
+            task = session.execute(
+                select(Task).where(Task.run_id == thread_id)
+            ).scalar_one_or_none()
+            if task is None:
+                # Run wasn't dispatched via Tactical (manual /runs endpoint,
+                # test envelope, etc.) — nothing to release.
+                return
+            active = mcp_lease.find_active_for_task(session, task.id)
+            if active is None:
+                return
+            mcp_lease.release(session, lease_id=active.id, reason=reason)
+            session.commit()
+            logger.info(
+                "strategic.lease_released",
+                task_id=str(task.id),
+                lease_id=str(active.id),
+                reason=reason,
+            )
+        except Exception:
+            session.rollback()
+            logger.exception("strategic.release_lease_failed")
+        finally:
+            session.close()
 
     def _analyze(self, finding_id: uuid.UUID) -> None:
         session = self._session_factory()

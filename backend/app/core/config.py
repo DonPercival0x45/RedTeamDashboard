@@ -10,6 +10,11 @@ class Settings(BaseSettings):
     env: str = "local"
     database_url: str = "postgresql+psycopg://rtd:rtd@postgres:5432/rtd"
     redis_url: str = "redis://redis:6379/0"
+    # Base URL the worker uses to reach the MCP server from inside the
+    # container. Stamped onto the worker envelope so the Execution Agent
+    # knows where to connect with its X-Lease-Token. Override in prod to
+    # the public hostname (e.g. https://<app>.azurecontainerapps.io).
+    public_base_url: str = "http://backend:8000"
 
     # CORS allow-origins for the browser viewer. Defaults cover local dev.
     # Kit deploys override this with the central viewer's origin (Phase 6)
