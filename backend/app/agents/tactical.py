@@ -101,6 +101,15 @@ class TacticalAgent:
         provider, model_name = default_provider_model()
         thread_id = uuid.uuid4()
 
+        # Stage 1 of per-task MCP composition: mint a lease for this dispatch
+        # so the Execution Agent gets the curated tool/context/prompt surface
+        # Strategic chose for this TaskKind. The lease id is the bearer token.
+        from app.agents.strategic import StrategicAgent
+        from app.core.config import settings
+
+        lease = StrategicAgent().provision_lease(session, task=task)
+        mcp_url = f"{settings.public_base_url.rstrip('/')}/mcp"
+
         store_run_model(
             self._redis,
             thread_id,
@@ -115,6 +124,8 @@ class TacticalAgent:
                     "thread_id": str(thread_id),
                     "prompt": prompt,
                     "model": {"provider": provider, "name": model_name},
+                    "mcp_url": mcp_url,
+                    "lease_token": str(lease.id),
                 }
             ),
         )
