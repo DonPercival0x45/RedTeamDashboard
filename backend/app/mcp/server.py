@@ -30,7 +30,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 from sqlalchemy import select
 
-from app.mcp.auth import get_current_key, get_current_user
+from app.mcp.auth import get_current_key, get_current_lease, get_current_user
 from app.models import (
     ActorType,
     Approval,
@@ -198,8 +198,30 @@ def _store_findings(
     return count
 
 
+def _require_tool_in_lease(tool_name: str) -> dict[str, Any] | None:
+    """When a lease is active, deny tools outside the lease's allowed_tools.
+
+    Returns an error dict to surface to the caller, or None to allow.
+    No lease → no enforcement (legacy non-task-bound path stays open)."""
+    lease = get_current_lease()
+    if lease is None:
+        return None
+    if tool_name not in lease.allowed_tools:
+        return {
+            "error": (
+                f"tool '{tool_name}' is not in the active MCP lease's allowed "
+                f"surface (lease={lease.id}, task={lease.task_id})"
+            )
+        }
+    return None
+
+
 def _run_osint(tool_name: str, engagement_slug: str, args: dict[str, Any]) -> dict[str, Any]:
-    """Shared OSINT tool runner: scope check → run → audit → store findings."""
+    """Shared OSINT tool runner: lease gate → scope check → run → audit → store findings."""
+    denied = _require_tool_in_lease(tool_name)
+    if denied is not None:
+        return denied
+
     key = get_current_key()
     user = get_current_user()
 
@@ -931,6 +953,34 @@ def resource_findings(slug: str) -> str:
             },
             indent=2,
         )
+
+
+@mcp.resource("lease://current")
+def resource_lease_current() -> str:
+    """Curated context for the Execution Agent: engagement, scope, task,
+    and (when linked) the triggering finding. Only available when the
+    request carries a valid X-Lease-Token — otherwise raises so the agent
+    can fail loudly instead of silently operating without context."""
+    import json as _json
+
+    lease = get_current_lease()
+    if lease is None:
+        raise ValueError(
+            "no active MCP lease — lease://current is only available "
+            "when the request carries an X-Lease-Token header"
+        )
+    return _json.dumps(
+        {
+            "lease_id": str(lease.id),
+            "task_id": str(lease.task_id),
+            "engagement_id": str(lease.engagement_id),
+            "allowed_tools": list(lease.allowed_tools),
+            "prompt_keys": list(lease.prompt_keys),
+            "context": dict(lease.context),
+            "expires_at": lease.expires_at.isoformat(),
+        },
+        indent=2,
+    )
 
 
 # ---------------------------------------------------------------------------
