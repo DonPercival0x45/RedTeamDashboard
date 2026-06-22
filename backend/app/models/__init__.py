@@ -14,6 +14,7 @@ from app.models.audit_log import ActorType, AuditLog
 from app.models.authorization import Authorization
 from app.models.engagement import Engagement, EngagementStatus
 from app.models.finding import Finding, FindingPhase, FindingStatus, Severity
+from app.models.mcp_lease import MCPLease, MCPLeaseStatus
 from app.models.observation import Observation
 from app.models.scope_item import ScopeItem, ScopeKind
 from app.models.suggestion import (
@@ -44,6 +45,8 @@ __all__ = [
     "Finding",
     "FindingPhase",
     "FindingStatus",
+    "MCPLease",
+    "MCPLeaseStatus",
     "Observation",
     "OwnerEligibility",
     "ProviderKeyKind",
