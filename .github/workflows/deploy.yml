@@ -1,0 +1,114 @@
+name: Deploy
+
+# Manual-trigger deploy: build current main into GHCR, then roll the Azure
+# Container App's backend + worker containers to the new image.
+#
+# Trigger from:
+#   - GitHub UI: Actions tab -> Deploy -> "Run workflow"
+#   - CLI:       gh workflow run deploy.yml
+#
+# Required repository VARIABLES (Settings -> Secrets and variables -> Actions -> Variables):
+#   AZURE_CLIENT_ID         App registration's client (application) ID
+#   AZURE_TENANT_ID         Entra tenant ID
+#   AZURE_SUBSCRIPTION_ID   Subscription where the Container App lives
+#   AZURE_RG                Resource group name (from install.sh output)
+#   AZURE_APP_NAME          Container App name (from install.sh output)
+#
+# Required federated credential on the App registration:
+#   subject: repo:<owner>/<repo>:ref:refs/heads/main
+#   audience: api://AzureADTokenExchange
+#
+# Set up with: infra/azure-kit/scripts/setup-github-deploy.sh
+
+on:
+  workflow_dispatch:
+    inputs:
+      revision_suffix:
+        description: 'Revision suffix (default: manual-<short-sha>)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve image tags
+        id: tags
+        run: |
+          set -euo pipefail
+          OWNER_LC="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          SHORT_SHA="${GITHUB_SHA::7}"
+          BACKEND="${REGISTRY}/${OWNER_LC}/rtd-backend"
+          WORKER="${REGISTRY}/${OWNER_LC}/rtd-worker"
+          {
+            echo "backend_sha=${BACKEND}:main-${SHORT_SHA}"
+            echo "worker_sha=${WORKER}:main-${SHORT_SHA}"
+            echo "short_sha=${SHORT_SHA}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build + push backend / worker image (single build, two tags)
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.tags.outputs.backend_sha }}
+            ${{ steps.tags.outputs.worker_sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Log in to Azure (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Roll Container App (backend + worker)
+        run: |
+          set -euo pipefail
+          SUFFIX="${{ github.event.inputs.revision_suffix }}"
+          [ -z "$SUFFIX" ] && SUFFIX="manual-${{ steps.tags.outputs.short_sha }}"
+          # Two updates -> two revisions; the second is the one we want active.
+          # Container App's single-revision mode auto-shifts traffic to latest.
+          az containerapp update \
+            --name "${{ vars.AZURE_APP_NAME }}" \
+            --resource-group "${{ vars.AZURE_RG }}" \
+            --container-name backend \
+            --image "${{ steps.tags.outputs.backend_sha }}"
+          az containerapp update \
+            --name "${{ vars.AZURE_APP_NAME }}" \
+            --resource-group "${{ vars.AZURE_RG }}" \
+            --container-name worker \
+            --image "${{ steps.tags.outputs.worker_sha }}" \
+            --revision-suffix "$SUFFIX"
+
+      - name: Show new revision
+        run: |
+          az containerapp revision list \
+            --name "${{ vars.AZURE_APP_NAME }}" \
+            --resource-group "${{ vars.AZURE_RG }}" \
+            --query '[0:3].{name:name,active:properties.active,created:properties.createdTime,traffic:properties.trafficWeight}' \
+            -o table
