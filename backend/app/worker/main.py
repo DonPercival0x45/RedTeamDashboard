@@ -11,6 +11,7 @@ import signal
 import sys
 import threading
 from collections.abc import Mapping
+from typing import Any
 
 import redis as redis_lib
 import structlog
@@ -38,15 +39,25 @@ def main() -> None:
     checkpointer = build_postgres_checkpointer()
     authorizer = make_db_authorizer(SessionLocal)
 
-    def graph_factory(model: Mapping[str, str] | None) -> object:
+    def graph_factory(model: Mapping[str, Any] | None) -> object:
         """Build a fresh graph per run with the requested LLM.
 
         Cheap — StateGraph compile is sub-millisecond. The LLM constructor
         is what costs (network handshake on first invoke), and we'd pay
         that anyway. Per-run rebuild lets each run pick its own provider.
+
+        BYO-keys: ``api_key`` and ``endpoint`` arrive in ``model`` via the
+        runner's per-envelope lookup (acting user's ``UserProviderKey``).
+        When omitted (e.g. tests with raw envelopes), ``make_llm`` falls
+        back to the SDK's env-var auto-detection.
         """
         if model and model.get("provider") and model.get("name"):
-            llm = make_llm(model["provider"], model["name"])
+            llm = make_llm(
+                str(model["provider"]),
+                str(model["name"]),
+                api_key=model.get("api_key"),
+                endpoint=model.get("endpoint"),
+            )
         else:
             provider, model_name = default_provider_model()
             llm = make_llm(provider, model_name)

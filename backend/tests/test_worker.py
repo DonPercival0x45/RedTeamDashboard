@@ -419,4 +419,16 @@ def test_run_runner_calls_factory_with_envelope_model() -> None:
         {"type": "run.start", "model": {"provider": "anthropic", "name": "x"}}
     )
     runner._resolve_graph({"type": "run.start"})  # no model => None
-    assert received == [{"provider": "anthropic", "name": "x"}, None]
+    # Phase user-byo-keys-wireup: the runner now extends model with
+    # api_key + endpoint fields populated from the acting user's
+    # UserProviderKey lookup. Without acting_user_id on the envelope (this
+    # test) both are None.
+    assert received == [
+        {
+            "provider": "anthropic",
+            "name": "x",
+            "api_key": None,
+            "endpoint": None,
+        },
+        None,
+    ]
