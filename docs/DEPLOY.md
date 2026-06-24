@@ -321,6 +321,8 @@ Both modes write findings to the same database. The viewer shows results from ei
 
 **Strategic policy LLM (Stage 3):** every `provision_lease` call fires one Strategic LLM call (via `with_structured_output(_LeasePolicy)`) to decide (a) which subset of the pack-default tool list this run actually needs and (b) whether the run should route to the isolated MCP host. The decision lands on a new `AgentExecution(trigger=lease_provision)` row so the Costs tab attributes the spend per-lease. The narrow-only enforcement is server-side — even if the LLM tries to widen past pack defaults or include an exploit tool, the result is filtered before the lease persists. The dispatch tool is always preserved so the worker can execute the task. Failure modes (no provider key for the engagement creator, LLM error, structured-output validation error) are caught: the row is marked `status=failed` with the error string and the lease falls back to pack defaults + `requires_container=False`, so dispatch is never blocked by Strategic. BYO-key posture: Strategic uses the engagement creator's stored provider key, same as `analyze_finding` — no env fallback by design.
 
+**Lease sweeper:** the worker runs a daemon thread that calls `mcp_lease.sweep_expired()` every `LEASE_SWEEP_INTERVAL` seconds (default 300s) to flip active leases past their `expires_at` to `status=expired`. Per-request `validate_token` already rejects expired leases at the MCP server, so this is purely for accounting cleanliness — the Costs UI and lease-state queries don't accumulate stale "active" rows. Failures on a single tick are logged and swallowed; the next tick gets a fresh shot.
+
 ## Engagement lifecycle
 
 Engagements move through three states: **active → archived → flushed**.
