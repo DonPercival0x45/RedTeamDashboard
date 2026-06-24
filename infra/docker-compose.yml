@@ -82,6 +82,15 @@ services:
       AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:-}
       AZURE_OPENAI_DEPLOYMENT: ${AZURE_OPENAI_DEPLOYMENT:-}
       AZURE_OPENAI_API_VERSION: ${AZURE_OPENAI_API_VERSION:-2024-08-01-preview}
+      # Stage 3+1: worker fails fast at boot if blank. Bootstrap the
+      # local-dev key by minting a cli-scoped key inside a running backend
+      # and persisting it to infra/.env (read by docker-compose by default,
+      # gitignored):
+      #   docker compose exec backend python -m app.scripts.mint_api_key \
+      #     --name local-worker --scope cli
+      #   echo "WORKER_MCP_API_KEY=<paste>" > infra/.env
+      #   docker compose up -d worker
+      WORKER_MCP_API_KEY: ${WORKER_MCP_API_KEY:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
