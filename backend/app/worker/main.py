@@ -25,6 +25,7 @@ from app.orchestrator.llm import default_provider_model, make_llm
 from app.worker.authz import make_db_authorizer
 from app.worker.checkpoint import build_postgres_checkpointer
 from app.worker.consumer import StreamConsumer
+from app.worker.lease_sweeper import LeaseSweeperThread
 from app.worker.runner import RunRunner
 from app.worker.strategic_consumer import StrategicConsumer
 
@@ -160,8 +161,24 @@ def main() -> None:
     )
     strategic_thread.start()
 
+    # Stage 3+1.5: periodic sweep of expired MCP leases. validate_token
+    # rejects expired leases at request time so this is for clean
+    # accounting (Costs UI + lease-state queries), not security.
+    sweeper = LeaseSweeperThread(
+        session_factory=SessionLocal,
+        interval_seconds=settings.lease_sweep_interval,
+    )
+    sweeper_thread = threading.Thread(
+        target=sweeper.run_forever,
+        args=(stop_event,),
+        name="lease-sweeper",
+        daemon=True,
+    )
+    sweeper_thread.start()
+
     consumer.run_forever(stop_event)
     strategic_thread.join(timeout=5.0)
+    sweeper_thread.join(timeout=5.0)
     sys.exit(0)
 
 

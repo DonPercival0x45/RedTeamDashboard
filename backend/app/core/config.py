@@ -23,6 +23,14 @@ class Settings(BaseSettings):
     # as ``worker-mcp-api-key``, surface as this env var.
     worker_mcp_api_key: str = ""
 
+    # How often the worker sweeps expired MCP leases (active rows past
+    # ``expires_at``) into status=expired. The per-request
+    # ``validate_token`` already rejects expired leases at the MCP server,
+    # so this is for accounting cleanliness — the Costs and lease-state
+    # views show fewer stale "active" rows. 5 minutes balances DB chatter
+    # against UI freshness; override via env if needed.
+    lease_sweep_interval: int = 300
+
     # Stage 2 — isolated MCP via a secondary Azure Container App with
     # scale-to-zero. ACA Jobs don't accept HTTP ingress, so the ephemeral
     # MCP host is a second Container App provisioned alongside the main
