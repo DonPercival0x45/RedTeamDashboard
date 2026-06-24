@@ -460,7 +460,13 @@ def test_run_endpoint_enqueues_run_start(
 
     response = client.post(
         f"/engagements/{eng['slug']}/runs",
-        json={"prompt": "enumerate acme.com"},
+        json={
+            "prompt": "enumerate acme.com",
+            # Pin the provider so the BYO-key precheck hits the seeded
+            # Ollama row regardless of ``settings.llm_provider`` default
+            # (CI sets LLM_PROVIDER=ollama; local hosts often don't).
+            "model": {"provider": "ollama", "name": "llama3.1:8b"},
+        },
         headers=_headers(),
     )
     assert response.status_code == 202, response.text
@@ -509,8 +515,14 @@ def test_run_endpoint_defaults_model_when_body_omits(
     client: TestClient,
     redis_client: redis_lib.Redis,
     cleanup_slugs: list[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Body without model => response + envelope echo the settings default."""
+    # Pin the default to ollama so the seeded ollama key satisfies the
+    # BYO-key precheck regardless of host env (CI sets LLM_PROVIDER=ollama
+    # already; local hosts often don't). The "echo the settings default"
+    # semantic still holds — the assertions read settings.llm_provider.
+    monkeypatch.setattr(settings, "llm_provider", "ollama")
     _seed_provider_key(client)
     eng = _create(client, "Default model")
     cleanup_slugs.append(eng["slug"])
