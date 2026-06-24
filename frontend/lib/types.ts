@@ -156,6 +156,19 @@ export interface MaltegoImportResult {
   entities: StoredEntity[];
 }
 
+// Phase 10 — DarkWeb data import (Dehashed JSON/CSV first, future
+// sources slot into the same response shape).
+export interface DarkwebImportResult {
+  source: string; // "dehashed" today
+  inserted: number;
+  merged: number;
+  skipped_no_identifier: number;
+  skipped_malformed: number;
+  total_rows: number;
+  databases: string[];
+  entities: StoredEntity[];
+}
+
 // Phase 10 — workflow templates (starter packs).
 export interface WorkflowTemplateStep {
   tool: string;

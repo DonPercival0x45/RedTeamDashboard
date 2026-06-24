@@ -6,12 +6,14 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
+  importEntitiesDarkweb,
   importEntitiesMaltego,
   listEntities,
   listStoredEntities,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import type {
+  DarkwebImportResult,
   Entity,
   MaltegoImportResult,
   Severity,
@@ -187,12 +189,18 @@ export function EntitiesView({ slug }: { slug: string }) {
 
 // ───── Imported entities section (Maltego today, future Dehashed etc.) ─────
 
+// Last-import receipt; one shape per source so the UI doesn't have to
+// unify schemas. The renderer below pattern-matches on the kind tag.
+type LastImport =
+  | { kind: "maltego"; result: MaltegoImportResult }
+  | { kind: "darkweb"; result: DarkwebImportResult };
+
 function ImportedEntitiesSection({ slug }: { slug: string }) {
   const [items, setItems] = useState<StoredEntity[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
-  const [lastResult, setLastResult] = useState<MaltegoImportResult | null>(null);
+  const [lastImport, setLastImport] = useState<LastImport | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
@@ -215,9 +223,22 @@ function ImportedEntitiesSection({ slug }: { slug: string }) {
     setUploading(true);
     setUploadError(null);
     try {
-      const result = await importEntitiesMaltego(slug, file);
-      setLastResult(result);
-      setItems(result.entities);
+      // Route by extension. .mtgx → Maltego (zip-of-GraphML);
+      // .json/.csv → DarkWeb (Dehashed today, more sources later).
+      const name = file.name.toLowerCase();
+      if (name.endsWith(".mtgx")) {
+        const result = await importEntitiesMaltego(slug, file);
+        setLastImport({ kind: "maltego", result });
+        setItems(result.entities);
+      } else if (name.endsWith(".json") || name.endsWith(".csv")) {
+        const result = await importEntitiesDarkweb(slug, file, "dehashed");
+        setLastImport({ kind: "darkweb", result });
+        setItems(result.entities);
+      } else {
+        setUploadError(
+          "Unrecognized file type — upload .mtgx (Maltego), .json or .csv (Dehashed).",
+        );
+      }
     } catch (err) {
       setUploadError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -231,8 +252,11 @@ function ImportedEntitiesSection({ slug }: { slug: string }) {
         <div>
           <h2 className="text-base font-medium">Imported</h2>
           <p className="text-xs text-muted-foreground">
-            Persistent entities from external sources (Maltego .mtgx today;
-            Dehashed and others later). Re-imports merge into existing rows.
+            Persistent entities from external sources. Accepts Maltego
+            graphs (<code className="font-mono">.mtgx</code>) and Dehashed /
+            DarkWeb exports (<code className="font-mono">.json</code> or{" "}
+            <code className="font-mono">.csv</code>). Re-imports merge into
+            existing rows.
           </p>
         </div>
         <div>
@@ -244,36 +268,80 @@ function ImportedEntitiesSection({ slug }: { slug: string }) {
             disabled={uploading}
           >
             <Upload className="mr-1.5 h-3.5 w-3.5" />
-            {uploading ? "Importing…" : "Import .mtgx"}
+            {uploading ? "Importing…" : "Import"}
           </Button>
           <input
             ref={fileRef}
             type="file"
-            accept=".mtgx,application/zip"
+            accept=".mtgx,.json,.csv,application/zip,application/json,text/csv"
             className="hidden"
             onChange={onFile}
           />
         </div>
       </div>
 
-      {lastResult && (
+      {lastImport?.kind === "maltego" && (
         <div className="rounded border border-border bg-background p-2 text-xs">
           <div className="font-medium">
-            <span className="font-mono">{lastResult.inserted}</span> inserted,{" "}
-            <span className="font-mono">{lastResult.merged}</span> merged
+            Maltego: <span className="font-mono">{lastImport.result.inserted}</span>{" "}
+            inserted, <span className="font-mono">{lastImport.result.merged}</span>{" "}
+            merged
             <span className="text-muted-foreground">
               {" "}
-              ({lastResult.total_nodes} node
-              {lastResult.total_nodes === 1 ? "" : "s"} in graph)
+              ({lastImport.result.total_nodes} node
+              {lastImport.result.total_nodes === 1 ? "" : "s"} in graph)
             </span>
           </div>
-          {(lastResult.skipped_empty > 0 ||
-            lastResult.skipped_unknown > 0) && (
+          {(lastImport.result.skipped_empty > 0 ||
+            lastImport.result.skipped_unknown > 0) && (
             <div className="text-muted-foreground">
               Skipped:{" "}
-              <span className="font-mono">{lastResult.skipped_empty}</span> empty
-              · <span className="font-mono">{lastResult.skipped_unknown}</span>{" "}
+              <span className="font-mono">
+                {lastImport.result.skipped_empty}
+              </span>{" "}
+              empty ·{" "}
+              <span className="font-mono">
+                {lastImport.result.skipped_unknown}
+              </span>{" "}
               unknown
+            </div>
+          )}
+        </div>
+      )}
+
+      {lastImport?.kind === "darkweb" && (
+        <div className="rounded border border-border bg-background p-2 text-xs">
+          <div className="font-medium">
+            {lastImport.result.source}:{" "}
+            <span className="font-mono">{lastImport.result.inserted}</span>{" "}
+            inserted, <span className="font-mono">{lastImport.result.merged}</span>{" "}
+            merged
+            <span className="text-muted-foreground">
+              {" "}
+              ({lastImport.result.total_rows} record
+              {lastImport.result.total_rows === 1 ? "" : "s"})
+            </span>
+          </div>
+          {lastImport.result.databases.length > 0 && (
+            <div className="text-muted-foreground">
+              Breach sources:{" "}
+              <span className="font-mono">
+                {lastImport.result.databases.join(", ")}
+              </span>
+            </div>
+          )}
+          {(lastImport.result.skipped_no_identifier > 0 ||
+            lastImport.result.skipped_malformed > 0) && (
+            <div className="text-muted-foreground">
+              Skipped:{" "}
+              <span className="font-mono">
+                {lastImport.result.skipped_no_identifier}
+              </span>{" "}
+              no-identifier ·{" "}
+              <span className="font-mono">
+                {lastImport.result.skipped_malformed}
+              </span>{" "}
+              malformed
             </div>
           )}
         </div>
