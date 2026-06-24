@@ -18,12 +18,14 @@ class AgentTrigger(enum.StrEnum):
     """Why the orchestrator agent fired. ``finding`` = a new finding
     landed; ``task`` = a task completed and Strategic wants to re-plan;
     ``manual`` = analyst clicked the slide-over button; ``tick`` = periodic
-    watcher cadence (Phase 10)."""
+    watcher cadence (Phase 10); ``lease_provision`` = Stage 3 lease-mint
+    policy call deciding the curated MCP surface for one dispatch."""
 
     finding = "finding"
     task = "task"
     manual = "manual"
     tick = "tick"
+    lease_provision = "lease_provision"
 
 
 class AgentExecutionStatus(enum.StrEnum):
