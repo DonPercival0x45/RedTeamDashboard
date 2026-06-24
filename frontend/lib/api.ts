@@ -471,6 +471,37 @@ export async function importEntitiesMaltego(
   return response.json() as Promise<import("@/lib/types").MaltegoImportResult>;
 }
 
+/**
+ * Upload a DarkWeb data export (Dehashed JSON/CSV today; pluggable for
+ * future sources). Multipart, same fetch-with-FormData pattern as the
+ * Maltego importer — do NOT override Content-Type so the boundary lands.
+ *
+ * Format is auto-detected server-side by filename suffix.
+ */
+export async function importEntitiesDarkweb(
+  slug: string,
+  file: File,
+  source: string = "dehashed",
+): Promise<import("@/lib/types").DarkwebImportResult> {
+  const form = new FormData();
+  form.append("file", file);
+  const response = await fetch(
+    `${API_BASE_URL}/engagements/${slug}/entities/import/darkweb?source=${encodeURIComponent(source)}`,
+    {
+      method: "POST",
+      body: form,
+      headers: { ...(await authHeaders()) },
+    },
+  );
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`${response.status} ${response.statusText}: ${text}`);
+  }
+  return response.json() as Promise<
+    import("@/lib/types").DarkwebImportResult
+  >;
+}
+
 // ---------------------------------------------------------------------------
 // Workflow templates (Phase 10 starter packs)
 // ---------------------------------------------------------------------------

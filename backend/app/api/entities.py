@@ -25,7 +25,7 @@ from sqlalchemy import select
 
 from app.api.deps import CurrentUser, DbSession
 from app.models import ActorType, AuditLog, Engagement, Entity
-from app.services import entity_store
+from app.services import darkweb_import, entity_store
 from app.services.maltego_import import parse_mtgx
 
 router = APIRouter()
@@ -55,6 +55,25 @@ class MaltegoImportResult(BaseModel):
     skipped_empty: int
     skipped_unknown: int
     total_nodes: int
+    entities: list[StoredEntityRead]
+
+
+class DarkwebImportResult(BaseModel):
+    """Response shape for the DarkWeb import endpoint.
+
+    ``source`` echoes the requested source (e.g., "dehashed") so the
+    UI's result panel can label the import accordingly. ``databases``
+    is the distinct list of breach sources seen in the upload —
+    useful header info for the analyst.
+    """
+
+    source: str
+    inserted: int
+    merged: int
+    skipped_no_identifier: int
+    skipped_malformed: int
+    total_rows: int
+    databases: list[str]
     entities: list[StoredEntityRead]
 
 
@@ -154,6 +173,113 @@ def import_maltego(
         skipped_empty=result.skipped_empty,
         skipped_unknown=result.skipped_unknown,
         total_nodes=result.total_nodes,
+        entities=[_entity_to_read(e) for e in fresh],
+    )
+
+
+@router.post(
+    "/engagements/{slug}/entities/import/darkweb",
+    response_model=DarkwebImportResult,
+    status_code=status.HTTP_201_CREATED,
+)
+def import_darkweb(
+    slug: str,
+    session: DbSession,
+    user: CurrentUser,
+    file: Annotated[
+        UploadFile, File(..., description="DarkWeb source export (JSON or CSV).")
+    ],
+    source: Annotated[
+        str,
+        Query(
+            description=(
+                "Source name. Only 'dehashed' is supported in v1; "
+                "future sources (HIBP, IntelX) will follow."
+            )
+        ),
+    ] = "dehashed",
+) -> DarkwebImportResult:
+    """Import a DarkWeb data export (Dehashed today; pluggable for
+    future sources). One Entity per record with type=breach_record;
+    composite value ``<email-or-username>@<database_name>`` preserves
+    per-breach distinction while UPSERTing cleanly on re-import.
+
+    Format auto-detection by filename suffix:
+      - ``.json`` → JSON parser
+      - ``.csv`` (or no recognized suffix on a Dehashed source) → CSV parser
+    """
+    eng = _engagement_by_slug(session, slug)
+    raw = file.file.read()
+    attribution = file.filename or f"{source}.darkweb"
+    filename_lower = attribution.lower()
+
+    source = source.lower().strip()
+    if source != "dehashed":
+        raise HTTPException(
+            status_code=400,
+            detail=f"unsupported darkweb source {source!r}; only 'dehashed' is wired",
+        )
+
+    try:
+        if filename_lower.endswith(".json"):
+            result = darkweb_import.parse_dehashed_json(
+                raw, source_attribution=attribution
+            )
+        elif filename_lower.endswith(".csv"):
+            result = darkweb_import.parse_dehashed_csv(
+                raw, source_attribution=attribution
+            )
+        else:
+            # No clear suffix — try JSON first (Dehashed API responses
+            # tend to come as raw JSON with no extension), fall back to CSV.
+            try:
+                result = darkweb_import.parse_dehashed_json(
+                    raw, source_attribution=attribution
+                )
+            except ValueError:
+                result = darkweb_import.parse_dehashed_csv(
+                    raw, source_attribution=attribution
+                )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    inserted, merged = entity_store.persist_entities(
+        session,
+        engagement=eng,
+        items=result.items,
+        source_tool=f"{source}_import",
+        source_attribution=attribution,
+    )
+
+    session.add(
+        AuditLog(
+            engagement_id=eng.id,
+            actor_type=ActorType.user,
+            actor_id=str(user.id),
+            event_type="entities.imported",
+            payload={
+                "source": f"{source}_import",
+                "filename": attribution,
+                "inserted": inserted,
+                "merged": merged,
+                "skipped_no_identifier": result.skipped_no_identifier,
+                "skipped_malformed": result.skipped_malformed,
+                "total_rows": result.total_rows,
+                "databases": result.databases,
+            },
+        )
+    )
+    session.commit()
+
+    fresh = entity_store.list_stored_entities(session, engagement=eng)
+    return DarkwebImportResult(
+        source=source,
+        inserted=inserted,
+        merged=merged,
+        skipped_no_identifier=result.skipped_no_identifier,
+        skipped_malformed=result.skipped_malformed,
+        total_rows=result.total_rows,
+        databases=result.databases,
         entities=[_entity_to_read(e) for e in fresh],
     )
 
