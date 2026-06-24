@@ -122,6 +122,72 @@ the analyst accepts.
 )
 
 
+LEASE_POLICY_SYSTEM_PROMPT = (
+    """You are the Strategic policy advisor in a red-team orchestrator. A Task \
+is about to dispatch to a worker, and you are shaping the curated MCP \
+surface that single run will see.
+
+You are NOT choosing the tool, target, or whether the task runs. Those \
+are already decided. You decide TWO things:
+
+1. TOOLS — which subset of the PACK_DEFAULTS this run actually needs. \
+Strict NARROW-ONLY: every tool you return MUST already appear in \
+PACK_DEFAULTS. Adding a tool not on that list is a failure; your output \
+will be filtered and the run will fall back to pack defaults. \
+DISPATCH_TOOL must always appear in your output — without it the worker \
+cannot execute the task at all.
+
+2. CONTAINER — whether this run executes against the ISOLATED MCP host \
+(process-separated, scale-to-zero) or the COLOCATED one (faster, shares \
+the backend process). Return requires_container=True when the task has \
+elevated blast-radius:
+- kind=scan with active tooling (port_scan, subnet_sweep, service_detect, \
+or any risk=active tool)
+- tasks against a HIGH- or CRITICAL-severity source finding
+- wide-fan-out targets (CIDR larger than /28; many subdomains)
+Return requires_container=False for passive enum on a single target. \
+When uncertain, prefer requires_container=True — isolation costs $0 when \
+idle and the cold-start hit is one-time per scale-up.
+
+HARD RULES (never break):
+- Agents scan, analysts exploit. NEVER include any exploit-kind tool in \
+your output, even if PACK_DEFAULTS mistakenly listed one.
+- Stay inside PACK_DEFAULTS. Narrow, never widen.
+- DISPATCH_TOOL must be present.
+
+Provide a 1–2 sentence `reason` explaining your two choices. This is \
+recorded on the AgentExecution row and shown in the Costs tab so the \
+analyst can review your policy decisions after the fact.
+"""
+)
+
+
+class _LeasePolicy(BaseModel):
+    """LLM-side output for a single per-lease policy decision."""
+
+    tools: list[str] = Field(
+        ...,
+        description=(
+            "Subset of PACK_DEFAULTS this run needs. DISPATCH_TOOL must "
+            "appear. Narrow only — never widen."
+        ),
+    )
+    requires_container: bool = Field(
+        ...,
+        description=(
+            "True → isolated MCP App; False → colocated. Default True on "
+            "active scans or HIGH/CRITICAL source findings."
+        ),
+    )
+    reason: str = Field(
+        ...,
+        description=(
+            "1–2 sentences explaining the tools + container choice. Used "
+            "for audit + Costs tab visibility."
+        ),
+    )
+
+
 def _scope_summary(scope_items: Iterable[ScopeItem]) -> str:
     lines = []
     for item in scope_items:
@@ -138,6 +204,70 @@ def _tools_summary() -> str:
             f"target={spec.target_arg}/{spec.kind.value}): {spec.description}"
         )
     return "\n".join(lines)
+
+
+def _pack_defaults_summary(pack_defaults: list[str]) -> str:
+    """Render the pack-default tool list with risk + kind + description.
+    Stage 3's policy prompt needs this granularity so the LLM can reason
+    about *which* tools to drop without consulting the registry itself."""
+    from app.orchestrator.tools import get_tool
+
+    lines: list[str] = []
+    for name in pack_defaults:
+        spec = get_tool(name)
+        if spec is None:
+            lines.append(f"  - {name} (unknown — drop if unsure)")
+            continue
+        lines.append(
+            f"  - {spec.name} (risk={spec.risk.value}, kind={spec.kind.value}): "
+            f"{spec.description}"
+        )
+    return "\n".join(lines) if lines else "  (pack is empty)"
+
+
+def _build_lease_policy_user_prompt(
+    *,
+    engagement: Engagement | None,
+    task: Any,
+    pack_defaults: list[str],
+    dispatch_tool: str,
+    finding: Finding | None,
+    scope_items: list[ScopeItem],
+) -> str:
+    if engagement is None:
+        engagement_block = "(orphaned task — no engagement record)"
+    else:
+        engagement_block = f"{engagement.name} ({engagement.slug})"
+    finding_block = "(none — task created directly, not from a finding)"
+    if finding is not None:
+        finding_block = (
+            f"id:       {finding.id}\n"
+            f"  title:    {finding.title}\n"
+            f"  severity: {finding.severity.value}\n"
+            f"  phase:    {finding.phase.value}\n"
+            f"  tool:     {finding.source_tool or '(unknown)'}\n"
+            f"  target:   {finding.target or '(none)'}"
+        )
+    return f"""ENGAGEMENT: {engagement_block}
+
+TASK:
+  id:               {task.id}
+  kind:             {task.kind.value}
+  title:            {task.title}
+  dispatch_tool:    {dispatch_tool or '(none)'}
+  dispatch_target:  {(task.payload or {}).get('target', '(none)')}
+
+PACK_DEFAULTS (the unfiltered tool surface for kind={task.kind.value}):
+{_pack_defaults_summary(pack_defaults)}
+
+SCOPE:
+{_scope_summary(scope_items)}
+
+SOURCE_FINDING:
+  {finding_block}
+
+Return JSON matching the required schema.
+"""
 
 
 def _build_user_prompt(engagement: Engagement, finding: Finding, scope: str) -> str:
@@ -404,36 +534,205 @@ class StrategicAgent:
         The lease's id is the bearer token Tactical stamps on the worker
         envelope. Caller commits the session.
 
-        Stage 2 adds ``requires_container`` — when True (decided by
-        ``_decide_requires_container`` unless overridden), Tactical
-        provisions an ephemeral ACA Job to host the MCP for this run.
+        Stage 2 added ``requires_container`` — when True, Tactical points
+        the worker at the secondary scale-to-zero MCP App.
+
+        Stage 3 adds the LLM policy call: by default this method asks
+        Strategic to narrow the pack default tool list and decide
+        ``requires_container`` via an LLM call. ``requires_container``
+        passed explicitly (or as a tests-only override) bypasses the LLM
+        entirely — useful for callers who already know what they want.
+        Failure of the LLM call is non-fatal: pack defaults + the
+        conservative ``_decide_requires_container`` seed are used and a
+        failed ``AgentExecution`` is recorded so the analyst can see why
+        their key/prompt didn't fire.
         """
         # Local import keeps the orchestrator HTTP module from pulling the
         # lease service in at import time.
         from app.services import mcp_lease, tool_packs
 
+        pack_defaults = tool_packs.tools_for_task(task)
+        context = tool_packs.context_for_task(session, task)
+        prompt_keys = tool_packs.prompts_for_task(task)
+
         if requires_container is None:
-            requires_container = self._decide_requires_container(task)
+            allowed_tools, requires_container = self._provision_policy(
+                session, task=task, pack_defaults=pack_defaults
+            )
+        else:
+            # Explicit override — bypass the LLM. Callers who pass this
+            # already decided; we honor it verbatim and use pack defaults
+            # for the tool surface.
+            allowed_tools = pack_defaults
 
         return mcp_lease.mint(
             session,
             task=task,
-            allowed_tools=tool_packs.tools_for_task(task),
-            context=tool_packs.context_for_task(session, task),
-            prompt_keys=tool_packs.prompts_for_task(task),
+            allowed_tools=allowed_tools,
+            context=context,
+            prompt_keys=prompt_keys,
             ttl_seconds=ttl_seconds,
             requires_container=requires_container,
         )
 
     def _decide_requires_container(self, task: Any) -> bool:
-        """Conservative default policy: never request a container.
+        """Conservative seed value used when the Stage 3 policy LLM call
+        can't run (no provider key, LLM error). Returns False so leases
+        keep flowing through the colocated path on failure.
 
-        Stage 2 ships the wiring; Stage 3 will replace this with an
-        LLM-driven decision keyed on ``task.kind`` + scope + risk. Until
-        then, every lease takes the colocated MCP path — the column is
-        opt-in via explicit override on ``provision_lease``.
+        Tests monkeypatch this to flip the failure-fallback into a
+        positive value without standing up a fake LLM.
         """
         return False
+
+    def _provision_policy(
+        self,
+        session: Session,
+        *,
+        task: Any,
+        pack_defaults: list[str],
+    ) -> tuple[list[str], bool]:
+        """Stage 3: ask the LLM to narrow the pack and pick the container
+        target. Returns ``(allowed_tools, requires_container)``. Writes
+        an ``AgentExecution`` row regardless of success or failure so the
+        Costs tab and audit log see the call.
+
+        Failure modes (no provider key, LLM raise, structured-output
+        validation error) are caught and reported via the execution row;
+        the function falls back to ``(pack_defaults,
+        _decide_requires_container(task))``.
+        """
+        dispatch_tool = (task.payload or {}).get("tool", "")
+        engagement = session.get(Engagement, task.engagement_id)
+        finding = (
+            session.get(Finding, task.finding_id)
+            if getattr(task, "finding_id", None) is not None
+            else None
+        )
+
+        execution = AgentExecution(
+            engagement_id=task.engagement_id,
+            agent=AgentName.strategic,
+            trigger=AgentTrigger.lease_provision,
+            input={
+                "task_id": str(task.id),
+                "task_kind": task.kind.value,
+                "dispatch_tool": dispatch_tool,
+                "pack_defaults": list(pack_defaults),
+            },
+            status=AgentExecutionStatus.running,
+            started_at=datetime.now(tz=UTC),
+        )
+        session.add(execution)
+        session.flush()
+
+        try:
+            llm, provider, model_name = self._resolve_llm(
+                session=session,
+                acting_user_id=(
+                    engagement.created_by if engagement is not None else None
+                ),
+            )
+            execution.model_provider = provider
+            execution.model_name = model_name
+            user_prompt = _build_lease_policy_user_prompt(
+                engagement=engagement,
+                task=task,
+                pack_defaults=pack_defaults,
+                dispatch_tool=dispatch_tool,
+                finding=finding,
+                scope_items=list(
+                    session.execute(
+                        select(ScopeItem).where(
+                            ScopeItem.engagement_id == task.engagement_id
+                        )
+                    ).scalars()
+                ),
+            )
+            structured = llm.with_structured_output(_LeasePolicy)
+            raw: Any = structured.invoke(
+                [
+                    ("system", LEASE_POLICY_SYSTEM_PROMPT),
+                    ("user", user_prompt),
+                ]
+            )
+            policy: _LeasePolicy = (
+                raw if isinstance(raw, _LeasePolicy) else _LeasePolicy.model_validate(raw)
+            )
+            tokens_in, tokens_out = _extract_usage(raw)
+            execution.tokens_in = tokens_in
+            execution.tokens_out = tokens_out
+        except Exception as exc:  # noqa: BLE001 — any failure → fall back safely
+            execution.status = AgentExecutionStatus.failed
+            execution.error = str(exc)[:2000]
+            execution.completed_at = datetime.now(tz=UTC)
+            logger.warning(
+                "strategic.lease_policy_failed",
+                task_id=str(task.id),
+                error=str(exc),
+            )
+            return list(pack_defaults), self._decide_requires_container(task)
+
+        allowed_tools = self._narrow_to_pack(
+            policy.tools,
+            pack_defaults=pack_defaults,
+            dispatch_tool=dispatch_tool,
+        )
+        execution.output = {
+            "tools": allowed_tools,
+            "requires_container": policy.requires_container,
+            "reason": policy.reason,
+            "llm_proposed_tools": list(policy.tools),
+        }
+        execution.status = AgentExecutionStatus.completed
+        execution.completed_at = datetime.now(tz=UTC)
+        logger.info(
+            "strategic.lease_policy",
+            task_id=str(task.id),
+            requires_container=policy.requires_container,
+            tools_kept=len(allowed_tools),
+            tools_dropped=max(0, len(pack_defaults) - len(allowed_tools)),
+        )
+        return allowed_tools, policy.requires_container
+
+    def _narrow_to_pack(
+        self,
+        llm_tools: list[str],
+        *,
+        pack_defaults: list[str],
+        dispatch_tool: str,
+    ) -> list[str]:
+        """Narrow-only filter: keep order-preserving intersection of
+        ``llm_tools`` and ``pack_defaults``. Drops any tool the LLM
+        invented (widening attempt) or that the registry no longer
+        knows. Defense-in-depth drop on exploit-kind tools — packs
+        already exclude them but a misconfigured pack shouldn't blow
+        the charter.
+
+        Always preserves ``dispatch_tool`` so the worker can execute
+        the task, even if the LLM omitted it. If the dispatch tool
+        isn't in pack defaults at all (unusual but possible if a caller
+        constructs a task by hand), we still keep it — the alternative
+        is a guaranteed worker failure.
+        """
+        from app.orchestrator.tools import get_tool
+
+        pack_set = set(pack_defaults)
+        seen: set[str] = set()
+        narrowed: list[str] = []
+        for name in llm_tools:
+            if name in seen or name not in pack_set:
+                continue
+            spec = get_tool(name)
+            if spec is None:
+                continue
+            if spec.kind == TaskKind.exploit:
+                continue
+            narrowed.append(name)
+            seen.add(name)
+        if dispatch_tool and dispatch_tool not in seen:
+            narrowed.append(dispatch_tool)
+        return narrowed
 
     def release_lease(
         self,

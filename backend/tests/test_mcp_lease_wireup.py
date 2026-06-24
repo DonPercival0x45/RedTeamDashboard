@@ -49,6 +49,24 @@ class _FakeRedis:
 
 
 @pytest.fixture()
+def stub_strategic_policy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Bypass Stage 3's policy LLM call.
+
+    `_provision_policy` ordinarily fires an LLM call per ``provision_lease``.
+    The Stage 1/1.5/2 wireup tests don't care about the LLM step — they're
+    asserting on routing, envelope shape, lease persistence — so we replace
+    the method with a deterministic stub that returns the pack defaults
+    and lets `_decide_requires_container` decide the container flag. Tests
+    that DO care about the LLM path (Stage 3 tests) inject their own LLM
+    via ``StrategicAgent(llm=...)`` and don't request this fixture.
+    """
+    def _stub(self, session, *, task, pack_defaults):
+        return list(pack_defaults), self._decide_requires_container(task)
+
+    monkeypatch.setattr(StrategicAgent, "_provision_policy", _stub)
+
+
+@pytest.fixture()
 def engagement(db: Session) -> Iterator[Engagement]:
     eng = Engagement(
         name="wireup-test",
@@ -90,7 +108,7 @@ def _make_enum_task(db: Session, engagement: Engagement) -> Task:
 
 
 def test_strategic_provision_lease_uses_pack_defaults(
-    db: Session, engagement: Engagement
+    db: Session, engagement: Engagement, stub_strategic_policy: None
 ) -> None:
     task = _make_enum_task(db, engagement)
     lease = StrategicAgent().provision_lease(db, task=task)
@@ -103,7 +121,7 @@ def test_strategic_provision_lease_uses_pack_defaults(
 
 
 def test_tactical_dispatch_mints_lease_and_stamps_envelope(
-    db: Session, engagement: Engagement
+    db: Session, engagement: Engagement, stub_strategic_policy: None
 ) -> None:
     task = _make_enum_task(db, engagement)
     redis = _FakeRedis()
@@ -126,7 +144,7 @@ def test_tactical_dispatch_mints_lease_and_stamps_envelope(
 
 
 def test_strategic_release_lease_is_idempotent(
-    db: Session, engagement: Engagement
+    db: Session, engagement: Engagement, stub_strategic_policy: None
 ) -> None:
     task = _make_enum_task(db, engagement)
     lease = StrategicAgent().provision_lease(db, task=task)
@@ -152,7 +170,7 @@ def test_strategic_release_lease_is_idempotent(
 
 
 def test_strategic_default_policy_provisions_requires_container_false(
-    db: Session, engagement: Engagement
+    db: Session, engagement: Engagement, stub_strategic_policy: None
 ) -> None:
     """Conservative default: leases mint with requires_container=False
     so every dispatch keeps the colocated path until Stage 3 LLM-driven
@@ -164,7 +182,7 @@ def test_strategic_default_policy_provisions_requires_container_false(
 
 
 def test_strategic_provision_lease_honours_explicit_requires_container(
-    db: Session, engagement: Engagement
+    db: Session, engagement: Engagement, stub_strategic_policy: None
 ) -> None:
     """The kwarg override lets callers (and tests) flip the column without
     waiting for the LLM policy."""
@@ -177,7 +195,10 @@ def test_strategic_provision_lease_honours_explicit_requires_container(
 
 
 def test_tactical_routes_to_colocated_when_aca_disabled(
-    db: Session, engagement: Engagement, monkeypatch: pytest.MonkeyPatch
+    db: Session,
+    engagement: Engagement,
+    monkeypatch: pytest.MonkeyPatch,
+    stub_strategic_policy: None,
 ) -> None:
     """Even with requires_container=True, ``aca_mcp_app_enabled=False``
     (the default — and the forced local-dev posture) collapses every
@@ -206,7 +227,10 @@ def test_tactical_routes_to_colocated_when_aca_disabled(
 
 
 def test_tactical_routes_to_colocated_when_lease_does_not_require_container(
-    db: Session, engagement: Engagement, monkeypatch: pytest.MonkeyPatch
+    db: Session,
+    engagement: Engagement,
+    monkeypatch: pytest.MonkeyPatch,
+    stub_strategic_policy: None,
 ) -> None:
     """Setting on, lease off → still colocated. The lease column is the
     per-task switch; the setting is the deployment-level guard."""
@@ -230,7 +254,10 @@ def test_tactical_routes_to_colocated_when_lease_does_not_require_container(
 
 
 def test_tactical_routes_to_aca_mcp_when_lease_and_settings_agree(
-    db: Session, engagement: Engagement, monkeypatch: pytest.MonkeyPatch
+    db: Session,
+    engagement: Engagement,
+    monkeypatch: pytest.MonkeyPatch,
+    stub_strategic_policy: None,
 ) -> None:
     """Both gates pass → Tactical stamps the secondary App's URL."""
     from app.core.config import settings
@@ -261,7 +288,10 @@ def test_tactical_routes_to_aca_mcp_when_lease_and_settings_agree(
 
 
 def test_tactical_routes_to_colocated_when_aca_url_blank(
-    db: Session, engagement: Engagement, monkeypatch: pytest.MonkeyPatch
+    db: Session,
+    engagement: Engagement,
+    monkeypatch: pytest.MonkeyPatch,
+    stub_strategic_policy: None,
 ) -> None:
     """Setting on but URL unset (mid-deploy state) → fall back rather than
     stamp a broken URL onto the envelope."""
