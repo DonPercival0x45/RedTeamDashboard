@@ -195,7 +195,9 @@ jobs:
             ${{ env.REGISTRY }}/${{ needs.version.outputs.owner_lc }}/${{ matrix.image.name }}:${{ needs.version.outputs.version }}
 
       # Report-only table scan first so the build log shows which CVEs Trivy
-      # found before the strict SARIF scan exits non-zero.
+      # found before the strict SARIF scan exits non-zero. trivyignores
+      # picks up risk-accepted CVEs documented in .trivyignore at the repo
+      # root (transitive subfinder Go deps — code paths not reached).
       - name: Trivy image scan (report — list CVEs in log)
         uses: aquasecurity/trivy-action@v0.36.0
         with:
@@ -203,6 +205,7 @@ jobs:
           severity: CRITICAL,HIGH
           exit-code: '0'
           ignore-unfixed: true
+          trivyignores: ./.trivyignore
           format: table
 
       - name: Trivy image scan (STRICT — fails the release)
@@ -212,6 +215,7 @@ jobs:
           severity: CRITICAL,HIGH
           exit-code: '1'
           ignore-unfixed: true
+          trivyignores: ./.trivyignore
           format: sarif
           output: trivy-${{ matrix.image.name }}.sarif
           # Without this, format=sarif forces trivy to scan ALL severities

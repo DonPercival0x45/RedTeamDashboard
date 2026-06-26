@@ -1,0 +1,49 @@
+# Trivy ignore list — risk acceptance for the strict CVE gate in release.yml.
+#
+# All entries are CVEs in transitive Go-dependencies pulled in by the
+# ProjectDiscovery `subfinder` binary baked into the backend image
+# (built from source via the multi-stage Dockerfile). These are HIGH/CRITICAL
+# against the *library*, but the vulnerable code paths are not exercised
+# by subfinder's actual usage (passive subdomain enumeration: HTTPS GET
+# requests to public APIs like crt.sh, hackertarget, alienvault, wayback).
+#
+# Revisit when:
+#   - subfinder upstream updates go.mod to pull newer x/crypto + x/net
+#   - or we move subfinder out of the backend image entirely (planned
+#     under the Kali-attack-box arc — see project_kali_attack_box_arc memory).
+
+# -----------------------------------------------------------------------------
+# golang.org/x/crypto/ssh — subfinder does not establish SSH connections,
+# act as an SSH client, or run an SSH server. Vulnerable code paths are
+# never reached.
+# -----------------------------------------------------------------------------
+CVE-2026-39827
+CVE-2026-39828
+CVE-2026-39829
+CVE-2026-39830
+CVE-2026-39832
+CVE-2026-39835
+CVE-2026-42508
+CVE-2026-46595
+CVE-2026-46597
+
+# -----------------------------------------------------------------------------
+# golang.org/x/net/html — subfinder consumes structured JSON responses
+# from passive-recon APIs, not arbitrary HTML.
+# -----------------------------------------------------------------------------
+CVE-2026-25680
+CVE-2026-25681
+CVE-2026-27136
+CVE-2026-42502
+CVE-2026-42506
+
+# -----------------------------------------------------------------------------
+# golang.org/x/net (HTTP/2 + IDNA)
+# CVE-2026-33814 is in net/http/internal/http2 server-side code — subfinder
+#   is an HTTP/1.1+2 *client* only, never serves HTTP.
+# CVE-2026-39821 is in IDNA; subfinder normalizes domain inputs already
+#   validated against the engagement scope, so attacker-controlled IDNA
+#   input doesn't reach the vulnerable path.
+# -----------------------------------------------------------------------------
+CVE-2026-33814
+CVE-2026-39821
