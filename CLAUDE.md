@@ -54,6 +54,16 @@ python -m pytest -p no:cacheprovider -q
 Forgetting `REDIS_URL` makes the Redis tests hang (resolving host `redis`).
 `pytest-timeout` is not installed. Full suite ~4.5 min.
 
+**After pulling a merge that adds a migration**, rebuild and recreate the
+backend + worker containers — otherwise Postgres remembers the new revision
+from a prior run but the running image's `alembic/versions/` chain only
+goes up to the old head, and startup fails with `Can't locate revision`:
+
+```bash
+docker compose -f infra/docker-compose.yml build backend worker
+docker compose -f infra/docker-compose.yml up -d --force-recreate backend worker
+```
+
 **Known host-only failures (not bugs):** 3 `test_events_api.py` SSE tests
 (fixture 404s) + 1 `test_findings_validation.py::test_report_excludes_unvalidated`
 (WeasyPrint needs GTK/`libgobject` not present on Windows). These pass in CI
