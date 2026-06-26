@@ -20,15 +20,21 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
-from app.api.api_keys import router as api_keys_router
-from app.api.approvals import router as approvals_router
-from app.api.authorizations import router as authorizations_router
 from app.api.deps import AsyncRedisClient, DbSession
-from app.api.projects import router as projects_router
 from app.api.events import router as events_router
-from app.api.orchestrator import router as orchestrator_router
-from app.api.provider_keys import router as provider_keys_router
 from app.api.reports import router as reports_router
+from app.auth.routes import (
+    api_keys_router,
+    approvals_router,
+    authorizations_router,
+    provider_keys_router,
+)
+from app.findings.routes import router as findings_router
+from app.observations.routes import router as observations_router
+from app.projects.routes import router as projects_router
+from app.runs.routes import router as runs_router
+from app.scope.routes import router as scope_router
+from app.tasks.routes import router as tasks_router
 from app.core.config import settings
 from app.core.logging import configure_logging
 from app.mcp.auth import MCPAuthMiddleware
@@ -49,13 +55,22 @@ app.add_middleware(
     expose_headers=["Last-Event-ID"],
 )
 
+# Domain routers (vertical-slice refactor)
 app.include_router(projects_router)
+app.include_router(scope_router)
+app.include_router(findings_router)
+app.include_router(observations_router)
+app.include_router(runs_router)
+app.include_router(tasks_router)
+
+# Auth domain (api_keys, approvals, authorizations, provider_keys)
+app.include_router(api_keys_router)
 app.include_router(approvals_router)
 app.include_router(authorizations_router)
-app.include_router(api_keys_router)
-app.include_router(events_router)
-app.include_router(orchestrator_router)
 app.include_router(provider_keys_router)
+
+# Remaining api/ routers (small, not yet split into domain packages)
+app.include_router(events_router)
 app.include_router(reports_router)
 
 # MCP server — auth-gated SSE endpoint for agent clients (Claude Code, etc.)

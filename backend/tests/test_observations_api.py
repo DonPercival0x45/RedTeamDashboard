@@ -22,9 +22,12 @@ def client() -> TestClient:
     return TestClient(app)
 
 
+_ProjectModel = Project  # save class reference before fixture shadows the name
+
+
 @pytest.fixture()
 def Project(db: Session) -> Iterator[Project]:
-    eng = Project(
+    eng = _ProjectModel(
         name="Obs Test",
         slug=f"obs-test-{uuid.uuid4().hex[:8]}",
         status=ProjectStatus.active,
@@ -174,7 +177,7 @@ def test_delete_observation_404_for_unknown(client: TestClient) -> None:
 def test_cannot_add_observation_to_flushed_engagement(
     client: TestClient, db: Session
 ) -> None:
-    eng = Project(
+    eng = _ProjectModel(
         name="Flushed",
         slug=f"flushed-obs-{uuid.uuid4().hex[:8]}",
         status=ProjectStatus.flushed,

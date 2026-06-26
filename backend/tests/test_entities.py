@@ -25,9 +25,12 @@ def client() -> TestClient:
     return TestClient(app)
 
 
+_ProjectModel = Project  # save class reference before fixture shadows the name
+
+
 @pytest.fixture()
 def Project(db: Session) -> Iterator[Project]:
-    eng = Project(
+    eng = _ProjectModel(
         name="Entities Test",
         slug=f"entities-{uuid.uuid4().hex[:8]}",
         status=ProjectStatus.active,

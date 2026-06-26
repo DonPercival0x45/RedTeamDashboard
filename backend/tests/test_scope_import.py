@@ -30,9 +30,12 @@ def client() -> TestClient:
     return TestClient(app)
 
 
+_ProjectModel = Project  # save class reference before fixture shadows the name
+
+
 @pytest.fixture()
 def Project(db: Session) -> Iterator[Project]:
-    eng = Project(
+    eng = _ProjectModel(
         name="Scope Import",
         slug=f"scope-import-{uuid.uuid4().hex[:8]}",
         status=ProjectStatus.active,
@@ -193,7 +196,7 @@ def test_endpoint_commit_creates_and_dedupes(
 def test_endpoint_rejects_flushed_engagement(
     client: TestClient, db: Session
 ) -> None:
-    eng = Project(
+    eng = _ProjectModel(
         name="Flushed",
         slug=f"flushed-{uuid.uuid4().hex[:8]}",
         status=ProjectStatus.flushed,

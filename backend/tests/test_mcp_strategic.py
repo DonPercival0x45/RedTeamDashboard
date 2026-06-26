@@ -52,9 +52,12 @@ from app.models import (
 )
 
 
+_ProjectModel = Project  # save class reference before fixture shadows the name
+
+
 @pytest.fixture()
 def Project(db: Session) -> Iterator[Project]:
-    eng = Project(
+    eng = _ProjectModel(
         name="MCP Strategic",
         slug=f"mcp-strategic-{uuid.uuid4().hex[:8]}",
         status=ProjectStatus.active,

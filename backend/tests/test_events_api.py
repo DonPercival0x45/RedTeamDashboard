@@ -43,11 +43,14 @@ def redis_client() -> Iterator[redis_lib.Redis]:
         r.close()
 
 
+_ProjectModel = Project  # save class reference before fixture shadows the name
+
+
 @pytest.fixture()
 def Project(
     db: Session, redis_client: redis_lib.Redis
 ) -> Iterator[Project]:
-    eng = Project(
+    eng = _ProjectModel(
         name="sse-test",
         slug=f"sse-test-{uuid.uuid4().hex[:8]}",
         status=ProjectStatus.active,

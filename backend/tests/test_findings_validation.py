@@ -31,9 +31,12 @@ def client() -> TestClient:
     return TestClient(app)
 
 
+_ProjectModel = Project  # save class reference before fixture shadows the name
+
+
 @pytest.fixture()
 def Project(db: Session) -> Iterator[Project]:
-    eng = Project(
+    eng = _ProjectModel(
         name="Phase8 Validation",
         slug=f"phase8-{uuid.uuid4().hex[:8]}",
         status=ProjectStatus.active,
@@ -76,10 +79,10 @@ def _seed(
 
 
 def test_phase_for_tool_maps_recon_and_scan() -> None:
-    assert phase_for_tool("subfinder") == "osint"
-    assert phase_for_tool("crt_sh") == "osint"
-    assert phase_for_tool("portscan") == "vuln_scan"
-    assert phase_for_tool("service_detect") == "vuln_scan"
+    assert phase_for_tool("subfinder") == "discovery"
+    assert phase_for_tool("crt_sh") == "discovery"
+    assert phase_for_tool("portscan") == "analysis"
+    assert phase_for_tool("service_detect") == "analysis"
     assert phase_for_tool("something_unknown") == "general"
     assert phase_for_tool(None) == "general"
 
@@ -92,11 +95,11 @@ def test_findings_filter_by_phase_and_status(
 ) -> None:
     _seed(
         db, Project.id, tool="subfinder",
-        phase=FindingPhase.osint, status=FindingStatus.pending_validation,
+        phase=FindingPhase.discovery, status=FindingStatus.pending_validation,
     )
     _seed(
         db, Project.id, tool="portscan",
-        phase=FindingPhase.vuln_scan, status=FindingStatus.validated,
+        phase=FindingPhase.analysis, status=FindingStatus.validated,
     )
     hdr = {"X-User-Id": "p8@example.com"}
 
@@ -104,12 +107,12 @@ def test_findings_filter_by_phase_and_status(
         f"/projects/{Project.slug}/findings", headers=hdr
     ).json()
     assert len(all_rows) == 2
-    assert {r["phase"] for r in all_rows} == {"osint", "vuln_scan"}
+    assert {r["phase"] for r in all_rows} == {"discovery", "analysis"}
 
-    osint = client.get(
-        f"/projects/{Project.slug}/findings?phase=osint", headers=hdr
+    discovery = client.get(
+        f"/projects/{Project.slug}/findings?phase=discovery", headers=hdr
     ).json()
-    assert len(osint) == 1 and osint[0]["phase"] == "osint"
+    assert len(discovery) == 1 and discovery[0]["phase"] == "discovery"
 
     pending = client.get(
         f"/projects/{Project.slug}/findings?status=pending_validation",

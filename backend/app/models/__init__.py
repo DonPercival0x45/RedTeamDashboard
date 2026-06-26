@@ -2,29 +2,37 @@
 
 Alembic's env.py imports this module so autogenerate can see all tables.
 """
-from app.models.agent_execution import (
+from app.auth.models import (
+    APIKey,
+    APIKeyScope,
+    ActorType,
+    AuditLog,
+    Authorization,
+    Approval,
+    ApprovalStatus,
+    ProviderKeyKind,
+    RiskLevel,
+    User,
+    UserProviderKey,
+    scope_satisfies,
+)
+from app.findings.models import Attachment, Finding, FindingPhase, FindingStatus, Severity
+from app.observations.models import Observation
+from app.projects.models import Project, ProjectStatus
+from app.scope.models import ScopeItem, ScopeKind
+from app.tasks.models import (
     AgentExecution,
     AgentExecutionStatus,
-    AgentTrigger,
-)
-from app.models.api_key import APIKey, APIKeyScope, scope_satisfies
-from app.models.approval import Approval, ApprovalStatus, RiskLevel
-from app.models.attachment import Attachment
-from app.models.audit_log import ActorType, AuditLog
-from app.models.authorization import Authorization
-from app.models.project import Project, ProjectStatus
-from app.models.finding import Finding, FindingPhase, FindingStatus, Severity
-from app.models.observation import Observation
-from app.models.scope_item import ScopeItem, ScopeKind
-from app.models.suggestion import (
     AgentName,
+    AgentTrigger,
+    OwnerEligibility,
     Suggestion,
     SuggestionKind,
     SuggestionStatus,
+    Task,
+    TaskKind,
+    TaskStatus,
 )
-from app.models.task import OwnerEligibility, Task, TaskKind, TaskStatus
-from app.models.user import User
-from app.models.user_provider_key import ProviderKeyKind, UserProviderKey
 
 __all__ = [
     "APIKey",

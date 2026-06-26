@@ -22,9 +22,12 @@ def client() -> TestClient:
     return TestClient(app)
 
 
+_ProjectModel = Project  # save class reference before fixture shadows the name
+
+
 @pytest.fixture()
 def Project(db: Session) -> Iterator[Project]:
-    eng = Project(
+    eng = _ProjectModel(
         name="Import Test",
         slug=f"import-test-{uuid.uuid4().hex[:8]}",
         status=ProjectStatus.active,
@@ -211,7 +214,7 @@ def test_import_requires_auth(client: TestClient, Project: Project) -> None:
 def test_import_409_for_flushed_engagement(
     client: TestClient, db: Session
 ) -> None:
-    eng = Project(
+    eng = _ProjectModel(
         name="Flushed Import",
         slug=f"flushed-import-{uuid.uuid4().hex[:8]}",
         status=ProjectStatus.flushed,

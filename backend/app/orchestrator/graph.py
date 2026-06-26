@@ -44,7 +44,7 @@ from app.orchestrator.tools.runtime import ToolImpl, ToolResult, run_tool
 # messages, UUID, datetime, Interrupt, Command, etc.) are already in the
 # built-in SAFE_MSGPACK_TYPES list.
 CUSTOM_MSGPACK_TYPES: tuple[tuple[str, str], ...] = (
-    ("app.models.scope_item", "ScopeKind"),
+    ("app.scope.models", "ScopeKind"),
     ("app.orchestrator.scope", "ScopeSnapshot"),
 )
 

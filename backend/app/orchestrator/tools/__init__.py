@@ -163,17 +163,17 @@ def get_tool(name: str, registry: Mapping[str, ToolSpec] | None = None) -> ToolS
 
 
 # Tool → Project phase, for tagging the findings a tool produces (Phase 8).
-# Passive recon → OSINT; active enumeration → Vuln Scan. Unknown → general.
+# Passive recon → discovery; active enumeration → analysis. Unknown → general.
 _TOOL_PHASE: dict[str, str] = {
-    "subfinder": "osint",
-    "crt_sh": "osint",
-    "dns_lookup": "osint",
-    "whois_lookup": "osint",
-    "httpx_probe": "osint",
-    "reverse_dns": "osint",
-    "portscan": "vuln_scan",
-    "subnet_sweep": "vuln_scan",
-    "service_detect": "vuln_scan",
+    "subfinder": "discovery",
+    "crt_sh": "discovery",
+    "dns_lookup": "discovery",
+    "whois_lookup": "discovery",
+    "httpx_probe": "discovery",
+    "reverse_dns": "discovery",
+    "portscan": "analysis",
+    "subnet_sweep": "analysis",
+    "service_detect": "analysis",
 }
 
 
