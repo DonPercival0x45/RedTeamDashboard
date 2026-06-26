@@ -200,7 +200,9 @@ def test_post_runs_mints_direct_run_lease_and_stamps_envelope(
     queued = redis_client.xrange(inbound_stream(uuid.UUID(eng["id"])))
     payload = json.loads(queued[-1][1]["data"])
     # Stage 3+1 envelope additions.
-    assert payload["mcp_url"].endswith("/mcp")
+    # mcp_url is the full FastMCP SSE handler path, not just the mount root.
+    # The /mcp/sse vs /mcp distinction matters: a bare /mcp 404s once auth passes.
+    assert payload["mcp_url"].endswith("/mcp/sse")
     assert "lease_token" in payload
 
     # Lease persisted with task_id=NULL and is reachable by thread_id.
@@ -275,7 +277,7 @@ def test_post_runs_lease_uses_colocated_mcp_url(
     payload = json.loads(
         redis_client.xrange(inbound_stream(uuid.UUID(eng["id"])))[-1][1]["data"]
     )
-    assert payload["mcp_url"] == "http://backend:8000/mcp"
+    assert payload["mcp_url"] == "http://backend:8000/mcp/sse"
 
 
 # ---------------------------------------------------------------------------

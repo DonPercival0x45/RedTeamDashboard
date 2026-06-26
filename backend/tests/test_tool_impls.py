@@ -80,19 +80,59 @@ def test_crt_sh_missing_domain() -> None:
 
 
 @respx.mock
-def test_subfinder_repackages_crt_sh_result() -> None:
-    respx.get("https://crt.sh/").mock(
-        return_value=httpx.Response(
-            200,
-            json=[
-                {"common_name": "acme.com", "name_value": "acme.com\nwww.acme.com"}
-            ],
-        )
+def test_subfinder_aggregates_real_binary_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Real subfinder Go binary shells out and emits one JSON record per
+    line (NDJSON) with ``host``, ``input``, ``source`` fields. The wrapper
+    deduplicates hosts and surfaces which passive sources contributed."""
+    import subprocess
+    from app.orchestrator.tools import subfinder as sf
+
+    fake_stdout = (
+        '{"host": "acme.com", "input": "acme.com", "source": "crtsh"}\n'
+        '{"host": "www.acme.com", "input": "acme.com", "source": "crtsh"}\n'
+        '{"host": "api.acme.com", "input": "acme.com", "source": "hackertarget"}\n'
+        # Duplicate from another source — must dedupe by host.
+        '{"host": "www.acme.com", "input": "acme.com", "source": "alienvault"}\n'
     )
+
+    def fake_run(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess:
+        return subprocess.CompletedProcess(
+            args=args[0], returncode=0, stdout=fake_stdout, stderr=""
+        )
+
+    monkeypatch.setattr(sf.subprocess, "run", fake_run)
+
     result = subfinder_impl({"domain": "acme.com"})
-    assert result.ok
-    assert result.data["source"] == "crt.sh"
-    assert set(result.data["subdomains"]) == {"acme.com", "www.acme.com"}
+    assert result.ok, result.error
+    assert result.data["source"] == "subfinder"
+    assert result.data["count"] == 3
+    assert set(result.data["subdomains"]) == {
+        "acme.com",
+        "www.acme.com",
+        "api.acme.com",
+    }
+    assert set(result.data["sources_used"]) == {
+        "crtsh",
+        "hackertarget",
+        "alienvault",
+    }
+
+
+def test_subfinder_binary_not_installed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When the binary is missing from the image, surface a clear error
+    instead of a generic subprocess crash."""
+    import subprocess
+    from app.orchestrator.tools import subfinder as sf
+
+    def fake_run(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess:
+        raise FileNotFoundError("subfinder")
+
+    monkeypatch.setattr(sf.subprocess, "run", fake_run)
+    result = subfinder_impl({"domain": "acme.com"})
+    assert not result.ok
+    assert "subfinder binary not found" in (result.error or "")
 
 
 # ---------------------------------------------------------------------------

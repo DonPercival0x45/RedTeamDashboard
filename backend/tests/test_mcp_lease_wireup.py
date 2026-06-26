@@ -133,7 +133,9 @@ def test_tactical_dispatch_mints_lease_and_stamps_envelope(
     _stream, fields = redis.xadd_calls[0]
     envelope = json.loads(fields["data"])
     assert envelope["type"] == "run.start"
-    assert envelope["mcp_url"].endswith("/mcp")
+    # mcp_url is the full FastMCP SSE handler path, not just the mount root.
+    # The /mcp/sse vs /mcp distinction matters: a bare /mcp 404s once auth passes.
+    assert envelope["mcp_url"].endswith("/mcp/sse")
     assert "lease_token" in envelope
     # Lease persisted with the token Tactical stamped.
     lease = mcp_lease.validate_token(db, envelope["lease_token"])
@@ -223,7 +225,7 @@ def test_tactical_routes_to_colocated_when_aca_disabled(
     db.commit()
 
     envelope = json.loads(redis.xadd_calls[0][1]["data"])
-    assert envelope["mcp_url"] == "http://backend:8000/mcp"
+    assert envelope["mcp_url"] == "http://backend:8000/mcp/sse"
 
 
 def test_tactical_routes_to_colocated_when_lease_does_not_require_container(
@@ -250,7 +252,7 @@ def test_tactical_routes_to_colocated_when_lease_does_not_require_container(
     db.commit()
 
     envelope = json.loads(redis.xadd_calls[0][1]["data"])
-    assert envelope["mcp_url"] == "http://backend:8000/mcp"
+    assert envelope["mcp_url"] == "http://backend:8000/mcp/sse"
 
 
 def test_tactical_routes_to_aca_mcp_when_lease_and_settings_agree(
@@ -279,7 +281,7 @@ def test_tactical_routes_to_aca_mcp_when_lease_and_settings_agree(
     envelope = json.loads(redis.xadd_calls[0][1]["data"])
     assert (
         envelope["mcp_url"]
-        == "https://rtd-mcp.example.azurecontainerapps.io/mcp"
+        == "https://rtd-mcp.example.azurecontainerapps.io/mcp/sse"
     )
     # Lease persisted with the container flag set.
     lease = mcp_lease.validate_token(db, envelope["lease_token"])
@@ -310,4 +312,4 @@ def test_tactical_routes_to_colocated_when_aca_url_blank(
     db.commit()
 
     envelope = json.loads(redis.xadd_calls[0][1]["data"])
-    assert envelope["mcp_url"] == "http://backend:8000/mcp"
+    assert envelope["mcp_url"] == "http://backend:8000/mcp/sse"

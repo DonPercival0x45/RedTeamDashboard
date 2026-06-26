@@ -62,7 +62,10 @@ def test_import_single_finding(
     assert rows[0]["title"] == "TLS cert expiring soon"
     assert rows[0]["severity"] == "medium"
     assert rows[0]["phase"] == "osint"
-    assert rows[0]["status"] == "pending_validation"
+    # Phase A: osint-phase imports auto-validate at creation because the
+    # results are factual. Non-osint phases stay pending_validation; see
+    # test_import_phase_status_routing below for the per-phase matrix.
+    assert rows[0]["status"] == "validated"
 
 
 def test_import_multiple_findings(
