@@ -112,6 +112,14 @@ var appEnv = [
   // Redis is a sibling container in the same pod; reachable via localhost.
   { name: 'REDIS_URL', value: 'redis://127.0.0.1:6379/0' }
   { name: 'REDIS_HOST_PORT', value: '127.0.0.1:6379' }
+  // Worker calls the colocated MCP server via this URL. The settings
+  // default `http://backend:8000` only resolves under docker-compose
+  // (where `backend` is a service-name DNS entry). In the collapsed-app
+  // pod, backend + worker share the network namespace, so 127.0.0.1
+  // is the correct target. Without this, every tool call fails with
+  // "unhandled errors in a TaskGroup" because the worker can't resolve
+  // `backend` and the SSE handshake times out before returning.
+  { name: 'PUBLIC_BASE_URL', value: 'http://127.0.0.1:8000' }
   { name: 'LLM_PROVIDER', value: llmProvider }
   { name: 'ANTHROPIC_API_KEY', secretRef: 'anthropic-api-key' }
   { name: 'ANTHROPIC_MODEL', value: anthropicModel }
