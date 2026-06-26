@@ -794,12 +794,21 @@ def _create_findings_from_imports(
     Both ``FindingImport`` (Phase 11 JSON/CSV importer) and
     ``nessus_import.ParsedItem`` (Phase 10 .nessus parser) satisfy this.
 
-    All imports land ``status=pending_validation`` per the Phase 8
-    validation gate — analyst must approve before they're report-eligible.
-    Caller commits the session.
+    Phase-based validation gate (refined 2026-06-26): ``osint``-phase
+    imports auto-validate at creation because the results are factual.
+    Non-osint phases (``vuln_scan``, ``exploit``, ``phishing``, ``general``)
+    stay ``pending_validation`` for analyst review before the report
+    includes them. See ``default_status_for_phase`` for the rule. Caller
+    commits the session.
     """
+    from datetime import UTC, datetime
+
+    from app.models.finding import default_status_for_phase
+
     created: list[Finding] = []
+    now = datetime.now(tz=UTC)
     for item in items:
+        status = default_status_for_phase(item.phase)
         f = Finding(
             engagement_id=eng.id,
             title=item.title,
@@ -809,7 +818,9 @@ def _create_findings_from_imports(
             target=item.target,
             source_tool=item.source_tool or "import",
             details=item.details,
-            status=FindingStatus.pending_validation,
+            status=status,
+            validated_at=now if status == FindingStatus.validated else None,
+            validated_by=user.id if status == FindingStatus.validated else None,
         )
         session.add(f)
         created.append(f)

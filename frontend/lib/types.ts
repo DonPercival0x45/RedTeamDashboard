@@ -93,7 +93,8 @@ export type FindingValidationStatus =
   | "pending_validation"
   | "validated"
   | "rejected"
-  | "false_positive";
+  | "false_positive"
+  | "needs_review";
 
 // Persisted finding as returned by GET /engagements/{slug}/findings. Mirrors
 // the SSE `finding.created` event's tool/args/data so the table can render

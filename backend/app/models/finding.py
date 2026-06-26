@@ -31,13 +31,38 @@ class FindingPhase(enum.StrEnum):
 
 
 class FindingStatus(enum.StrEnum):
-    """Validation state. Agent/tool findings start ``pending_validation`` and
-    only become report-eligible once an analyst marks them ``validated``."""
+    """Validation state. ``osint``-phase findings (passive recon — crt_sh,
+    subfinder, whois, dns_lookup, etc.) auto-validate at creation because
+    the results are factual. Active enum / vuln_scan / exploit / phishing
+    findings start ``pending_validation`` and need analyst sign-off before
+    the report includes them.
+
+    ``needs_review`` is reserved for the upcoming confirmation-tool flow:
+    when an analyst clicks Validate on a manual-tier finding and the
+    backend dispatches a follow-up tool run, a failed/dead-target
+    confirmation drops the row here instead of promoting it to
+    ``validated``. Today the enum value exists in the schema but no code
+    writes it yet.
+    """
 
     pending_validation = "pending_validation"
     validated = "validated"
     rejected = "rejected"
     false_positive = "false_positive"
+    needs_review = "needs_review"
+
+
+def default_status_for_phase(phase: FindingPhase) -> FindingStatus:
+    """Status a freshly-created finding should land at, given its phase.
+
+    Passive recon (``osint``) auto-validates because the results are
+    factual — a DNS record either exists or doesn't. Active scans,
+    imported vuln results, exploit attempts, and phishing pretexts go
+    through analyst review before they're report-eligible.
+    """
+    if phase == FindingPhase.osint:
+        return FindingStatus.validated
+    return FindingStatus.pending_validation
 
 
 class Finding(Base, TimestampMixin):

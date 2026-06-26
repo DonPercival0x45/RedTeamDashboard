@@ -504,6 +504,17 @@ class RunRunner:
             f"{tool} → {target}" if target else tool
         )
 
+        # Phase-based validation gate: ``osint``-phase findings (passive
+        # recon + active-but-factual probes like httpx_probe) auto-validate;
+        # vuln_scan / exploit / phishing land pending_validation. The worker
+        # has no acting user — auto-validated rows leave validated_by NULL
+        # to signal "system-validated, no human reviewer."
+        from datetime import UTC, datetime
+
+        from app.models.finding import FindingStatus, default_status_for_phase
+
+        phase = FindingPhase(phase_for_tool(tool))
+        status = default_status_for_phase(phase)
         with self._session_scope() as session:
             row = Finding(
                 engagement_id=engagement_id,
@@ -513,8 +524,11 @@ class RunRunner:
                 details={"thread_id": thread_id, "args": args, **data},
                 source_tool=tool,
                 target=target,
-                phase=FindingPhase(phase_for_tool(tool)),
-                # status defaults to pending_validation — analyst must approve.
+                phase=phase,
+                status=status,
+                validated_at=datetime.now(tz=UTC)
+                if status == FindingStatus.validated
+                else None,
             )
             session.add(row)
             session.commit()

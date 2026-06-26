@@ -178,11 +178,21 @@ def _store_findings(
     tool_name: str,
     findings: list[dict[str, Any]],
 ) -> int:
+    from datetime import UTC, datetime
+
+    from app.models.finding import default_status_for_phase
+
     phase_str = phase_for_tool(tool_name)
     try:
         phase = FindingPhase(phase_str)
     except ValueError:
         phase = FindingPhase.general
+
+    # Phase-based validation gate (refined 2026-06-26): osint phase
+    # auto-validates; everything else stays pending for analyst review.
+    status = default_status_for_phase(phase)
+    now = datetime.now(tz=UTC)
+    user = get_current_user()
 
     count = 0
     for f in findings:
@@ -206,7 +216,11 @@ def _store_findings(
                 source_tool=tool_name,
                 target=f.get("target"),
                 phase=phase,
-                status=FindingStatus.pending_validation,
+                status=status,
+                validated_at=now if status == FindingStatus.validated else None,
+                validated_by=user.id
+                if status == FindingStatus.validated
+                else None,
             )
         )
         count += 1
@@ -234,11 +248,50 @@ def _require_tool_in_lease(tool_name: str) -> dict[str, Any] | None:
     return None
 
 
-def _run_osint(tool_name: str, engagement_slug: str, args: dict[str, Any]) -> dict[str, Any]:
-    """Shared OSINT tool runner: lease gate → scope check → run → audit → store findings."""
+def _infer_engagement_slug(provided: str | None) -> str | None:
+    """Resolve the engagement_slug for an MCP call.
+
+    Worker runs always carry a lease whose ``context["engagement"]["slug"]``
+    pins the engagement — so the LLM's tool calls don't need to pass slug
+    explicitly. External Claude Code sessions without a lease must still
+    supply slug. Returns the inferred slug, or None when neither path
+    provides one (caller raises with a clear message).
+    """
+    if provided:
+        return provided
+    lease = get_current_lease()
+    if lease is None:
+        return None
+    engagement = (lease.context or {}).get("engagement") or {}
+    inferred = engagement.get("slug")
+    return inferred if isinstance(inferred, str) and inferred else None
+
+
+def _run_osint(
+    tool_name: str,
+    engagement_slug: str | None,
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    """Shared OSINT tool runner: lease gate → scope check → run → audit → store findings.
+
+    ``engagement_slug`` may be empty/None — under an active lease it's
+    inferred from the lease's pinned engagement context. Without a lease
+    AND without a provided slug, returns an instructive error so the
+    caller knows what to fix.
+    """
     denied = _require_tool_in_lease(tool_name)
     if denied is not None:
         return denied
+
+    engagement_slug = _infer_engagement_slug(engagement_slug)
+    if not engagement_slug:
+        return {
+            "error": (
+                "engagement_slug is required when there's no active lease. "
+                "Worker runs auto-infer from the lease; external MCP clients "
+                "must pass it explicitly."
+            )
+        }
 
     key = get_current_key()
     user = get_current_user()
@@ -366,11 +419,16 @@ def list_engagements() -> list[dict]:
 
 
 @mcp.tool()
-def get_engagement(engagement_slug: str) -> dict:
+def get_engagement(engagement_slug: str = "") -> dict:
     """Get full details for a single engagement including scope items and finding counts.
 
     Call this at the start of a session to understand the engagement context.
+    Under an active lease, ``engagement_slug`` is inferred from the lease;
+    external clients without a lease must pass it explicitly.
     """
+    engagement_slug = _infer_engagement_slug(engagement_slug) or ""
+    if not engagement_slug:
+        return {"error": "engagement_slug required when no lease is active"}
     with _session() as session:
         try:
             eng = _resolve_engagement(session, engagement_slug)
@@ -456,13 +514,17 @@ def create_engagement(name: str, description: str = "") -> dict:
 
 
 @mcp.tool()
-def get_scope(engagement_slug: str) -> dict:
+def get_scope(engagement_slug: str = "") -> dict:
     """Get the scope items for an engagement.
 
     Always call this before running any OSINT tool to verify the target
     is in scope. Returns include items (allowed targets) and exclusions
-    (targets to skip even if inside an allowed range).
+    (targets to skip even if inside an allowed range). Under an active
+    lease, ``engagement_slug`` is inferred from the lease.
     """
+    engagement_slug = _infer_engagement_slug(engagement_slug) or ""
+    if not engagement_slug:
+        return {"error": "engagement_slug required when no lease is active"}
     with _session() as session:
         try:
             eng = _resolve_engagement(session, engagement_slug)
@@ -494,11 +556,11 @@ def get_scope(engagement_slug: str) -> dict:
 
 @mcp.tool()
 def add_scope_item(
-    engagement_slug: str,
     kind: str,
     value: str,
     is_exclusion: bool = False,
     note: str = "",
+    engagement_slug: str = "",
 ) -> dict:
     """Add a scope item to an engagement.
 
@@ -517,6 +579,10 @@ def add_scope_item(
         scope_kind = ScopeKind(kind)
     except ValueError:
         return {"error": f"invalid kind '{kind}' — must be one of: domain, ip, cidr, url"}
+
+    engagement_slug = _infer_engagement_slug(engagement_slug) or ""
+    if not engagement_slug:
+        return {"error": "engagement_slug required when no lease is active"}
 
     with _session() as session:
         try:
@@ -556,16 +622,20 @@ def add_scope_item(
 
 @mcp.tool()
 def list_findings(
-    engagement_slug: str,
     severity: str = "",
     source_tool: str = "",
     limit: int = 50,
+    engagement_slug: str = "",
 ) -> dict:
     """List findings for an engagement.
 
     Optionally filter by severity (info/low/medium/high/critical) or source_tool.
-    Returns the most recent findings first, up to `limit` (max 200).
+    Returns the most recent findings first, up to `limit` (max 200). Under an
+    active lease, ``engagement_slug`` is inferred from the lease.
     """
+    engagement_slug = _infer_engagement_slug(engagement_slug) or ""
+    if not engagement_slug:
+        return {"error": "engagement_slug required when no lease is active"}
     with _session() as session:
         try:
             eng = _resolve_engagement(session, engagement_slug)
@@ -606,13 +676,13 @@ def list_findings(
 
 @mcp.tool()
 def create_finding(
-    engagement_slug: str,
     title: str,
     severity: str,
     target: str = "",
     summary: str = "",
     details: str = "",
     source_tool: str = "analyst",
+    engagement_slug: str = "",
 ) -> dict:
     """Store an analyst-authored finding in an engagement.
 
@@ -634,6 +704,10 @@ def create_finding(
     except ValueError:
         return {"error": f"invalid severity '{severity}' — must be info/low/medium/high/critical"}
 
+    engagement_slug = _infer_engagement_slug(engagement_slug) or ""
+    if not engagement_slug:
+        return {"error": "engagement_slug required when no lease is active"}
+
     details_payload: dict[str, Any] = {}
     if details:
         import json as _json
@@ -650,6 +724,15 @@ def create_finding(
         except ValueError as exc:
             return {"error": str(exc)}
 
+        # Analyst-authored manual findings default to phase=general, which
+        # the phase-based gate leaves at pending_validation. The analyst
+        # can still validate via the slide-over once they confirm details.
+        from datetime import UTC, datetime
+
+        from app.models.finding import default_status_for_phase
+
+        phase = FindingPhase.general
+        status = default_status_for_phase(phase)
         finding = Finding(
             engagement_id=eng.id,
             title=title,
@@ -658,8 +741,14 @@ def create_finding(
             details=details_payload,
             source_tool=source_tool,
             target=target or None,
-            phase=FindingPhase.general,
-            status=FindingStatus.pending_validation,
+            phase=phase,
+            status=status,
+            validated_at=datetime.now(tz=UTC)
+            if status == FindingStatus.validated
+            else None,
+            validated_by=user.id
+            if status == FindingStatus.validated
+            else None,
         )
         session.add(finding)
 
@@ -684,7 +773,7 @@ def create_finding(
 
 
 @mcp.tool()
-def dns_lookup(engagement_slug: str, domain: str) -> dict:
+def dns_lookup(domain: str, engagement_slug: str = "") -> dict:
     """[PASSIVE] Resolve DNS records (A, AAAA, CNAME) for a domain.
 
     Makes no connections to the target — uses public DNS resolvers only.
@@ -697,7 +786,7 @@ def dns_lookup(engagement_slug: str, domain: str) -> dict:
 
 
 @mcp.tool()
-def whois_lookup(engagement_slug: str, domain: str) -> dict:
+def whois_lookup(domain: str, engagement_slug: str = "") -> dict:
     """[PASSIVE] WHOIS registration lookup for a domain.
 
     Returns registrar, registration dates, name servers, and registrant
@@ -709,7 +798,7 @@ def whois_lookup(engagement_slug: str, domain: str) -> dict:
 
 
 @mcp.tool()
-def crt_sh(engagement_slug: str, domain: str) -> dict:
+def crt_sh(domain: str, engagement_slug: str = "") -> dict:
     """[PASSIVE] Certificate Transparency log search via crt.sh.
 
     Queries the public crt.sh database for all TLS certificates issued
@@ -722,7 +811,7 @@ def crt_sh(engagement_slug: str, domain: str) -> dict:
 
 
 @mcp.tool()
-def httpx_probe(engagement_slug: str, url: str) -> dict:
+def httpx_probe(url: str, engagement_slug: str = "") -> dict:
     """[PASSIVE] HTTP/HTTPS probe for status, title, and tech fingerprints.
 
     Sends a HEAD then GET request to the URL. Returns status code, page
@@ -735,7 +824,7 @@ def httpx_probe(engagement_slug: str, url: str) -> dict:
 
 
 @mcp.tool()
-def subfinder(engagement_slug: str, domain: str) -> dict:
+def subfinder(domain: str, engagement_slug: str = "") -> dict:
     """[PASSIVE] Subdomain enumeration via passive sources.
 
     Queries certificate transparency logs, DNS aggregators, and other
@@ -748,7 +837,7 @@ def subfinder(engagement_slug: str, domain: str) -> dict:
 
 
 @mcp.tool()
-def reverse_dns(engagement_slug: str, ip: str) -> dict:
+def reverse_dns(ip: str, engagement_slug: str = "") -> dict:
     """[PASSIVE] Reverse DNS (PTR) lookup for an IP address.
 
     Looks up the PTR record for an IP to identify the hostname. Useful
@@ -765,7 +854,7 @@ def reverse_dns(engagement_slug: str, ip: str) -> dict:
 
 
 @mcp.tool()
-def port_scan(engagement_slug: str, target: str, ports: str = "") -> dict:
+def port_scan(target: str, ports: str = "", engagement_slug: str = "") -> dict:
     """[ACTIVE — confirm with analyst before calling] TCP connect port scan.
 
     Makes real TCP connections to the target. Always tell the analyst what
@@ -786,7 +875,7 @@ def port_scan(engagement_slug: str, target: str, ports: str = "") -> dict:
 
 
 @mcp.tool()
-def subnet_sweep(engagement_slug: str, cidr: str, ports: str = "") -> dict:
+def subnet_sweep(cidr: str, ports: str = "", engagement_slug: str = "") -> dict:
     """[ACTIVE — confirm with analyst before calling] TCP port sweep of a CIDR.
 
     Scans all hosts in the CIDR (up to a /24, 254 hosts). Scope-excluded
@@ -807,7 +896,7 @@ def subnet_sweep(engagement_slug: str, cidr: str, ports: str = "") -> dict:
 
 
 @mcp.tool()
-def service_detect(engagement_slug: str, target: str, ports: str = "") -> dict:
+def service_detect(target: str, ports: str = "", engagement_slug: str = "") -> dict:
     """[ACTIVE — confirm with analyst before calling] Service/version detection.
 
     Banner-grabs, HTTP-probes, and TLS handshakes on a host's open ports to
