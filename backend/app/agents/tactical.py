@@ -116,15 +116,20 @@ class TacticalAgent:
         # default (``aca_mcp_app_enabled=False``) collapses both paths to
         # colocated so we don't fork the local stack for an Azure-only
         # feature.
+        # The FastMCP server is mounted at /mcp; the SSE endpoint inside
+        # it lives at /sse, so the worker's MCP client needs the full
+        # /mcp/sse path. Hitting /mcp gets 404 (no handler at the mount
+        # root) once auth passes. Same path on both colocated + secondary
+        # MCP Apps — the standalone entrypoint mirrors the mount.
         if (
             lease.requires_container
             and settings.aca_mcp_app_enabled
             and settings.aca_mcp_url
         ):
-            mcp_url = f"{settings.aca_mcp_url.rstrip('/')}/mcp"
+            mcp_url = f"{settings.aca_mcp_url.rstrip('/')}/mcp/sse"
             mcp_host = "container"
         else:
-            mcp_url = f"{settings.public_base_url.rstrip('/')}/mcp"
+            mcp_url = f"{settings.public_base_url.rstrip('/')}/mcp/sse"
             mcp_host = "colocated"
 
         store_run_model(
@@ -132,19 +137,6 @@ class TacticalAgent:
             thread_id,
             provider=provider,
             model_name=model_name,
-        )
-        self._redis.xadd(
-            inbound_stream(task.engagement_id),
-            encode_command(
-                {
-                    "type": "run.start",
-                    "thread_id": str(thread_id),
-                    "prompt": prompt,
-                    "model": {"provider": provider, "name": model_name},
-                    "mcp_url": mcp_url,
-                    "lease_token": str(lease.id),
-                }
-            ),
         )
 
         now = datetime.now(tz=UTC)
@@ -169,6 +161,30 @@ class TacticalAgent:
         task.status = TaskStatus.dispatched
         task.dispatched_at = now
         task.run_id = thread_id
+
+        # Commit lease + execution + task state BEFORE enqueueing on Redis.
+        # The worker reads the envelope in another process within ~2ms; if
+        # we xadd before commit, the worker's ``validate_token`` lookup
+        # races this session's commit and returns None (lease not yet
+        # visible) — surfaced as a confusing "invalid, released, or
+        # expired" ValueError. Crash between commit and xadd leaves an
+        # orphan lease that the periodic sweeper reclaims and a task in
+        # ``dispatched`` state with no run on the queue — recoverable.
+        session.commit()
+
+        self._redis.xadd(
+            inbound_stream(task.engagement_id),
+            encode_command(
+                {
+                    "type": "run.start",
+                    "thread_id": str(thread_id),
+                    "prompt": prompt,
+                    "model": {"provider": provider, "name": model_name},
+                    "mcp_url": mcp_url,
+                    "lease_token": str(lease.id),
+                }
+            ),
+        )
 
         logger.info(
             "tactical.dispatched",

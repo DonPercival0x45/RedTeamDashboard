@@ -28,6 +28,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 from sqlalchemy import select
 
 from app.mcp.auth import get_current_key, get_current_lease, get_current_user
@@ -98,7 +99,24 @@ CORE RULES — always follow these without exception:
    Every action is logged. Be precise about what you are doing and why.
 """
 
-mcp = FastMCP("Red Team Dashboard", instructions=INSTRUCTIONS)
+# FastMCP auto-enables DNS-rebinding protection when its default host is
+# localhost (127.0.0.1), which gates the SSE handler on a Host-header
+# allow-list of just localhost variants. That rejects the worker's
+# legitimate calls to ``http://backend:8000/mcp/sse`` (compose) and to
+# the Container App FQDN (ACA) with HTTP 421 Misdirected Request.
+#
+# We disable the library's rebinding protection because ``MCPAuthMiddleware``
+# in ``app/main.py`` already requires ``X-API-Key`` on every request. DNS
+# rebinding attacks rely on a victim's browser auto-including cookies/auth
+# on cross-origin requests — that threat model doesn't apply when auth is
+# header-based and never auto-included by any user agent.
+mcp = FastMCP(
+    "Red Team Dashboard",
+    instructions=INSTRUCTIONS,
+    transport_security=TransportSecuritySettings(
+        enable_dns_rebinding_protection=False
+    ),
+)
 
 
 # ---------------------------------------------------------------------------

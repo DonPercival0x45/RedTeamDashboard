@@ -1221,7 +1221,35 @@ def start_run(
         },
         prompt_keys=[],
     )
-    mcp_url = f"{settings.public_base_url.rstrip('/')}/mcp"
+    # The FastMCP server is mounted at /mcp in app/main.py; the SSE
+    # endpoint inside it lives at /sse, so the worker's MCP client needs
+    # the full /mcp/sse path. Hitting /mcp gets a 404 (no handler at the
+    # mount root) once auth passes.
+    mcp_url = f"{settings.public_base_url.rstrip('/')}/mcp/sse"
+
+    # Commit lease + audit BEFORE enqueueing on Redis. The worker reads the
+    # envelope in another process within ~2ms; if we xadd before commit, the
+    # worker's `validate_token` lookup races the API session's commit and
+    # returns None (lease not yet visible) — surfaced as a confusing
+    # "invalid, released, or expired" ValueError. Crash between commit and
+    # xadd leaves an orphan lease that the periodic sweeper reclaims.
+    session.add(
+        AuditLog(
+            engagement_id=eng.id,
+            actor_type=ActorType.user,
+            actor_id=str(user.id),
+            event_type="run.requested",
+            payload={
+                "thread_id": str(thread_id),
+                "prompt_len": len(body.prompt),
+                "model": {
+                    "provider": effective_model.provider,
+                    "name": effective_model.name,
+                },
+            },
+        )
+    )
+    session.commit()
 
     # NB: we put ``acting_user_id`` on the envelope, NOT the decrypted key.
     # The worker re-resolves at run-time via UserProviderKey lookup. This
@@ -1243,24 +1271,6 @@ def start_run(
             }
         ),
     )
-
-    session.add(
-        AuditLog(
-            engagement_id=eng.id,
-            actor_type=ActorType.user,
-            actor_id=str(user.id),
-            event_type="run.requested",
-            payload={
-                "thread_id": str(thread_id),
-                "prompt_len": len(body.prompt),
-                "model": {
-                    "provider": effective_model.provider,
-                    "name": effective_model.name,
-                },
-            },
-        )
-    )
-    session.commit()
 
     return RunStartResponse(
         engagement_id=eng.id,
