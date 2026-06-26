@@ -51,6 +51,7 @@ const STATUS_LABEL: Record<FindingValidationStatus, string> = {
   validated: "Validated",
   rejected: "Rejected",
   false_positive: "False positive",
+  needs_review: "Needs review",
 };
 
 const PHASE_LABEL: Record<FindingPhase, string> = {
