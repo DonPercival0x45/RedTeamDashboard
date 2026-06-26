@@ -11,6 +11,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends \
         build-essential \
         curl \
+        unzip \
         libcairo2 \
         libpango-1.0-0 \
         libpangoft2-1.0-0 \
@@ -19,6 +20,19 @@ RUN apt-get update \
         shared-mime-info \
         fonts-dejavu-core \
  && rm -rf /var/lib/apt/lists/*
+
+# ProjectDiscovery subfinder — passive subdomain enumeration. Aggregates
+# crt.sh + 30+ other sources (the dashboard's Phase 0 stub only used crt.sh
+# directly, which both duplicated the standalone crt_sh tool and surfaced
+# crt.sh's frequent 502s as run errors). Pinned to a known release so a
+# silent upstream change doesn't break the orchestrator's tool contract.
+ARG SUBFINDER_VERSION=2.6.7
+RUN curl -fsSL -o /tmp/subfinder.zip \
+        "https://github.com/projectdiscovery/subfinder/releases/download/v${SUBFINDER_VERSION}/subfinder_${SUBFINDER_VERSION}_linux_amd64.zip" \
+ && unzip -j /tmp/subfinder.zip subfinder -d /usr/local/bin/ \
+ && chmod +x /usr/local/bin/subfinder \
+ && rm /tmp/subfinder.zip \
+ && /usr/local/bin/subfinder -version
 
 COPY pyproject.toml ./
 RUN pip install --upgrade pip \
