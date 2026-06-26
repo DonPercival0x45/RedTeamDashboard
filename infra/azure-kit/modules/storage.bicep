@@ -13,9 +13,10 @@ param tags object
 
 // Storage account names: 3-24 chars, lowercase alphanumeric only. We strip
 // hyphens from the prefix then suffix with a unique hash so the name is
-// globally unique and deterministic per resource group.
+// globally unique and deterministic per resource group. Bicep requires
+// string interpolation, not `+`, for string concat.
 var storageAccountName = take(
-  toLower(replace(namePrefix, '-', '')) + uniqueString(resourceGroup().id),
+  '${toLower(replace(namePrefix, '-', ''))}${uniqueString(resourceGroup().id)}',
   24
 )
 

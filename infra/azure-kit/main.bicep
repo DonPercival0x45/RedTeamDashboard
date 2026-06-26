@@ -88,25 +88,10 @@ module vnet 'modules/vnet.bicep' = {
   }
 }
 
-// Private DNS zone so VNet-injected Postgres is reachable by hostname from
-// within the VNet. The zone name is the fixed Azure suffix for Postgres
-// Flexible Server private access.
-resource pgDnsZone 'Microsoft.Network/privateDnsZones@2020-06-01' = {
-  name: 'privatelink.postgres.database.azure.com'
-  location: 'global'
-  tags: tags
-  scope: rg
-}
-
-resource pgDnsVnetLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = {
-  parent: pgDnsZone
-  name: '${namePrefix}-pg-dns-link'
-  location: 'global'
-  properties: {
-    virtualNetwork: { id: vnet.outputs.vnetId }
-    registrationEnabled: false
-  }
-}
+// Private DNS zone for Postgres VNet injection is now created INSIDE
+// vnet.bicep — subscription-scoped main.bicep can't declare a
+// resource-group-scoped resource like privateDnsZones directly. See
+// modules/vnet.bicep for the zone + vnet-link definitions.
 
 // ---------------------------------------------------------------------------
 // Observability
@@ -147,9 +132,8 @@ module postgres 'modules/postgres.bicep' = {
     adminLogin: postgresAdminLogin
     adminPassword: postgresAdminPassword
     delegatedSubnetId: vnet.outputs.postgresSubnetId
-    privateDnsZoneId: pgDnsZone.id
+    privateDnsZoneId: vnet.outputs.privateDnsZoneId
   }
-  dependsOn: [ pgDnsVnetLink ]
 }
 
 module kv 'modules/keyvault.bicep' = {
@@ -257,24 +241,15 @@ module apps 'modules/containerapps.bicep' = {
 // ---------------------------------------------------------------------------
 
 // Grant the container app's managed identity Storage Blob Data Contributor
-// on the exports account so the backend can upload without a connection string.
-var storageBlobContributorRoleId = 'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
-
-resource storageAccountRef 'Microsoft.Storage/storageAccounts@2023-01-01' existing = {
-  name: storage.outputs.storageAccountName
+// on the exports account. The role assignment lives in its own RG-scoped
+// module because main.bicep is subscription-scoped — see
+// modules/storage_roles.bicep for why.
+module storageRoles 'modules/storage_roles.bicep' = {
+  name: 'storageRoles'
   scope: rg
-}
-
-resource appStorageRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(storage.outputs.storageAccountId, apps.outputs.appPrincipalId, storageBlobContributorRoleId)
-  scope: storageAccountRef
-  properties: {
+  params: {
+    storageAccountName: storage.outputs.storageAccountName
     principalId: apps.outputs.appPrincipalId
-    principalType: 'ServicePrincipal'
-    roleDefinitionId: subscriptionResourceId(
-      'Microsoft.Authorization/roleDefinitions',
-      storageBlobContributorRoleId
-    )
   }
 }
 
