@@ -1,6 +1,6 @@
 """Phase 11 — Costs tab roll-up (GET /engagements/{slug}/costs).
 
-Seeds agent_executions directly and asserts the per-engagement roll-up:
+Seeds agent_executions directly and asserts the per-Project roll-up:
 totals, by-agent and by-model breakdowns, USD derived from app.core.pricing,
 unpriced-model flagging, and free (local) providers counted at $0 without being
 flagged. Plus 404 / auth.
@@ -22,8 +22,8 @@ from app.models import (
     AgentExecutionStatus,
     AgentName,
     AgentTrigger,
-    Engagement,
-    EngagementStatus,
+    Project,
+    ProjectStatus,
 )
 
 HDR = {"X-User-Id": "phase11@example.com"}
@@ -35,11 +35,11 @@ def client() -> TestClient:
 
 
 @pytest.fixture()
-def engagement(db: Session) -> Iterator[Engagement]:
-    eng = Engagement(
+def Project(db: Session) -> Iterator[Project]:
+    eng = Project(
         name="Phase11 Costs",
         slug=f"phase11-{uuid.uuid4().hex[:8]}",
-        status=EngagementStatus.active,
+        status=ProjectStatus.active,
         description="Costs roll-up",
     )
     db.add(eng)
@@ -54,7 +54,7 @@ def engagement(db: Session) -> Iterator[Engagement]:
 
 def _exec(
     db: Session,
-    eng: Engagement,
+    eng: Project,
     *,
     agent: AgentName,
     provider: str | None,
@@ -64,7 +64,7 @@ def _exec(
 ) -> None:
     db.add(
         AgentExecution(
-            engagement_id=eng.id,
+            project_id=eng.id,
             agent=agent,
             trigger=AgentTrigger.finding,
             input={},
@@ -79,11 +79,11 @@ def _exec(
     )
 
 
-def test_costs_empty(client: TestClient, engagement: Engagement) -> None:
-    r = client.get(f"/engagements/{engagement.slug}/costs", headers=HDR)
+def test_costs_empty(client: TestClient, Project: Project) -> None:
+    r = client.get(f"/projects/{Project.slug}/costs", headers=HDR)
     assert r.status_code == 200
     body = r.json()
-    assert body["engagement_slug"] == engagement.slug
+    assert body["engagement_slug"] == Project.slug
     assert body["total"] == {
         "executions": 0,
         "tokens_in": 0,
@@ -96,20 +96,20 @@ def test_costs_empty(client: TestClient, engagement: Engagement) -> None:
 
 
 def test_costs_rollup_by_agent_and_model(
-    client: TestClient, engagement: Engagement, db: Session
+    client: TestClient, Project: Project, db: Session
 ) -> None:
     # A: strategic sonnet 1M+1M = $3 + $15 = 18.00
-    _exec(db, engagement, agent=AgentName.strategic, provider="anthropic",
+    _exec(db, Project, agent=AgentName.strategic, provider="anthropic",
           model="claude-sonnet-4-6", tokens_in=1_000_000, tokens_out=1_000_000)
     # B: tactical haiku-3.5 1M+1M = $0.80 + $4 = 4.80
-    _exec(db, engagement, agent=AgentName.tactical, provider="anthropic",
+    _exec(db, Project, agent=AgentName.tactical, provider="anthropic",
           model="claude-3-5-haiku-20241022", tokens_in=1_000_000, tokens_out=1_000_000)
     # C: strategic sonnet 2M in only = $6.00
-    _exec(db, engagement, agent=AgentName.strategic, provider="anthropic",
+    _exec(db, Project, agent=AgentName.strategic, provider="anthropic",
           model="claude-sonnet-4-6", tokens_in=2_000_000, tokens_out=0)
     db.commit()
 
-    body = client.get(f"/engagements/{engagement.slug}/costs", headers=HDR).json()
+    body = client.get(f"/projects/{Project.slug}/costs", headers=HDR).json()
 
     assert body["total"]["executions"] == 3
     assert body["total"]["tokens_in"] == 4_000_000
@@ -133,13 +133,13 @@ def test_costs_rollup_by_agent_and_model(
 
 
 def test_costs_unpriced_model_flagged(
-    client: TestClient, engagement: Engagement, db: Session
+    client: TestClient, Project: Project, db: Session
 ) -> None:
-    _exec(db, engagement, agent=AgentName.strategic, provider="mystery",
+    _exec(db, Project, agent=AgentName.strategic, provider="mystery",
           model="mystery-model-x", tokens_in=1000, tokens_out=1000)
     db.commit()
 
-    body = client.get(f"/engagements/{engagement.slug}/costs", headers=HDR).json()
+    body = client.get(f"/projects/{Project.slug}/costs", headers=HDR).json()
     assert body["total"]["tokens_in"] == 1000
     assert body["total"]["cost_usd"] == 0.0  # unpriced contributes nothing
     assert body["unpriced_models"] == ["mystery-model-x"]
@@ -150,13 +150,13 @@ def test_costs_unpriced_model_flagged(
 
 
 def test_costs_free_provider_not_flagged(
-    client: TestClient, engagement: Engagement, db: Session
+    client: TestClient, Project: Project, db: Session
 ) -> None:
-    _exec(db, engagement, agent=AgentName.tactical, provider="ollama",
+    _exec(db, Project, agent=AgentName.tactical, provider="ollama",
           model="llama3.1", tokens_in=5000, tokens_out=5000)
     db.commit()
 
-    body = client.get(f"/engagements/{engagement.slug}/costs", headers=HDR).json()
+    body = client.get(f"/projects/{Project.slug}/costs", headers=HDR).json()
     assert body["total"]["cost_usd"] == 0.0
     assert body["total"]["tokens_in"] == 5000
     assert body["unpriced_models"] == []  # free != unpriced
@@ -164,10 +164,10 @@ def test_costs_free_provider_not_flagged(
 
 
 def test_costs_404_unknown_engagement(client: TestClient) -> None:
-    r = client.get("/engagements/does-not-exist/costs", headers=HDR)
+    r = client.get("/projects/does-not-exist/costs", headers=HDR)
     assert r.status_code == 404
 
 
-def test_costs_requires_auth(client: TestClient, engagement: Engagement) -> None:
-    r = client.get(f"/engagements/{engagement.slug}/costs")
+def test_costs_requires_auth(client: TestClient, Project: Project) -> None:
+    r = client.get(f"/projects/{Project.slug}/costs")
     assert r.status_code == 401

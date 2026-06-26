@@ -13,7 +13,7 @@ from typing import Any
 import httpx
 from httpx_sse import connect_sse
 
-from rtd.config import Profile
+from xray.config import Profile
 
 _DEFAULT_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
 

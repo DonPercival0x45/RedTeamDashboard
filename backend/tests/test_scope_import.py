@@ -3,7 +3,7 @@
 The parser is the load-bearing piece — most of the coverage here is per-line
 classification (domain / cidr / ip / url) plus the `!` exclusion and `#`
 comment markers. The endpoint tests cover dry-run preview, real commit,
-dedupe, and the archived-engagement guard.
+dedupe, and the archived-Project guard.
 """
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.main import app
-from app.models import Engagement, EngagementStatus, ScopeItem, ScopeKind
+from app.models import Project, ProjectStatus, ScopeItem, ScopeKind
 from app.services.scope_import import (
     detect_kind,
     parse_scope_text,
@@ -31,11 +31,11 @@ def client() -> TestClient:
 
 
 @pytest.fixture()
-def engagement(db: Session) -> Iterator[Engagement]:
-    eng = Engagement(
+def Project(db: Session) -> Iterator[Project]:
+    eng = Project(
         name="Scope Import",
         slug=f"scope-import-{uuid.uuid4().hex[:8]}",
-        status=EngagementStatus.active,
+        status=ProjectStatus.active,
     )
     db.add(eng)
     db.commit()
@@ -137,11 +137,11 @@ def test_parser_strips_bom_and_crlf() -> None:
 
 
 def test_endpoint_dry_run_returns_preview_without_writing(
-    client: TestClient, db: Session, engagement: Engagement
+    client: TestClient, db: Session, Project: Project
 ) -> None:
     blob = "acme.test\n10.0.0.0/24\nbogus\n"
     res = client.post(
-        f"/engagements/{engagement.slug}/scope/import?dry_run=true",
+        f"/projects/{Project.slug}/scope/import?dry_run=true",
         json={"text": blob},
         headers=HDR,
     )
@@ -152,17 +152,17 @@ def test_endpoint_dry_run_returns_preview_without_writing(
     assert len(body["errors"]) == 1
 
     count = db.execute(
-        select(ScopeItem).where(ScopeItem.engagement_id == engagement.id)
+        select(ScopeItem).where(ScopeItem.project_id == Project.id)
     ).all()
     assert count == []
 
 
 def test_endpoint_commit_creates_and_dedupes(
-    client: TestClient, db: Session, engagement: Engagement
+    client: TestClient, db: Session, Project: Project
 ) -> None:
     db.add(
         ScopeItem(
-            engagement_id=engagement.id,
+            project_id=Project.id,
             kind=ScopeKind.domain,
             value="acme.test",
             is_exclusion=False,
@@ -172,7 +172,7 @@ def test_endpoint_commit_creates_and_dedupes(
 
     blob = "acme.test\n10.0.0.0/24\n!10.0.0.5\n"
     res = client.post(
-        f"/engagements/{engagement.slug}/scope/import",
+        f"/projects/{Project.slug}/scope/import",
         json={"text": blob},
         headers=HDR,
     )
@@ -184,7 +184,7 @@ def test_endpoint_commit_creates_and_dedupes(
 
     rows = list(
         db.execute(
-            select(ScopeItem).where(ScopeItem.engagement_id == engagement.id)
+            select(ScopeItem).where(ScopeItem.project_id == Project.id)
         ).scalars()
     )
     assert {r.value for r in rows} == {"acme.test", "10.0.0.0/24", "10.0.0.5"}
@@ -193,15 +193,15 @@ def test_endpoint_commit_creates_and_dedupes(
 def test_endpoint_rejects_flushed_engagement(
     client: TestClient, db: Session
 ) -> None:
-    eng = Engagement(
+    eng = Project(
         name="Flushed",
         slug=f"flushed-{uuid.uuid4().hex[:8]}",
-        status=EngagementStatus.flushed,
+        status=ProjectStatus.flushed,
     )
     db.add(eng)
     db.commit()
     res = client.post(
-        f"/engagements/{eng.slug}/scope/import",
+        f"/projects/{eng.slug}/scope/import",
         json={"text": "acme.test\n"},
         headers=HDR,
     )

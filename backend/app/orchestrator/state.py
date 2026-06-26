@@ -18,7 +18,7 @@ from app.orchestrator.scope import ScopeSnapshot
 
 
 class OsintState(TypedDict, total=False):
-    engagement_id: UUID
+    project_id: UUID
     messages: Annotated[list[BaseMessage], add_messages]
     scope_items: list[ScopeSnapshot]
     findings: Annotated[list[dict[str, Any]], operator.add]

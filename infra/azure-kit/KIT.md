@@ -1,11 +1,11 @@
-# Red Team Dashboard — Deployment Kit
+# Project X-Ray — Deployment Kit
 
 Self-hosted Azure deploy. The operator owns every byte of data in their own
 tenant; we ship the kit + container images, they run it.
 
 ## What gets created
 
-In one resource group (`rtd-<env>`):
+In one resource group (`xray-<env>`):
 
 | Resource                 | Purpose                                            | ~Monthly |
 |--------------------------|----------------------------------------------------|----------|
@@ -60,24 +60,24 @@ The installer:
 
 ```bash
 # Apply DB migrations
-az containerapp exec -n rtd-prod-backend -g rtd-prod \
+az containerapp exec -n xray-prod-backend -g xray-prod \
     --command 'alembic upgrade head'
 
 # Mint the admin API key — SAVE THE OUTPUT, this is the only time it's visible
-az containerapp exec -n rtd-prod-backend -g rtd-prod \
+az containerapp exec -n xray-prod-backend -g xray-prod \
     --command 'python -m app.scripts.mint_api_key --name bootstrap --scope admin'
 
 # Stash the key in Key Vault (recoverable from the portal later)
 az keyvault secret set --vault-name <KV-NAME> \
-    --name admin-api-key --value 'rtd_…'
+    --name admin-api-key --value 'xr_…'
 
 # Drop in the LLM provider key(s) you'll actually use
 az keyvault secret set --vault-name <KV-NAME> --name anthropic-api-key --value 'sk-ant-…'
 az keyvault secret set --vault-name <KV-NAME> --name openai-api-key    --value 'sk-…'
 
 # Restart the apps so they pick up the rotated secrets
-az containerapp revision restart -n rtd-prod-backend -g rtd-prod \
-    --revision $(az containerapp revision list -n rtd-prod-backend -g rtd-prod --query '[0].name' -o tsv)
+az containerapp revision restart -n xray-prod-backend -g xray-prod \
+    --revision $(az containerapp revision list -n xray-prod-backend -g xray-prod --query '[0].name' -o tsv)
 ```
 
 > **Why are these manual?** `az containerapp exec` is interactive (TTY-bound)
@@ -90,21 +90,21 @@ az containerapp revision restart -n rtd-prod-backend -g rtd-prod \
 
 You now have:
 
-- A running backend at `https://rtd-prod-backend.<random>.<region>.azurecontainerapps.io`
+- A running backend at `https://xray-prod-backend.<random>.<region>.azurecontainerapps.io`
 - An admin API key (saved in Key Vault under `admin-api-key`)
 - Empty Postgres + Redis ready for engagements
 
 Next steps:
 
-1. **Install the CLI** (`pip install rtd-cli` — coming in Phase 5):
+1. **Install the CLI** (`pip install xray-cli` — coming in Phase 5):
    ```bash
-   rtd login --api-url https://<backend-fqdn> --api-key rtd_<your-admin-key>
+   XR login --api-url https://<backend-fqdn> --api-key xr_<your-admin-key>
    ```
 2. **Point the central viewer** at this tenant: add a new connection in the
    viewer's UI with the backend URL + a `viewer`-scoped API key minted via:
    ```bash
    curl -X POST https://<backend-fqdn>/api-keys \
-       -H "X-API-Key: rtd_<admin-key>" \
+       -H "X-API-Key: xr_<admin-key>" \
        -H 'Content-Type: application/json' \
        -d '{"name": "central viewer", "scope": "viewer"}'
    ```

@@ -21,12 +21,12 @@ class Severity(enum.StrEnum):
 
 
 class FindingPhase(enum.StrEnum):
-    """Engagement phase a finding belongs to — drives which tab it shows in."""
+    """Project phase a finding belongs to — drives which tab it shows in."""
 
-    osint = "osint"
-    vuln_scan = "vuln_scan"
-    exploit = "exploit"
-    phishing = "phishing"
+    discovery = "discovery"
+    analysis = "analysis"
+    execution = "execution"
+    outreach = "outreach"
     general = "general"
 
 
@@ -44,9 +44,9 @@ class Finding(Base, TimestampMixin):
     __tablename__ = "findings"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid7)
-    engagement_id: Mapped[uuid.UUID] = mapped_column(
+    project_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("engagements.id", ondelete="CASCADE"),
+        ForeignKey("projects.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )

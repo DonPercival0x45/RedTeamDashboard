@@ -11,7 +11,7 @@ class AuthorizationRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
-    engagement_id: UUID
+    project_id: UUID
     tool_name: str
     granted_by: UUID | None
     note: str | None

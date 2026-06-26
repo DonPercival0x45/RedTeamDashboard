@@ -11,7 +11,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-export type EngagementView =
+export type ProjectView =
   | "findings"
   | "entities"
   | "observations"
@@ -19,7 +19,7 @@ export type EngagementView =
   | "costs"
   | "scope";
 
-const ITEMS: { view: EngagementView; label: string; Icon: LucideIcon }[] = [
+const ITEMS: { view: ProjectView; label: string; Icon: LucideIcon }[] = [
   { view: "findings", label: "Findings", Icon: ListChecks },
   { view: "entities", label: "Entities", Icon: Network },
   { view: "observations", label: "Observations", Icon: MessageSquare },
@@ -28,15 +28,15 @@ const ITEMS: { view: EngagementView; label: string; Icon: LucideIcon }[] = [
   { view: "scope", label: "Scope", Icon: Target },
 ];
 
-// Left rail for the engagement workspace. Selecting an item swaps the whole
+// Left rail for the Project workspace. Selecting an item swaps the whole
 // content pane (page-level), per the CHARTER's left-nav direction. The active
 // item carries the single ember accent.
-export function EngagementNav({
+export function ProjectNav({
   active,
   onSelect,
 }: {
-  active: EngagementView;
-  onSelect: (view: EngagementView) => void;
+  active: ProjectView;
+  onSelect: (view: ProjectView) => void;
 }) {
   return (
     <nav className="w-44 shrink-0">

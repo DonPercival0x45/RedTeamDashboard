@@ -11,11 +11,11 @@ from pathlib import Path
 
 import click
 
-from rtd import __version__
-from rtd.client import APIError, Client
-from rtd.commands import (
+from xray import __version__
+from xray.client import APIError, Client
+from xray.commands import (
     approve,
-    engagement,
+    project,
     findings,
     grants,
     login,
@@ -24,8 +24,8 @@ from rtd.commands import (
     ssh,
     tail,
 )
-from rtd.config import Config, ConfigError
-from rtd.output import error
+from xray.config import Config, ConfigError
+from xray.output import error
 
 
 @dataclass
@@ -46,7 +46,7 @@ class Context:
 
 
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
-@click.version_option(__version__, prog_name="rtd")
+@click.version_option(__version__, prog_name="xray")
 @click.option(
     "--profile",
     "profile_name",
@@ -72,7 +72,7 @@ def cli(
     config_path: Path | None,
     json_mode: bool,
 ) -> None:
-    """Red Team Dashboard CLI."""
+    """Project X-Ray CLI."""
     try:
         cfg = Config.load(config_path)
     except ConfigError as exc:
@@ -85,7 +85,7 @@ def cli(
 # when commands move around.
 cli.add_command(login.login)
 cli.add_command(profile.profile_group)
-cli.add_command(engagement.engagement_group)
+cli.add_command(project.engagement_group)
 cli.add_command(run.run_group)
 cli.add_command(approve.approve)
 cli.add_command(tail.tail)

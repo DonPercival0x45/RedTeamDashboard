@@ -1,8 +1,8 @@
-# Red Team Dashboard
+# Project X-Ray
 
-Multi-engagement red team operations dashboard with orchestrator agents,
+Multi-engagement security operations dashboard with orchestrator agents,
 cost tracking, and governance controls. Each phase of an engagement
-(OSINT → Scan → Verify → Exploit → PrivEsc → Persistence → Cleanup → Report)
+(OSINT → Scan → Verify → Validation → PrivEsc → Persistence → Cleanup → Report)
 runs as its own LangGraph ReAct agent. Operator approves active/destructive
 tool calls in the UI.
 
@@ -35,7 +35,7 @@ Architecture and phase roadmap live in `docs/ARCHITECTURE_SKETCH_V2.md` and
 ```
 backend/    FastAPI app + LangGraph worker + orchestrator agents
 frontend/   Next.js App Router
-cli/        `rtd` CLI tool
+cli/        `XR` CLI tool
 infra/      docker-compose.yml + azure/ Bicep
 docs/       architecture, charter, deployment docs
 ```

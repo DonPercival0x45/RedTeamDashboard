@@ -13,12 +13,12 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
-from app.models import ActorType, AuditLog, Engagement, EngagementStatus
+from app.models import ActorType, AuditLog, Project, ProjectStatus
 
 
-def _make_audit_row(db: Session, engagement_id: uuid.UUID | None = None) -> AuditLog:
+def _make_audit_row(db: Session, project_id: uuid.UUID | None = None) -> AuditLog:
     row = AuditLog(
-        engagement_id=engagement_id,
+        project_id=project_id,
         actor_type=ActorType.system,
         actor_id="test",
         event_type="test.event",
@@ -52,27 +52,27 @@ def test_audit_log_blocks_delete(db: Session) -> None:
 
 
 def test_flush_engagement_bypasses_trigger(db: Session) -> None:
-    eng = Engagement(
+    eng = Project(
         name="flush-test",
         slug=f"flush-test-{uuid.uuid4().hex[:8]}",
-        status=EngagementStatus.active,
+        status=ProjectStatus.active,
     )
     db.add(eng)
     db.commit()
     db.refresh(eng)
 
-    _make_audit_row(db, engagement_id=eng.id)
-    _make_audit_row(db, engagement_id=eng.id)
+    _make_audit_row(db, project_id=eng.id)
+    _make_audit_row(db, project_id=eng.id)
 
     db.execute(text("SELECT flush_engagement(:id)"), {"id": eng.id})
     db.commit()
 
     remaining = db.execute(
-        select(AuditLog).where(AuditLog.engagement_id == eng.id)
+        select(AuditLog).where(AuditLog.project_id == eng.id)
     ).all()
     assert remaining == []
 
     engagement_gone = db.execute(
-        select(Engagement).where(Engagement.id == eng.id)
+        select(Project).where(Project.id == eng.id)
     ).first()
     assert engagement_gone is None

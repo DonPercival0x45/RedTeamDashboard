@@ -1,4 +1,4 @@
-# Red Team Dashboard — Charter
+# Project X-Ray — Charter
 
 > **What this file is:** the shared idea space for the people building this
 > dashboard. It holds our **wants, goals, and vision** in plain language — the
@@ -30,7 +30,7 @@ no hunting across screens for the next action.
   *tasks* → acting on tasks produces more findings → the table updates. The loop
   keeps turning for the life of the engagement.
 - **Analyst in control, agents assist.** Automation accelerates; the analyst
-  decides. **Agents do enumeration & scanning only — never exploitation.**
+  decides. **Agents do enumeration & scanning only — validation is analyst-only.**
 - **Whole-page navigation, not nested scrolling.** Moving between areas should
   feel like changing pages, not scrolling through stacked panels.
 
@@ -51,7 +51,7 @@ no hunting across screens for the next action.
 - **Phase 10**: Hybrid execution (import-first model), ephemeral executor
 
 **Engagement page**: tabbed shell with left navigation (OSINT · Vuln Scan ·
-Exploit · Phishing · Results · Costs · Observations). Findings are phase-tagged
+Validation · Phishing · Results · Costs · Observations). Findings are phase-tagged
 and gated behind analyst **validation** (pending → validated); only validated
 findings hit the PDF report.
 
@@ -127,10 +127,10 @@ findings hit the PDF report.
   the findings table stays visible behind it.
 - **Status:** 🔄 **In progress** (Phase 9) — Strategic agent generates suggestions
   with per-finding task lists. Findings slide-over shows actionable suggestions
-  with Analyst/Agent choice. Exploit tasks are analyst-only enforced.
+  with Analyst/Agent choice. Validation tasks are analyst-only enforced.
 - ✅ **Decided (safety):** the **Agent** button only runs **scan/enumeration**
-  tasks. **Exploitation tasks are Analyst-only** — agents never exploit
-  (confirmed 2026-06-16). So on an exploitation Path the Agent button is
+  tasks. **Validation tasks are Analyst-only** — agents never perform validation
+  (confirmed 2026-06-16). So on a validation Path the Agent button is
   disabled / not offered; the analyst works those steps manually and uploads
   results.
 
@@ -178,8 +178,8 @@ findings hit the PDF report.
 
 ## Decided
 
-- **Agents scan & enumerate only; analysts exploit.** The Agent button on an
-  attack path is limited to scan/enum tasks; exploitation is Analyst-only and
+- **Agents scan & enumerate only; analysts validate.** The Agent button on an
+  attack path is limited to scan/enum tasks; validation is Analyst-only and
   its results are uploaded. (2026-06-16)
 
 ## Open questions (for us to settle together)

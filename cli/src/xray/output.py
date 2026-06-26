@@ -24,7 +24,7 @@ def emit(payload: Any, *, json_mode: bool, table: Table | None = None) -> None:
 
 
 def kv_table(title: str, rows: Iterable[tuple[str, Any]]) -> Table:
-    """Two-column key/value table — handy for `rtd engagement view` output."""
+    """Two-column key/value table — handy for `rtd project view` output."""
     t = Table(title=title, show_header=False, box=None)
     t.add_column("key", style="bold")
     t.add_column("value")

@@ -1,5 +1,5 @@
 <!--
-RedTeamDashboard — Defensive Security Operations and Governance Platform
+ProjectXRay — Defensive Security Operations and Governance Platform
 
 This documentation describes a platform for managing authorized security engagements.
 All work described is conducted with explicit approval and scope boundaries.
@@ -13,7 +13,7 @@ Terminology Note: "exploit" in this context refers to validation/proof-of-concep
 work conducted by analysts during authorized engagements, not unauthorized intrusion.
 -->
 
-# Red Team Dashboard — Deploy & Operate
+# Project X-Ray — Deploy & Operate
 
 How the system is wired, how to stand up a fresh environment in your own
 Azure tenant, and how to use it day-to-day.
@@ -22,14 +22,14 @@ Azure tenant, and how to use it day-to-day.
 
 ```
 Operator / teammate
-├─ rtd-cli                ──── HTTPS+X-API-Key ───┐
+├─ xray-cli                ──── HTTPS+X-API-Key ───┐
 └─ Browser → SWA viewer ──┐                       │
    (Entra-gated)          │                       │
                           ▼                       ▼
    ┌──────────────────────────────────────────────────────┐
-   │  Azure RG: rtd-<env>                                 │
+   │  Azure RG: xray-<env>                                 │
    │                                                      │
-   │  Static Web App: rtd-<env>-viewer (Free SKU)         │
+   │  Static Web App: xray-<env>-viewer (Free SKU)         │
    │   serves the Next.js static bundle                   │
    │                          │                           │
    │   reads from ┄┄┄┄┄┄┄┄┄┄┄┘                           │
@@ -38,7 +38,7 @@ Operator / teammate
    │  ┌─────────────────────────────────────────────┐     │
    │  │ Subnet: container-apps  10.0.0.0/23         │     │
    │  │  Container Apps Env (Consumption)            │     │
-   │  │  Container App: rtd-<env>-app                │     │
+   │  │  Container App: xray-<env>-app                │     │
    │  │  ┌──────────┐ ┌────────┐ ┌────────────┐     │     │
    │  │  │ backend  │ │ worker │ │ redis:7    │     │     │
    │  │  │ uvicorn  │ │ lang   │ │ localhost  │     │     │
@@ -83,8 +83,8 @@ docker --version          # for building + deploying the viewer bundle
 ## Deploy a fresh environment
 
 ```bash
-git clone https://github.com/DonPercival0x45/RedTeamDashboard.git
-cd RedTeamDashboard
+git clone https://github.com/DonPercival0x45/ProjectXRay.git
+cd ProjectXRay
 
 ./infra/azure-kit/scripts/install.sh \
     --env prod \
@@ -130,32 +130,32 @@ That's it. The script handles everything end-to-end in ~10 minutes.
 
 ```bash
 pip install -e ./cli
-rtd --version
+XR --version
 
-rtd login --profile prod \
+XR login --profile prod \
   --url https://<app-fqdn>.azurecontainerapps.io \
-  --key rtd_yourtoken \
+  --key xr_yourtoken \
   --default
 
-rtd engagement create "Acme Q3 Pentest"
-rtd engagement scope add acme-q3-pentest --kind domain --value acme.com
-rtd run start acme-q3-pentest -p "Run passive OSINT on acme.com" --tail
+XR engagement create "Acme Q3 Pentest"
+XR engagement scope add acme-q3-pentest --kind domain --value acme.com
+XR run start acme-q3-pentest -p "Run passive OSINT on acme.com" --tail
 
-rtd approve <approval-id>
-rtd approve <approval-id> --remember   # creates a session grant
-rtd approve <approval-id> --deny --reason "out of scope"
+XR approve <approval-id>
+XR approve <approval-id> --remember   # creates a session grant
+XR approve <approval-id> --deny --reason "out of scope"
 
-rtd findings list acme-q3-pentest --severity high
-rtd tail acme-q3-pentest
+XR findings list acme-q3-pentest --severity high
+XR tail acme-q3-pentest
 
 # Add a freeform observation (doesn't need validation)
-rtd engagement observations add acme-q3-pentest "Login portal exposes version string in Server header" --phase osint
-rtd engagement observations list acme-q3-pentest
+XR engagement observations add acme-q3-pentest "Login portal exposes version string in Server header" --phase osint
+XR engagement observations list acme-q3-pentest
 
 # Bulk import findings from a prior report or scanner output
 # FILE is a JSON array — each object needs at minimum: title
 # Optional: severity, phase, summary, target, source_tool, details
-rtd engagement import-findings acme-q3-pentest findings.json
+XR engagement import-findings acme-q3-pentest findings.json
 ```
 
 **findings.json shape for import:**
@@ -192,11 +192,11 @@ paste their API key.
 
 ```bash
 # Full control (create engagements, run OSINT, approve tools)
-az containerapp exec -n rtd-prod-app -g rtd-prod --container backend \
+az containerapp exec -n xray-prod-app -g xray-prod --container backend \
     --command 'python -m app.scripts.mint_api_key --name alice --scope cli'
 
 # Read-only (browse findings, download reports — no write buttons in UI)
-az containerapp exec -n rtd-prod-app -g rtd-prod --container backend \
+az containerapp exec -n xray-prod-app -g xray-prod --container backend \
     --command 'python -m app.scripts.mint_api_key --name bob-readonly --scope viewer'
 ```
 
@@ -204,20 +204,20 @@ az containerapp exec -n rtd-prod-app -g rtd-prod --container backend \
 
 ```bash
 # Tail container logs
-az containerapp logs show -n rtd-prod-app -g rtd-prod \
+az containerapp logs show -n xray-prod-app -g xray-prod \
     --container backend --tail 60 --format text
 
 # Restart after rotating a KV secret
-REV=$(az containerapp revision list -n rtd-prod-app -g rtd-prod \
+REV=$(az containerapp revision list -n xray-prod-app -g xray-prod \
     --query '[?properties.active].name | [0]' -o tsv)
-az containerapp revision restart -n rtd-prod-app -g rtd-prod --revision "$REV"
+az containerapp revision restart -n xray-prod-app -g xray-prod --revision "$REV"
 
 # Roll to a new image (re-running install is idempotent)
 ./infra/azure-kit/scripts/install.sh --env prod --location centralus \
     --image-tag v0.2.0 --yes
 
 # Tear everything down
-az group delete -n rtd-prod -y
+az group delete -n xray-prod -y
 ```
 
 ## Entra ID SSO (optional)
@@ -243,15 +243,15 @@ See `docs/ENTRA_SETUP.md` for the full walkthrough.
 
 ## MCP server (Claude Code)
 
-The backend exposes an MCP server at `/mcp/sse`. Any MCP-compatible agent can connect to it using an RTD API key — Claude Code is the primary intended client.
+The backend exposes an MCP server at `/mcp/sse`. Any MCP-compatible agent can connect to it using an XR API key — Claude Code is the primary intended client.
 
 **Connect Claude Code:**
 
 ```bash
-claude mcp add rtd-prod \
+claude mcp add xray-prod \
     --transport sse \
     --url https://<app-fqdn>.azurecontainerapps.io/mcp/sse \
-    --header 'X-API-Key: rtd_yourtoken'
+    --header 'X-API-Key: xr_yourtoken'
 ```
 
 The install script prints this exact command (with the FQDN filled in) at the end of step 6.
@@ -260,7 +260,7 @@ The install script prints this exact command (with the FQDN filled in) at the en
 
 | Mode | How | LLM cost | Analyst in loop |
 |---|---|---|---|
-| Autonomous | `rtd run start <slug> -p "..."` | Anthropic API key | No |
+| Autonomous | `XR run start <slug> -p "..."` | Anthropic API key | No |
 | Interactive | Claude Code + MCP | Claude Max subscription | Yes |
 
 Both modes write findings to the same database. The viewer shows results from either.
@@ -288,15 +288,15 @@ active   → archived   → flushed
 **Archive** — marks an engagement done. Stays in the database but is excluded from active views. An export JSON is uploaded to blob storage first.
 
 ```bash
-rtd engagement archive acme-q3          # requires admin key
+XR engagement archive acme-q3          # requires admin key
 # or via MCP: archive_engagement("acme-q3")
 ```
 
 **Flush** — permanently deletes all engagement data from the database: findings, scope, approvals, and audit logs. Export is uploaded to blob first. Cannot be undone.
 
 ```bash
-rtd engagement flush acme-q3            # prompts for confirmation
-rtd engagement flush acme-q3 --yes      # skip prompt (scripts)
+XR engagement flush acme-q3            # prompts for confirmation
+XR engagement flush acme-q3 --yes      # skip prompt (scripts)
 # or via MCP: flush_engagement_data("acme-q3", confirmed=True)
 ```
 
@@ -305,7 +305,7 @@ rtd engagement flush acme-q3 --yes      # skip prompt (scripts)
 ```bash
 # CLI: use the API directly
 curl -X POST https://<fqdn>/engagements/acme-q3/export \
-    -H "X-API-Key: rtd_admintoken"
+    -H "X-API-Key: xr_admintoken"
 # or via MCP: export_engagement("acme-q3")
 ```
 
@@ -319,9 +319,9 @@ The storage account name is printed at the end of `install.sh` and in the Bicep 
 **Typical quarterly rhythm:**
 1. Create engagement, add scope, run recon over 1-2 months
 2. Write the report from validated findings
-3. `rtd engagement archive <slug>` — export + hide from viewer
+3. `XR engagement archive <slug>` — export + hide from viewer
 4. Start next engagement; old data is safely in blob if you ever need it
-5. `rtd engagement flush <slug>` — once you're confident the blob is sufficient
+5. `XR engagement flush <slug>` — once you're confident the blob is sufficient
 
 ## Expected costs
 

@@ -39,7 +39,7 @@ class TaskStatus(enum.StrEnum):
 
 
 class Task(Base, TimestampMixin):
-    """A unit of orchestrator-emitted work tied to an engagement.
+    """A unit of orchestrator-emitted work tied to an Project.
 
     Tasks may originate from an accepted ``Suggestion`` (Strategic) or be
     minted directly by analyst action. ``payload`` carries the tool name +
@@ -51,9 +51,9 @@ class Task(Base, TimestampMixin):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid7
     )
-    engagement_id: Mapped[uuid.UUID] = mapped_column(
+    project_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("engagements.id", ondelete="CASCADE"),
+        ForeignKey("projects.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )

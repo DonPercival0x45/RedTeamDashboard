@@ -9,9 +9,9 @@ echo ""
 # Backend tests
 echo "1. Backend cost tests..."
 cd backend
-export DATABASE_URL="postgresql+psycopg://rtd:rtd@localhost:5432/rtd"
+export DATABASE_URL="postgresql+psycopg://XR:XR@localhost:5432/XR"
 export REDIS_URL="redis://localhost:6379/0"
-export RTD_MASTER_KEY="$(python -c 'import base64;print(base64.urlsafe_b64encode(b"0"*32).decode())')"
+export xr_MASTER_KEY="$(python -c 'import base64;print(base64.urlsafe_b64encode(b"0"*32).decode())')"
 python -m pytest tests/test_costs.py -q
 echo "✅ Cost tests pass"
 

@@ -3,7 +3,7 @@
 The dev-time ``X-User-Id`` header is a backdoor for local work; in a real
 deployment every API call carries an ``X-API-Key`` instead. The kit's installer
 mints the first ``admin`` key after migrations; that key can then issue scoped
-keys (``cli`` for engagement work, ``viewer`` for the central viewer) via
+keys (``cli`` for Project work, ``viewer`` for the central viewer) via
 ``POST /api-keys``.
 
 Keys are stored hashed (SHA-256 of the random token). The plaintext is only
@@ -29,7 +29,7 @@ class APIKeyScope(enum.StrEnum):
 
     - ``viewer`` — read-only GETs (findings, events, grants list, scope). For
       the central viewer's connection to a tenant's API.
-    - ``cli``    — full engagement work: start runs, approve, edit scope,
+    - ``cli``    — full Project work: start runs, approve, edit scope,
       revoke grants. For the operator's CLI.
     - ``admin``  — everything ``cli`` can do, plus mint/list/revoke API keys.
       For the first key minted by the kit; create others sparingly.

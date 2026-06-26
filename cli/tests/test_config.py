@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from rtd.config import Config, ConfigError, Profile
+from xray.config import Config, ConfigError, Profile
 
 
 def test_load_missing_returns_empty(tmp_path: Path) -> None:

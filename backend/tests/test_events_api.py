@@ -1,6 +1,6 @@
 """SSE endpoint that re-streams ``runs:{eid}:events`` to HTTP clients.
 
-Each test seeds raw events on the engagement's outbound stream, opens an SSE
+Each test seeds raw events on the Project's outbound stream, opens an SSE
 connection using TestClient's streaming mode, and verifies the SSE framing,
 the ``Last-Event-ID`` resume contract, and the optional ``?thread=`` filter.
 """
@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.main import app
-from app.models import Engagement, EngagementStatus
+from app.models import Project, ProjectStatus
 from app.runs.events import encode_event
 from app.runs.streams import inbound_stream, outbound_stream
 
@@ -44,13 +44,13 @@ def redis_client() -> Iterator[redis_lib.Redis]:
 
 
 @pytest.fixture()
-def engagement(
+def Project(
     db: Session, redis_client: redis_lib.Redis
-) -> Iterator[Engagement]:
-    eng = Engagement(
+) -> Iterator[Project]:
+    eng = Project(
         name="sse-test",
         slug=f"sse-test-{uuid.uuid4().hex[:8]}",
-        status=EngagementStatus.active,
+        status=ProjectStatus.active,
     )
     db.add(eng)
     db.commit()
@@ -60,7 +60,7 @@ def engagement(
     finally:
         redis_client.delete(inbound_stream(eng.id), outbound_stream(eng.id))
         db.execute(
-            text("DELETE FROM approvals WHERE engagement_id = :id"),
+            text("DELETE FROM approvals WHERE project_id = :id"),
             {"id": eng.id},
         )
         db.commit()
@@ -77,11 +77,11 @@ def _headers(extra: dict[str, str] | None = None) -> dict[str, str]:
 
 def _push(
     redis_client: redis_lib.Redis,
-    engagement_id: uuid.UUID,
+    project_id: uuid.UUID,
     payload: dict[str, Any],
 ) -> str:
     """xadd a properly-encoded event, return the resulting stream ID."""
-    return redis_client.xadd(outbound_stream(engagement_id), encode_event(payload))
+    return redis_client.xadd(outbound_stream(project_id), encode_event(payload))
 
 
 # ---------------------------------------------------------------------------
@@ -160,15 +160,15 @@ def _async_client() -> httpx.AsyncClient:
 
 
 def test_requires_x_user_id_header(
-    client: TestClient, engagement: Engagement
+    client: TestClient, Project: Project
 ) -> None:
-    response = client.get(f"/engagements/{engagement.slug}/events")
+    response = client.get(f"/projects/{Project.slug}/events")
     assert response.status_code == 401
 
 
 def test_unknown_engagement_returns_404(client: TestClient) -> None:
     response = client.get(
-        f"/engagements/does-not-exist-{uuid.uuid4().hex[:6]}/events",
+        f"/projects/does-not-exist-{uuid.uuid4().hex[:6]}/events",
         headers=_headers(),
     )
     assert response.status_code == 404
@@ -181,17 +181,17 @@ def test_unknown_engagement_returns_404(client: TestClient) -> None:
 
 async def test_replays_events_from_last_event_id(
     redis_client: redis_lib.Redis,
-    engagement: Engagement,
+    Project: Project,
 ) -> None:
     thread_id = str(uuid.uuid4())
     id_a = _push(
         redis_client,
-        engagement.id,
+        Project.id,
         {"type": "run.started", "thread_id": thread_id, "prompt": "p"},
     )
     id_b = _push(
         redis_client,
-        engagement.id,
+        Project.id,
         {
             "type": "finding.created",
             "thread_id": thread_id,
@@ -202,14 +202,14 @@ async def test_replays_events_from_last_event_id(
     )
     _push(
         redis_client,
-        engagement.id,
+        Project.id,
         {"type": "run.completed", "thread_id": thread_id},
     )
 
     # Resume from id_a -> we should get id_b and the run.completed (2 events).
     async with _async_client() as ac, ac.stream(
         "GET",
-        f"/engagements/{engagement.slug}/events",
+        f"/projects/{Project.slug}/events",
         headers=_headers({"Last-Event-ID": id_a}),
     ) as response:
         assert response.status_code == 200
@@ -230,25 +230,25 @@ async def test_replays_events_from_last_event_id(
 
 async def test_thread_filter_drops_other_threads(
     redis_client: redis_lib.Redis,
-    engagement: Engagement,
+    Project: Project,
 ) -> None:
     target = str(uuid.uuid4())
     other = str(uuid.uuid4())
 
-    _push(redis_client, engagement.id, {"type": "run.started", "thread_id": other})
+    _push(redis_client, Project.id, {"type": "run.started", "thread_id": other})
     _push(
         redis_client,
-        engagement.id,
+        Project.id,
         {"type": "run.started", "thread_id": target, "prompt": "p"},
     )
     _push(
         redis_client,
-        engagement.id,
+        Project.id,
         {"type": "finding.created", "thread_id": other, "tool": "subfinder"},
     )
     _push(
         redis_client,
-        engagement.id,
+        Project.id,
         {
             "type": "finding.created",
             "thread_id": target,
@@ -258,13 +258,13 @@ async def test_thread_filter_drops_other_threads(
     )
     _push(
         redis_client,
-        engagement.id,
+        Project.id,
         {"type": "run.completed", "thread_id": target},
     )
 
     async with _async_client() as ac, ac.stream(
         "GET",
-        f"/engagements/{engagement.slug}/events",
+        f"/projects/{Project.slug}/events",
         params={"thread": target},
         headers=_headers({"Last-Event-ID": "0"}),
     ) as response:
@@ -284,19 +284,19 @@ async def test_thread_filter_drops_other_threads(
 
 async def test_tail_default_skips_pre_existing_events(
     redis_client: redis_lib.Redis,
-    engagement: Engagement,
+    Project: Project,
 ) -> None:
     """No Last-Event-ID means start at $ — old events stay invisible."""
     thread_id = str(uuid.uuid4())
     _push(
         redis_client,
-        engagement.id,
+        Project.id,
         {"type": "run.started", "thread_id": thread_id, "prompt": "early"},
     )
 
     async with _async_client() as ac, ac.stream(
         "GET",
-        f"/engagements/{engagement.slug}/events",
+        f"/projects/{Project.slug}/events",
         headers=_headers(),
     ) as response:
         assert response.status_code == 200

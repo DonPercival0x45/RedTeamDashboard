@@ -1,4 +1,4 @@
-"""Wire-format models for engagements, scope items, and run kickoff."""
+"""Wire-format models for projects, scope items, and run kickoff."""
 from __future__ import annotations
 
 from datetime import datetime
@@ -7,12 +7,12 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.models import EngagementStatus, ScopeKind
+from app.models import ProjectStatus, ScopeKind
 
 LLMProvider = Literal["anthropic", "openai", "azure", "ollama"]
 
 
-class EngagementCreate(BaseModel):
+class ProjectCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     slug: str | None = Field(
         default=None,
@@ -20,13 +20,13 @@ class EngagementCreate(BaseModel):
         description="Optional. Auto-generated from `name` if omitted.",
     )
     description: str | None = Field(
-        default=None, description="Optional free-text engagement details."
+        default=None, description="Optional free-text project details."
     )
 
 
-class EngagementUpdate(BaseModel):
+class ProjectUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
-    status: EngagementStatus | None = Field(
+    status: ProjectStatus | None = Field(
         default=None,
         description=(
             "Only `active` or `archived` are accepted via PATCH. Use "
@@ -35,14 +35,14 @@ class EngagementUpdate(BaseModel):
     )
 
 
-class EngagementRead(BaseModel):
+class ProjectRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
     name: str
     slug: str
     description: str | None = None
-    status: EngagementStatus
+    status: ProjectStatus
     created_by: UUID | None
     archived_at: datetime | None
     flushed_at: datetime | None
@@ -67,7 +67,7 @@ class ScopeItemRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
-    engagement_id: UUID
+    project_id: UUID
     kind: ScopeKind
     value: str
     is_exclusion: bool
@@ -149,7 +149,7 @@ class RunStart(BaseModel):
 
 
 class RunStartResponse(BaseModel):
-    engagement_id: UUID
+    project_id: UUID
     thread_id: UUID
     events_stream: str
     model: RunModel

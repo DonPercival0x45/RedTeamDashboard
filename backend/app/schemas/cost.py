@@ -30,7 +30,7 @@ class ModelCost(CostBucket):
 
 
 class CostRollup(BaseModel):
-    engagement_id: UUID
+    project_id: UUID
     engagement_slug: str
     total: CostBucket
     by_agent: list[AgentCost]

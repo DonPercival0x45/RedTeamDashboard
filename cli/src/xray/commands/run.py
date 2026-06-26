@@ -3,12 +3,12 @@ from __future__ import annotations
 
 import click
 
-from rtd.output import console, emit, kv_table
+from xray.output import console, emit, kv_table
 
 
 @click.group(name="run")
 def run_group() -> None:
-    """Start runs against an engagement."""
+    """Start runs against an project."""
 
 
 @run_group.command("start")
@@ -30,7 +30,7 @@ def start(
     model_name: str | None,
     tail: bool,
 ) -> None:
-    """Start a run on engagement SLUG. Tails events by default."""
+    """Start a run on project SLUG. Tails events by default."""
     if (provider is None) != (model_name is None):
         raise click.UsageError("--provider and --model must be given together (or both omitted).")
 
@@ -39,7 +39,7 @@ def start(
         body["model"] = {"provider": provider, "name": model_name}
 
     with ctx.obj.client() as c:
-        result = c.post(f"/engagements/{slug}/runs", json=body)
+        result = c.post(f"/projects/{slug}/runs", json=body)
 
     emit(
         result,
@@ -55,5 +55,5 @@ def start(
     if tail and not ctx.obj.json_mode:
         console.print()
         # Avoid a circular import by reaching tail at call time.
-        from rtd.commands.tail import _tail_events
+        from xray.commands.tail import _tail_events
         _tail_events(ctx, slug, thread_id=result["thread_id"])

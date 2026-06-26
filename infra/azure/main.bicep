@@ -1,4 +1,4 @@
-// Red Team Dashboard — Phase 0 Azure deploy (subscription-scoped).
+// Project X-Ray — Phase 0 Azure deploy (subscription-scoped).
 //
 // Creates a per-environment resource group and provisions:
 //   - VNet with two delegated subnets (Container Apps /23, Postgres /28)
@@ -26,8 +26,8 @@ param env string = 'dev'
 @description('Azure region for everything. Stick to one region for Phase 0.')
 param location string = 'eastus'
 
-@description('Resource group name. Defaults to rtd-<env>.')
-param resourceGroupName string = 'rtd-${env}'
+@description('Resource group name. Defaults to xray-<env>.')
+param resourceGroupName string = 'xray-${env}'
 
 @description('Postgres admin username.')
 param postgresAdminLogin string = 'rtdadmin'
@@ -52,9 +52,9 @@ param llmProvider string = 'anthropic'
 @description('ANTHROPIC_MODEL env value (used when LLM_PROVIDER=anthropic).')
 param anthropicModel string = 'claude-opus-4-7'
 
-var namePrefix = 'rtd-${env}'
+var namePrefix = 'xray-${env}'
 var tags = {
-  app: 'red-team-dashboard'
+  app: 'project-xray'
   env: env
   managedBy: 'bicep'
 }
@@ -177,9 +177,9 @@ module kv 'modules/keyvault.bicep' = {
 // Compute tier
 // ---------------------------------------------------------------------------
 
-var backendImage = '${acr.outputs.loginServer}/rtd-backend:${backendImageTag}'
-var workerImage = '${acr.outputs.loginServer}/rtd-worker:${workerImageTag}'
-var frontendImage = '${acr.outputs.loginServer}/rtd-frontend:${frontendImageTag}'
+var backendImage = '${acr.outputs.loginServer}/xray-backend:${backendImageTag}'
+var workerImage = '${acr.outputs.loginServer}/xray-worker:${workerImageTag}'
+var frontendImage = '${acr.outputs.loginServer}/xray-frontend:${frontendImageTag}'
 
 module apps 'modules/containerapps.bicep' = {
   name: 'containerapps'

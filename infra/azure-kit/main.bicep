@@ -1,4 +1,4 @@
-// Red Team Dashboard — Deployment Kit (subscription-scoped).
+// Project X-Ray — Deployment Kit (subscription-scoped).
 //
 // Provisions, in one resource group, the per-tenant backend an operator owns:
 //   - VNet with two delegated subnets (Container Apps /23, Postgres /28)
@@ -31,8 +31,8 @@ param env string = 'prod'
 @description('Azure region for everything.')
 param location string = 'eastus2'
 
-@description('Resource group name. Defaults to rtd-<env>.')
-param resourceGroupName string = 'rtd-${env}'
+@description('Resource group name. Defaults to xray-<env>.')
+param resourceGroupName string = 'xray-${env}'
 
 @description('Postgres admin username.')
 param postgresAdminLogin string = 'rtdadmin'
@@ -41,7 +41,7 @@ param postgresAdminLogin string = 'rtdadmin'
 @secure()
 param postgresAdminPassword string
 
-@description('GHCR repository owner (e.g. "donpercival0x45"). The kit pulls images from ghcr.io/<owner>/rtd-{backend,worker}:<tag>.')
+@description('GHCR repository owner (e.g. "donpercival0x45"). The kit pulls images from ghcr.io/<owner>/xray-{backend,worker}:<tag>.')
 param imageRepoOwner string = 'donpercival0x45'
 
 @description('Image tag for backend + worker (e.g. "0.1.0", "v0.1.0", "main"). Bump on each release.')
@@ -61,9 +61,9 @@ param extraCorsAllowOrigins string = 'http://localhost:3001,http://127.0.0.1:300
 param entraTenantId string = ''
 param entraClientId string = ''
 
-var namePrefix = 'rtd-${env}'
+var namePrefix = 'xray-${env}'
 var tags = {
-  app: 'red-team-dashboard'
+  app: 'project-xray'
   env: env
   managedBy: 'bicep-kit'
 }
@@ -205,8 +205,8 @@ module viewer 'modules/viewer.bicep' = {
   }
 }
 
-var backendImage = 'ghcr.io/${imageRepoOwner}/rtd-backend:${imageTag}'
-var workerImage = 'ghcr.io/${imageRepoOwner}/rtd-worker:${imageTag}'
+var backendImage = 'ghcr.io/${imageRepoOwner}/xray-backend:${imageTag}'
+var workerImage = 'ghcr.io/${imageRepoOwner}/xray-worker:${imageTag}'
 
 module apps 'modules/containerapps.bicep' = {
   name: 'containerapps'

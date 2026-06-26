@@ -1,10 +1,10 @@
-"""`rtd findings list` — read persisted findings for an engagement."""
+"""`rtd findings list` — read persisted findings for an project."""
 from __future__ import annotations
 
 import click
 from rich.table import Table
 
-from rtd.output import emit
+from xray.output import emit
 
 
 @click.group(name="findings")
@@ -19,9 +19,9 @@ def findings_group() -> None:
               help="Filter by minimum severity.")
 @click.pass_context
 def list_findings(ctx: click.Context, slug: str, severity: str | None) -> None:
-    """List findings on engagement SLUG, highest severity first."""
+    """List findings on project SLUG, highest severity first."""
     with ctx.obj.client() as c:
-        rows = c.get(f"/engagements/{slug}/findings")
+        rows = c.get(f"/projects/{slug}/findings")
 
     if severity:
         order = ["info", "low", "medium", "high", "critical"]

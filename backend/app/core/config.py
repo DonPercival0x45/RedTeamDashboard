@@ -79,6 +79,14 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-opus-4-7"
 
+    # Per-agent model overrides — each agent (Strategic, Tactical, Worker) can
+    # use a different model. Falls back to the provider default (anthropic_model /
+    # openai_model / etc.) when blank. Set e.g. STRATEGIC_MODEL=claude-opus-4-8
+    # to pin the Strategic watcher to the latest Opus without changing the Worker.
+    strategic_model: str = ""
+    tactical_model: str = ""
+    worker_model: str = ""
+
     # OpenAI
     openai_api_key: str = ""
     openai_model: str = "gpt-4o-mini"
@@ -93,10 +101,10 @@ class Settings(BaseSettings):
     azure_openai_deployment: str = ""
     azure_openai_api_version: str = "2024-08-01-preview"
 
-    # Azure Blob Storage for engagement exports (archive / flush)
+    # Azure Blob Storage for project exports (archive / flush)
     # Set AZURE_STORAGE_ACCOUNT_NAME to enable; unset → exports returned inline only.
     azure_storage_account_name: str = ""
-    azure_storage_container_name: str = "engagement-exports"
+    azure_storage_container_name: str = "project-exports"
 
     # BYO provider keys (Phase: user-byo-keys). Fernet master key — analysts'
     # uploaded LLM / MCP API keys are encrypted with this before they hit

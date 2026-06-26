@@ -14,7 +14,7 @@ class ApprovalRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
-    engagement_id: UUID
+    project_id: UUID
     thread_id: str
     node: str | None
     tool_name: str
@@ -41,7 +41,7 @@ class ApprovalDecision(BaseModel):
     approved: bool
     edited_args: dict[str, Any] | None = None
     reason: str | None = None
-    # When approving, also grant a standing per-(engagement, tool) session
+    # When approving, also grant a standing per-(Project, tool) session
     # authorization so future in-scope calls to this tool auto-run. Ignored on
     # denial.
     remember_for_session: bool = False

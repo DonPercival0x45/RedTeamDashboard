@@ -1,7 +1,7 @@
 """Run lifecycle primitives shared by worker and API layers.
 
 Two seams:
-- ``streams`` — Redis Streams naming helpers (per-engagement).
+- ``streams`` — Redis Streams naming helpers (per-Project).
 - ``events`` — outbound event vocabulary (5 types) and envelope encoding.
 """
 from app.runs.events import (

@@ -9,7 +9,7 @@ service boundary.
 
 Slice 1 (Phase 9): deterministic dispatcher. Pulls (tool, target) from
 ``task.payload`` (set by Strategic when the suggestion was accepted) and
-publishes a ``run.start`` envelope on the engagement's inbound stream. The
+publishes a ``run.start`` envelope on the Project's inbound stream. The
 worker's existing graph + approval gate handles everything from there.
 
 HARD INVARIANT: ``TaskKind.exploit`` is refused at the service boundary. The
@@ -98,7 +98,7 @@ class TacticalAgent:
             "Report exactly what the tool returns; do not call any other tool."
         )
 
-        provider, model_name = default_provider_model()
+        provider, model_name = default_provider_model(agent="tactical")
         thread_id = uuid.uuid4()
 
         store_run_model(
@@ -108,7 +108,7 @@ class TacticalAgent:
             model_name=model_name,
         )
         self._redis.xadd(
-            inbound_stream(task.engagement_id),
+            inbound_stream(task.project_id),
             encode_command(
                 {
                     "type": "run.start",
@@ -121,7 +121,7 @@ class TacticalAgent:
 
         now = datetime.now(tz=UTC)
         execution = AgentExecution(
-            engagement_id=task.engagement_id,
+            project_id=task.project_id,
             agent=AgentName.tactical,
             trigger=trigger,
             input={

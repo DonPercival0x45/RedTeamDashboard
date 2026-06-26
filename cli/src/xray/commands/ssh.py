@@ -2,7 +2,7 @@
 
 This is the one command that bypasses the HTTP surface: it delegates to
 ``az containerapp exec``, which the operator already has from running the
-deployment kit. ``rtd ssh <slug>`` is just sugar that maps an engagement slug
+deployment kit. ``rtd ssh <slug>`` is just sugar that maps an project slug
 (or the profile's deployment by default) to the underlying app name.
 
 For the MVP we resolve "<env>-backend" from the profile's URL hostname —
@@ -17,7 +17,7 @@ import sys
 
 import click
 
-from rtd.output import console, error
+from xray.output import console, error
 
 _HOSTNAME_RE = re.compile(r"^(?P<app>[a-z0-9][a-z0-9-]+)\.")
 

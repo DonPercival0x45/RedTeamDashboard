@@ -21,7 +21,7 @@ class TaskRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
-    engagement_id: UUID
+    project_id: UUID
     finding_id: UUID | None
     title: str
     kind: TaskKind
@@ -39,7 +39,7 @@ class SuggestionRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
-    engagement_id: UUID
+    project_id: UUID
     finding_id: UUID | None
     title: str
     body: str | None
@@ -79,7 +79,7 @@ class AgentExecutionRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
-    engagement_id: UUID
+    project_id: UUID
     agent: AgentName
     trigger: AgentTrigger
     input: dict[str, Any]

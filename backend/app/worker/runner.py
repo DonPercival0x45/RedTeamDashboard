@@ -63,14 +63,14 @@ def _build_system_prompt(snapshots: list[ScopeSnapshot]) -> str:
         scope_lines = "  (no scope items yet)"
 
     return (
-        "You are a recon agent for an authorized red team engagement.\n"
+        "You are a recon agent for an authorized red team Project.\n"
         "\n"
-        "Use the available tools to investigate targets within the engagement "
+        "Use the available tools to investigate targets within the Project "
         "scope. Each tool call's target argument MUST match a scope item "
         "(exact value, or a subdomain of a domain-kind item, or an IP inside "
         "a CIDR-kind item).\n"
         "\n"
-        "Engagement scope:\n"
+        "Project scope:\n"
         f"{scope_lines}\n"
         "\n"
         "When the operator's prompt says 'all', 'every', 'all targets', "
@@ -149,7 +149,7 @@ class RunRunner:
     # Public entry
     # ------------------------------------------------------------------
 
-    def handle(self, engagement_id: uuid.UUID, envelope: Mapping[str, Any]) -> None:
+    def handle(self, project_id: uuid.UUID, envelope: Mapping[str, Any]) -> None:
         kind = envelope.get("type")
         thread_id = str(envelope.get("thread_id") or "")
         if not thread_id:
@@ -158,25 +158,25 @@ class RunRunner:
         try:
             graph = self._resolve_graph(envelope)
             if kind == "run.start":
-                self._start(engagement_id, thread_id, envelope, graph)
+                self._start(project_id, thread_id, envelope, graph)
             elif kind == "run.resume":
-                self._resume(engagement_id, thread_id, envelope, graph)
+                self._resume(project_id, thread_id, envelope, graph)
             else:
                 raise ValueError(f"unknown envelope type: {kind!r}")
         except Exception as exc:
             logger.exception(
                 "worker.handle_failed",
-                engagement_id=str(engagement_id),
+                project_id=str(project_id),
                 thread_id=thread_id,
                 error=str(exc),
             )
             self._audit(
-                engagement_id,
+                project_id,
                 "run.errored",
                 {"thread_id": thread_id, "error": str(exc)},
             )
             self._emit(
-                engagement_id,
+                project_id,
                 {"type": "run.errored", "thread_id": thread_id, "error": str(exc)},
             )
 
@@ -186,24 +186,24 @@ class RunRunner:
 
     def _start(
         self,
-        engagement_id: uuid.UUID,
+        project_id: uuid.UUID,
         thread_id: str,
         envelope: Mapping[str, Any],
         graph: Any,
     ) -> None:
         prompt = str(envelope.get("prompt") or "")
-        snapshots = self._load_scope(engagement_id)
+        snapshots = self._load_scope(project_id)
         model = envelope.get("model") if isinstance(envelope.get("model"), Mapping) else None
         logger.info(
             "worker.run_starting",
-            engagement_id=str(engagement_id),
+            project_id=str(project_id),
             thread_id=thread_id,
             prompt_len=len(prompt),
             scope_items=len(snapshots),
             model=model,
         )
         initial_state: dict[str, Any] = {
-            "engagement_id": engagement_id,
+            "project_id": project_id,
             "messages": [
                 SystemMessage(content=_build_system_prompt(snapshots)),
                 HumanMessage(content=prompt),
@@ -215,16 +215,16 @@ class RunRunner:
         started_payload: dict[str, Any] = {"thread_id": thread_id, "prompt": prompt}
         if model is not None:
             started_payload["model"] = dict(model)
-        self._audit(engagement_id, "run.started", started_payload)
+        self._audit(project_id, "run.started", started_payload)
         self._emit(
-            engagement_id,
+            project_id,
             {"type": "run.started", **started_payload},
         )
-        self._drive(engagement_id, thread_id, initial_state, config, graph)
+        self._drive(project_id, thread_id, initial_state, config, graph)
 
     def _resume(
         self,
-        engagement_id: uuid.UUID,
+        project_id: uuid.UUID,
         thread_id: str,
         envelope: Mapping[str, Any],
         graph: Any,
@@ -237,12 +237,12 @@ class RunRunner:
 
         logger.info(
             "worker.run_resuming",
-            engagement_id=str(engagement_id),
+            project_id=str(project_id),
             thread_id=thread_id,
             approved=resume_value["approved"],
         )
         config = self._config(thread_id)
-        self._drive(engagement_id, thread_id, Command(resume=resume_value), config, graph)
+        self._drive(project_id, thread_id, Command(resume=resume_value), config, graph)
 
     # ------------------------------------------------------------------
     # Graph driving + event emission
@@ -250,7 +250,7 @@ class RunRunner:
 
     def _drive(
         self,
-        engagement_id: uuid.UUID,
+        project_id: uuid.UUID,
         thread_id: str,
         input_: Any,
         config: dict[str, Any],
@@ -262,39 +262,39 @@ class RunRunner:
                     continue
                 logger.info(
                     "worker.graph_step",
-                    engagement_id=str(engagement_id),
+                    project_id=str(project_id),
                     thread_id=thread_id,
                     node=node,
                 )
-            self._emit_from_chunk(engagement_id, thread_id, chunk)
+            self._emit_from_chunk(project_id, thread_id, chunk)
 
         snapshot = graph.get_state(config)
         if not snapshot.next:
             logger.info(
                 "worker.run_completed",
-                engagement_id=str(engagement_id),
+                project_id=str(project_id),
                 thread_id=thread_id,
             )
             self._audit(
-                engagement_id,
+                project_id,
                 "run.completed",
                 {"thread_id": thread_id},
             )
             self._emit(
-                engagement_id,
+                project_id,
                 {"type": "run.completed", "thread_id": thread_id},
             )
         else:
             logger.info(
                 "worker.run_interrupted",
-                engagement_id=str(engagement_id),
+                project_id=str(project_id),
                 thread_id=thread_id,
                 next_nodes=list(snapshot.next),
             )
 
     def _emit_from_chunk(
         self,
-        engagement_id: uuid.UUID,
+        project_id: uuid.UUID,
         thread_id: str,
         chunk: Mapping[str, Any],
     ) -> None:
@@ -307,10 +307,10 @@ class RunRunner:
                 if not isinstance(payload, Mapping):
                     continue
                 approval_id = self._persist_pending_approval(
-                    engagement_id, thread_id, payload
+                    project_id, thread_id, payload
                 )
                 self._emit(
-                    engagement_id,
+                    project_id,
                     {
                         "type": "approval.pending",
                         "thread_id": thread_id,
@@ -328,9 +328,9 @@ class RunRunner:
             if not isinstance(update, Mapping):
                 continue
             for finding in update.get("findings") or []:
-                row = self._persist_finding(engagement_id, thread_id, finding)
+                row = self._persist_finding(project_id, thread_id, finding)
                 self._emit(
-                    engagement_id,
+                    project_id,
                     {
                         "type": "finding.created",
                         "thread_id": thread_id,
@@ -347,7 +347,7 @@ class RunRunner:
                 )
             for denial in update.get("denials") or []:
                 self._audit(
-                    engagement_id,
+                    project_id,
                     "tool.denied",
                     {
                         "thread_id": thread_id,
@@ -357,7 +357,7 @@ class RunRunner:
                     },
                 )
                 self._emit(
-                    engagement_id,
+                    project_id,
                     {
                         "type": "tool.denied",
                         "thread_id": thread_id,
@@ -371,7 +371,7 @@ class RunRunner:
                 # An active call auto-approved via a session grant must still be
                 # logged with the covering authorization id (authz hard rule).
                 self._audit(
-                    engagement_id,
+                    project_id,
                     "tool.auto_approved",
                     {
                         "thread_id": thread_id,
@@ -382,7 +382,7 @@ class RunRunner:
                     },
                 )
                 self._emit(
-                    engagement_id,
+                    project_id,
                     {
                         "type": "tool.auto_approved",
                         "thread_id": thread_id,
@@ -397,15 +397,15 @@ class RunRunner:
     # Plumbing
     # ------------------------------------------------------------------
 
-    def _emit(self, engagement_id: uuid.UUID, payload: dict[str, Any]) -> None:
-        self._redis.xadd(outbound_stream(engagement_id), encode_event(payload))
+    def _emit(self, project_id: uuid.UUID, payload: dict[str, Any]) -> None:
+        self._redis.xadd(outbound_stream(project_id), encode_event(payload))
 
     def _config(self, thread_id: str) -> dict[str, Any]:
         return {"configurable": {"thread_id": thread_id}}
 
     def _persist_finding(
         self,
-        engagement_id: uuid.UUID,
+        project_id: uuid.UUID,
         thread_id: str,
         finding: Mapping[str, Any],
     ) -> Finding:
@@ -433,7 +433,7 @@ class RunRunner:
 
         with self._session_scope() as session:
             row = Finding(
-                engagement_id=engagement_id,
+                project_id=project_id,
                 title=title,
                 severity=severity,
                 summary=None,
@@ -450,7 +450,7 @@ class RunRunner:
 
     def _audit(
         self,
-        engagement_id: uuid.UUID | None,
+        project_id: uuid.UUID | None,
         event_type: str,
         payload: Mapping[str, Any],
     ) -> None:
@@ -458,7 +458,7 @@ class RunRunner:
             with self._session_scope() as session:
                 session.add(
                     AuditLog(
-                        engagement_id=engagement_id,
+                        project_id=project_id,
                         actor_type=ActorType.agent,
                         actor_id="worker",
                         event_type=event_type,
@@ -469,13 +469,13 @@ class RunRunner:
         except Exception:  # noqa: BLE001 — audit failures shouldn't kill a run
             logger.exception(
                 "worker.audit_failed",
-                engagement_id=str(engagement_id) if engagement_id else None,
+                project_id=str(project_id) if project_id else None,
                 event_type=event_type,
             )
 
     def _persist_pending_approval(
         self,
-        engagement_id: uuid.UUID,
+        project_id: uuid.UUID,
         thread_id: str,
         payload: Mapping[str, Any],
     ) -> uuid.UUID:
@@ -483,7 +483,7 @@ class RunRunner:
         risk = RiskLevel(risk_raw) if risk_raw else RiskLevel.active
         with self._session_scope() as session:
             approval = Approval(
-                engagement_id=engagement_id,
+                project_id=project_id,
                 thread_id=thread_id,
                 node="tool_dispatch",
                 tool_name=str(payload.get("tool") or ""),
@@ -497,7 +497,7 @@ class RunRunner:
             session.refresh(approval)
             logger.info(
                 "worker.approval_persisted",
-                engagement_id=str(engagement_id),
+                project_id=str(project_id),
                 thread_id=thread_id,
                 approval_id=str(approval.id),
                 tool=approval.tool_name,
@@ -505,10 +505,10 @@ class RunRunner:
             )
             return approval.id
 
-    def _load_scope(self, engagement_id: uuid.UUID) -> list[ScopeSnapshot]:
+    def _load_scope(self, project_id: uuid.UUID) -> list[ScopeSnapshot]:
         with self._session_scope() as session:
             rows: Iterable[ScopeItem] = session.execute(
-                select(ScopeItem).where(ScopeItem.engagement_id == engagement_id)
+                select(ScopeItem).where(ScopeItem.project_id == project_id)
             ).scalars()
             return [ScopeSnapshot.from_scope_item(item) for item in rows]
 

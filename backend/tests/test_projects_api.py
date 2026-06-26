@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.main import app
-from app.models import Engagement, Finding, Severity
+from app.models import Project, Finding, Severity
 from app.runs.streams import inbound_stream, outbound_stream
 
 # ---------------------------------------------------------------------------
@@ -43,17 +43,17 @@ def redis_client() -> Iterator[redis_lib.Redis]:
 
 @pytest.fixture()
 def cleanup_slugs(db: Session, redis_client: redis_lib.Redis) -> Iterator[list[str]]:
-    """Tests append slugs they create; teardown flushes each engagement."""
+    """Tests append slugs they create; teardown flushes each Project."""
     slugs: list[str] = []
     yield slugs
     for slug in slugs:
         eng_id = db.execute(
-            select(Engagement.id).where(Engagement.slug == slug)
+            select(Project.id).where(Project.slug == slug)
         ).scalar_one_or_none()
         if eng_id is None:
             continue
         db.execute(
-            text("DELETE FROM approvals WHERE engagement_id = :id"),
+            text("DELETE FROM approvals WHERE project_id = :id"),
             {"id": eng_id},
         )
         db.commit()
@@ -63,20 +63,20 @@ def cleanup_slugs(db: Session, redis_client: redis_lib.Redis) -> Iterator[list[s
 
 
 def _headers() -> dict[str, str]:
-    return {"X-User-Id": "engagement-test@example.com"}
+    return {"X-User-Id": "Project-test@example.com"}
 
 
 def _create(client: TestClient, name: str, slug: str | None = None) -> dict[str, Any]:
     body: dict[str, Any] = {"name": name}
     if slug is not None:
         body["slug"] = slug
-    response = client.post("/engagements", json=body, headers=_headers())
+    response = client.post("/projects", json=body, headers=_headers())
     assert response.status_code == 201, response.text
     return response.json()
 
 
 # ---------------------------------------------------------------------------
-# Engagement CRUD
+# Project CRUD
 # ---------------------------------------------------------------------------
 
 
@@ -99,9 +99,9 @@ def test_create_with_description_round_trips(
     client: TestClient, cleanup_slugs: list[str]
 ) -> None:
     name = f"Described {uuid.uuid4().hex[:6]}"
-    desc = "Rules of engagement: passive OSINT first; no active without approval."
+    desc = "Rules of Project: passive OSINT first; no active without approval."
     response = client.post(
-        "/engagements",
+        "/projects",
         json={"name": name, "description": desc},
         headers=_headers(),
     )
@@ -111,7 +111,7 @@ def test_create_with_description_round_trips(
     assert body["description"] == desc
 
     # And it comes back on read.
-    read = client.get(f"/engagements/{body['slug']}", headers=_headers()).json()
+    read = client.get(f"/projects/{body['slug']}", headers=_headers()).json()
     assert read["description"] == desc
 
 
@@ -145,7 +145,7 @@ def test_create_with_conflicting_slug_appends_suffix(
 
 
 def test_requires_x_user_id_header(client: TestClient) -> None:
-    response = client.post("/engagements", json={"name": "no auth"})
+    response = client.post("/projects", json={"name": "no auth"})
     assert response.status_code == 401
 
 
@@ -156,9 +156,9 @@ def test_list_engagements_filters_by_status(
     archived = _create(client, f"List archived {uuid.uuid4().hex[:6]}")
     cleanup_slugs.extend([active["slug"], archived["slug"]])
 
-    client.delete(f"/engagements/{archived['slug']}", headers=_headers())
+    client.delete(f"/projects/{archived['slug']}", headers=_headers())
 
-    response = client.get("/engagements", params={"status": "active"})
+    response = client.get("/projects", params={"status": "active"})
     assert response.status_code == 200
     slugs = {e["slug"] for e in response.json()}
     assert active["slug"] in slugs
@@ -166,7 +166,7 @@ def test_list_engagements_filters_by_status(
 
 
 def test_get_engagement_404_for_unknown_slug(client: TestClient) -> None:
-    response = client.get(f"/engagements/does-not-exist-{uuid.uuid4().hex[:6]}")
+    response = client.get(f"/projects/does-not-exist-{uuid.uuid4().hex[:6]}")
     assert response.status_code == 404
 
 
@@ -177,7 +177,7 @@ def test_patch_renames_engagement(
     cleanup_slugs.append(eng["slug"])
 
     response = client.patch(
-        f"/engagements/{eng['slug']}",
+        f"/projects/{eng['slug']}",
         json={"name": "Renamed"},
         headers=_headers(),
     )
@@ -192,7 +192,7 @@ def test_patch_archive_then_unarchive_stamps_and_clears_archived_at(
     cleanup_slugs.append(eng["slug"])
 
     archived = client.patch(
-        f"/engagements/{eng['slug']}",
+        f"/projects/{eng['slug']}",
         json={"status": "archived"},
         headers=_headers(),
     ).json()
@@ -200,7 +200,7 @@ def test_patch_archive_then_unarchive_stamps_and_clears_archived_at(
     assert archived["archived_at"] is not None
 
     unarchived = client.patch(
-        f"/engagements/{eng['slug']}",
+        f"/projects/{eng['slug']}",
         json={"status": "active"},
         headers=_headers(),
     ).json()
@@ -215,7 +215,7 @@ def test_patch_to_flushed_status_is_rejected(
     cleanup_slugs.append(eng["slug"])
 
     response = client.patch(
-        f"/engagements/{eng['slug']}",
+        f"/projects/{eng['slug']}",
         json={"status": "flushed"},
         headers=_headers(),
     )
@@ -228,14 +228,14 @@ def test_delete_soft_archives(
     eng = _create(client, "Soft archive me")
     cleanup_slugs.append(eng["slug"])
 
-    response = client.delete(f"/engagements/{eng['slug']}", headers=_headers())
+    response = client.delete(f"/projects/{eng['slug']}", headers=_headers())
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "archived"
     assert body["archived_at"] is not None
 
     # Row still fetchable
-    again = client.get(f"/engagements/{eng['slug']}")
+    again = client.get(f"/projects/{eng['slug']}")
     assert again.status_code == 200
 
 
@@ -255,13 +255,13 @@ def test_flush_removes_engagement_and_streams(
     assert redis_client.exists(inbound_stream(uuid.UUID(eng["id"]))) == 1
 
     response = client.post(
-        f"/engagements/{eng['slug']}/flush", headers=_headers()
+        f"/projects/{eng['slug']}/flush", headers=_headers()
     )
     assert response.status_code == 204
 
-    # Engagement row is gone.
+    # Project row is gone.
     gone = db.execute(
-        select(Engagement.id).where(Engagement.slug == eng["slug"])
+        select(Project.id).where(Project.slug == eng["slug"])
     ).scalar_one_or_none()
     assert gone is None
 
@@ -281,13 +281,13 @@ def test_create_and_list_scope_items(
     cleanup_slugs.append(eng["slug"])
 
     a = client.post(
-        f"/engagements/{eng['slug']}/scope",
+        f"/projects/{eng['slug']}/scope",
         json={"kind": "domain", "value": "acme.com"},
         headers=_headers(),
     )
     assert a.status_code == 201, a.text
     b = client.post(
-        f"/engagements/{eng['slug']}/scope",
+        f"/projects/{eng['slug']}/scope",
         json={
             "kind": "cidr",
             "value": "10.0.0.0/24",
@@ -298,7 +298,7 @@ def test_create_and_list_scope_items(
     )
     assert b.status_code == 201
 
-    listing = client.get(f"/engagements/{eng['slug']}/scope")
+    listing = client.get(f"/projects/{eng['slug']}/scope")
     assert listing.status_code == 200
     rows = listing.json()
     assert len(rows) == 2
@@ -312,13 +312,13 @@ def test_update_scope_item(
     eng = _create(client, "Scope edit")
     cleanup_slugs.append(eng["slug"])
     created = client.post(
-        f"/engagements/{eng['slug']}/scope",
+        f"/projects/{eng['slug']}/scope",
         json={"kind": "domain", "value": "acme.com"},
         headers=_headers(),
     ).json()
 
     response = client.patch(
-        f"/engagements/{eng['slug']}/scope/{created['id']}",
+        f"/projects/{eng['slug']}/scope/{created['id']}",
         json={"value": "acme.org", "note": "renamed"},
         headers=_headers(),
     )
@@ -334,18 +334,18 @@ def test_delete_scope_item(
     eng = _create(client, "Scope delete")
     cleanup_slugs.append(eng["slug"])
     created = client.post(
-        f"/engagements/{eng['slug']}/scope",
+        f"/projects/{eng['slug']}/scope",
         json={"kind": "domain", "value": "doomed.example.com"},
         headers=_headers(),
     ).json()
 
     response = client.delete(
-        f"/engagements/{eng['slug']}/scope/{created['id']}",
+        f"/projects/{eng['slug']}/scope/{created['id']}",
         headers=_headers(),
     )
     assert response.status_code == 204
 
-    listing = client.get(f"/engagements/{eng['slug']}/scope").json()
+    listing = client.get(f"/projects/{eng['slug']}/scope").json()
     assert listing == []
 
 
@@ -357,14 +357,14 @@ def test_scope_404_when_id_belongs_to_other_engagement(
     cleanup_slugs.extend([a["slug"], b["slug"]])
 
     item_a = client.post(
-        f"/engagements/{a['slug']}/scope",
+        f"/projects/{a['slug']}/scope",
         json={"kind": "domain", "value": "a.com"},
         headers=_headers(),
     ).json()
 
-    # Try to update under engagement b's slug — must 404.
+    # Try to update under Project b's slug — must 404.
     response = client.patch(
-        f"/engagements/{b['slug']}/scope/{item_a['id']}",
+        f"/projects/{b['slug']}/scope/{item_a['id']}",
         json={"value": "leaked.com"},
         headers=_headers(),
     )
@@ -386,7 +386,7 @@ def test_list_findings_unpacks_persisted_rows(
     # details alongside the {thread_id, args} envelope.
     db.add(
         Finding(
-            engagement_id=uuid.UUID(eng["id"]),
+            project_id=uuid.UUID(eng["id"]),
             title="dns_lookup → acme.com",
             severity=Severity.info,
             source_tool="dns_lookup",
@@ -400,7 +400,7 @@ def test_list_findings_unpacks_persisted_rows(
     )
     db.commit()
 
-    response = client.get(f"/engagements/{eng['slug']}/findings")
+    response = client.get(f"/projects/{eng['slug']}/findings")
     assert response.status_code == 200, response.text
     rows = response.json()
     assert len(rows) == 1
@@ -419,7 +419,7 @@ def test_list_findings_empty_for_new_engagement(
 ) -> None:
     eng = _create(client, f"No findings {uuid.uuid4().hex[:6]}")
     cleanup_slugs.append(eng["slug"])
-    response = client.get(f"/engagements/{eng['slug']}/findings")
+    response = client.get(f"/projects/{eng['slug']}/findings")
     assert response.status_code == 200
     assert response.json() == []
 
@@ -438,13 +438,13 @@ def test_run_endpoint_enqueues_run_start(
     cleanup_slugs.append(eng["slug"])
 
     response = client.post(
-        f"/engagements/{eng['slug']}/runs",
+        f"/projects/{eng['slug']}/runs",
         json={"prompt": "enumerate acme.com"},
         headers=_headers(),
     )
     assert response.status_code == 202, response.text
     body = response.json()
-    assert body["engagement_id"] == eng["id"]
+    assert body["project_id"] == eng["id"]
     assert body["events_stream"] == outbound_stream(uuid.UUID(eng["id"]))
 
     # Verify the envelope hit the inbound stream.
@@ -461,10 +461,10 @@ def test_run_endpoint_rejects_archived_engagement(
 ) -> None:
     eng = _create(client, "Archived no runs")
     cleanup_slugs.append(eng["slug"])
-    client.delete(f"/engagements/{eng['slug']}", headers=_headers())
+    client.delete(f"/projects/{eng['slug']}", headers=_headers())
 
     response = client.post(
-        f"/engagements/{eng['slug']}/runs",
+        f"/projects/{eng['slug']}/runs",
         json={"prompt": "should be rejected"},
         headers=_headers(),
     )
@@ -473,7 +473,7 @@ def test_run_endpoint_rejects_archived_engagement(
 
 def test_run_endpoint_404_for_unknown_engagement(client: TestClient) -> None:
     response = client.post(
-        f"/engagements/does-not-exist-{uuid.uuid4().hex[:6]}/runs",
+        f"/projects/does-not-exist-{uuid.uuid4().hex[:6]}/runs",
         json={"prompt": "..."},
         headers=_headers(),
     )
@@ -490,7 +490,7 @@ def test_run_endpoint_defaults_model_when_body_omits(
     cleanup_slugs.append(eng["slug"])
 
     response = client.post(
-        f"/engagements/{eng['slug']}/runs",
+        f"/projects/{eng['slug']}/runs",
         json={"prompt": "go"},
         headers=_headers(),
     )
@@ -515,7 +515,7 @@ def test_run_endpoint_passes_through_explicit_model(
 
     chosen = {"provider": "ollama", "name": "llama3.1:8b"}
     response = client.post(
-        f"/engagements/{eng['slug']}/runs",
+        f"/projects/{eng['slug']}/runs",
         json={"prompt": "go", "model": chosen},
         headers=_headers(),
     )
@@ -550,7 +550,7 @@ def test_run_endpoint_rejects_when_provider_key_missing(
     cleanup_slugs.append(eng["slug"])
 
     response = client.post(
-        f"/engagements/{eng['slug']}/runs",
+        f"/projects/{eng['slug']}/runs",
         json={
             "prompt": "go",
             "model": {"provider": "anthropic", "name": "claude-opus-4-7"},
@@ -580,7 +580,7 @@ def test_run_endpoint_rejects_when_provider_key_is_placeholder(
     cleanup_slugs.append(eng["slug"])
 
     response = client.post(
-        f"/engagements/{eng['slug']}/runs",
+        f"/projects/{eng['slug']}/runs",
         json={
             "prompt": "go",
             "model": {"provider": "anthropic", "name": "claude-opus-4-7"},

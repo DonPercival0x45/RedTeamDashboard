@@ -12,7 +12,7 @@ from app.models.approval import Approval, ApprovalStatus, RiskLevel
 from app.models.attachment import Attachment
 from app.models.audit_log import ActorType, AuditLog
 from app.models.authorization import Authorization
-from app.models.engagement import Engagement, EngagementStatus
+from app.models.project import Project, ProjectStatus
 from app.models.finding import Finding, FindingPhase, FindingStatus, Severity
 from app.models.observation import Observation
 from app.models.scope_item import ScopeItem, ScopeKind
@@ -39,8 +39,8 @@ __all__ = [
     "ApprovalStatus",
     "AuditLog",
     "Authorization",
-    "Engagement",
-    "EngagementStatus",
+    "Project",
+    "ProjectStatus",
     "Finding",
     "FindingPhase",
     "FindingStatus",

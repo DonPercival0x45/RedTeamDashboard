@@ -4,7 +4,7 @@ Risk: **active**. One approval authorizes the whole range (the scope gate
 matches the CIDR against in-scope CIDRs via subnet-of), then this impl fans out
 internally to each host — so the operator approves once, not per host.
 
-Scope exclusions are honored: the dispatch node injects the engagement's
+Scope exclusions are honored: the dispatch node injects the Project's
 ip/cidr exclusions as ``exclude`` and any host inside one is skipped, so a
 carved-out box is never touched even when it sits inside an approved range.
 

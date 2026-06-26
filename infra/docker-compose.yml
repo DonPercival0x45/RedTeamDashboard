@@ -4,15 +4,15 @@ services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-rtd}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rtd}
-      POSTGRES_DB: ${POSTGRES_DB:-rtd}
+      POSTGRES_USER: ${POSTGRES_USER:-XR}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-XR}
+      POSTGRES_DB: ${POSTGRES_DB:-XR}
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-rtd} -d ${POSTGRES_DB:-rtd}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-XR} -d ${POSTGRES_DB:-XR}"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -39,7 +39,7 @@ services:
       context: ../backend
     environment:
       ENV: local
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-rtd}:${POSTGRES_PASSWORD:-rtd}@postgres:5432/${POSTGRES_DB:-rtd}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-XR}:${POSTGRES_PASSWORD:-XR}@postgres:5432/${POSTGRES_DB:-XR}
       REDIS_URL: redis://redis:6379/0
       LLM_PROVIDER: ${LLM_PROVIDER:-anthropic}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
@@ -71,7 +71,7 @@ services:
     command: ["python", "-m", "app.worker.main"]
     environment:
       ENV: local
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-rtd}:${POSTGRES_PASSWORD:-rtd}@postgres:5432/${POSTGRES_DB:-rtd}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-XR}:${POSTGRES_PASSWORD:-XR}@postgres:5432/${POSTGRES_DB:-XR}
       REDIS_URL: redis://redis:6379/0
       LLM_PROVIDER: ${LLM_PROVIDER:-anthropic}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}

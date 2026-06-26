@@ -1,14 +1,14 @@
 """End-to-end worker integration against the live compose Postgres + Redis.
 
 Each test:
-1. Inserts an Engagement (+ scope items) directly via SQLAlchemy.
+1. Inserts an Project (+ scope items) directly via SQLAlchemy.
 2. Spins up a ``StreamConsumer`` in a thread, wired to a ``FakeLLM`` graph and
    a unique consumer-group name so it can't race with the compose worker.
 3. Pushes a ``run.start`` (or ``run.resume``) envelope onto the inbound stream.
 4. Reads the outbound stream until the expected terminal event arrives or the
    per-test deadline elapses.
 5. Cleans up by calling the ``flush_engagement`` SECURITY DEFINER helper from
-   migration 0001 and deleting the per-engagement Redis streams.
+   migration 0001 and deleting the per-Project Redis streams.
 """
 from __future__ import annotations
 
@@ -28,8 +28,8 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.db.session import SessionLocal
 from app.models import (
-    Engagement,
-    EngagementStatus,
+    Project,
+    ProjectStatus,
     RiskLevel,
     ScopeItem,
     ScopeKind,
@@ -72,11 +72,11 @@ def redis_client() -> Iterator[redis_lib.Redis]:
 
 
 @pytest.fixture()
-def engagement(db: Session) -> Iterator[Engagement]:
-    eng = Engagement(
+def Project(db: Session) -> Iterator[Project]:
+    eng = Project(
         name="worker-test",
         slug=f"worker-test-{uuid.uuid4().hex[:8]}",
-        status=EngagementStatus.active,
+        status=ProjectStatus.active,
     )
     db.add(eng)
     db.commit()
@@ -89,10 +89,10 @@ def engagement(db: Session) -> Iterator[Engagement]:
         db.commit()
 
 
-def _add_scope(db: Session, engagement_id: uuid.UUID, kind: ScopeKind, value: str) -> None:
+def _add_scope(db: Session, project_id: uuid.UUID, kind: ScopeKind, value: str) -> None:
     db.add(
         ScopeItem(
-            engagement_id=engagement_id,
+            project_id=project_id,
             kind=kind,
             value=value,
             is_exclusion=False,
@@ -101,8 +101,8 @@ def _add_scope(db: Session, engagement_id: uuid.UUID, kind: ScopeKind, value: st
     db.commit()
 
 
-def _delete_streams(client: redis_lib.Redis, engagement_id: uuid.UUID) -> None:
-    client.delete(inbound_stream(engagement_id), outbound_stream(engagement_id))
+def _delete_streams(client: redis_lib.Redis, project_id: uuid.UUID) -> None:
+    client.delete(inbound_stream(project_id), outbound_stream(project_id))
 
 
 # ---------------------------------------------------------------------------
@@ -114,10 +114,10 @@ def _spin_worker(
     *,
     graph: Any,
     redis_client: redis_lib.Redis,
-    engagement_id: uuid.UUID,
+    project_id: uuid.UUID,
 ) -> tuple[StreamConsumer, threading.Thread, threading.Event]:
     """Start a StreamConsumer in a daemon thread with a unique consumer group,
-    scoped to a single engagement so leftover rows from other tests can't
+    scoped to a single Project so leftover rows from other tests can't
     feed messages into this thread's FakeLLM queue."""
     runner = RunRunner(
         graph=graph,
@@ -130,7 +130,7 @@ def _spin_worker(
         session_factory=SessionLocal,
         consumer_group=f"test-{uuid.uuid4().hex[:8]}",
         refresh_interval=0.5,
-        engagement_ids=[engagement_id],
+        engagement_ids=[project_id],
     )
     # Create consumer groups synchronously BEFORE the thread starts so the
     # test can xadd immediately without racing the worker's first refresh —
@@ -177,9 +177,9 @@ def _stop(thread: threading.Thread, stop: threading.Event) -> None:
 
 
 def test_passive_run_emits_lifecycle_events(
-    db: Session, engagement: Engagement, redis_client: redis_lib.Redis
+    db: Session, Project: Project, redis_client: redis_lib.Redis
 ) -> None:
-    _add_scope(db, engagement.id, ScopeKind.domain, "acme.com")
+    _add_scope(db, Project.id, ScopeKind.domain, "acme.com")
 
     llm = FakeLLM(
         [
@@ -200,12 +200,12 @@ def test_passive_run_emits_lifecycle_events(
     _, thread, stop = _spin_worker(
         graph=graph,
         redis_client=redis_client,
-        engagement_id=engagement.id,
+        project_id=Project.id,
     )
     try:
         thread_id = str(uuid.uuid4())
         redis_client.xadd(
-            inbound_stream(engagement.id),
+            inbound_stream(Project.id),
             encode_command(
                 {
                     "type": "run.start",
@@ -217,12 +217,12 @@ def test_passive_run_emits_lifecycle_events(
 
         events = _collect_until(
             redis_client,
-            outbound_stream(engagement.id),
+            outbound_stream(Project.id),
             terminal={"run.completed", "run.errored"},
         )
     finally:
         _stop(thread, stop)
-        _delete_streams(redis_client, engagement.id)
+        _delete_streams(redis_client, Project.id)
 
     types = [e["type"] for e in events]
     assert "run.started" in types
@@ -234,7 +234,7 @@ def test_passive_run_emits_lifecycle_events(
 
 
 def test_out_of_scope_call_emits_tool_denied(
-    db: Session, engagement: Engagement, redis_client: redis_lib.Redis
+    db: Session, Project: Project, redis_client: redis_lib.Redis
 ) -> None:
     # No scope items — every tool call is out of scope.
     llm = FakeLLM(
@@ -256,12 +256,12 @@ def test_out_of_scope_call_emits_tool_denied(
     _, thread, stop = _spin_worker(
         graph=graph,
         redis_client=redis_client,
-        engagement_id=engagement.id,
+        project_id=Project.id,
     )
     try:
         thread_id = str(uuid.uuid4())
         redis_client.xadd(
-            inbound_stream(engagement.id),
+            inbound_stream(Project.id),
             encode_command(
                 {
                     "type": "run.start",
@@ -273,12 +273,12 @@ def test_out_of_scope_call_emits_tool_denied(
 
         events = _collect_until(
             redis_client,
-            outbound_stream(engagement.id),
+            outbound_stream(Project.id),
             terminal={"run.completed", "run.errored"},
         )
     finally:
         _stop(thread, stop)
-        _delete_streams(redis_client, engagement.id)
+        _delete_streams(redis_client, Project.id)
 
     types = [e["type"] for e in events]
     assert "tool.denied" in types
@@ -290,9 +290,9 @@ def test_out_of_scope_call_emits_tool_denied(
 
 
 def test_active_run_interrupts_then_resumes(
-    db: Session, engagement: Engagement, redis_client: redis_lib.Redis
+    db: Session, Project: Project, redis_client: redis_lib.Redis
 ) -> None:
-    _add_scope(db, engagement.id, ScopeKind.cidr, "10.0.0.0/24")
+    _add_scope(db, Project.id, ScopeKind.cidr, "10.0.0.0/24")
 
     portscan = ToolSpec(
         name="portscan",
@@ -327,12 +327,12 @@ def test_active_run_interrupts_then_resumes(
     _, thread, stop = _spin_worker(
         graph=graph,
         redis_client=redis_client,
-        engagement_id=engagement.id,
+        project_id=Project.id,
     )
     try:
         thread_id = str(uuid.uuid4())
         redis_client.xadd(
-            inbound_stream(engagement.id),
+            inbound_stream(Project.id),
             encode_command(
                 {
                     "type": "run.start",
@@ -344,7 +344,7 @@ def test_active_run_interrupts_then_resumes(
 
         first = _collect_until(
             redis_client,
-            outbound_stream(engagement.id),
+            outbound_stream(Project.id),
             terminal={"approval.pending", "run.errored"},
         )
         assert any(e["type"] == "approval.pending" for e in first)
@@ -354,7 +354,7 @@ def test_active_run_interrupts_then_resumes(
 
         # Approve and resume on the same thread.
         redis_client.xadd(
-            inbound_stream(engagement.id),
+            inbound_stream(Project.id),
             encode_command(
                 {
                     "type": "run.resume",
@@ -366,13 +366,13 @@ def test_active_run_interrupts_then_resumes(
 
         all_events = _collect_until(
             redis_client,
-            outbound_stream(engagement.id),
+            outbound_stream(Project.id),
             terminal={"run.completed", "run.errored"},
             deadline_s=10.0,
         )
     finally:
         _stop(thread, stop)
-        _delete_streams(redis_client, engagement.id)
+        _delete_streams(redis_client, Project.id)
 
     types = [e["type"] for e in all_events]
     assert "run.started" in types

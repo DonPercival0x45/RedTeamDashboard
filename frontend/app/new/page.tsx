@@ -17,11 +17,11 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { ScopeImporter } from "@/components/scope-importer";
-import { createEngagement, createScopeItem, startRun } from "@/lib/api";
+import { createProject, createScopeItem, startRun } from "@/lib/api";
 import type { LLMProvider, ScopeKind } from "@/lib/types";
 
-// Nessus-style engagement setup (CHARTER Idea 3): name, details, scope — then
-// "Save & start OSINT" provisions the engagement, writes the scope, and kicks
+// Nessus-style Project setup (CHARTER Idea 3): name, details, scope — then
+// "Save & start OSINT" provisions the Project, writes the scope, and kicks
 // off a passive-recon run so findings start populating immediately.
 
 const KINDS: ScopeKind[] = ["domain", "cidr", "ip", "url"];
@@ -82,7 +82,7 @@ export default function NewEngagementPage() {
     setBusy(true);
     setError(null);
     try {
-      const eng = await createEngagement({
+      const eng = await createProject({
         name: name.trim(),
         description: description.trim() || undefined,
       });
@@ -101,7 +101,7 @@ export default function NewEngagementPage() {
           });
         } else {
           // No includes → nothing in scope to scan; skip the run rather than
-          // 400, and let the analyst add scope on the engagement page.
+          // 400, and let the analyst add scope on the Project page.
           setError(null);
         }
       }
@@ -131,7 +131,7 @@ export default function NewEngagementPage() {
           ← all engagements
         </Link>
         <h1 className="mt-2 text-2xl font-semibold tracking-tight">
-          New engagement
+          New Project
         </h1>
         <p className="mt-1 text-sm text-muted-foreground">
           Name it, set scope, and start OSINT — findings begin populating on save.
@@ -154,7 +154,7 @@ export default function NewEngagementPage() {
             />
           </div>
           <div className="space-y-2">
-            <Label htmlFor="description">Description / rules of engagement</Label>
+            <Label htmlFor="description">Description / rules of Project</Label>
             <Textarea
               id="description"
               value={description}
@@ -170,7 +170,7 @@ export default function NewEngagementPage() {
         <CardHeader>
           <CardTitle className="text-base">Scope</CardTitle>
           <CardDescription>
-            Targets the engagement may touch. Tool calls outside scope are denied
+            Targets the Project may touch. Tool calls outside scope are denied
             by the gate. Add includes (and optional exclusions).
           </CardDescription>
         </CardHeader>

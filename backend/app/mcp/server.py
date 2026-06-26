@@ -1,19 +1,19 @@
 """MCP server for Red Team Dashboard.
 
-Exposes the RTD's OSINT tooling, engagement data, and findings as MCP tools,
+Exposes the RTD's OSINT tooling, Project data, and findings as MCP tools,
 resources, and prompts so any MCP-capable agent (Claude Code, Cursor, etc.)
 can orchestrate recon sessions using their own model subscription instead of
 the built-in LangGraph worker.
 
 Architecture:
-  - Tools — OSINT runners (scope-gated) + engagement management (DB writes)
-  - Resources — read-only engagement/findings/scope views for agent context
+  - Tools — OSINT runners (scope-gated) + Project management (DB writes)
+  - Resources — read-only Project/findings/scope views for agent context
   - Prompts — structured workflow templates
 
 Analyst workflow:
   1. Open Claude Code, connect to this MCP server (claude mcp add rtd …)
   2. Start a session: "What engagements do I have?"
-  3. Run passive recon: "Run passive OSINT on acme.com for the acme-q3 engagement"
+  3. Run passive recon: "Run passive OSINT on acme.com for the acme-q3 Project"
   4. Drill in: "Port scan 192.168.1.1 for acme-q3"  ← Claude Code asks first
   5. Findings appear in the viewer immediately
 
@@ -36,8 +36,8 @@ from app.models import (
     Approval,
     ApprovalStatus,
     AuditLog,
-    Engagement,
-    EngagementStatus,
+    Project,
+    ProjectStatus,
     Finding,
     FindingPhase,
     FindingStatus,
@@ -58,14 +58,14 @@ from app.orchestrator.tools.runtime import run_tool
 # ---------------------------------------------------------------------------
 
 INSTRUCTIONS = """
-You are assisting security engagement analysts using the Red Team Dashboard (RTD).
-You have access to OSINT recon tools, engagement data, and findings storage.
+You are assisting security Project analysts using the Red Team Dashboard (RTD).
+You have access to OSINT recon tools, Project data, and findings storage.
 
 CORE RULES — always follow these without exception:
 
 1. SCOPE
    Always call get_scope(engagement_slug) before running any OSINT tool.
-   Never run any tool against a target that is not in the engagement scope.
+   Never run any tool against a target that is not in the Project scope.
    The server enforces scope server-side; out-of-scope calls are rejected.
 
 2. RISK LEVELS
@@ -117,19 +117,19 @@ def _session():
         s.close()
 
 
-def _resolve_engagement(session, slug: str) -> Engagement:
+def _resolve_engagement(session, slug: str) -> Project:
     eng = session.execute(
-        select(Engagement).where(Engagement.slug == slug)
+        select(Project).where(Project.slug == slug)
     ).scalar_one_or_none()
     if eng is None:
-        raise ValueError(f"engagement '{slug}' not found")
+        raise ValueError(f"Project '{slug}' not found")
     return eng
 
 
-def _get_scope(session, eng: Engagement) -> list[ScopeSnapshot]:
+def _get_scope(session, eng: Project) -> list[ScopeSnapshot]:
     items = list(
         session.execute(
-            select(ScopeItem).where(ScopeItem.engagement_id == eng.id)
+            select(ScopeItem).where(ScopeItem.project_id == eng.id)
         ).scalars()
     )
     return normalize_scope_items(items)
@@ -137,14 +137,14 @@ def _get_scope(session, eng: Engagement) -> list[ScopeSnapshot]:
 
 def _write_audit(
     session,
-    eng: Engagement,
+    eng: Project,
     user: User,
     event_type: str,
     payload: dict[str, Any],
 ) -> None:
     session.add(
         AuditLog(
-            engagement_id=eng.id,
+            project_id=eng.id,
             actor_type=ActorType.agent,
             actor_id=str(user.id),
             event_type=event_type,
@@ -156,7 +156,7 @@ def _write_audit(
 
 def _store_findings(
     session,
-    eng: Engagement,
+    eng: Project,
     tool_name: str,
     findings: list[dict[str, Any]],
 ) -> int:
@@ -180,7 +180,7 @@ def _store_findings(
 
         session.add(
             Finding(
-                engagement_id=eng.id,
+                project_id=eng.id,
                 title=title,
                 severity=sev,
                 summary=f.get("summary"),
@@ -227,7 +227,7 @@ def _run_osint(tool_name: str, engagement_slug: str, args: dict[str, Any]) -> di
         # Approval row so the audit trail matches the LangGraph path.
         if decision.action is Action.interrupt:
             approval = Approval(
-                engagement_id=eng.id,
+                project_id=eng.id,
                 thread_id=f"mcp-{uuid.uuid4()}",
                 node="mcp_tool",
                 tool_name=tool_name,
@@ -242,7 +242,7 @@ def _run_osint(tool_name: str, engagement_slug: str, args: dict[str, Any]) -> di
             session.flush()
             session.add(
                 AuditLog(
-                    engagement_id=eng.id,
+                    project_id=eng.id,
                     actor_type=ActorType.user,
                     actor_id=str(user.id),
                     event_type="approval.decided",
@@ -280,7 +280,7 @@ def _run_osint(tool_name: str, engagement_slug: str, args: dict[str, Any]) -> di
 
 
 # ---------------------------------------------------------------------------
-# Engagement management tools
+# Project management tools
 # ---------------------------------------------------------------------------
 
 
@@ -288,13 +288,13 @@ def _run_osint(tool_name: str, engagement_slug: str, args: dict[str, Any]) -> di
 def list_engagements() -> list[dict]:
     """List all engagements in the Red Team Dashboard.
 
-    Returns name, slug, status, and description for each engagement.
+    Returns name, slug, status, and description for each Project.
     Use the slug when calling other tools.
     """
     with _session() as session:
         engagements = list(
             session.execute(
-                select(Engagement).order_by(Engagement.created_at.desc())
+                select(Project).order_by(Project.created_at.desc())
             ).scalars()
         )
         return [
@@ -311,9 +311,9 @@ def list_engagements() -> list[dict]:
 
 @mcp.tool()
 def get_engagement(engagement_slug: str) -> dict:
-    """Get full details for a single engagement including scope items and finding counts.
+    """Get full details for a single Project including scope items and finding counts.
 
-    Call this at the start of a session to understand the engagement context.
+    Call this at the start of a session to understand the Project context.
     """
     with _session() as session:
         try:
@@ -323,13 +323,13 @@ def get_engagement(engagement_slug: str) -> dict:
 
         scope_items = list(
             session.execute(
-                select(ScopeItem).where(ScopeItem.engagement_id == eng.id)
+                select(ScopeItem).where(ScopeItem.project_id == eng.id)
             ).scalars()
         )
         from sqlalchemy import func
 
         finding_count = session.execute(
-            select(func.count()).where(Finding.engagement_id == eng.id)
+            select(func.count()).where(Finding.project_id == eng.id)
         ).scalar_one()
 
         return {
@@ -353,7 +353,7 @@ def get_engagement(engagement_slug: str) -> dict:
 
 @mcp.tool()
 def create_engagement(name: str, description: str = "") -> dict:
-    """Create a new engagement.
+    """Create a new Project.
 
     Requires cli scope. The slug is auto-generated from the name.
     After creating, use add_scope_item to define what targets are in scope.
@@ -370,12 +370,12 @@ def create_engagement(name: str, description: str = "") -> dict:
 
     with _session() as session:
         existing = session.execute(
-            select(Engagement).where(Engagement.slug == slug)
+            select(Project).where(Project.slug == slug)
         ).scalar_one_or_none()
         if existing:
             return {"error": f"slug '{slug}' already exists — choose a different name"}
 
-        eng = Engagement(
+        eng = Project(
             name=name,
             slug=slug,
             description=description or None,
@@ -387,10 +387,10 @@ def create_engagement(name: str, description: str = "") -> dict:
 
         session.add(
             AuditLog(
-                engagement_id=eng.id,
+                project_id=eng.id,
                 actor_type=ActorType.agent,
                 actor_id=str(user.id),
-                event_type="mcp.engagement.created",
+                event_type="mcp.Project.created",
                 payload={"name": name, "slug": slug},
             )
         )
@@ -401,7 +401,7 @@ def create_engagement(name: str, description: str = "") -> dict:
 
 @mcp.tool()
 def get_scope(engagement_slug: str) -> dict:
-    """Get the scope items for an engagement.
+    """Get the scope items for an Project.
 
     Always call this before running any OSINT tool to verify the target
     is in scope. Returns include items (allowed targets) and exclusions
@@ -415,7 +415,7 @@ def get_scope(engagement_slug: str) -> dict:
 
         items = list(
             session.execute(
-                select(ScopeItem).where(ScopeItem.engagement_id == eng.id)
+                select(ScopeItem).where(ScopeItem.project_id == eng.id)
             ).scalars()
         )
         includes = [
@@ -429,7 +429,7 @@ def get_scope(engagement_slug: str) -> dict:
             if s.is_exclusion
         ]
         return {
-            "engagement": engagement_slug,
+            "Project": engagement_slug,
             "includes": includes,
             "exclusions": exclusions,
             "scope_kinds": ["domain", "cidr", "ip", "url"],
@@ -444,7 +444,7 @@ def add_scope_item(
     is_exclusion: bool = False,
     note: str = "",
 ) -> dict:
-    """Add a scope item to an engagement.
+    """Add a scope item to an Project.
 
     Requires cli scope.
     kind: 'domain' | 'ip' | 'cidr' | 'url'
@@ -469,7 +469,7 @@ def add_scope_item(
             return {"error": str(exc)}
 
         item = ScopeItem(
-            engagement_id=eng.id,
+            project_id=eng.id,
             kind=scope_kind,
             value=value.strip(),
             is_exclusion=is_exclusion,
@@ -479,7 +479,7 @@ def add_scope_item(
 
         session.add(
             AuditLog(
-                engagement_id=eng.id,
+                project_id=eng.id,
                 actor_type=ActorType.agent,
                 actor_id=str(user.id),
                 event_type="mcp.scope.added",
@@ -494,7 +494,7 @@ def add_scope_item(
 
         return {
             "added": {"kind": kind, "value": value, "is_exclusion": is_exclusion},
-            "engagement": engagement_slug,
+            "Project": engagement_slug,
         }
 
 
@@ -505,7 +505,7 @@ def list_findings(
     source_tool: str = "",
     limit: int = 50,
 ) -> dict:
-    """List findings for an engagement.
+    """List findings for an Project.
 
     Optionally filter by severity (info/low/medium/high/critical) or source_tool.
     Returns the most recent findings first, up to `limit` (max 200).
@@ -516,7 +516,7 @@ def list_findings(
         except ValueError as exc:
             return {"error": str(exc)}
 
-        q = select(Finding).where(Finding.engagement_id == eng.id)
+        q = select(Finding).where(Finding.project_id == eng.id)
         if severity:
             try:
                 q = q.where(Finding.severity == Severity(severity))
@@ -529,7 +529,7 @@ def list_findings(
         findings = list(session.execute(q).scalars())
 
         return {
-            "engagement": engagement_slug,
+            "Project": engagement_slug,
             "count": len(findings),
             "findings": [
                 {
@@ -558,7 +558,7 @@ def create_finding(
     details: str = "",
     source_tool: str = "analyst",
 ) -> dict:
-    """Store an analyst-authored finding in an engagement.
+    """Store an analyst-authored finding in an Project.
 
     Requires cli scope. Use this to record findings you identify through
     reasoning, manual testing, or observations — not just tool outputs
@@ -595,7 +595,7 @@ def create_finding(
             return {"error": str(exc)}
 
         finding = Finding(
-            engagement_id=eng.id,
+            project_id=eng.id,
             title=title,
             severity=sev,
             summary=summary or None,
@@ -609,7 +609,7 @@ def create_finding(
 
         session.add(
             AuditLog(
-                engagement_id=eng.id,
+                project_id=eng.id,
                 actor_type=ActorType.agent,
                 actor_id=str(user.id),
                 event_type="mcp.finding.created",
@@ -635,7 +635,7 @@ def dns_lookup(engagement_slug: str, domain: str) -> dict:
     Verify the domain is in scope with get_scope() before calling.
 
     Returns resolved IPs, CNAME chains, and TTL values.
-    Findings are automatically stored in the engagement.
+    Findings are automatically stored in the Project.
     """
     return _run_osint("dns_lookup", engagement_slug, {"domain": domain})
 
@@ -647,7 +647,7 @@ def whois_lookup(engagement_slug: str, domain: str) -> dict:
     Returns registrar, registration dates, name servers, and registrant
     info where available. Useful for attributing infrastructure ownership.
 
-    Findings are automatically stored in the engagement.
+    Findings are automatically stored in the Project.
     """
     return _run_osint("whois_lookup", engagement_slug, {"domain": domain})
 
@@ -660,7 +660,7 @@ def crt_sh(engagement_slug: str, domain: str) -> dict:
     to the domain and its subdomains. Reveals infrastructure that may not
     be indexed by DNS or search engines.
 
-    Findings are automatically stored in the engagement.
+    Findings are automatically stored in the Project.
     """
     return _run_osint("crt_sh", engagement_slug, {"domain": domain})
 
@@ -673,7 +673,7 @@ def httpx_probe(engagement_slug: str, url: str) -> dict:
     title, server header, and detected technologies (via response headers
     and body patterns). Use this to quickly assess what a web service is.
 
-    Findings are automatically stored in the engagement.
+    Findings are automatically stored in the Project.
     """
     return _run_osint("httpx_probe", engagement_slug, {"url": url})
 
@@ -686,7 +686,7 @@ def subfinder(engagement_slug: str, domain: str) -> dict:
     passive sources to enumerate subdomains without touching target systems.
     Good first step before DNS resolution or port scanning.
 
-    Findings are automatically stored in the engagement.
+    Findings are automatically stored in the Project.
     """
     return _run_osint("subfinder", engagement_slug, {"domain": domain})
 
@@ -698,7 +698,7 @@ def reverse_dns(engagement_slug: str, ip: str) -> dict:
     Looks up the PTR record for an IP to identify the hostname. Useful
     for understanding what a discovered IP belongs to before scanning it.
 
-    Findings are automatically stored in the engagement.
+    Findings are automatically stored in the Project.
     """
     return _run_osint("reverse_dns", engagement_slug, {"ip": ip})
 
@@ -721,7 +721,7 @@ def port_scan(engagement_slug: str, target: str, ports: str = "") -> dict:
            or '8000-8100'. Omit to scan ~1000 common ports.
 
     Scope is enforced server-side — out-of-scope targets are rejected.
-    Findings are automatically stored in the engagement.
+    Findings are automatically stored in the Project.
     """
     args: dict[str, Any] = {"target": target}
     if ports:
@@ -742,7 +742,7 @@ def subnet_sweep(engagement_slug: str, cidr: str, ports: str = "") -> dict:
     cidr: target network e.g. '192.168.1.0/24'
     ports: optional ports/ranges. Omit to scan ~1000 common ports per host.
 
-    Findings are automatically stored in the engagement.
+    Findings are automatically stored in the Project.
     """
     args: dict[str, Any] = {"cidr": cidr}
     if ports:
@@ -764,7 +764,7 @@ def service_detect(engagement_slug: str, target: str, ports: str = "") -> dict:
     target: IP address or hostname.
     ports: recommended — the open ports from a prior port_scan.
 
-    Findings are automatically stored in the engagement.
+    Findings are automatically stored in the Project.
     """
     args: dict[str, Any] = {"target": target}
     if ports:
@@ -773,7 +773,7 @@ def service_detect(engagement_slug: str, target: str, ports: str = "") -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Resources — read-only engagement data for agent context
+# Resources — read-only Project data for agent context
 # ---------------------------------------------------------------------------
 
 
@@ -790,13 +790,13 @@ def resource_engagements() -> str:
 
         rows = session.execute(
             select(
-                Engagement,
+                Project,
                 select(func.count())
-                .where(Finding.engagement_id == Engagement.id)
-                .correlate(Engagement)
+                .where(Finding.project_id == Project.id)
+                .correlate(Project)
                 .scalar_subquery()
                 .label("finding_count"),
-            ).order_by(Engagement.created_at.desc())
+            ).order_by(Project.created_at.desc())
         ).all()
 
         data = [
@@ -813,24 +813,24 @@ def resource_engagements() -> str:
         return _json.dumps(data, indent=2)
 
 
-@mcp.resource("engagement://{slug}")
+@mcp.resource("Project://{slug}")
 def resource_engagement(slug: str) -> str:
-    """Full engagement context: metadata, scope, and recent high/critical findings.
+    """Full Project context: metadata, scope, and recent high/critical findings.
 
-    Load this when starting work on a specific engagement to orient yourself.
+    Load this when starting work on a specific Project to orient yourself.
     """
     import json as _json
 
     with _session() as session:
         eng = session.execute(
-            select(Engagement).where(Engagement.slug == slug)
+            select(Project).where(Project.slug == slug)
         ).scalar_one_or_none()
         if eng is None:
-            return _json.dumps({"error": f"engagement '{slug}' not found"})
+            return _json.dumps({"error": f"Project '{slug}' not found"})
 
         scope_items = list(
             session.execute(
-                select(ScopeItem).where(ScopeItem.engagement_id == eng.id)
+                select(ScopeItem).where(ScopeItem.project_id == eng.id)
             ).scalars()
         )
 
@@ -838,7 +838,7 @@ def resource_engagement(slug: str) -> str:
             session.execute(
                 select(Finding)
                 .where(
-                    Finding.engagement_id == eng.id,
+                    Finding.project_id == eng.id,
                     Finding.severity.in_([Severity.high, Severity.critical]),
                 )
                 .order_by(Finding.created_at.desc())
@@ -879,7 +879,7 @@ def resource_engagement(slug: str) -> str:
 
 @mcp.resource("findings://{slug}")
 def resource_findings(slug: str) -> str:
-    """All findings for an engagement, ordered by severity then creation date.
+    """All findings for an Project, ordered by severity then creation date.
 
     Use this to review what has been discovered so far and identify gaps.
     """
@@ -887,10 +887,10 @@ def resource_findings(slug: str) -> str:
 
     with _session() as session:
         eng = session.execute(
-            select(Engagement).where(Engagement.slug == slug)
+            select(Project).where(Project.slug == slug)
         ).scalar_one_or_none()
         if eng is None:
-            return _json.dumps({"error": f"engagement '{slug}' not found"})
+            return _json.dumps({"error": f"Project '{slug}' not found"})
 
         sev_order = {
             Severity.critical: 0,
@@ -903,7 +903,7 @@ def resource_findings(slug: str) -> str:
         findings = list(
             session.execute(
                 select(Finding)
-                .where(Finding.engagement_id == eng.id)
+                .where(Finding.project_id == eng.id)
                 .order_by(Finding.created_at.desc())
                 .limit(500)
             ).scalars()
@@ -912,7 +912,7 @@ def resource_findings(slug: str) -> str:
 
         return _json.dumps(
             {
-                "engagement": slug,
+                "Project": slug,
                 "total": len(findings),
                 "findings": [
                     {
@@ -945,7 +945,7 @@ def passive_recon(engagement_slug: str, target: str) -> str:
     Runs the full passive OSINT chain without touching the target directly.
     """
     return f"""
-Run passive OSINT on target '{target}' for engagement '{engagement_slug}'.
+Run passive OSINT on target '{target}' for Project '{engagement_slug}'.
 
 Follow this sequence:
 1. Call get_scope('{engagement_slug}') — verify '{target}' is in scope before
@@ -978,11 +978,11 @@ def active_enum(engagement_slug: str, target: str, ports: str = "") -> str:
     """
     port_hint = f" Focus on ports: {ports}." if ports else ""
     return f"""
-Run active enumeration on '{target}' for engagement '{engagement_slug}'.
+Run active enumeration on '{target}' for Project '{engagement_slug}'.
 
 IMPORTANT: Before doing anything, confirm with the analyst:
   "I'm about to run active tools (port scan + service detection) against
-  {target} for the {engagement_slug} engagement.{port_hint} Shall I proceed?"
+  {target} for the {engagement_slug} Project.{port_hint} Shall I proceed?"
 
 Wait for their explicit confirmation before calling any tools.
 
@@ -1010,11 +1010,11 @@ def strategic_planning(engagement_slug: str, finding_id: str) -> str:
 
     return f"""{STRATEGIC_SYSTEM_PROMPT}
 
-You are acting as Strategic for engagement '{engagement_slug}', finding
+You are acting as Strategic for Project '{engagement_slug}', finding
 {finding_id}. Follow this sequence:
 
 1. Call get_finding_context('{engagement_slug}', '{finding_id}') — read the
-   finding, the engagement scope, and the registered OSINT tool list.
+   finding, the Project scope, and the registered OSINT tool list.
 2. Call list_open_suggestions('{engagement_slug}', '{finding_id}') — see what
    is already on the board so you don't duplicate work.
 3. Decide on 0–N concrete next-step tasks. Each MUST be scan or enum, MUST
@@ -1040,10 +1040,10 @@ entirely. Empty is a valid answer.
 def deep_dive(engagement_slug: str, finding_id: str) -> str:
     """Drill into a specific finding to assess validation potential and impact."""
     return f"""
-Investigate finding {finding_id} from engagement '{engagement_slug}'.
+Investigate finding {finding_id} from Project '{engagement_slug}'.
 
 Steps:
-1. Load the engagement context: use the engagement://{engagement_slug} resource.
+1. Load the Project context: use the Project://{engagement_slug} resource.
 2. Find the specific finding in findings://{engagement_slug} or via
    list_findings('{engagement_slug}').
 3. Based on the finding's target, tool source, and details, determine:
@@ -1066,7 +1066,7 @@ Steps:
 
 @mcp.tool()
 def export_engagement(engagement_slug: str) -> dict:
-    """[ADMIN] Export all engagement data to Azure Blob Storage.
+    """[ADMIN] Export all Project data to Azure Blob Storage.
 
     Exports findings, scope, metadata, and audit summary as JSON.
     Returns the blob URL if storage is configured, or the data inline if not.
@@ -1079,7 +1079,7 @@ def export_engagement(engagement_slug: str) -> dict:
         return {"error": "requires admin scope to export engagements"}
 
 
-    from app.api.engagements import _build_export_payload
+    from app.api.projects import _build_export_payload
     from app.core.blob import upload_engagement_export
     from app.db.session import SessionLocal as _SL
 
@@ -1097,10 +1097,10 @@ def export_engagement(engagement_slug: str) -> dict:
                 return getattr(self._s, name)
 
         eng = s.execute(
-            select(Engagement).where(Engagement.slug == engagement_slug)
+            select(Project).where(Project.slug == engagement_slug)
         ).scalar_one_or_none()
         if eng is None:
-            return {"error": f"engagement '{engagement_slug}' not found"}
+            return {"error": f"Project '{engagement_slug}' not found"}
         payload = _build_export_payload(s, eng)
         blob_url = upload_engagement_export(engagement_slug, payload)
         if blob_url:
@@ -1112,9 +1112,9 @@ def export_engagement(engagement_slug: str) -> dict:
 
 @mcp.tool()
 def archive_engagement(engagement_slug: str) -> dict:
-    """[ADMIN] Export and archive an engagement.
+    """[ADMIN] Export and archive an Project.
 
-    Marks the engagement as archived — it stays in the database but is
+    Marks the Project as archived — it stays in the database but is
     excluded from active views. An export is uploaded to blob storage first.
     Requires admin scope. Reversible (can be unarchived via PATCH /engagements/{slug}).
     """
@@ -1128,20 +1128,20 @@ def archive_engagement(engagement_slug: str) -> dict:
     from datetime import UTC
     from datetime import datetime as _dt
 
-    from app.api.engagements import _build_export_payload
+    from app.api.projects import _build_export_payload
     from app.core.blob import upload_engagement_export
 
     with _session() as session:
         eng = session.execute(
-            select(Engagement).where(Engagement.slug == engagement_slug)
+            select(Project).where(Project.slug == engagement_slug)
         ).scalar_one_or_none()
         if eng is None:
-            return {"error": f"engagement '{engagement_slug}' not found"}
-        if eng.status == EngagementStatus.flushed:
-            return {"error": "engagement has been flushed"}
+            return {"error": f"Project '{engagement_slug}' not found"}
+        if eng.status == ProjectStatus.flushed:
+            return {"error": "Project has been flushed"}
 
-        if eng.status != EngagementStatus.archived:
-            eng.status = EngagementStatus.archived
+        if eng.status != ProjectStatus.archived:
+            eng.status = ProjectStatus.archived
             eng.archived_at = _dt.now(tz=UTC)
             session.commit()
             session.refresh(eng)
@@ -1150,10 +1150,10 @@ def archive_engagement(engagement_slug: str) -> dict:
 
         session.add(
             AuditLog(
-                engagement_id=eng.id,
+                project_id=eng.id,
                 actor_type=ActorType.agent,
                 actor_id=str(user.id),
-                event_type="mcp.engagement.archived",
+                event_type="mcp.Project.archived",
                 payload={"blob_url": blob_url},
             )
         )
@@ -1169,10 +1169,10 @@ def archive_engagement(engagement_slug: str) -> dict:
 
 @mcp.tool()
 def flush_engagement_data(engagement_slug: str, confirmed: bool = False) -> dict:
-    """[ADMIN — DESTRUCTIVE] Export then permanently delete all engagement data.
+    """[ADMIN — DESTRUCTIVE] Export then permanently delete all Project data.
 
-    Removes the engagement and ALL associated data (findings, scope, approvals,
-    audit logs) from the database. The engagement disappears from the viewer.
+    Removes the Project and ALL associated data (findings, scope, approvals,
+    audit logs) from the database. The Project disappears from the viewer.
     An export is uploaded to blob storage first as a safety net.
 
     THIS CANNOT BE UNDONE. Set confirmed=True to proceed.
@@ -1189,7 +1189,7 @@ def flush_engagement_data(engagement_slug: str, confirmed: bool = False) -> dict
         return {
             "error": "confirmation required",
             "message": (
-                f"This will permanently delete ALL data for engagement '{engagement_slug}' "
+                f"This will permanently delete ALL data for Project '{engagement_slug}' "
                 "including all findings, scope, approvals, and audit logs. "
                 "Call again with confirmed=True to proceed."
             ),
@@ -1197,15 +1197,15 @@ def flush_engagement_data(engagement_slug: str, confirmed: bool = False) -> dict
 
     from sqlalchemy import text as _text
 
-    from app.api.engagements import _build_export_payload
+    from app.api.projects import _build_export_payload
     from app.core.blob import upload_engagement_export
 
     with _session() as session:
         eng = session.execute(
-            select(Engagement).where(Engagement.slug == engagement_slug)
+            select(Project).where(Project.slug == engagement_slug)
         ).scalar_one_or_none()
         if eng is None:
-            return {"error": f"engagement '{engagement_slug}' not found"}
+            return {"error": f"Project '{engagement_slug}' not found"}
 
         eid = eng.id
         payload = _build_export_payload(session, eng)
@@ -1240,14 +1240,14 @@ def flush_engagement_data(engagement_slug: str, confirmed: bool = False) -> dict
 
 @mcp.tool()
 def get_finding_context(engagement_slug: str, finding_id: str) -> dict:
-    """Read a finding plus the engagement scope and OSINT tool registry — the
+    """Read a finding plus the Project scope and OSINT tool registry — the
     full context Strategic plans over.
 
     Use this when acting as the Strategic watcher: read the returned context,
     decide on next-step scan/enum tasks, then call ``propose_strategic_suggestion``
     once per proposed task. Read-only. Viewer scope is sufficient.
 
-    Returns a dict shaped: {engagement, finding, scope, tools, charter_rules}.
+    Returns a dict shaped: {Project, finding, scope, tools, charter_rules}.
     """
     from app.models import Finding as _Finding
 
@@ -1263,12 +1263,12 @@ def get_finding_context(engagement_slug: str, finding_id: str) -> dict:
             return {"error": f"invalid finding_id {finding_id!r} — must be a UUID"}
 
         finding = session.get(_Finding, fid)
-        if finding is None or finding.engagement_id != eng.id:
+        if finding is None or finding.project_id != eng.id:
             return {"error": f"finding {finding_id} not found in {engagement_slug}"}
 
         scope_items = list(
             session.execute(
-                select(ScopeItem).where(ScopeItem.engagement_id == eng.id)
+                select(ScopeItem).where(ScopeItem.project_id == eng.id)
             ).scalars()
         )
 
@@ -1286,7 +1286,7 @@ def get_finding_context(engagement_slug: str, finding_id: str) -> dict:
         ]
 
         return {
-            "engagement": {
+            "Project": {
                 "slug": eng.slug,
                 "name": eng.name,
                 "description": eng.description,
@@ -1318,7 +1318,7 @@ def get_finding_context(engagement_slug: str, finding_id: str) -> dict:
             "charter_rules": [
                 "Agents scan, analysts exploit. Never propose exploit-kind tasks.",
                 "Only propose tools from the provided registry.",
-                "Targets MUST be inside the engagement's scope.",
+                "Targets MUST be inside the Project's scope.",
                 "Each proposed task is one concrete next step (one tool + one target).",
                 "An empty proposal list is a valid answer.",
             ],
@@ -1419,21 +1419,21 @@ def propose_strategic_suggestion(
             eng = _resolve_engagement(session, engagement_slug)
         except ValueError as exc:
             return {"error": str(exc)}
-        if eng.status is not EngagementStatus.active:
+        if eng.status is not ProjectStatus.active:
             return {
                 "error": (
-                    f"engagement is {eng.status.value}; only active engagements"
+                    f"Project is {eng.status.value}; only active engagements"
                     " accept new suggestions"
                 )
             }
 
         finding = session.get(_Finding, fid)
-        if finding is None or finding.engagement_id != eng.id:
+        if finding is None or finding.project_id != eng.id:
             return {"error": f"finding {finding_id} not found in {engagement_slug}"}
 
         now = datetime.now(tz=UTC)
         execution = AgentExecution(
-            engagement_id=eng.id,
+            project_id=eng.id,
             agent=AgentName.strategic,
             trigger=AgentTrigger.manual,
             input={
@@ -1451,7 +1451,7 @@ def propose_strategic_suggestion(
         session.flush()
 
         suggestion = Suggestion(
-            engagement_id=eng.id,
+            project_id=eng.id,
             finding_id=finding.id,
             title=title,
             body=body or None,
@@ -1474,7 +1474,7 @@ def propose_strategic_suggestion(
 
         session.add(
             AuditLog(
-                engagement_id=eng.id,
+                project_id=eng.id,
                 actor_type=ActorType.agent,
                 actor_id=str(user.id),
                 event_type="mcp.strategic.proposed",
@@ -1506,7 +1506,7 @@ def propose_strategic_suggestion(
 def list_open_suggestions(
     engagement_slug: str, finding_id: str | None = None
 ) -> list[dict]:
-    """List open Strategic suggestions for an engagement.
+    """List open Strategic suggestions for an Project.
 
     Call before proposing more suggestions to avoid duplicates. Optionally
     filter to a single finding. Read-only.
@@ -1521,7 +1521,7 @@ def list_open_suggestions(
 
         stmt = (
             select(Suggestion)
-            .where(Suggestion.engagement_id == eng.id)
+            .where(Suggestion.project_id == eng.id)
             .where(Suggestion.status == SuggestionStatus.open)
             .order_by(Suggestion.created_at.desc())
         )

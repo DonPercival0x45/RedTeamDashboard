@@ -1,4 +1,4 @@
-// SSE wrapper around the backend's /engagements/{slug}/events feed.
+// SSE wrapper around the backend's /projects/{slug}/events feed.
 //
 // Uses @microsoft/fetch-event-source because the standard EventSource API
 // can't send custom headers (we need the auth header). fetch-event-source
@@ -20,7 +20,7 @@ export interface SubscribeOptions {
 }
 
 export async function subscribeToEvents(opts: SubscribeOptions): Promise<void> {
-  const url = new URL(`${API_BASE_URL}/engagements/${opts.slug}/events`);
+  const url = new URL(`${API_BASE_URL}/projects/${opts.slug}/events`);
   if (opts.thread) url.searchParams.set("thread", opts.thread);
 
   // Resolve auth once at subscribe time; the stream stays authorized for its

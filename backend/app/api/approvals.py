@@ -1,11 +1,11 @@
 """Approvals HTTP surface.
 
-- ``GET  /engagements/{eid}/approvals?status=pending`` — list rows for an engagement
+- ``GET  /engagements/{eid}/approvals?status=pending`` — list rows for an Project
 - ``GET  /approvals/{id}``                            — fetch one
 - ``POST /approvals/{id}/decision``                   — decide a pending approval
 
 The decision endpoint updates the row in-place and pushes a ``run.resume``
-envelope onto ``runs:{engagement_id}:in`` so the worker can resume the paused
+envelope onto ``runs:{project_id}:in`` so the worker can resume the paused
 LangGraph thread with ``Command(resume=...)``.
 """
 from __future__ import annotations
@@ -33,15 +33,15 @@ router = APIRouter()
 
 
 @router.get(
-    "/engagements/{engagement_id}/approvals",
+    "/engagements/{project_id}/approvals",
     response_model=list[ApprovalRead],
 )
 def list_approvals(
-    engagement_id: UUID,
+    project_id: UUID,
     session: DbSession,
     status: Annotated[ApprovalStatus | None, Query()] = None,
 ) -> list[Approval]:
-    stmt = select(Approval).where(Approval.engagement_id == engagement_id)
+    stmt = select(Approval).where(Approval.project_id == project_id)
     if status is not None:
         stmt = stmt.where(Approval.status == status)
     stmt = stmt.order_by(Approval.created_at.desc())
@@ -92,20 +92,20 @@ def decide_approval(
         decision_args["reason"] = body.reason
     approval.decision_args = decision_args
 
-    # Approving "for the session" grants a standing per-(engagement, tool)
+    # Approving "for the session" grants a standing per-(Project, tool)
     # authorization so future in-scope calls to this tool auto-run. Reuse an
     # existing active grant rather than duplicating it.
     if body.approved and body.remember_for_session:
         grant = session.execute(
             select(Authorization).where(
-                Authorization.engagement_id == approval.engagement_id,
+                Authorization.project_id == approval.project_id,
                 Authorization.tool_name == approval.tool_name,
                 Authorization.revoked_at.is_(None),
             )
         ).scalar_one_or_none()
         if grant is None:
             grant = Authorization(
-                engagement_id=approval.engagement_id,
+                project_id=approval.project_id,
                 tool_name=approval.tool_name,
                 granted_by=user.id,
                 note=f"granted while approving a {approval.tool_name} call",
@@ -114,7 +114,7 @@ def decide_approval(
             session.flush()  # assign grant.id
             session.add(
                 AuditLog(
-                    engagement_id=approval.engagement_id,
+                    project_id=approval.project_id,
                     actor_type=ActorType.user,
                     actor_id=str(user.id),
                     event_type="authorization.granted",
@@ -129,7 +129,7 @@ def decide_approval(
 
     session.add(
         AuditLog(
-            engagement_id=approval.engagement_id,
+            project_id=approval.project_id,
             actor_type=ActorType.user,
             actor_id=str(user.id),
             event_type="approval.decided",
@@ -165,7 +165,7 @@ def decide_approval(
         resume_payload["model"] = cached_model
 
     redis_client.xadd(
-        inbound_stream(approval.engagement_id),
+        inbound_stream(approval.project_id),
         encode_command(resume_payload),
     )
 

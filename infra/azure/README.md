@@ -1,4 +1,4 @@
-# Azure deploy — Red Team Dashboard
+# Azure deploy — Project X-Ray
 
 Bicep IaC for the Phase 0 Azure stack. Targets **Container Apps** (consumption tier) — same Dockerfiles as `docker compose`, no Kubernetes to manage.
 
@@ -39,7 +39,7 @@ az bicep build --file infra/azure/main.bicep
 read -srp "postgres password: " PG_PW; echo
 
 az deployment sub create \
-    --name rtd-initial \
+    --name xray-initial \
     --location eastus \
     --template-file infra/azure/main.bicep \
     --parameters infra/azure/main.bicepparam \
@@ -52,28 +52,28 @@ This creates the resource group, all infra, and the three Container Apps. The ap
 
 ```bash
 # Grab the ACR login server from the deploy outputs
-ACR=$(az deployment sub show -n rtd-initial --query properties.outputs.acrLoginServer.value -o tsv)
-RG=$(az deployment sub show -n rtd-initial --query properties.outputs.resourceGroupName.value -o tsv)
+ACR=$(az deployment sub show -n xray-initial --query properties.outputs.acrLoginServer.value -o tsv)
+RG=$(az deployment sub show -n xray-initial --query properties.outputs.resourceGroupName.value -o tsv)
 TAG=$(git rev-parse --short HEAD)
 
 az acr login -n "${ACR%%.*}"
 
 # Backend image (same image is used for the worker — different command).
-docker build -t "$ACR/rtd-backend:$TAG" backend/
-docker push "$ACR/rtd-backend:$TAG"
+docker build -t "$ACR/xray-backend:$TAG" backend/
+docker push "$ACR/xray-backend:$TAG"
 
 # Worker uses the same artifact. (Tag separately so we can pin versions
 # independently down the line, e.g. canary the worker on a newer image.)
-docker tag "$ACR/rtd-backend:$TAG" "$ACR/rtd-worker:$TAG"
-docker push "$ACR/rtd-worker:$TAG"
+docker tag "$ACR/xray-backend:$TAG" "$ACR/xray-worker:$TAG"
+docker push "$ACR/xray-worker:$TAG"
 
 # Frontend — must bake NEXT_PUBLIC_API_BASE at build time.
-BACKEND_FQDN=$(az deployment sub show -n rtd-initial --query properties.outputs.backendFqdn.value -o tsv)
+BACKEND_FQDN=$(az deployment sub show -n xray-initial --query properties.outputs.backendFqdn.value -o tsv)
 docker build \
     --build-arg NEXT_PUBLIC_API_BASE="https://$BACKEND_FQDN" \
     --target runner \
-    -t "$ACR/rtd-frontend:$TAG" frontend/
-docker push "$ACR/rtd-frontend:$TAG"
+    -t "$ACR/xray-frontend:$TAG" frontend/
+docker push "$ACR/xray-frontend:$TAG"
 ```
 
 > The frontend `builder` stage accepts `NEXT_PUBLIC_API_BASE` as a build arg and inlines it into the client bundle. If you omit `--build-arg`, the bundle falls back to `http://localhost:8000` (wrong for a deployed frontend), so always pass the backend FQDN as shown above.
@@ -84,7 +84,7 @@ Either re-run the deploy with the tag…
 
 ```bash
 az deployment sub create \
-    --name rtd-roll-$TAG \
+    --name xray-roll-$TAG \
     --location eastus \
     --template-file infra/azure/main.bicep \
     --parameters infra/azure/main.bicepparam \
@@ -95,9 +95,9 @@ az deployment sub create \
 …or update each app directly (faster, no full template eval):
 
 ```bash
-az containerapp update -n rtd-dev-backend  -g $RG --image "$ACR/rtd-backend:$TAG"
-az containerapp update -n rtd-dev-worker   -g $RG --image "$ACR/rtd-worker:$TAG"
-az containerapp update -n rtd-dev-frontend -g $RG --image "$ACR/rtd-frontend:$TAG"
+az containerapp update -n xray-dev-backend  -g $RG --image "$ACR/xray-backend:$TAG"
+az containerapp update -n xray-dev-worker   -g $RG --image "$ACR/xray-worker:$TAG"
+az containerapp update -n xray-dev-frontend -g $RG --image "$ACR/xray-frontend:$TAG"
 ```
 
 ## Populate the LLM secrets
@@ -105,7 +105,7 @@ az containerapp update -n rtd-dev-frontend -g $RG --image "$ACR/rtd-frontend:$TA
 Key Vault is seeded with `PLACEHOLDER` for every LLM-related key. Rotate them once:
 
 ```bash
-KV=$(az deployment sub show -n rtd-initial --query properties.outputs.keyVaultName.value -o tsv)
+KV=$(az deployment sub show -n xray-initial --query properties.outputs.keyVaultName.value -o tsv)
 
 # If you're using Azure OpenAI (LLM_PROVIDER=azure):
 az keyvault secret set --vault-name $KV --name azure-openai-endpoint   --value "https://<your-aoai-resource>.openai.azure.com"
@@ -119,8 +119,8 @@ az keyvault secret set --vault-name $KV --name anthropic-api-key --value "sk-ant
 Restart the apps so they pick up the new secret values:
 
 ```bash
-az containerapp revision restart -n rtd-dev-backend -g $RG --revision $(az containerapp revision list -n rtd-dev-backend -g $RG --query "[0].name" -o tsv)
-az containerapp revision restart -n rtd-dev-worker  -g $RG --revision $(az containerapp revision list -n rtd-dev-worker  -g $RG --query "[0].name" -o tsv)
+az containerapp revision restart -n xray-dev-backend -g $RG --revision $(az containerapp revision list -n xray-dev-backend -g $RG --query "[0].name" -o tsv)
+az containerapp revision restart -n xray-dev-worker  -g $RG --revision $(az containerapp revision list -n xray-dev-worker  -g $RG --query "[0].name" -o tsv)
 ```
 
 ## Run the database migrations
@@ -128,14 +128,14 @@ az containerapp revision restart -n rtd-dev-worker  -g $RG --revision $(az conta
 Alembic doesn't run automatically. Exec into a backend revision once:
 
 ```bash
-az containerapp exec -n rtd-dev-backend -g $RG --command "alembic upgrade head"
+az containerapp exec -n xray-dev-backend -g $RG --command "alembic upgrade head"
 ```
 
 ## Verify
 
 ```bash
-BACKEND=$(az deployment sub show -n rtd-initial --query properties.outputs.backendFqdn.value -o tsv)
-FRONTEND=$(az deployment sub show -n rtd-initial --query properties.outputs.frontendFqdn.value -o tsv)
+BACKEND=$(az deployment sub show -n xray-initial --query properties.outputs.backendFqdn.value -o tsv)
+FRONTEND=$(az deployment sub show -n xray-initial --query properties.outputs.frontendFqdn.value -o tsv)
 
 curl "https://$BACKEND/health"
 open "https://$FRONTEND"
@@ -144,12 +144,12 @@ open "https://$FRONTEND"
 ## Teardown
 
 ```bash
-RG=$(az deployment sub show -n rtd-initial --query properties.outputs.resourceGroupName.value -o tsv)
+RG=$(az deployment sub show -n xray-initial --query properties.outputs.resourceGroupName.value -o tsv)
 az group delete --name $RG --yes --no-wait
 
 # Key Vault stays in soft-deleted state for 7 days; purge if you want the
 # name back immediately:
-az keyvault purge --name $(az deployment sub show -n rtd-initial --query properties.outputs.keyVaultName.value -o tsv)
+az keyvault purge --name $(az deployment sub show -n xray-initial --query properties.outputs.keyVaultName.value -o tsv)
 ```
 
 ## What's NOT in here yet

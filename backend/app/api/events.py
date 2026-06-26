@@ -34,7 +34,7 @@ from sqlalchemy import select
 from starlette.responses import StreamingResponse
 
 from app.api.deps import AsyncRedisClient, CurrentUser, DbSession
-from app.models import Engagement
+from app.models import Project
 from app.runs.streams import outbound_stream
 
 router = APIRouter()
@@ -144,10 +144,10 @@ async def stream_events(
     ] = None,
 ) -> StreamingResponse:
     eng = session.execute(
-        select(Engagement).where(Engagement.slug == slug)
+        select(Project).where(Project.slug == slug)
     ).scalar_one_or_none()
     if eng is None:
-        raise HTTPException(status_code=404, detail="engagement not found")
+        raise HTTPException(status_code=404, detail="Project not found")
 
     stream = outbound_stream(eng.id)
     start_id = last_event_id if last_event_id else "$"

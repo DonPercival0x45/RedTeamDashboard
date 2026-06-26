@@ -1,10 +1,10 @@
-// Azure Static Web App that hosts the RTD viewer for this tenant.
+// Azure Static Web App that hosts the XR viewer for this tenant.
 //
 // The viewer is a pure Next.js static export (HTML+JS, no server). End
 // users land at the SWA's default URL, sign in with Entra ID (gated via
 // staticwebapp.config.json), then paste their backend URL + API key into
 // a Source. Multi-source is preserved — one viewer can read from any
-// number of RTD deployments the operator has keys for.
+// number of XR deployments the operator has keys for.
 //
 // SKU: Free tier — 100 GB bandwidth/mo, custom domain + AAD auth
 // included. No real-world reason to upgrade for this use case.

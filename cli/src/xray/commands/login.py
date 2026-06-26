@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import click
 
-from rtd.config import Profile
-from rtd.output import console
+from xray.config import Profile
+from xray.output import console
 
 
 @click.command()

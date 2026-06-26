@@ -102,7 +102,7 @@ def test_valid_bearer_resolves_and_creates_user(
     token = _token(rsa_key, oid=oid, preferred_username=email, name="Jane Analyst")
 
     resp = client.post(
-        "/engagements", json={"name": "Via Entra"}, headers=_bearer(token)
+        "/projects", json={"name": "Via Entra"}, headers=_bearer(token)
     )
     assert resp.status_code == 201, resp.text
 
@@ -123,7 +123,7 @@ def test_expired_token_is_401(
     )
     past = dt.datetime.now(tz=dt.UTC) - dt.timedelta(hours=1)
     token = _token(rsa_key, exp=past)
-    resp = client.post("/engagements", json={"name": "x"}, headers=_bearer(token))
+    resp = client.post("/projects", json={"name": "x"}, headers=_bearer(token))
     assert resp.status_code == 401
     assert "invalid token" in resp.json()["detail"]
 
@@ -136,7 +136,7 @@ def test_wrong_audience_is_401(
         return_value=httpx.Response(200, json=_jwks(rsa_key))
     )
     token = _token(rsa_key, aud="api://some-other-app")
-    resp = client.post("/engagements", json={"name": "x"}, headers=_bearer(token))
+    resp = client.post("/projects", json={"name": "x"}, headers=_bearer(token))
     assert resp.status_code == 401
 
 
@@ -148,7 +148,7 @@ def test_wrong_issuer_is_401(
         return_value=httpx.Response(200, json=_jwks(rsa_key))
     )
     token = _token(rsa_key, iss="https://login.microsoftonline.com/evil/v2.0")
-    resp = client.post("/engagements", json={"name": "x"}, headers=_bearer(token))
+    resp = client.post("/projects", json={"name": "x"}, headers=_bearer(token))
     assert resp.status_code == 401
 
 
@@ -163,7 +163,7 @@ def test_bad_signature_is_401(
     )
     impostor = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     token = _token(impostor)
-    resp = client.post("/engagements", json={"name": "x"}, headers=_bearer(token))
+    resp = client.post("/projects", json={"name": "x"}, headers=_bearer(token))
     assert resp.status_code == 401
 
 
@@ -171,7 +171,7 @@ def test_bearer_ignored_when_entra_disabled(client: TestClient) -> None:
     # Default settings have Entra off. A Bearer token (and nothing else) must
     # not authenticate — it falls through to the missing-header 401.
     resp = client.post(
-        "/engagements", json={"name": "x"}, headers=_bearer("not.a.real.token")
+        "/projects", json={"name": "x"}, headers=_bearer("not.a.real.token")
     )
     assert resp.status_code == 401
     assert "header required" in resp.json()["detail"]

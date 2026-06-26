@@ -24,7 +24,7 @@ def default_config_path() -> Path:
     """`$XDG_CONFIG_HOME/rtd/config.toml`, falling back to `~/.config/rtd/config.toml`."""
     xdg = os.environ.get("XDG_CONFIG_HOME")
     base = Path(xdg) if xdg else Path.home() / ".config"
-    return base / "rtd" / "config.toml"
+    return base / "xray" / "config.toml"
 
 
 @dataclass(frozen=True, slots=True)

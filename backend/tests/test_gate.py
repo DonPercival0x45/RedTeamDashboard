@@ -1,6 +1,6 @@
 """Scope gate + approval gate behavior.
 
-Pure unit tests — no DB. ScopeItem and Engagement are SQLAlchemy ORM classes
+Pure unit tests — no DB. ScopeItem and Project are SQLAlchemy ORM classes
 but they can be instantiated unattached; we just pass concrete values into the
 constructor and feed the resulting objects straight to the gate.
 """

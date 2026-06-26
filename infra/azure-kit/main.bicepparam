@@ -9,8 +9,8 @@ using './main.bicep'
 param env = 'prod'
 param location = 'eastus2'
 
-// Resource group name defaults to rtd-<env>. Uncomment to override.
-// param resourceGroupName = 'rtd-prod'
+// Resource group name defaults to xray-<env>. Uncomment to override.
+// param resourceGroupName = 'xray-prod'
 
 param postgresAdminLogin = 'rtdadmin'
 

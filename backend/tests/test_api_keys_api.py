@@ -81,7 +81,7 @@ def test_bootstrap_mint_creates_usable_admin_key(
 ) -> None:
     name = f"bootstrap-{__import__('uuid').uuid4().hex[:8]}"
     token = mint_bootstrap(name, APIKeyScope.admin)
-    assert token.startswith("rtd_")
+    assert token.startswith("xr_")
 
     # Looked up via SHA-256 hash, not the raw token.
     row = db.execute(
@@ -123,7 +123,7 @@ def test_mint_with_admin_key_returns_plaintext_once(
     body = response.json()
     assert body["name"] == "ops cli"
     assert body["scope"] == "cli"
-    assert body["key"].startswith("rtd_")
+    assert body["key"].startswith("xr_")
     assert body["created_by"] == str(user.id)
 
     # Listing the key now does NOT carry the plaintext.
@@ -174,7 +174,7 @@ def test_me_returns_calling_key_metadata(client: TestClient, db: Session) -> Non
 
 def test_me_rejects_unknown_key(client: TestClient) -> None:
     response = client.get(
-        "/api-keys/me", headers={"X-API-Key": "rtd_does-not-exist"}
+        "/api-keys/me", headers={"X-API-Key": "xr_does-not-exist"}
     )
     assert response.status_code == 401
 
@@ -248,7 +248,7 @@ def test_x_api_key_resolves_to_minting_user_on_current_user(
     _, token = _seed_key(db, name="cli-2", scope=APIKeyScope.cli, created_by=user)
 
     response = client.post(
-        "/engagements",
+        "/projects",
         json={"name": "Created via API key"},
         headers={"X-API-Key": token},
     )
@@ -258,7 +258,7 @@ def test_x_api_key_resolves_to_minting_user_on_current_user(
 
 def test_unknown_api_key_returns_401(client: TestClient) -> None:
     response = client.get(
-        "/api-keys", headers={"X-API-Key": "rtd_nonexistent-totally-fake-token"}
+        "/api-keys", headers={"X-API-Key": "xr_nonexistent-totally-fake-token"}
     )
     assert response.status_code == 401
     assert "invalid" in response.json()["detail"].lower()

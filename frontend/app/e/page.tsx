@@ -17,9 +17,9 @@ import {
 import { DownloadReport } from "@/components/download-report";
 import { EventLog, type LoggedEvent } from "@/components/event-log";
 import {
-  EngagementNav,
-  type EngagementView,
-} from "@/components/engagement-nav";
+  ProjectNav,
+  type ProjectView,
+} from "@/components/Project-nav";
 import { EntitiesView } from "@/components/entities-view";
 import { FindingsView } from "@/components/findings-view";
 import { ObservationsView } from "@/components/observations-view";
@@ -27,12 +27,12 @@ import { CostsView } from "@/components/costs-view";
 import { GrantsCard } from "@/components/grants-card";
 import { RunPrompt } from "@/components/run-prompt";
 import { ScopeEditor } from "@/components/scope-editor";
-import { archiveEngagement, downloadEngagementExport, getEngagement, listFindings } from "@/lib/api";
+import { archiveProject, downloadProjectExport, getProject, listFindings } from "@/lib/api";
 import { subscribeToEvents } from "@/lib/events";
-import type { Engagement, Finding } from "@/lib/types";
+import type { Project, Finding } from "@/lib/types";
 
 // Slug + active view ride in the query string (?slug=&view=) so the page can be
-// statically exported for Azure SWA (no dynamic route segments). The engagement
+// statically exported for Azure SWA (no dynamic route segments). The Project
 // opens on Findings — the work product is front and center (see CHARTER).
 
 function ReportView({ slug }: { slug: string }) {
@@ -43,7 +43,7 @@ function ReportView({ slug }: { slug: string }) {
     setExportBusy(true);
     setExportError(null);
     try {
-      await downloadEngagementExport(slug);
+      await downloadProjectExport(slug);
     } catch (err) {
       setExportError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -74,7 +74,7 @@ function ReportView({ slug }: { slug: string }) {
       </CardHeader>
       <CardContent>
         <p className="text-xs text-muted-foreground/70">
-          <span className="text-critical">●</span> PDF includes the engagement&apos;s{" "}
+          <span className="text-critical">●</span> PDF includes the Project&apos;s{" "}
           <strong>validated</strong> findings across every phase — including any
           summaries written in finding detail panels. JSON export includes the
           full snapshot (findings, scope, observations, audit summary).
@@ -84,7 +84,7 @@ function ReportView({ slug }: { slug: string }) {
   );
 }
 
-const VALID_VIEWS = new Set<EngagementView>([
+const VALID_VIEWS = new Set<ProjectView>([
   "findings",
   "entities",
   "observations",
@@ -96,16 +96,16 @@ const VALID_VIEWS = new Set<EngagementView>([
 function EngagementDetail({ slug }: { slug: string }) {
   const router = useRouter();
   const params = useSearchParams();
-  // Single-tenant: any signed-in analyst can act on the engagement.
+  // Single-tenant: any signed-in analyst can act on the Project.
   const canWrite = true;
 
   const viewParam = params.get("view");
-  const view: EngagementView =
-    viewParam && VALID_VIEWS.has(viewParam as EngagementView)
-      ? (viewParam as EngagementView)
+  const view: ProjectView =
+    viewParam && VALID_VIEWS.has(viewParam as ProjectView)
+      ? (viewParam as ProjectView)
       : "findings";
   const setView = useCallback(
-    (next: EngagementView) => {
+    (next: ProjectView) => {
       const p = new URLSearchParams(params.toString());
       p.set("view", next);
       router.replace(`/e?${p.toString()}`, { scroll: false });
@@ -113,7 +113,7 @@ function EngagementDetail({ slug }: { slug: string }) {
     [params, router],
   );
 
-  const [engagement, setEngagement] = useState<Engagement | null>(null);
+  const [Project, setEngagement] = useState<Project | null>(null);
   const [events, setEvents] = useState<LoggedEvent[]>([]);
   const [findings, setFindings] = useState<Finding[]>([]);
   const [pending, setPending] = useState<PendingApproval | null>(null);
@@ -127,7 +127,7 @@ function EngagementDetail({ slug }: { slug: string }) {
 
   const reload = useCallback(async () => {
     try {
-      setEngagement(await getEngagement(slug));
+      setEngagement(await getProject(slug));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -230,27 +230,27 @@ function EngagementDetail({ slug }: { slug: string }) {
   }, [slug, canWrite]);
 
   const onArchive = async () => {
-    if (!engagement) return;
-    if (!window.confirm(`Archive ${engagement.slug}? Stops new runs.`)) return;
+    if (!Project) return;
+    if (!window.confirm(`Archive ${Project.slug}? Stops new runs.`)) return;
     try {
-      await archiveEngagement(slug);
+      await archiveProject(slug);
       await reload();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
   };
 
-  if (!engagement) {
+  if (!Project) {
     return (
       <p className="text-sm text-muted-foreground">
-        {error ?? "Loading engagement…"}
+        {error ?? "Loading Project…"}
       </p>
     );
   }
 
   return (
     <div className="space-y-6">
-      {/* Engagement header — full width above the workspace. */}
+      {/* Project header — full width above the workspace. */}
       <div className="flex items-start justify-between gap-4">
         <div>
           <Link
@@ -260,18 +260,18 @@ function EngagementDetail({ slug }: { slug: string }) {
             ← all engagements
           </Link>
           <h1 className="mt-2 text-xl font-semibold tracking-tight">
-            {engagement.name}
+            {Project.name}
           </h1>
           <p className="mt-1 font-mono text-xs text-muted-foreground">
-            {engagement.slug} · {engagement.status} · stream {streamState}
+            {Project.slug} · {Project.status} · stream {streamState}
           </p>
-          {engagement.description && (
+          {Project.description && (
             <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
-              {engagement.description}
+              {Project.description}
             </p>
           )}
         </div>
-        {canWrite && engagement.status === "active" && (
+        {canWrite && Project.status === "active" && (
           <Button variant="outline" size="sm" onClick={onArchive}>
             Archive
           </Button>
@@ -282,7 +282,7 @@ function EngagementDetail({ slug }: { slug: string }) {
 
       {/* Left nav + content pane. */}
       <div className="flex gap-8">
-        <EngagementNav active={view} onSelect={setView} />
+        <ProjectNav active={view} onSelect={setView} />
 
         <div className="min-w-0 flex-1">
           {view === "findings" && (
@@ -302,15 +302,15 @@ function EngagementDetail({ slug }: { slug: string }) {
           {view === "scope" && (
             <div className="space-y-6">
               <ScopeEditor slug={slug} canWrite={canWrite} />
-              {engagement.status === "active" ? (
+              {Project.status === "active" ? (
                 <RunPrompt slug={slug} />
               ) : (
                 <p className="text-sm text-muted-foreground">
-                  This engagement is {engagement.status}; runs are disabled.
+                  This Project is {Project.status}; runs are disabled.
                 </p>
               )}
               <GrantsCard
-                engagementId={engagement.id}
+                engagementId={Project.id}
                 refreshKey={grantsRefreshKey}
                 canRevoke={canWrite}
               />

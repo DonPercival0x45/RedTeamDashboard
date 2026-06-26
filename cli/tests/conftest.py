@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from rtd.config import Config, Profile
+from xray.config import Config, Profile
 
 
 @pytest.fixture()

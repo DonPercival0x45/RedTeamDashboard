@@ -88,23 +88,46 @@ def make_llm(provider: str, model_name: str) -> Any:
     return llm.bind_tools(tool_schemas())
 
 
-def default_provider_model() -> tuple[str, str]:
-    """Resolve ``settings``-derived (provider, model) for runs that don't pick one."""
+def default_provider_model(agent: str = "") -> tuple[str, str]:
+    """Resolve (provider, model) for runs that don't pick one explicitly.
+
+    ``agent`` is an optional hint — ``"strategic"``, ``"tactical"``, or
+    ``"worker"`` — that activates per-agent model overrides when set via
+    ``STRATEGIC_MODEL``, ``TACTICAL_MODEL``, or ``WORKER_MODEL`` env vars.
+    Blank agent or unset override falls back to the global provider default.
+    """
     from app.core.config import settings
 
     provider = settings.llm_provider.lower()
     if provider == "anthropic":
-        return provider, settings.anthropic_model
-    if provider == "openai":
-        return provider, settings.openai_model
-    if provider == "ollama":
-        return provider, settings.ollama_model
-    if provider == "azure":
-        return provider, settings.azure_openai_deployment
-    raise ValueError(f"unknown settings.llm_provider {provider!r}")
+        base_model = settings.anthropic_model
+    elif provider == "openai":
+        base_model = settings.openai_model
+    elif provider == "ollama":
+        base_model = settings.ollama_model
+    elif provider == "azure":
+        base_model = settings.azure_openai_deployment
+    else:
+        raise ValueError(f"unknown settings.llm_provider {provider!r}")
+
+    # Per-agent override: only applies when the provider is Anthropic (since the
+    # override is a model name string; mixed-provider overrides aren't supported).
+    override = ""
+    if agent == "strategic":
+        override = settings.strategic_model
+    elif agent == "tactical":
+        override = settings.tactical_model
+    elif agent == "worker":
+        override = settings.worker_model
+
+    return provider, (override or base_model)
 
 
-def default_llm() -> Any:
-    """Tool-bound chat model from settings defaults — backwards-compat shim."""
-    provider, model = default_provider_model()
+def default_llm(agent: str = "") -> Any:
+    """Tool-bound chat model from settings defaults.
+
+    Pass ``agent="strategic"`` / ``"tactical"`` / ``"worker"`` to activate
+    per-agent model overrides (``STRATEGIC_MODEL`` etc. env vars).
+    """
+    provider, model = default_provider_model(agent=agent)
     return make_llm(provider, model)

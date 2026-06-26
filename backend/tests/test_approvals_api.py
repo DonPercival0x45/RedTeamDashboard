@@ -29,8 +29,8 @@ from app.main import app
 from app.models import (
     Approval,
     ApprovalStatus,
-    Engagement,
-    EngagementStatus,
+    Project,
+    ProjectStatus,
     RiskLevel,
     ScopeItem,
     ScopeKind,
@@ -63,11 +63,11 @@ def redis_client() -> Iterator[redis_lib.Redis]:
 
 
 @pytest.fixture()
-def engagement(db: Session) -> Iterator[Engagement]:
-    eng = Engagement(
+def Project(db: Session) -> Iterator[Project]:
+    eng = Project(
         name="approvals-test",
         slug=f"approvals-test-{uuid.uuid4().hex[:8]}",
-        status=EngagementStatus.active,
+        status=ProjectStatus.active,
     )
     db.add(eng)
     db.commit()
@@ -76,9 +76,9 @@ def engagement(db: Session) -> Iterator[Engagement]:
         yield eng
     finally:
         # Wipe any users we created during the test that referenced this
-        # engagement — flush_engagement only handles audit_log and engagements.
+        # Project — flush_engagement only handles audit_log and engagements.
         db.execute(
-            text("DELETE FROM approvals WHERE engagement_id = :id"),
+            text("DELETE FROM approvals WHERE project_id = :id"),
             {"id": eng.id},
         )
         db.commit()
@@ -88,12 +88,12 @@ def engagement(db: Session) -> Iterator[Engagement]:
 
 def _pending_approval(
     db: Session,
-    engagement_id: uuid.UUID,
+    project_id: uuid.UUID,
     *,
     thread_id: str | None = None,
 ) -> Approval:
     approval = Approval(
-        engagement_id=engagement_id,
+        project_id=project_id,
         thread_id=thread_id or str(uuid.uuid4()),
         node="tool_dispatch",
         tool_name="portscan",
@@ -118,15 +118,15 @@ def _pending_approval(
 
 
 def test_list_pending_approvals_returns_only_pending(
-    client: TestClient, db: Session, engagement: Engagement
+    client: TestClient, db: Session, Project: Project
 ) -> None:
-    pending = _pending_approval(db, engagement.id)
-    decided = _pending_approval(db, engagement.id)
+    pending = _pending_approval(db, Project.id)
+    decided = _pending_approval(db, Project.id)
     decided.status = ApprovalStatus.approved
     db.commit()
 
     response = client.get(
-        f"/engagements/{engagement.id}/approvals",
+        f"/projects/{Project.id}/approvals",
         params={"status": "pending"},
     )
     assert response.status_code == 200
@@ -135,9 +135,9 @@ def test_list_pending_approvals_returns_only_pending(
 
 
 def test_get_single_approval(
-    client: TestClient, db: Session, engagement: Engagement
+    client: TestClient, db: Session, Project: Project
 ) -> None:
-    approval = _pending_approval(db, engagement.id)
+    approval = _pending_approval(db, Project.id)
     response = client.get(f"/approvals/{approval.id}")
     assert response.status_code == 200
     assert response.json()["id"] == str(approval.id)
@@ -156,12 +156,12 @@ def test_get_missing_approval_is_404(client: TestClient) -> None:
 def test_decision_approves_updates_row_and_pushes_resume(
     client: TestClient,
     db: Session,
-    engagement: Engagement,
+    Project: Project,
     redis_client: redis_lib.Redis,
 ) -> None:
-    approval = _pending_approval(db, engagement.id)
-    # Drain anything that may have been left on this engagement's input stream.
-    redis_client.delete(inbound_stream(engagement.id))
+    approval = _pending_approval(db, Project.id)
+    # Drain anything that may have been left on this Project's input stream.
+    redis_client.delete(inbound_stream(Project.id))
 
     response = client.post(
         f"/approvals/{approval.id}/decision",
@@ -180,7 +180,7 @@ def test_decision_approves_updates_row_and_pushes_resume(
     assert approval.decision_args == {"approved": True}
 
     # A run.resume envelope should now be sitting on the inbound stream.
-    queued = redis_client.xrange(inbound_stream(engagement.id))
+    queued = redis_client.xrange(inbound_stream(Project.id))
     assert len(queued) == 1
     payload = json.loads(queued[0][1]["data"])
     assert payload == {
@@ -193,11 +193,11 @@ def test_decision_approves_updates_row_and_pushes_resume(
 def test_decision_with_edited_args_marks_status_edited(
     client: TestClient,
     db: Session,
-    engagement: Engagement,
+    Project: Project,
     redis_client: redis_lib.Redis,
 ) -> None:
-    approval = _pending_approval(db, engagement.id)
-    redis_client.delete(inbound_stream(engagement.id))
+    approval = _pending_approval(db, Project.id)
+    redis_client.delete(inbound_stream(Project.id))
 
     response = client.post(
         f"/approvals/{approval.id}/decision",
@@ -207,7 +207,7 @@ def test_decision_with_edited_args_marks_status_edited(
     assert response.status_code == 200
     assert response.json()["status"] == "edited"
 
-    queued = redis_client.xrange(inbound_stream(engagement.id))
+    queued = redis_client.xrange(inbound_stream(Project.id))
     payload = json.loads(queued[0][1]["data"])
     assert payload["edited_args"] == {"ip": "10.0.0.6"}
 
@@ -215,11 +215,11 @@ def test_decision_with_edited_args_marks_status_edited(
 def test_decision_denies(
     client: TestClient,
     db: Session,
-    engagement: Engagement,
+    Project: Project,
     redis_client: redis_lib.Redis,
 ) -> None:
-    approval = _pending_approval(db, engagement.id)
-    redis_client.delete(inbound_stream(engagement.id))
+    approval = _pending_approval(db, Project.id)
+    redis_client.delete(inbound_stream(Project.id))
 
     response = client.post(
         f"/approvals/{approval.id}/decision",
@@ -229,7 +229,7 @@ def test_decision_denies(
     assert response.status_code == 200
     assert response.json()["status"] == "denied"
 
-    queued = redis_client.xrange(inbound_stream(engagement.id))
+    queued = redis_client.xrange(inbound_stream(Project.id))
     payload = json.loads(queued[0][1]["data"])
     assert payload["approved"] is False
     assert payload["reason"] == "out of window"
@@ -238,12 +238,12 @@ def test_decision_denies(
 def test_decision_resume_carries_cached_model_when_present(
     client: TestClient,
     db: Session,
-    engagement: Engagement,
+    Project: Project,
     redis_client: redis_lib.Redis,
 ) -> None:
     """Approvals reuse the run's original LLM choice on resume."""
-    approval = _pending_approval(db, engagement.id)
-    redis_client.delete(inbound_stream(engagement.id))
+    approval = _pending_approval(db, Project.id)
+    redis_client.delete(inbound_stream(Project.id))
     redis_client.hset(
         f"run:model:{approval.thread_id}",
         mapping={"provider": "anthropic", "name": "claude-sonnet-4-6"},
@@ -257,15 +257,15 @@ def test_decision_resume_carries_cached_model_when_present(
     assert response.status_code == 200
 
     payload = json.loads(
-        redis_client.xrange(inbound_stream(engagement.id))[-1][1]["data"]
+        redis_client.xrange(inbound_stream(Project.id))[-1][1]["data"]
     )
     assert payload["model"] == {"provider": "anthropic", "name": "claude-sonnet-4-6"}
 
 
 def test_decision_on_already_decided_returns_409(
-    client: TestClient, db: Session, engagement: Engagement
+    client: TestClient, db: Session, Project: Project
 ) -> None:
-    approval = _pending_approval(db, engagement.id)
+    approval = _pending_approval(db, Project.id)
     approval.status = ApprovalStatus.approved
     db.commit()
 
@@ -278,9 +278,9 @@ def test_decision_on_already_decided_returns_409(
 
 
 def test_decision_requires_x_user_id_header(
-    client: TestClient, db: Session, engagement: Engagement
+    client: TestClient, db: Session, Project: Project
 ) -> None:
-    approval = _pending_approval(db, engagement.id)
+    approval = _pending_approval(db, Project.id)
     response = client.post(
         f"/approvals/{approval.id}/decision",
         json={"approved": True},
@@ -289,9 +289,9 @@ def test_decision_requires_x_user_id_header(
 
 
 def test_x_user_id_upserts_user_by_email(
-    client: TestClient, db: Session, engagement: Engagement
+    client: TestClient, db: Session, Project: Project
 ) -> None:
-    approval = _pending_approval(db, engagement.id)
+    approval = _pending_approval(db, Project.id)
     email = f"new-analyst-{uuid.uuid4().hex[:6]}@example.com"
 
     response = client.post(
@@ -307,9 +307,9 @@ def test_x_user_id_upserts_user_by_email(
 
 
 def test_invalid_x_user_id_is_400(
-    client: TestClient, db: Session, engagement: Engagement
+    client: TestClient, db: Session, Project: Project
 ) -> None:
-    approval = _pending_approval(db, engagement.id)
+    approval = _pending_approval(db, Project.id)
     response = client.post(
         f"/approvals/{approval.id}/decision",
         headers={"X-User-Id": "not-a-uuid-or-email"},
@@ -326,11 +326,11 @@ def test_invalid_x_user_id_is_400(
 def test_decision_remember_for_session_creates_grant(
     client: TestClient,
     db: Session,
-    engagement: Engagement,
+    Project: Project,
     redis_client: redis_lib.Redis,
 ) -> None:
-    approval = _pending_approval(db, engagement.id)
-    redis_client.delete(inbound_stream(engagement.id))
+    approval = _pending_approval(db, Project.id)
+    redis_client.delete(inbound_stream(Project.id))
 
     response = client.post(
         f"/approvals/{approval.id}/decision",
@@ -341,7 +341,7 @@ def test_decision_remember_for_session_creates_grant(
     assert response.json()["authorization_id"] is not None
 
     grants = client.get(
-        f"/engagements/{engagement.id}/authorizations",
+        f"/projects/{Project.id}/authorizations",
         params={"active": "true"},
     ).json()
     assert len(grants) == 1
@@ -353,30 +353,30 @@ def test_decision_remember_for_session_creates_grant(
 def test_decision_without_remember_creates_no_grant(
     client: TestClient,
     db: Session,
-    engagement: Engagement,
+    Project: Project,
     redis_client: redis_lib.Redis,
 ) -> None:
-    approval = _pending_approval(db, engagement.id)
-    redis_client.delete(inbound_stream(engagement.id))
+    approval = _pending_approval(db, Project.id)
+    redis_client.delete(inbound_stream(Project.id))
 
     client.post(
         f"/approvals/{approval.id}/decision",
         headers={"X-User-Id": "analyst@example.com"},
         json={"approved": True},
     )
-    grants = client.get(f"/engagements/{engagement.id}/authorizations").json()
+    grants = client.get(f"/projects/{Project.id}/authorizations").json()
     assert grants == []
 
 
 def test_remember_for_session_reuses_existing_active_grant(
     client: TestClient,
     db: Session,
-    engagement: Engagement,
+    Project: Project,
     redis_client: redis_lib.Redis,
 ) -> None:
-    redis_client.delete(inbound_stream(engagement.id))
-    first = _pending_approval(db, engagement.id)
-    second = _pending_approval(db, engagement.id)
+    redis_client.delete(inbound_stream(Project.id))
+    first = _pending_approval(db, Project.id)
+    second = _pending_approval(db, Project.id)
 
     a = client.post(
         f"/approvals/{first.id}/decision",
@@ -392,7 +392,7 @@ def test_remember_for_session_reuses_existing_active_grant(
     # Both approvals point at the SAME grant; no duplicate active row.
     assert a["authorization_id"] == b["authorization_id"]
     grants = client.get(
-        f"/engagements/{engagement.id}/authorizations",
+        f"/projects/{Project.id}/authorizations",
         params={"active": "true"},
     ).json()
     assert len(grants) == 1
@@ -401,18 +401,18 @@ def test_remember_for_session_reuses_existing_active_grant(
 def test_revoke_authorization(
     client: TestClient,
     db: Session,
-    engagement: Engagement,
+    Project: Project,
     redis_client: redis_lib.Redis,
 ) -> None:
-    approval = _pending_approval(db, engagement.id)
-    redis_client.delete(inbound_stream(engagement.id))
+    approval = _pending_approval(db, Project.id)
+    redis_client.delete(inbound_stream(Project.id))
     client.post(
         f"/approvals/{approval.id}/decision",
         headers={"X-User-Id": "analyst@example.com"},
         json={"approved": True, "remember_for_session": True},
     )
     grant_id = client.get(
-        f"/engagements/{engagement.id}/authorizations",
+        f"/projects/{Project.id}/authorizations",
         params={"active": "true"},
     ).json()[0]["id"]
 
@@ -425,7 +425,7 @@ def test_revoke_authorization(
 
     assert (
         client.get(
-            f"/engagements/{engagement.id}/authorizations",
+            f"/projects/{Project.id}/authorizations",
             params={"active": "true"},
         ).json()
         == []
@@ -448,7 +448,7 @@ class _FakeLLM:
 
 
 def _spin_worker(
-    *, graph: Any, redis_client: redis_lib.Redis, engagement_id: uuid.UUID
+    *, graph: Any, redis_client: redis_lib.Redis, project_id: uuid.UUID
 ) -> tuple[threading.Thread, threading.Event]:
     runner = RunRunner(
         graph=graph,
@@ -461,7 +461,7 @@ def _spin_worker(
         session_factory=SessionLocal,
         consumer_group=f"test-{uuid.uuid4().hex[:8]}",
         refresh_interval=0.5,
-        engagement_ids=[engagement_id],
+        engagement_ids=[project_id],
     )
     consumer.refresh_streams()
     stop = threading.Event()
@@ -497,12 +497,12 @@ def _collect_until(
 def test_full_round_trip(
     client: TestClient,
     db: Session,
-    engagement: Engagement,
+    Project: Project,
     redis_client: redis_lib.Redis,
 ) -> None:
     db.add(
         ScopeItem(
-            engagement_id=engagement.id,
+            project_id=Project.id,
             kind=ScopeKind.cidr,
             value="10.0.0.0/24",
             is_exclusion=False,
@@ -543,12 +543,12 @@ def test_full_round_trip(
     thread, stop = _spin_worker(
         graph=graph,
         redis_client=redis_client,
-        engagement_id=engagement.id,
+        project_id=Project.id,
     )
     try:
         thread_id = str(uuid.uuid4())
         redis_client.xadd(
-            inbound_stream(engagement.id),
+            inbound_stream(Project.id),
             encode_command(
                 {
                     "type": "run.start",
@@ -560,7 +560,7 @@ def test_full_round_trip(
 
         events, last_id = _collect_until(
             redis_client,
-            outbound_stream(engagement.id),
+            outbound_stream(Project.id),
             terminal={"approval.pending", "run.errored"},
         )
         pending = next(e for e in events if e["type"] == "approval.pending")
@@ -576,7 +576,7 @@ def test_full_round_trip(
 
         final, _ = _collect_until(
             redis_client,
-            outbound_stream(engagement.id),
+            outbound_stream(Project.id),
             terminal={"run.completed", "run.errored"},
             start_id=last_id,
         )
@@ -590,5 +590,5 @@ def test_full_round_trip(
         stop.set()
         thread.join(timeout=5.0)
         redis_client.delete(
-            inbound_stream(engagement.id), outbound_stream(engagement.id)
+            inbound_stream(Project.id), outbound_stream(Project.id)
         )

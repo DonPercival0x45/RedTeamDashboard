@@ -26,7 +26,7 @@ param environmentId string
 param keyVaultName string
 param keyVaultId string
 
-// Full image refs, e.g. `ghcr.io/donpercival0x45/rtd-backend:0.1.0`.
+// Full image refs, e.g. `ghcr.io/donpercival0x45/xray-backend:0.1.0`.
 param backendImage string
 param workerImage string
 

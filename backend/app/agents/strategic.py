@@ -33,7 +33,7 @@ from app.models import (
     AgentExecutionStatus,
     AgentName,
     AgentTrigger,
-    Engagement,
+    Project,
     Finding,
     OwnerEligibility,
     ScopeItem,
@@ -109,7 +109,7 @@ HARD RULES (never break):
 scan or enum.
 - Only propose tools from the provided registry. Inventing a tool name is a \
 failure.
-- Targets MUST be inside the engagement's scope. If the finding's target sits \
+- Targets MUST be inside the Project's scope. If the finding's target sits \
 outside scope, return an empty task list.
 - Each proposed task must be one concrete next step (one tool + one target). \
 Do not stack steps.
@@ -140,9 +140,9 @@ def _tools_summary() -> str:
     return "\n".join(lines)
 
 
-def _build_user_prompt(engagement: Engagement, finding: Finding, scope: str) -> str:
-    return f"""ENGAGEMENT: {engagement.name} ({engagement.slug})
-Description: {engagement.description or "(none)"}
+def _build_user_prompt(Project: Project, finding: Finding, scope: str) -> str:
+    return f"""Project: {Project.name} ({Project.slug})
+Description: {Project.description or "(none)"}
 
 SCOPE:
 {scope}
@@ -242,7 +242,7 @@ class StrategicAgent:
         provider = self._provider
         model_name = self._model_name
         if not (provider and model_name):
-            provider, model_name = default_provider_model()
+            provider, model_name = default_provider_model(agent="strategic")
         return _make_chat_model(provider, model_name), provider, model_name
 
     def analyze_finding(
@@ -257,24 +257,24 @@ class StrategicAgent:
         Caller commits the session — we add but don't commit so this composes
         cleanly inside an API request transaction.
         """
-        engagement = session.get(Engagement, finding.engagement_id)
-        if engagement is None:
-            raise ValueError(f"finding {finding.id} has no engagement")
+        Project = session.get(Project, finding.project_id)
+        if Project is None:
+            raise ValueError(f"finding {finding.id} has no Project")
         scope_items = list(
             session.execute(
-                select(ScopeItem).where(ScopeItem.engagement_id == engagement.id)
+                select(ScopeItem).where(ScopeItem.project_id == Project.id)
             ).scalars()
         )
 
-        prompt = _build_user_prompt(engagement, finding, _scope_summary(scope_items))
+        prompt = _build_user_prompt(Project, finding, _scope_summary(scope_items))
 
         execution = AgentExecution(
-            engagement_id=engagement.id,
+            project_id=Project.id,
             agent=AgentName.strategic,
             trigger=trigger,
             input={
                 "finding_id": str(finding.id),
-                "engagement_slug": engagement.slug,
+                "engagement_slug": Project.slug,
             },
             status=AgentExecutionStatus.running,
             started_at=datetime.now(tz=UTC),
@@ -317,7 +317,7 @@ class StrategicAgent:
 
         suggestions = self._persist_suggestions(
             session,
-            engagement_id=engagement.id,
+            project_id=Project.id,
             finding_id=finding.id,
             proposal=proposal,
         )
@@ -338,7 +338,7 @@ class StrategicAgent:
         self,
         session: Session,
         *,
-        engagement_id: uuid.UUID,
+        project_id: uuid.UUID,
         finding_id: uuid.UUID,
         proposal: _StrategicProposal,
     ) -> list[Suggestion]:
@@ -350,7 +350,7 @@ class StrategicAgent:
                 # execution.output for visibility.
                 continue
             suggestion = Suggestion(
-                engagement_id=engagement_id,
+                project_id=project_id,
                 finding_id=finding_id,
                 title=task.title,
                 body=task.rationale,

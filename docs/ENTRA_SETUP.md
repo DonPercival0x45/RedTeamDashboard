@@ -1,5 +1,5 @@
 <!--
-RedTeamDashboard — Defensive Security Operations and Governance Platform
+ProjectXRay — Defensive Security Operations and Governance Platform
 
 This documentation describes a platform for managing authorized security engagements.
 All work described is conducted with explicit approval and scope boundaries.
@@ -13,7 +13,7 @@ Terminology Note: "exploit" in this context refers to validation/proof-of-concep
 work conducted by analysts during authorized engagements, not unauthorized intrusion.
 -->
 
-# Entra ID setup — analyst SSO for the Red Team Dashboard
+# Entra ID setup — analyst SSO for the Project X-Ray
 
 Phase 7 replaces the API-key/source model in the browser with **per-analyst
 Microsoft Entra ID sign-in**. Analysts sign in with their org account; the
@@ -68,7 +68,7 @@ reuses an app of the same display name and won't duplicate the scope.
 If the script hits a tenant policy, do it by hand:
 
 1. **Entra admin center → App registrations → New registration.**
-   - Name: `rtd-prod-viewer` · Supported accounts: *this org only* · skip
+   - Name: `xray-prod-viewer` · Supported accounts: *this org only* · skip
      redirect for now → **Register**. Note the **Application (client) ID** and
      **Directory (tenant) ID**.
 2. **Expose an API →** set Application ID URI to `api://<client-id>` (default)

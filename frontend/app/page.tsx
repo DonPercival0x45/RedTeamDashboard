@@ -5,23 +5,23 @@ import { useCallback, useEffect, useState } from "react";
 import { Plus } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { listEngagements } from "@/lib/api";
-import type { Engagement } from "@/lib/types";
+import { listProjects } from "@/lib/api";
+import type { Project } from "@/lib/types";
 
-function statusVariant(status: Engagement["status"]) {
+function statusVariant(status: Project["status"]) {
   if (status === "active") return "default" as const;
   if (status === "archived") return "secondary" as const;
   return "outline" as const;
 }
 
 export default function EngagementListPage() {
-  const [engagements, setEngagements] = useState<Engagement[] | null>(null);
+  const [engagements, setEngagements] = useState<Project[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
     try {
       setError(null);
-      setEngagements(await listEngagements());
+      setEngagements(await listProjects());
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -41,14 +41,14 @@ export default function EngagementListPage() {
             {engagements === null
               ? "Loading…"
               : `${engagements.length} ${
-                  engagements.length === 1 ? "engagement" : "engagements"
+                  engagements.length === 1 ? "Project" : "engagements"
                 }`}
           </p>
         </div>
         <Button asChild>
           <Link href="/new">
             <Plus className="mr-2 h-4 w-4" />
-            New engagement
+            New Project
           </Link>
         </Button>
       </div>
@@ -59,7 +59,7 @@ export default function EngagementListPage() {
         <p className="text-sm text-muted-foreground">
           No engagements yet — start one with{" "}
           <Link href="/new" className="underline">
-            New engagement
+            New Project
           </Link>
           .
         </p>

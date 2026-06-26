@@ -1,4 +1,4 @@
-"""Azure Blob Storage helper for engagement exports.
+"""Azure Blob Storage helper for Project exports.
 
 Uses DefaultAzureCredential (managed identity in Container Apps, env/CLI creds
 in dev). If AZURE_STORAGE_ACCOUNT_NAME is unset all operations return None —
@@ -40,5 +40,5 @@ def upload_engagement_export(slug: str, data: dict[str, Any]) -> str | None:
             f"/{settings.azure_storage_container_name}/{blob_name}"
         )
     except Exception:
-        log.exception("blob upload failed for engagement %s — continuing without export URL", slug)
+        log.exception("blob upload failed for Project %s — continuing without export URL", slug)
         return None

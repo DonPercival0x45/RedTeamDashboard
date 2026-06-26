@@ -526,7 +526,7 @@ def test_resolve_host_resolved_ip_out_of_scope_is_denied(
 def test_subnet_sweep_interrupts_then_injects_exclusions(
 ) -> None:
     """A CIDR sweep gets ONE approval; on resume the dispatch injects the
-    engagement's ip/cidr exclusions so the tool skips carved-out hosts."""
+    Project's ip/cidr exclusions so the tool skips carved-out hosts."""
     llm = FakeLLM(
         [
             AIMessage(

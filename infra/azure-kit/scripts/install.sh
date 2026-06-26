@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Red Team Dashboard — Deployment Kit installer.
+# Project X-Ray — Deployment Kit installer.
 #
 # One-shot install: provisions every Azure resource the kit needs in the
 # subscription you've already selected with `az account set`. Re-runnable —
@@ -47,7 +47,7 @@ Usage: $0 [options]
 Options:
   --env NAME              Short env name; used in every resource name (default: prod)
   --location REGION       Azure region (default: eastus2)
-  --image-repo-owner OWNER GHCR owner where rtd-{backend,worker} are published (default: donpercival0x45)
+  --image-repo-owner OWNER GHCR owner where xray-{backend,worker} are published (default: donpercival0x45)
   --image-tag TAG         Image tag to deploy (default: latest)
   --llm-provider P        anthropic | openai | azure (default: anthropic)
   --postgres-password PW  Provide the postgres password; otherwise one is generated.
@@ -82,8 +82,8 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-RG_NAME="rtd-${ENV_NAME}"
-DEPLOY_NAME="rtd-${ENV_NAME}-$(date +%Y%m%d%H%M%S)"
+RG_NAME="xray-${ENV_NAME}"
+DEPLOY_NAME="xray-${ENV_NAME}-$(date +%Y%m%d%H%M%S)"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 KIT_ROOT="$(dirname "$HERE")"
 
@@ -131,7 +131,7 @@ echo "    Subscription: $SUB_NAME"
 echo "    Tenant:       $TENANT_ID"
 echo "    Region:       $LOCATION"
 echo "    Resource group: $RG_NAME"
-echo "    Image:        ghcr.io/$IMAGE_REPO_OWNER/rtd-{backend,worker}:$IMAGE_TAG"
+echo "    Image:        ghcr.io/$IMAGE_REPO_OWNER/xray-{backend,worker}:$IMAGE_TAG"
 echo "    LLM provider: $LLM_PROVIDER"
 echo
 
@@ -215,7 +215,7 @@ echo "    (migrations run automatically on startup; waiting for schema + DB to b
 REV_BUMP="$(date +%s)"
 az containerapp update -n "$APP_NAME" -g "$RG_OUT" \
     --container-name backend \
-    --set-env-vars "RTD_REVISION_BUMP=$REV_BUMP" --only-show-errors -o none
+    --set-env-vars "xr_REVISION_BUMP=$REV_BUMP" --only-show-errors -o none
 
 for i in {1..40}; do
     if curl -sf "https://$APP_FQDN/health" >/dev/null 2>&1; then
@@ -291,13 +291,13 @@ sleep 30
 
 # Mint the bootstrap admin key. The token prints to stdout — copy it.
 echo
-blue "    Minting bootstrap admin API key — COPY the rtd_… token that appears below:"
+blue "    Minting bootstrap admin API key — COPY the xr_… token that appears below:"
 echo
 container_exec 'python -m app.scripts.mint_api_key --name bootstrap --scope admin'
 echo
 
 if [[ "$NON_INTERACTIVE" != "true" ]]; then
-    read -rsp "    Paste the rtd_… token to store it in Key Vault (hidden): " ADMIN_KEY
+    read -rsp "    Paste the xr_… token to store it in Key Vault (hidden): " ADMIN_KEY
     echo
     if [[ -n "$ADMIN_KEY" ]]; then
         az keyvault secret set --vault-name "$KV_NAME" --name admin-api-key \
@@ -362,9 +362,9 @@ if [[ -z "$ANTHROPIC_KEY" && -z "$OPENAI_KEY" ]]; then
 fi
 
 echo
-bold "Connect Claude Code (MCP) — paste your rtd_… token from step 6:"
-blue "  claude mcp add rtd-${ENV_NAME} \\"
+bold "Connect Claude Code (MCP) — paste your xr_… token from step 6:"
+blue "  claude mcp add xray-${ENV_NAME} \\"
 blue "      --transport sse \\"
 blue "      --url https://$APP_FQDN/mcp/sse \\"
-blue "      --header 'X-API-Key: <your-rtd-token>'"
+blue "      --header 'X-API-Key: <your-xray-token>'"
 echo "  Then: claude  (start a session and ask 'What engagements do I have?')"

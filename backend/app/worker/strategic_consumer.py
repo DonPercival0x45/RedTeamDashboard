@@ -1,7 +1,7 @@
 """Strategic watcher consumer loop.
 
 A second Redis Streams consumer that lives alongside the existing
-``StreamConsumer``. Instead of reading the *inbound* per-engagement command
+``StreamConsumer``. Instead of reading the *inbound* per-Project command
 streams, this one reads the *outbound* event streams (``runs:{eid}:events``)
 under a NEW consumer group (``strategic-watcher``) so it doesn't compete with
 the SSE endpoint or with other workers' delivery of inbound commands.
@@ -30,7 +30,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.agents import StrategicAgent
-from app.models import AgentTrigger, Engagement, EngagementStatus, Finding
+from app.models import AgentTrigger, Project, ProjectStatus, Finding
 from app.runs.streams import outbound_stream
 
 logger = structlog.get_logger(__name__)
@@ -65,8 +65,8 @@ class StrategicConsumer:
         try:
             return list(
                 session.execute(
-                    select(Engagement.id).where(
-                        Engagement.status == EngagementStatus.active
+                    select(Project.id).where(
+                        Project.status == ProjectStatus.active
                     )
                 ).scalars()
             )
@@ -111,7 +111,7 @@ class StrategicConsumer:
             )
         except ResponseError as exc:
             if "NOGROUP" in str(exc):
-                # The outbound stream was deleted (engagement flushed). Forget
+                # The outbound stream was deleted (Project flushed). Forget
                 # everything and let the next refresh recreate as needed.
                 logger.warning("strategic.nogroup_recovering", error=str(exc))
                 self._known_streams = set()

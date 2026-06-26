@@ -48,7 +48,7 @@ CUSTOM_MSGPACK_TYPES: tuple[tuple[str, str], ...] = (
     ("app.orchestrator.scope", "ScopeSnapshot"),
 )
 
-# Looks up a standing session grant: given an engagement and tool name, returns
+# Looks up a standing session grant: given an Project and tool name, returns
 # the authorization id covering active calls to that tool, or None. Injected
 # into the graph so the dispatch node stays free of DB imports (worker provides
 # a DB-backed one; tests pass a static stub).
@@ -88,7 +88,7 @@ def _tool_dispatch_node(
         return {}
 
     scope_items = normalize_scope_items(state.get("scope_items"))
-    engagement_id = state.get("engagement_id")
+    project_id = state.get("project_id")
 
     out_messages: list[Any] = []
     out_findings: list[dict[str, Any]] = []
@@ -158,7 +158,7 @@ def _tool_dispatch_node(
                 if resolved != host:
                     args["resolved_from"] = host
 
-        # A standing session grant for this tool (per engagement) auto-approves
+        # A standing session grant for this tool (per Project) auto-approves
         # an otherwise-interrupting active call. The gate still enforces scope.
         authorization_id = None
         if (
@@ -166,7 +166,7 @@ def _tool_dispatch_node(
             and spec is not None
             and spec.risk in (RiskLevel.active, RiskLevel.destructive)
         ):
-            authorization_id = authorizer(engagement_id, name)
+            authorization_id = authorizer(project_id, name)
 
         decision = evaluate(
             name,
@@ -247,7 +247,7 @@ def _tool_dispatch_node(
                     }
                 )
 
-        # Range tools (e.g. subnet_sweep) get the engagement's ip/cidr scope
+        # Range tools (e.g. subnet_sweep) get the Project's ip/cidr scope
         # exclusions injected so they skip carved-out hosts inside the approved
         # CIDR. The single CIDR approval covers the range; exclusions are still
         # enforced per host by the tool.

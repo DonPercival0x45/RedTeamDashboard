@@ -11,8 +11,8 @@ from pathlib import Path
 from click.testing import CliRunner
 from pytest_httpx import HTTPXMock
 
-from rtd.config import Config
-from rtd.main import cli
+from xray.config import Config
+from xray.main import cli
 
 
 def _invoke(args: list[str], config_path: Path) -> str:
@@ -65,7 +65,7 @@ def test_profile_use_switches_default(seeded_config: Config) -> None:
 
 
 # ---------------------------------------------------------------------------
-# engagement
+# project
 # ---------------------------------------------------------------------------
 
 
@@ -78,7 +78,7 @@ def test_engagement_list_uses_default_profile(
         json=[{"id": "1", "slug": "acme", "name": "Acme",
                "status": "active", "created_at": "2026-06-02T00:00:00Z"}],
     )
-    out = _invoke(["--json", "engagement", "list"], seeded_config.path)
+    out = _invoke(["--json", "project", "list"], seeded_config.path)
     rows = json.loads(out)
     assert rows[0]["slug"] == "acme"
     # Verify auth header reached the mock.
@@ -96,7 +96,7 @@ def test_engagement_create_posts_name(
         json={"id": "1", "slug": "new", "name": "New",
               "status": "active", "created_at": "2026-06-02T00:00:00Z"},
     )
-    _invoke(["--json", "engagement", "create", "--name", "New"], seeded_config.path)
+    _invoke(["--json", "project", "create", "--name", "New"], seeded_config.path)
     req = httpx_mock.get_request()
     assert req is not None
     assert req.method == "POST"
@@ -205,7 +205,7 @@ def test_approve_remember_and_deny_conflict(seeded_config: Config) -> None:
 
 
 def test_ssh_derives_app_and_rg_from_profile_url() -> None:
-    from rtd.commands.ssh import _app_from_url, _default_rg
+    from xray.commands.ssh import _app_from_url, _default_rg
 
     url = "https://rtd-prod-backend.purplebeach-xx.centralus.azurecontainerapps.io"
     app = _app_from_url(url)
@@ -214,7 +214,7 @@ def test_ssh_derives_app_and_rg_from_profile_url() -> None:
 
 
 def test_ssh_unparseable_url_returns_none() -> None:
-    from rtd.commands.ssh import _app_from_url
+    from xray.commands.ssh import _app_from_url
 
     # The regex requires at least one DNS label followed by '.', so a host
     # without a dot doesn't yield an app name.

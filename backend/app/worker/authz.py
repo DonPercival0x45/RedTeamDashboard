@@ -18,14 +18,14 @@ from app.worker.runner import SessionFactory
 
 
 def make_db_authorizer(session_factory: SessionFactory):
-    def authorizer(engagement_id: uuid.UUID | None, tool_name: str) -> uuid.UUID | None:
-        if engagement_id is None:
+    def authorizer(project_id: uuid.UUID | None, tool_name: str) -> uuid.UUID | None:
+        if project_id is None:
             return None
         session: Session = session_factory()
         try:
             return session.execute(
                 select(Authorization.id).where(
-                    Authorization.engagement_id == engagement_id,
+                    Authorization.project_id == project_id,
                     Authorization.tool_name == tool_name,
                     Authorization.revoked_at.is_(None),
                 )

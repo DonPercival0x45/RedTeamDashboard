@@ -11,8 +11,8 @@ from sqlalchemy.orm import Session
 
 from app.main import app
 from app.models import (
-    Engagement,
-    EngagementStatus,
+    Project,
+    ProjectStatus,
     Finding,
     FindingPhase,
     FindingStatus,
@@ -26,11 +26,11 @@ def client() -> TestClient:
 
 
 @pytest.fixture()
-def engagement(db: Session) -> Iterator[Engagement]:
-    eng = Engagement(
+def Project(db: Session) -> Iterator[Project]:
+    eng = Project(
         name="Entities Test",
         slug=f"entities-{uuid.uuid4().hex[:8]}",
-        status=EngagementStatus.active,
+        status=ProjectStatus.active,
     )
     db.add(eng)
     db.commit()
@@ -44,7 +44,7 @@ def engagement(db: Session) -> Iterator[Engagement]:
 
 def _seed(
     db: Session,
-    engagement_id: uuid.UUID,
+    project_id: uuid.UUID,
     *,
     tool: str,
     target: str | None,
@@ -53,7 +53,7 @@ def _seed(
 ) -> None:
     db.add(
         Finding(
-            engagement_id=engagement_id,
+            project_id=project_id,
             title=f"{tool} → {target}",
             severity=severity,
             details=details,
@@ -68,7 +68,7 @@ def _seed(
 
 def _entities(client: TestClient, slug: str, qs: str = "") -> list[dict]:
     r = client.get(
-        f"/engagements/{slug}/entities{qs}",
+        f"/projects/{slug}/entities{qs}",
         headers={"X-User-Id": "ent@example.com"},
     )
     assert r.status_code == 200, r.text
@@ -76,22 +76,22 @@ def _entities(client: TestClient, slug: str, qs: str = "") -> list[dict]:
 
 
 def test_extracts_ip_cidr_domain_subdomain_email(
-    client: TestClient, db: Session, engagement: Engagement
+    client: TestClient, db: Session, Project: Project
 ) -> None:
     _seed(
-        db, engagement.id, tool="subnet_sweep", target="172.18.0.0/28",
+        db, Project.id, tool="subnet_sweep", target="172.18.0.0/28",
         details={"live_hosts": [{"host": "172.18.0.1", "open_ports": [6379]}]},
     )
     _seed(
-        db, engagement.id, tool="subfinder", target="acme.com",
+        db, Project.id, tool="subfinder", target="acme.com",
         details={"subdomains": ["www.acme.com", "mail.acme.com"]},
     )
     _seed(
-        db, engagement.id, tool="crt_sh", target="acme.com",
+        db, Project.id, tool="crt_sh", target="acme.com",
         details={"contacts": ["admin@acme.com"]},
     )
 
-    ents = _entities(client, engagement.slug)
+    ents = _entities(client, Project.slug)
     by_type: dict[str, set[str]] = {}
     for e in ents:
         by_type.setdefault(e["type"], set()).add(e["value"])
@@ -104,20 +104,20 @@ def test_extracts_ip_cidr_domain_subdomain_email(
 
 
 def test_correlates_same_value_across_findings(
-    client: TestClient, db: Session, engagement: Engagement
+    client: TestClient, db: Session, Project: Project
 ) -> None:
     _seed(
-        db, engagement.id, tool="portscan", target="172.18.0.5",
+        db, Project.id, tool="portscan", target="172.18.0.5",
         details={"open_ports": [80]}, severity=Severity.low,
     )
     _seed(
-        db, engagement.id, tool="service_detect", target="172.18.0.5",
+        db, Project.id, tool="service_detect", target="172.18.0.5",
         details={"services": [{"port": 80, "service": "http"}]},
         severity=Severity.high,
     )
 
     ip = next(
-        e for e in _entities(client, engagement.slug)
+        e for e in _entities(client, Project.slug)
         if e["type"] == "ip" and e["value"] == "172.18.0.5"
     )
     assert ip["count"] == 2
@@ -127,19 +127,19 @@ def test_correlates_same_value_across_findings(
 
 
 def test_type_and_query_filters(
-    client: TestClient, db: Session, engagement: Engagement
+    client: TestClient, db: Session, Project: Project
 ) -> None:
     _seed(
-        db, engagement.id, tool="subfinder", target="acme.com",
+        db, Project.id, tool="subfinder", target="acme.com",
         details={"subdomains": ["api.acme.com"]},
     )
     _seed(
-        db, engagement.id, tool="crt_sh", target="other.com",
+        db, Project.id, tool="crt_sh", target="other.com",
         details={"contacts": ["root@other.com"]},
     )
 
-    emails = _entities(client, engagement.slug, "?type=email")
+    emails = _entities(client, Project.slug, "?type=email")
     assert emails and all(e["type"] == "email" for e in emails)
 
-    acme = _entities(client, engagement.slug, "?q=acme")
+    acme = _entities(client, Project.slug, "?q=acme")
     assert acme and all("acme" in e["value"] for e in acme)

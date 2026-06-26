@@ -1,10 +1,10 @@
-"""`rtd grants ...` — list / revoke per-(engagement, tool) session grants."""
+"""`rtd grants ...` — list / revoke per-(project, tool) session grants."""
 from __future__ import annotations
 
 import click
 from rich.table import Table
 
-from rtd.output import console, emit
+from xray.output import console, emit
 
 
 @click.group(name="grants")
@@ -18,13 +18,13 @@ def grants_group() -> None:
               help="Include revoked grants too (default is active only).")
 @click.pass_context
 def list_grants(ctx: click.Context, slug: str, include_inactive: bool) -> None:
-    """List session grants on engagement SLUG."""
+    """List session grants on project SLUG."""
     params: dict[str, str] = {}
     if not include_inactive:
         params["active"] = "true"
     with ctx.obj.client() as c:
-        eng = c.get(f"/engagements/{slug}")
-        rows = c.get(f"/engagements/{eng['id']}/authorizations", params=params or None)
+        eng = c.get(f"/projects/{slug}")
+        rows = c.get(f"/projects/{eng['id']}/authorizations", params=params or None)
     t = Table(title=f"Grants ({slug})")
     t.add_column("id", style="bold")
     t.add_column("tool")

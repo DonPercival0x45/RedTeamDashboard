@@ -16,11 +16,11 @@ export interface APIKeyInfo {
   created_at: string;
 }
 
-// Per-(engagement, tool) standing session grant. A row with revoked_at=null is
+// Per-(Project, tool) standing session grant. A row with revoked_at=null is
 // active and the gate auto-approves matching active calls.
 export interface Authorization {
   id: string;
-  engagement_id: string;
+  project_id: string;
   tool_name: string;
   granted_by: string | null;
   note: string | null;
@@ -38,7 +38,7 @@ export type ApprovalStatus =
   | "edited"
   | "auto";
 
-export interface Engagement {
+export interface Project {
   id: string;
   name: string;
   slug: string;
@@ -53,7 +53,7 @@ export interface Engagement {
 
 export interface ScopeItem {
   id: string;
-  engagement_id: string;
+  project_id: string;
   kind: ScopeKind;
   value: string;
   is_exclusion: boolean;
@@ -64,7 +64,7 @@ export interface ScopeItem {
 
 export interface Approval {
   id: string;
-  engagement_id: string;
+  project_id: string;
   thread_id: string;
   node: string | null;
   tool_name: string;
@@ -95,7 +95,7 @@ export type FindingValidationStatus =
   | "rejected"
   | "false_positive";
 
-// Persisted finding as returned by GET /engagements/{slug}/findings. Mirrors
+// Persisted finding as returned by GET /projects/{slug}/findings. Mirrors
 // the SSE `finding.created` event's tool/args/data so the table can render
 // hydrated and live findings the same way.
 export interface Finding {
@@ -114,7 +114,7 @@ export interface Finding {
   created_at: string;
 }
 
-// Payload for POST /engagements/{slug}/findings/import
+// Payload for POST /projects/{slug}/findings/import
 export interface FindingImport {
   title: string;
   severity?: Severity;
@@ -152,7 +152,7 @@ export interface EntityFindingRef {
   phase: FindingPhase;
 }
 
-// Correlated entity derived from findings (GET /engagements/{slug}/entities).
+// Correlated entity derived from findings (GET /projects/{slug}/entities).
 export interface Entity {
   type: string;
   value: string;
@@ -205,7 +205,7 @@ export type TaskStatus =
 
 export interface Task {
   id: string;
-  engagement_id: string;
+  project_id: string;
   finding_id: string | null;
   title: string;
   kind: TaskKind;
@@ -252,7 +252,7 @@ export type AgentName = "strategic" | "tactical";
 
 export interface Suggestion {
   id: string;
-  engagement_id: string;
+  project_id: string;
   finding_id: string | null;
   title: string;
   body: string | null;
@@ -320,7 +320,7 @@ export interface RunModel {
 }
 
 export interface RunStartResponse {
-  engagement_id: string;
+  project_id: string;
   thread_id: string;
   events_stream: string;
   model: RunModel;
@@ -396,7 +396,7 @@ export interface ModelCost extends CostBucket {
 }
 
 export interface CostRollup {
-  engagement_id: string;
+  project_id: string;
   engagement_slug: string;
   total: CostBucket;
   by_agent: AgentCost[];

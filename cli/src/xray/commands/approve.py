@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import click
 
-from rtd.output import console, emit, kv_table
+from xray.output import console, emit, kv_table
 
 
 @click.command()

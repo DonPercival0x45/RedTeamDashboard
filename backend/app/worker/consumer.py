@@ -1,7 +1,7 @@
 """Redis Streams consumer loop.
 
 Discovery: at refresh intervals the consumer queries the DB for active
-engagement IDs, builds the set of inbound stream names, and ensures the
+Project IDs, builds the set of inbound stream names, and ensures the
 consumer group exists on each (idempotent ``XGROUP CREATE MKSTREAM``).
 
 Polling: a single blocking ``XREADGROUP`` across all known streams. Each
@@ -26,7 +26,7 @@ from redis.exceptions import ResponseError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Engagement, EngagementStatus
+from app.models import Project, ProjectStatus
 from app.runs.events import decode_envelope
 from app.runs.streams import (
     CONSUMER_GROUP,
@@ -68,7 +68,7 @@ class StreamConsumer:
         self._last_refresh = 0.0
 
     # ------------------------------------------------------------------
-    # Engagement discovery
+    # Project discovery
     # ------------------------------------------------------------------
 
     def refresh_streams(self) -> set[str]:
@@ -85,7 +85,7 @@ class StreamConsumer:
     def _ensure_group(self, stream: str) -> None:
         # ID "0" so the group also sees messages added before group creation —
         # avoids a race where the API/driver xadds before the worker's discovery
-        # refresh has had a chance to create the group on a new engagement's
+        # refresh has had a chance to create the group on a new Project's
         # stream. New groups have their own delivery checkpoint so this doesn't
         # cause duplicate processing across worker restarts.
         try:
@@ -100,8 +100,8 @@ class StreamConsumer:
         try:
             all_active = list(
                 session.execute(
-                    select(Engagement.id).where(
-                        Engagement.status == EngagementStatus.active
+                    select(Project.id).where(
+                        Project.status == ProjectStatus.active
                     )
                 ).scalars()
             )
@@ -134,7 +134,7 @@ class StreamConsumer:
             )
         except ResponseError as exc:
             # A stream we knew about got XDEL'd (commonly: test cleanup, or an
-            # engagement was flushed). XREADGROUP fails on the whole batch even
+            # Project was flushed). XREADGROUP fails on the whole batch even
             # if only one stream is missing — easiest recovery is to forget what
             # we know and let the next refresh re-create groups for whatever is
             # still active in the DB.
@@ -174,17 +174,17 @@ class StreamConsumer:
         fields: dict[str, Any],
     ) -> None:
         try:
-            engagement_id = engagement_id_from_inbound(stream_name)
+            project_id = engagement_id_from_inbound(stream_name)
             envelope = decode_envelope(fields)
             logger.info(
                 "worker.message_received",
                 stream=stream_name,
                 msg_id=msg_id,
-                engagement_id=str(engagement_id),
+                project_id=str(project_id),
                 envelope_type=envelope.get("type"),
                 thread_id=envelope.get("thread_id"),
             )
-            self._runner.handle(engagement_id, envelope)
+            self._runner.handle(project_id, envelope)
         except Exception:
             logger.exception(
                 "worker.message_failed",

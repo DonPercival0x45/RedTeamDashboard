@@ -11,9 +11,9 @@ param env = 'dev'
 param location = 'eastus'
 
 // Choose a short, lowercase-only prefix that's globally unique enough for ACR
-// (alphanumeric only, 5-50 chars). Default is `rtd-dev` — change only if you
+// (alphanumeric only, 5-50 chars). Default is `xray-dev` — change only if you
 // hit a name collision in the chosen region.
-// param resourceGroupName = 'rtd-dev'
+// param resourceGroupName = 'xray-dev'
 
 param postgresAdminLogin = 'rtdadmin'
 

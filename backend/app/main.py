@@ -1,15 +1,15 @@
 """
-RedTeamDashboard — Defensive Security Operations and Governance Platform
+Project X-Ray — Project Management and Governance Platform
 
 This FastAPI application provides the HTTP and MCP (Model Context Protocol) surface
-for managing authorized security engagements.
+for managing authorized project work with approval-gated AI execution.
 
 **Charter:**
 - Approval-gated execution: Every active tool call passes a scope + risk gate and
   is recorded as an Approval with an immutable audit_log.
-- Agents assist, analysts decide: Automated agents perform enumeration and scanning
+- Agents assist, analysts decide: Automated agents perform enumeration and analysis
   only. Validation/proof-of-concept work is analyst-only.
-- In-scope enforcement: Recon/OSINT tooling runs only against targets explicitly
+- In-scope enforcement: AI tooling runs only against targets explicitly
   defined by the analyst as in-scope.
 
 The MCP server exposes tools for Claude Code and other AI assistants, with the same
@@ -24,7 +24,7 @@ from app.api.api_keys import router as api_keys_router
 from app.api.approvals import router as approvals_router
 from app.api.authorizations import router as authorizations_router
 from app.api.deps import AsyncRedisClient, DbSession
-from app.api.engagements import router as engagements_router
+from app.api.projects import router as projects_router
 from app.api.events import router as events_router
 from app.api.orchestrator import router as orchestrator_router
 from app.api.provider_keys import router as provider_keys_router
@@ -36,7 +36,7 @@ from app.mcp.server import mcp
 
 configure_logging(settings.env)
 
-app = FastAPI(title="Red Team Dashboard API", version="0.0.1")
+app = FastAPI(title="Project X-Ray API", version="0.0.1")
 
 # CORS for the browser viewer. Defaults cover local dev; Phase 6 central
 # viewer adds its origin via the CORS_ALLOW_ORIGINS env var (Bicep param).
@@ -49,7 +49,7 @@ app.add_middleware(
     expose_headers=["Last-Event-ID"],
 )
 
-app.include_router(engagements_router)
+app.include_router(projects_router)
 app.include_router(approvals_router)
 app.include_router(authorizations_router)
 app.include_router(api_keys_router)

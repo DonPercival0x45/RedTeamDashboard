@@ -14,7 +14,7 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.main import app
-from app.models import Engagement, EngagementStatus, Observation
+from app.models import Project, ProjectStatus, Observation
 
 
 @pytest.fixture()
@@ -23,11 +23,11 @@ def client() -> TestClient:
 
 
 @pytest.fixture()
-def engagement(db: Session) -> Iterator[Engagement]:
-    eng = Engagement(
+def Project(db: Session) -> Iterator[Project]:
+    eng = Project(
         name="Obs Test",
         slug=f"obs-test-{uuid.uuid4().hex[:8]}",
-        status=EngagementStatus.active,
+        status=ProjectStatus.active,
     )
     db.add(eng)
     db.commit()
@@ -47,9 +47,9 @@ _HDR = {"X-User-Id": "obs-test@example.com"}
 # ---------------------------------------------------------------------------
 
 
-def test_create_observation(client: TestClient, engagement: Engagement) -> None:
+def test_create_observation(client: TestClient, Project: Project) -> None:
     resp = client.post(
-        f"/engagements/{engagement.slug}/observations",
+        f"/projects/{Project.slug}/observations",
         json={"content": "Login portal exposes version string", "phase": "osint"},
         headers=_HDR,
     )
@@ -61,9 +61,9 @@ def test_create_observation(client: TestClient, engagement: Engagement) -> None:
     assert body["created_at"] is not None
 
 
-def test_create_observation_no_phase(client: TestClient, engagement: Engagement) -> None:
+def test_create_observation_no_phase(client: TestClient, Project: Project) -> None:
     resp = client.post(
-        f"/engagements/{engagement.slug}/observations",
+        f"/projects/{Project.slug}/observations",
         json={"content": "Generic note without a phase"},
         headers=_HDR,
     )
@@ -72,10 +72,10 @@ def test_create_observation_no_phase(client: TestClient, engagement: Engagement)
 
 
 def test_create_observation_empty_content_rejected(
-    client: TestClient, engagement: Engagement
+    client: TestClient, Project: Project
 ) -> None:
     resp = client.post(
-        f"/engagements/{engagement.slug}/observations",
+        f"/projects/{Project.slug}/observations",
         json={"content": ""},
         headers=_HDR,
     )
@@ -84,7 +84,7 @@ def test_create_observation_empty_content_rejected(
 
 def test_create_observation_404_for_unknown_slug(client: TestClient) -> None:
     resp = client.post(
-        f"/engagements/does-not-exist-{uuid.uuid4().hex[:6]}/observations",
+        f"/projects/does-not-exist-{uuid.uuid4().hex[:6]}/observations",
         json={"content": "some note"},
         headers=_HDR,
     )
@@ -92,10 +92,10 @@ def test_create_observation_404_for_unknown_slug(client: TestClient) -> None:
 
 
 def test_create_observation_requires_auth(
-    client: TestClient, engagement: Engagement
+    client: TestClient, Project: Project
 ) -> None:
     resp = client.post(
-        f"/engagements/{engagement.slug}/observations",
+        f"/projects/{Project.slug}/observations",
         json={"content": "note"},
     )
     assert resp.status_code == 401
@@ -107,17 +107,17 @@ def test_create_observation_requires_auth(
 
 
 def test_list_observations_returns_chronological(
-    client: TestClient, engagement: Engagement
+    client: TestClient, Project: Project
 ) -> None:
     for i in range(3):
         client.post(
-            f"/engagements/{engagement.slug}/observations",
+            f"/projects/{Project.slug}/observations",
             json={"content": f"note {i}"},
             headers=_HDR,
         )
 
     resp = client.get(
-        f"/engagements/{engagement.slug}/observations", headers=_HDR
+        f"/projects/{Project.slug}/observations", headers=_HDR
     )
     assert resp.status_code == 200
     rows = resp.json()
@@ -128,10 +128,10 @@ def test_list_observations_returns_chronological(
 
 
 def test_list_observations_empty_for_new_engagement(
-    client: TestClient, engagement: Engagement
+    client: TestClient, Project: Project
 ) -> None:
     resp = client.get(
-        f"/engagements/{engagement.slug}/observations", headers=_HDR
+        f"/projects/{Project.slug}/observations", headers=_HDR
     )
     assert resp.status_code == 200
     assert resp.json() == []
@@ -143,10 +143,10 @@ def test_list_observations_empty_for_new_engagement(
 
 
 def test_delete_observation(
-    client: TestClient, db: Session, engagement: Engagement
+    client: TestClient, db: Session, Project: Project
 ) -> None:
     create = client.post(
-        f"/engagements/{engagement.slug}/observations",
+        f"/projects/{Project.slug}/observations",
         json={"content": "delete me"},
         headers=_HDR,
     )
@@ -167,24 +167,24 @@ def test_delete_observation_404_for_unknown(client: TestClient) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Flushed engagement guard
+# Flushed Project guard
 # ---------------------------------------------------------------------------
 
 
 def test_cannot_add_observation_to_flushed_engagement(
     client: TestClient, db: Session
 ) -> None:
-    eng = Engagement(
+    eng = Project(
         name="Flushed",
         slug=f"flushed-obs-{uuid.uuid4().hex[:8]}",
-        status=EngagementStatus.flushed,
+        status=ProjectStatus.flushed,
     )
     db.add(eng)
     db.commit()
     db.refresh(eng)
 
     resp = client.post(
-        f"/engagements/{eng.slug}/observations",
+        f"/projects/{eng.slug}/observations",
         json={"content": "should fail"},
         headers=_HDR,
     )

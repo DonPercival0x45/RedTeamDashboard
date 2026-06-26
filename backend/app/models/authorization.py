@@ -11,16 +11,16 @@ from app.db.base import Base, TimestampMixin, uuid7
 
 
 class Authorization(Base, TimestampMixin):
-    """A standing per-(engagement, tool) approval — a "session grant".
+    """A standing per-(Project, tool) approval — a "session grant".
 
     While active (``revoked_at`` is NULL), the gate auto-approves in-scope calls
-    to ``tool_name`` for this engagement instead of interrupting for a human;
+    to ``tool_name`` for this Project instead of interrupting for a human;
     each such auto-approval is still written to the audit log carrying this
     row's id. Created when an operator approves a pending interrupt with
-    "remember for this session", and lives until revoked or the engagement is
+    "remember for this session", and lives until revoked or the Project is
     flushed (FK cascade).
 
-    A partial unique index keeps at most one *active* grant per (engagement,
+    A partial unique index keeps at most one *active* grant per (Project,
     tool); revoking sets ``revoked_at`` rather than deleting, so the grant
     history survives.
     """
@@ -28,9 +28,9 @@ class Authorization(Base, TimestampMixin):
     __tablename__ = "authorizations"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid7)
-    engagement_id: Mapped[uuid.UUID] = mapped_column(
+    project_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("engagements.id", ondelete="CASCADE"),
+        ForeignKey("projects.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )

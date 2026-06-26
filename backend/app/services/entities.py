@@ -1,4 +1,4 @@
-"""Entity correlation — derive entities from an engagement's findings.
+"""Entity correlation — derive entities from an Project's findings.
 
 CHARTER Idea 4: surface the emails, hosts, IPs, domains, etc. disclosed across
 findings, correlated so each value appears once with all the findings that

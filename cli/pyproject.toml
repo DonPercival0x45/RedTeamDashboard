@@ -3,14 +3,14 @@ requires = ["hatchling>=1.21"]
 build-backend = "hatchling.build"
 
 [project]
-name = "rtd-cli"
-version = "0.2.0"
-description = "Command-line client for the Red Team Dashboard"
+name = "xray-cli"
+version = "0.3.0"
+description = "Command-line client for Project X-Ray"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
-authors = [{ name = "Red Team Dashboard contributors" }]
-keywords = ["red-team", "security", "cli", "rtd"]
+authors = [{ name = "Project X-Ray contributors" }]
+keywords = ["project-management", "ai", "cli", "xray"]
 classifiers = [
   "Development Status :: 4 - Beta",
   "Environment :: Console",
@@ -19,7 +19,6 @@ classifiers = [
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
-  "Topic :: Security",
 ]
 dependencies = [
   "click>=8.1",
@@ -30,7 +29,7 @@ dependencies = [
 ]
 
 [project.scripts]
-rtd = "rtd.main:main_entrypoint"
+xray = "xray.main:main_entrypoint"
 
 [project.urls]
 Homepage = "https://github.com/DonPercival0x45/RedTeamDashboard"
@@ -44,7 +43,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/rtd"]
+packages = ["src/xray"]
 
 [tool.hatch.build.targets.sdist]
 include = ["src/", "README.md", "pyproject.toml"]

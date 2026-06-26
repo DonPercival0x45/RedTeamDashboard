@@ -12,8 +12,8 @@ const PREVIEW_DEBOUNCE_MS = 300;
 const ACCEPT_TYPES = ".txt,.csv,text/plain,text/csv";
 
 // Bulk-import drop-in. Parent decides what to do on commit:
-//   /new wizard      -> stash parsed rows, commit alongside engagement create
-//   scope editor     -> POST /engagements/{slug}/scope/import + refresh list
+//   /new wizard      -> stash parsed rows, commit alongside Project create
+//   scope editor     -> POST /projects/{slug}/scope/import + refresh list
 
 export function ScopeImporter({
   onCommit,

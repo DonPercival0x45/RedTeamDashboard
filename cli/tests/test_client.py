@@ -4,8 +4,8 @@ from __future__ import annotations
 import pytest
 from pytest_httpx import HTTPXMock
 
-from rtd.client import APIError, Client
-from rtd.config import Profile
+from xray.client import APIError, Client
+from xray.config import Profile
 
 
 @pytest.fixture()

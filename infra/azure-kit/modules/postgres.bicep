@@ -34,7 +34,7 @@ param delegatedSubnetId string
 param privateDnsZoneId string
 
 var serverName = '${namePrefix}-pg'
-var databaseName = 'rtd'
+var databaseName = 'XR'
 
 resource server 'Microsoft.DBforPostgreSQL/flexibleServers@2024-08-01' = {
   name: serverName

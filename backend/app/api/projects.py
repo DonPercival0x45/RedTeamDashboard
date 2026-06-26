@@ -1,41 +1,41 @@
-"""Engagements + nested scope + runs HTTP surface.
+"""Projects + nested scope + runs HTTP surface.
 
-Engagements are addressed in URLs by their ``slug`` (human-set, non-sequential)
+Projects are addressed in URLs by their ``slug`` (human-set, non-sequential)
 rather than the UUIDv7 primary key — the UUIDs still appear in JSON responses
 (``id`` field) and as FKs internally, just never in paths.
 
 Endpoints::
 
-    POST   /engagements                                 -> create
-    GET    /engagements                                 -> list (?status filter)
-    GET    /engagements/{slug}                          -> read
-    PATCH  /engagements/{slug}                          -> rename / archive / unarchive
-    DELETE /engagements/{slug}                          -> soft archive
-    POST   /engagements/{slug}/flush                    -> irreversible (calls flush_engagement)
+    POST   /projects                                 -> create
+    GET    /projects                                 -> list (?status filter)
+    GET    /projects/{slug}                          -> read
+    PATCH  /projects/{slug}                          -> rename / archive / unarchive
+    DELETE /projects/{slug}                          -> soft archive
+    POST   /projects/{slug}/flush                    -> irreversible (calls flush_engagement)
 
-    POST   /engagements/{slug}/scope                    -> create scope item
-    GET    /engagements/{slug}/scope                    -> list scope items
-    PATCH  /engagements/{slug}/scope/{scope_id}         -> update
-    DELETE /engagements/{slug}/scope/{scope_id}         -> remove
+    POST   /projects/{slug}/scope                    -> create scope item
+    GET    /projects/{slug}/scope                    -> list scope items
+    PATCH  /projects/{slug}/scope/{scope_id}         -> update
+    DELETE /projects/{slug}/scope/{scope_id}         -> remove
 
-    GET    /engagements/{slug}/findings                 -> list persisted findings
+    GET    /projects/{slug}/findings                 -> list persisted findings
 
-    GET    /engagements/{slug}/observations              -> list observations
-    POST   /engagements/{slug}/observations              -> create observation
+    GET    /projects/{slug}/observations              -> list observations
+    POST   /projects/{slug}/observations              -> create observation
     DELETE /observations/{observation_id}                -> delete observation
 
-    POST   /engagements/{slug}/findings/import           -> bulk import findings
+    POST   /projects/{slug}/findings/import           -> bulk import findings
     PATCH  /findings/{finding_id}                        -> update title/summary/severity/phase
-    GET    /engagements/{slug}/export                    -> full JSON snapshot
+    GET    /projects/{slug}/export                    -> full JSON snapshot
 
     POST   /findings/{finding_id}/attachments            -> upload screenshot/evidence file
     GET    /findings/{finding_id}/attachments            -> list attachment metadata
     GET    /attachments/{attachment_id}                  -> serve raw bytes
     DELETE /attachments/{attachment_id}                  -> delete
 
-    POST   /engagements/{slug}/runs                     -> enqueue run.start
+    POST   /projects/{slug}/runs                     -> enqueue run.start
 
-DELETE soft-archives the engagement (worker stops considering it for new runs
+DELETE soft-archives the Project (worker stops considering it for new runs
 once status != active); /flush is the destructive operation, gated to a
 separate endpoint so it can't fire from a stray HTTP verb.
 """
@@ -57,8 +57,8 @@ from app.models import (
     ActorType,
     Attachment,
     AuditLog,
-    Engagement,
-    EngagementStatus,
+    Project,
+    ProjectStatus,
     Finding,
     FindingPhase,
     FindingStatus,
@@ -70,10 +70,10 @@ from app.models.api_key import APIKeyScope
 from app.orchestrator.llm import default_provider_model
 from app.runs.events import encode_command
 from app.runs.streams import inbound_stream, outbound_stream, store_run_model
-from app.schemas.engagement import (
-    EngagementCreate,
-    EngagementRead,
-    EngagementUpdate,
+from app.schemas.project import (
+    ProjectCreate,
+    ProjectRead,
+    ProjectUpdate,
     RunModel,
     RunStart,
     RunStartResponse,
@@ -102,39 +102,39 @@ _SLUG_RE = re.compile(r"[^a-z0-9]+")
 
 def _slugify(name: str) -> str:
     cleaned = _SLUG_RE.sub("-", name.lower()).strip("-")
-    return cleaned or "engagement"
+    return cleaned or "Project"
 
 
 def _unique_slug(session: DbSession, base: str) -> str:
     candidate = base
     while session.execute(
-        select(Engagement.id).where(Engagement.slug == candidate)
+        select(Project.id).where(Project.slug == candidate)
     ).first():
         candidate = f"{base}-{uuid.uuid4().hex[:6]}"
     return candidate
 
 
-def _get_engagement_or_404(session: DbSession, slug: str) -> Engagement:
+def _get_engagement_or_404(session: DbSession, slug: str) -> Project:
     eng = session.execute(
-        select(Engagement).where(Engagement.slug == slug)
+        select(Project).where(Project.slug == slug)
     ).scalar_one_or_none()
     if eng is None:
-        raise HTTPException(status_code=404, detail="engagement not found")
+        raise HTTPException(status_code=404, detail="Project not found")
     return eng
 
 
-def _build_export_payload(session: DbSession, eng: Engagement) -> dict[str, Any]:
-    """Assemble a complete engagement snapshot suitable for blob archiving."""
+def _build_export_payload(session: DbSession, eng: Project) -> dict[str, Any]:
+    """Assemble a complete Project snapshot suitable for blob archiving."""
     scope_items = list(
-        session.execute(select(ScopeItem).where(ScopeItem.engagement_id == eng.id)).scalars()
+        session.execute(select(ScopeItem).where(ScopeItem.project_id == eng.id)).scalars()
     )
     findings = list(
-        session.execute(select(Finding).where(Finding.engagement_id == eng.id)).scalars()
+        session.execute(select(Finding).where(Finding.project_id == eng.id)).scalars()
     )
     audit_rows = list(
         session.execute(
             select(AuditLog)
-            .where(AuditLog.engagement_id == eng.id)
+            .where(AuditLog.project_id == eng.id)
             .order_by(AuditLog.created_at)
         ).scalars()
     )
@@ -146,7 +146,7 @@ def _build_export_payload(session: DbSession, eng: Engagement) -> dict[str, Any]
     observations = list(
         session.execute(
             select(Observation)
-            .where(Observation.engagement_id == eng.id)
+            .where(Observation.project_id == eng.id)
             .order_by(Observation.created_at)
         ).scalars()
     )
@@ -154,7 +154,7 @@ def _build_export_payload(session: DbSession, eng: Engagement) -> dict[str, Any]
     return {
         "version": "1",
         "exported_at": str(datetime.now(tz=UTC)),
-        "engagement": {
+        "Project": {
             "id": str(eng.id),
             "slug": eng.slug,
             "name": eng.name,
@@ -194,11 +194,11 @@ def _build_export_payload(session: DbSession, eng: Engagement) -> dict[str, Any]
     }
 
 
-def _reject_flushed(eng: Engagement) -> None:
-    if eng.status is EngagementStatus.flushed:
+def _reject_flushed(eng: Project) -> None:
+    if eng.status is ProjectStatus.flushed:
         raise HTTPException(
             status_code=409,
-            detail="engagement has been flushed; the row will be gone shortly",
+            detail="Project has been flushed; the row will be gone shortly",
         )
 
 
@@ -232,27 +232,27 @@ def _finding_to_read(f: Finding) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Engagement CRUD
+# Project CRUD
 # ---------------------------------------------------------------------------
 
 
 @router.post(
-    "/engagements",
-    response_model=EngagementRead,
+    "/projects",
+    response_model=ProjectRead,
     status_code=status.HTTP_201_CREATED,
 )
 def create_engagement(
-    body: EngagementCreate,
+    body: ProjectCreate,
     session: DbSession,
     user: CurrentUser,
-) -> Engagement:
+) -> Project:
     base_slug = _slugify(body.slug) if body.slug else _slugify(body.name)
     slug = _unique_slug(session, base_slug)
-    eng = Engagement(
+    eng = Project(
         name=body.name,
         slug=slug,
         description=body.description,
-        status=EngagementStatus.active,
+        status=ProjectStatus.active,
         created_by=user.id,
     )
     session.add(eng)
@@ -261,32 +261,32 @@ def create_engagement(
     return eng
 
 
-@router.get("/engagements", response_model=list[EngagementRead])
+@router.get("/projects", response_model=list[ProjectRead])
 def list_engagements(
     session: DbSession,
     status_filter: Annotated[
-        EngagementStatus | None,
+        ProjectStatus | None,
         Query(alias="status", description="Filter by status."),
     ] = None,
-) -> list[Engagement]:
-    stmt = select(Engagement)
+) -> list[Project]:
+    stmt = select(Project)
     if status_filter is not None:
-        stmt = stmt.where(Engagement.status == status_filter)
-    stmt = stmt.order_by(Engagement.created_at.desc())
+        stmt = stmt.where(Project.status == status_filter)
+    stmt = stmt.order_by(Project.created_at.desc())
     return list(session.execute(stmt).scalars())
 
 
-@router.get("/engagements/{slug}", response_model=EngagementRead)
-def get_engagement(slug: str, session: DbSession) -> Engagement:
+@router.get("/projects/{slug}", response_model=ProjectRead)
+def get_engagement(slug: str, session: DbSession) -> Project:
     return _get_engagement_or_404(session, slug)
 
 
-@router.patch("/engagements/{slug}", response_model=EngagementRead)
+@router.patch("/projects/{slug}", response_model=ProjectRead)
 def update_engagement(
     slug: str,
-    body: EngagementUpdate,
+    body: ProjectUpdate,
     session: DbSession,
-) -> Engagement:
+) -> Project:
     eng = _get_engagement_or_404(session, slug)
     _reject_flushed(eng)
 
@@ -294,16 +294,16 @@ def update_engagement(
         eng.name = body.name
 
     if body.status is not None:
-        if body.status is EngagementStatus.flushed:
+        if body.status is ProjectStatus.flushed:
             raise HTTPException(
                 status_code=400,
-                detail="use POST /engagements/{slug}/flush to flush",
+                detail="use POST /projects/{slug}/flush to flush",
             )
-        if body.status is EngagementStatus.active and eng.status is EngagementStatus.archived:
+        if body.status is ProjectStatus.active and eng.status is ProjectStatus.archived:
             eng.archived_at = None
         elif (
-            body.status is EngagementStatus.archived
-            and eng.status is EngagementStatus.active
+            body.status is ProjectStatus.archived
+            and eng.status is ProjectStatus.active
         ):
             eng.archived_at = datetime.now(tz=UTC)
         eng.status = body.status
@@ -313,9 +313,9 @@ def update_engagement(
     return eng
 
 
-@router.post("/engagements/{slug}/export", dependencies=[Depends(RequireScope(APIKeyScope.admin))])
+@router.post("/projects/{slug}/export", dependencies=[Depends(RequireScope(APIKeyScope.admin))])
 def export_engagement(slug: str, session: DbSession) -> dict[str, Any]:
-    """Export all engagement data (findings, scope, audit summary) to blob storage.
+    """Export all Project data (findings, scope, audit summary) to blob storage.
 
     Returns the blob URL if storage is configured, or the full payload inline
     if AZURE_STORAGE_ACCOUNT_NAME is unset (useful for local dev / manual backup).
@@ -330,14 +330,14 @@ def export_engagement(slug: str, session: DbSession) -> dict[str, Any]:
 
 
 @router.delete(
-    "/engagements/{slug}",
-    response_model=EngagementRead,
+    "/projects/{slug}",
+    response_model=ProjectRead,
 )
-def archive_engagement(slug: str, session: DbSession, _user: CurrentUser) -> Engagement:
+def archive_engagement(slug: str, session: DbSession, _user: CurrentUser) -> Project:
     eng = _get_engagement_or_404(session, slug)
     _reject_flushed(eng)
-    if eng.status is not EngagementStatus.archived:
-        eng.status = EngagementStatus.archived
+    if eng.status is not ProjectStatus.archived:
+        eng.status = ProjectStatus.archived
         eng.archived_at = datetime.now(tz=UTC)
         session.commit()
         session.refresh(eng)
@@ -349,14 +349,14 @@ def archive_engagement(slug: str, session: DbSession, _user: CurrentUser) -> Eng
     return eng
 
 
-@router.post("/engagements/{slug}/flush", status_code=204)
+@router.post("/projects/{slug}/flush", status_code=204)
 def flush_engagement(
     slug: str,
     session: DbSession,
     redis_client: RedisClient,
     _user: CurrentUser,
 ) -> Response:
-    """Permanently delete all engagement data. Export to blob first, then purge."""
+    """Permanently delete all Project data. Export to blob first, then purge."""
     eng = _get_engagement_or_404(session, slug)
     eid = eng.id
     slug_val = eng.slug
@@ -375,12 +375,12 @@ def flush_engagement(
 
 
 # ---------------------------------------------------------------------------
-# Scope CRUD (nested under engagement)
+# Scope CRUD (nested under Project)
 # ---------------------------------------------------------------------------
 
 
 @router.post(
-    "/engagements/{slug}/scope",
+    "/projects/{slug}/scope",
     response_model=ScopeItemRead,
     status_code=status.HTTP_201_CREATED,
 )
@@ -392,7 +392,7 @@ def create_scope_item(
     eng = _get_engagement_or_404(session, slug)
     _reject_flushed(eng)
     item = ScopeItem(
-        engagement_id=eng.id,
+        project_id=eng.id,
         kind=body.kind,
         value=body.value,
         is_exclusion=body.is_exclusion,
@@ -411,9 +411,9 @@ def create_scope_item(
 def parse_scope_blob(
     body: ScopeImportRequest, _user: CurrentUser
 ) -> ScopeImportPreview:
-    """Pure parser — no engagement, no DB writes.
+    """Pure parser — no Project, no DB writes.
 
-    Lets the /new wizard preview an import before the engagement exists.
+    Lets the /new wizard preview an import before the Project exists.
     Same parser the /scope/import endpoint uses; results are interchangeable.
     """
     rows, errors = parse_scope_text(body.text)
@@ -435,7 +435,7 @@ def parse_scope_blob(
 
 
 @router.post(
-    "/engagements/{slug}/scope/import",
+    "/projects/{slug}/scope/import",
     response_model=ScopeImportPreview | ScopeImportResult,
 )
 def import_scope(
@@ -450,7 +450,7 @@ def import_scope(
     Same parser whether the analyst uploaded a file (client read it as text)
     or pasted into a textarea. ``?dry_run=true`` returns the preview without
     persisting; the UI calls it on each debounced keystroke. The real commit
-    de-dupes against the engagement's existing (kind, value, is_exclusion)
+    de-dupes against the Project's existing (kind, value, is_exclusion)
     tuples so re-running an import is safe.
     """
     eng = _get_engagement_or_404(session, slug)
@@ -478,7 +478,7 @@ def import_scope(
 
     existing = list(
         session.execute(
-            select(ScopeItem).where(ScopeItem.engagement_id == eng.id)
+            select(ScopeItem).where(ScopeItem.project_id == eng.id)
         ).scalars()
     )
     seen = {(s.kind, s.value, s.is_exclusion) for s in existing}
@@ -498,7 +498,7 @@ def import_scope(
             )
             continue
         item = ScopeItem(
-            engagement_id=eng.id,
+            project_id=eng.id,
             kind=r.kind,
             value=r.value,
             is_exclusion=r.is_exclusion,
@@ -511,7 +511,7 @@ def import_scope(
     if created:
         session.add(
             AuditLog(
-                engagement_id=eng.id,
+                project_id=eng.id,
                 actor_type=ActorType.user,
                 actor_id=str(user.id),
                 event_type="scope.imported",
@@ -534,21 +534,21 @@ def import_scope(
 
 
 @router.get(
-    "/engagements/{slug}/scope",
+    "/projects/{slug}/scope",
     response_model=list[ScopeItemRead],
 )
 def list_scope(slug: str, session: DbSession) -> list[ScopeItem]:
     eng = _get_engagement_or_404(session, slug)
     rows = session.execute(
         select(ScopeItem)
-        .where(ScopeItem.engagement_id == eng.id)
+        .where(ScopeItem.project_id == eng.id)
         .order_by(ScopeItem.created_at)
     ).scalars()
     return list(rows)
 
 
 @router.patch(
-    "/engagements/{slug}/scope/{scope_id}",
+    "/projects/{slug}/scope/{scope_id}",
     response_model=ScopeItemRead,
 )
 def update_scope_item(
@@ -560,7 +560,7 @@ def update_scope_item(
     eng = _get_engagement_or_404(session, slug)
     _reject_flushed(eng)
     item = session.get(ScopeItem, scope_id)
-    if item is None or item.engagement_id != eng.id:
+    if item is None or item.project_id != eng.id:
         raise HTTPException(status_code=404, detail="scope item not found")
     if body.value is not None:
         item.value = body.value
@@ -574,7 +574,7 @@ def update_scope_item(
 
 
 @router.delete(
-    "/engagements/{slug}/scope/{scope_id}",
+    "/projects/{slug}/scope/{scope_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     response_class=Response,
 )
@@ -585,7 +585,7 @@ def delete_scope_item(
 ) -> Response:
     eng = _get_engagement_or_404(session, slug)
     item = session.get(ScopeItem, scope_id)
-    if item is None or item.engagement_id != eng.id:
+    if item is None or item.project_id != eng.id:
         raise HTTPException(status_code=404, detail="scope item not found")
     session.delete(item)
     session.commit()
@@ -598,7 +598,7 @@ def delete_scope_item(
 
 
 @router.get(
-    "/engagements/{slug}/findings",
+    "/projects/{slug}/findings",
     response_model=list[FindingRead],
 )
 def list_findings(
@@ -610,7 +610,7 @@ def list_findings(
     ] = None,
 ) -> list[dict[str, Any]]:
     eng = _get_engagement_or_404(session, slug)
-    stmt = select(Finding).where(Finding.engagement_id == eng.id)
+    stmt = select(Finding).where(Finding.project_id == eng.id)
     if phase is not None:
         stmt = stmt.where(Finding.phase == phase)
     if status is not None:
@@ -620,7 +620,7 @@ def list_findings(
 
 
 @router.get(
-    "/engagements/{slug}/entities",
+    "/projects/{slug}/entities",
     response_model=list[EntityRead],
 )
 def list_entities(
@@ -629,12 +629,12 @@ def list_entities(
     type: Annotated[str | None, Query(description="Filter by entity type.")] = None,
     q: Annotated[str | None, Query(description="Substring match on the value.")] = None,
 ) -> list[dict[str, Any]]:
-    """Entities correlated across this engagement's findings (CHARTER Idea 4)."""
+    """Entities correlated across this Project's findings (CHARTER Idea 4)."""
     eng = _get_engagement_or_404(session, slug)
     findings = list(
         session.execute(
             select(Finding)
-            .where(Finding.engagement_id == eng.id)
+            .where(Finding.project_id == eng.id)
             .order_by(Finding.created_at)
         ).scalars()
     )
@@ -668,7 +668,7 @@ def validate_finding(
 
     session.add(
         AuditLog(
-            engagement_id=finding.engagement_id,
+            project_id=finding.project_id,
             actor_type=ActorType.user,
             actor_id=str(user.id),
             event_type="finding.validated",
@@ -689,20 +689,20 @@ def validate_finding(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/engagements/{slug}/observations", response_model=list[ObservationRead])
+@router.get("/projects/{slug}/observations", response_model=list[ObservationRead])
 def list_observations(slug: str, session: DbSession) -> list[Observation]:
     eng = _get_engagement_or_404(session, slug)
     return list(
         session.execute(
             select(Observation)
-            .where(Observation.engagement_id == eng.id)
+            .where(Observation.project_id == eng.id)
             .order_by(Observation.created_at)
         ).scalars()
     )
 
 
 @router.post(
-    "/engagements/{slug}/observations",
+    "/projects/{slug}/observations",
     response_model=ObservationRead,
     status_code=status.HTTP_201_CREATED,
 )
@@ -715,7 +715,7 @@ def create_observation(
     eng = _get_engagement_or_404(session, slug)
     _reject_flushed(eng)
     obs = Observation(
-        engagement_id=eng.id,
+        project_id=eng.id,
         content=body.content,
         phase=body.phase,
         created_by=user.id,
@@ -758,7 +758,7 @@ class FindingImport(BaseModel):
 
 
 @router.post(
-    "/engagements/{slug}/findings/import",
+    "/projects/{slug}/findings/import",
     response_model=list[FindingRead],
     status_code=status.HTTP_201_CREATED,
 )
@@ -783,7 +783,7 @@ def import_findings(
     created: list[Finding] = []
     for item in body:
         f = Finding(
-            engagement_id=eng.id,
+            project_id=eng.id,
             title=item.title,
             severity=item.severity,
             phase=item.phase,
@@ -798,7 +798,7 @@ def import_findings(
 
     session.add(
         AuditLog(
-            engagement_id=eng.id,
+            project_id=eng.id,
             actor_type=ActorType.user,
             actor_id=str(user.id),
             event_type="findings.imported",
@@ -849,7 +849,7 @@ def update_finding(
     if changed:
         session.add(
             AuditLog(
-                engagement_id=finding.engagement_id,
+                project_id=finding.project_id,
                 actor_type=ActorType.user,
                 actor_id=str(user.id),
                 event_type="finding.updated",
@@ -863,17 +863,17 @@ def update_finding(
 
 
 # ---------------------------------------------------------------------------
-# Engagement JSON export
+# Project JSON export
 # ---------------------------------------------------------------------------
 
 
-@router.get("/engagements/{slug}/export")
+@router.get("/projects/{slug}/export")
 def export_engagement(
     slug: str,
     session: DbSession,
     _user: CurrentUser,
 ) -> dict[str, Any]:
-    """Full engagement snapshot as structured JSON — findings, scope, observations,
+    """Full Project snapshot as structured JSON — findings, scope, observations,
     and audit summary. Suitable for archiving or importing into another instance."""
     eng = _get_engagement_or_404(session, slug)
     return _build_export_payload(session, eng)
@@ -911,7 +911,7 @@ async def upload_attachment(
 
     attachment = Attachment(
         finding_id=finding_id,
-        engagement_id=finding.engagement_id,
+        project_id=finding.project_id,
         filename=file.filename or "attachment",
         content_type=file.content_type or "application/octet-stream",
         size_bytes=len(data),
@@ -921,7 +921,7 @@ async def upload_attachment(
     session.add(attachment)
     session.add(
         AuditLog(
-            engagement_id=finding.engagement_id,
+            project_id=finding.project_id,
             actor_type=ActorType.user,
             actor_id=str(user.id),
             event_type="attachment.uploaded",
@@ -991,7 +991,7 @@ def delete_attachment(
         raise HTTPException(status_code=404, detail="attachment not found")
     session.add(
         AuditLog(
-            engagement_id=attachment.engagement_id,
+            project_id=attachment.project_id,
             actor_type=ActorType.user,
             actor_id=str(user.id),
             event_type="attachment.deleted",
@@ -1048,7 +1048,7 @@ def _check_provider_key_available(provider: str) -> None:
 
 
 @router.post(
-    "/engagements/{slug}/runs",
+    "/projects/{slug}/runs",
     response_model=RunStartResponse,
     status_code=status.HTTP_202_ACCEPTED,
 )
@@ -1060,11 +1060,11 @@ def start_run(
     user: CurrentUser,
 ) -> RunStartResponse:
     eng = _get_engagement_or_404(session, slug)
-    if eng.status is not EngagementStatus.active:
+    if eng.status is not ProjectStatus.active:
         raise HTTPException(
             status_code=409,
             detail=(
-                f"engagement is {eng.status.value}; only active engagements "
+                f"Project is {eng.status.value}; only active engagements "
                 "accept new runs"
             ),
         )
@@ -1104,7 +1104,7 @@ def start_run(
 
     session.add(
         AuditLog(
-            engagement_id=eng.id,
+            project_id=eng.id,
             actor_type=ActorType.user,
             actor_id=str(user.id),
             event_type="run.requested",
@@ -1121,7 +1121,7 @@ def start_run(
     session.commit()
 
     return RunStartResponse(
-        engagement_id=eng.id,
+        project_id=eng.id,
         thread_id=thread_id,
         events_stream=outbound_stream(eng.id),
         model=effective_model,

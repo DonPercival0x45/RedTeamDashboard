@@ -1,6 +1,6 @@
 """PDF report endpoint.
 
-Seeds an engagement with scope, a finding, an approval, and an audit-log
+Seeds an Project with scope, a finding, an approval, and an audit-log
 entry, then hits GET /engagements/{slug}/report and checks the response is
 a non-trivial PDF.
 """
@@ -20,8 +20,8 @@ from app.models import (
     Approval,
     ApprovalStatus,
     AuditLog,
-    Engagement,
-    EngagementStatus,
+    Project,
+    ProjectStatus,
     Finding,
     FindingPhase,
     FindingStatus,
@@ -54,11 +54,11 @@ def client() -> TestClient:
 
 
 @pytest.fixture()
-def engagement(db: Session) -> Iterator[Engagement]:
-    eng = Engagement(
+def Project(db: Session) -> Iterator[Project]:
+    eng = Project(
         name="Acme Report Test",
         slug=f"report-test-{uuid.uuid4().hex[:8]}",
-        status=EngagementStatus.active,
+        status=ProjectStatus.active,
     )
     db.add(eng)
     db.commit()
@@ -67,7 +67,7 @@ def engagement(db: Session) -> Iterator[Engagement]:
         yield eng
     finally:
         db.execute(
-            text("DELETE FROM approvals WHERE engagement_id = :id"),
+            text("DELETE FROM approvals WHERE project_id = :id"),
             {"id": eng.id},
         )
         db.commit()
@@ -75,10 +75,10 @@ def engagement(db: Session) -> Iterator[Engagement]:
         db.commit()
 
 
-def _seed_data(db: Session, engagement_id: uuid.UUID) -> None:
+def _seed_data(db: Session, project_id: uuid.UUID) -> None:
     db.add(
         ScopeItem(
-            engagement_id=engagement_id,
+            project_id=project_id,
             kind=ScopeKind.domain,
             value="acme.com",
             is_exclusion=False,
@@ -86,7 +86,7 @@ def _seed_data(db: Session, engagement_id: uuid.UUID) -> None:
     )
     db.add(
         Finding(
-            engagement_id=engagement_id,
+            project_id=project_id,
             title="subfinder → acme.com",
             severity=Severity.info,
             details={"subdomains": ["www.acme.com", "mail.acme.com"]},
@@ -99,7 +99,7 @@ def _seed_data(db: Session, engagement_id: uuid.UUID) -> None:
     )
     db.add(
         Approval(
-            engagement_id=engagement_id,
+            project_id=project_id,
             thread_id=str(uuid.uuid4()),
             node="tool_dispatch",
             tool_name="portscan",
@@ -111,7 +111,7 @@ def _seed_data(db: Session, engagement_id: uuid.UUID) -> None:
     )
     db.add(
         AuditLog(
-            engagement_id=engagement_id,
+            project_id=project_id,
             actor_type=ActorType.agent,
             actor_id="worker",
             event_type="run.started",
@@ -123,12 +123,12 @@ def _seed_data(db: Session, engagement_id: uuid.UUID) -> None:
 
 @_needs_gtk
 def test_report_renders_pdf(
-    client: TestClient, db: Session, engagement: Engagement
+    client: TestClient, db: Session, Project: Project
 ) -> None:
-    _seed_data(db, engagement.id)
+    _seed_data(db, Project.id)
 
     response = client.get(
-        f"/engagements/{engagement.slug}/report",
+        f"/projects/{Project.slug}/report",
         headers={"X-User-Id": "report-test@example.com"},
     )
     assert response.status_code == 200
@@ -142,11 +142,11 @@ def test_report_renders_pdf(
 
 @_needs_gtk
 def test_report_includes_observations(
-    client: TestClient, db: Session, engagement: Engagement
+    client: TestClient, db: Session, Project: Project
 ) -> None:
     db.add(
         Observation(
-            engagement_id=engagement.id,
+            project_id=Project.id,
             content="Certificate expires in 14 days",
             phase=FindingPhase.osint,
         )
@@ -154,7 +154,7 @@ def test_report_includes_observations(
     db.commit()
 
     resp = client.get(
-        f"/engagements/{engagement.slug}/report",
+        f"/projects/{Project.slug}/report",
         headers={"X-User-Id": "report-test@example.com"},
     )
     assert resp.status_code == 200
@@ -163,14 +163,14 @@ def test_report_includes_observations(
 
 def test_report_404_for_unknown_engagement(client: TestClient) -> None:
     response = client.get(
-        f"/engagements/does-not-exist-{uuid.uuid4().hex[:6]}/report",
+        f"/projects/does-not-exist-{uuid.uuid4().hex[:6]}/report",
         headers={"X-User-Id": "report-test@example.com"},
     )
     assert response.status_code == 404
 
 
 def test_report_requires_x_user_id(
-    client: TestClient, engagement: Engagement
+    client: TestClient, Project: Project
 ) -> None:
-    response = client.get(f"/engagements/{engagement.slug}/report")
+    response = client.get(f"/projects/{Project.slug}/report")
     assert response.status_code == 401

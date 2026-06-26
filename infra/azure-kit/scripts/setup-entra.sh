@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Red Team Dashboard — Microsoft Entra ID app registration for analyst SSO.
+# Project X-Ray — Microsoft Entra ID app registration for analyst SSO.
 #
 # Creates ONE app registration that is both the SPA client (analysts sign in)
 # and the API it calls (it exposes a single `access_as_user` scope). The
@@ -61,7 +61,7 @@ command -v python3 >/dev/null 2>&1 || die "python3 not found"
 az account show >/dev/null 2>&1 || die "not logged in — run 'az login'"
 
 TENANT_ID="$(az account show --query tenantId -o tsv)"
-DISPLAY_NAME="rtd-${ENV_NAME}-viewer"
+DISPLAY_NAME="xray-${ENV_NAME}-viewer"
 
 # Redirect URIs for the SPA platform. Dedupe; drop blanks.
 REDIRECTS=()
@@ -96,10 +96,10 @@ print(json.dumps({"api": {"oauth2PermissionScopes": [{
     "value": "access_as_user",
     "type": "User",
     "isEnabled": True,
-    "adminConsentDisplayName": "Access the Red Team Dashboard API",
-    "adminConsentDescription": "Allows the signed-in analyst to access the RTD API on their behalf.",
-    "userConsentDisplayName": "Access the Red Team Dashboard API",
-    "userConsentDescription": "Allows the app to access the RTD API on your behalf.",
+    "adminConsentDisplayName": "Access the Project X-Ray API",
+    "adminConsentDescription": "Allows the signed-in analyst to access the XR API on their behalf.",
+    "userConsentDisplayName": "Access the Project X-Ray API",
+    "userConsentDescription": "Allows the app to access the XR API on your behalf.",
 }]}}))
 PY
 )"

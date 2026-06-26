@@ -16,8 +16,8 @@ from sqlalchemy.orm import Session
 
 from app.main import app
 from app.models import (
-    Engagement,
-    EngagementStatus,
+    Project,
+    ProjectStatus,
     Finding,
     FindingPhase,
     FindingStatus,
@@ -32,11 +32,11 @@ def client() -> TestClient:
 
 
 @pytest.fixture()
-def engagement(db: Session) -> Iterator[Engagement]:
-    eng = Engagement(
+def Project(db: Session) -> Iterator[Project]:
+    eng = Project(
         name="Phase8 Validation",
         slug=f"phase8-{uuid.uuid4().hex[:8]}",
-        status=EngagementStatus.active,
+        status=ProjectStatus.active,
     )
     db.add(eng)
     db.commit()
@@ -50,14 +50,14 @@ def engagement(db: Session) -> Iterator[Engagement]:
 
 def _seed(
     db: Session,
-    engagement_id: uuid.UUID,
+    project_id: uuid.UUID,
     *,
     tool: str,
     phase: FindingPhase,
     status: FindingStatus,
 ) -> Finding:
     row = Finding(
-        engagement_id=engagement_id,
+        project_id=project_id,
         title=f"{tool} finding",
         severity=Severity.info,
         details={},
@@ -88,31 +88,31 @@ def test_phase_for_tool_maps_recon_and_scan() -> None:
 
 
 def test_findings_filter_by_phase_and_status(
-    client: TestClient, db: Session, engagement: Engagement
+    client: TestClient, db: Session, Project: Project
 ) -> None:
     _seed(
-        db, engagement.id, tool="subfinder",
+        db, Project.id, tool="subfinder",
         phase=FindingPhase.osint, status=FindingStatus.pending_validation,
     )
     _seed(
-        db, engagement.id, tool="portscan",
+        db, Project.id, tool="portscan",
         phase=FindingPhase.vuln_scan, status=FindingStatus.validated,
     )
     hdr = {"X-User-Id": "p8@example.com"}
 
     all_rows = client.get(
-        f"/engagements/{engagement.slug}/findings", headers=hdr
+        f"/projects/{Project.slug}/findings", headers=hdr
     ).json()
     assert len(all_rows) == 2
     assert {r["phase"] for r in all_rows} == {"osint", "vuln_scan"}
 
     osint = client.get(
-        f"/engagements/{engagement.slug}/findings?phase=osint", headers=hdr
+        f"/projects/{Project.slug}/findings?phase=osint", headers=hdr
     ).json()
     assert len(osint) == 1 and osint[0]["phase"] == "osint"
 
     pending = client.get(
-        f"/engagements/{engagement.slug}/findings?status=pending_validation",
+        f"/projects/{Project.slug}/findings?status=pending_validation",
         headers=hdr,
     ).json()
     assert len(pending) == 1 and pending[0]["status"] == "pending_validation"
@@ -122,10 +122,10 @@ def test_findings_filter_by_phase_and_status(
 
 
 def test_validate_promotes_finding(
-    client: TestClient, db: Session, engagement: Engagement
+    client: TestClient, db: Session, Project: Project
 ) -> None:
     f = _seed(
-        db, engagement.id, tool="subfinder",
+        db, Project.id, tool="subfinder",
         phase=FindingPhase.osint, status=FindingStatus.pending_validation,
     )
     resp = client.post(
@@ -144,10 +144,10 @@ def test_validate_promotes_finding(
 
 
 def test_reject_clears_validation_stamp(
-    client: TestClient, db: Session, engagement: Engagement
+    client: TestClient, db: Session, Project: Project
 ) -> None:
     f = _seed(
-        db, engagement.id, tool="portscan",
+        db, Project.id, tool="portscan",
         phase=FindingPhase.vuln_scan, status=FindingStatus.validated,
     )
     resp = client.post(
@@ -173,21 +173,21 @@ def test_validate_unknown_finding_404(client: TestClient) -> None:
 
 
 def test_report_excludes_unvalidated(
-    client: TestClient, db: Session, engagement: Engagement
+    client: TestClient, db: Session, Project: Project
 ) -> None:
     # Only a pending finding exists → it must not count as validated, and the
     # report still renders cleanly (just without that finding).
     _seed(
-        db, engagement.id, tool="subfinder",
+        db, Project.id, tool="subfinder",
         phase=FindingPhase.osint, status=FindingStatus.pending_validation,
     )
     hdr = {"X-User-Id": "p8@example.com"}
 
     validated = client.get(
-        f"/engagements/{engagement.slug}/findings?status=validated", headers=hdr
+        f"/projects/{Project.slug}/findings?status=validated", headers=hdr
     ).json()
     assert validated == []
 
-    report = client.get(f"/engagements/{engagement.slug}/report", headers=hdr)
+    report = client.get(f"/projects/{Project.slug}/report", headers=hdr)
     assert report.status_code == 200
     assert report.content.startswith(b"%PDF-")

@@ -14,7 +14,7 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.main import app
-from app.models import AuditLog, Engagement, EngagementStatus, Finding, FindingStatus
+from app.models import AuditLog, Project, ProjectStatus, Finding, FindingStatus
 
 
 @pytest.fixture()
@@ -23,11 +23,11 @@ def client() -> TestClient:
 
 
 @pytest.fixture()
-def engagement(db: Session) -> Iterator[Engagement]:
-    eng = Engagement(
+def Project(db: Session) -> Iterator[Project]:
+    eng = Project(
         name="Import Test",
         slug=f"import-test-{uuid.uuid4().hex[:8]}",
-        status=EngagementStatus.active,
+        status=ProjectStatus.active,
     )
     db.add(eng)
     db.commit()
@@ -48,11 +48,11 @@ _HDR = {"X-User-Id": "import-test@example.com"}
 
 
 def test_import_single_finding(
-    client: TestClient, db: Session, engagement: Engagement
+    client: TestClient, db: Session, Project: Project
 ) -> None:
     payload = [{"title": "TLS cert expiring soon", "severity": "medium", "phase": "osint"}]
     resp = client.post(
-        f"/engagements/{engagement.slug}/findings/import",
+        f"/projects/{Project.slug}/findings/import",
         json=payload,
         headers=_HDR,
     )
@@ -66,7 +66,7 @@ def test_import_single_finding(
 
 
 def test_import_multiple_findings(
-    client: TestClient, engagement: Engagement
+    client: TestClient, Project: Project
 ) -> None:
     payload = [
         {"title": "Finding A", "severity": "high"},
@@ -74,7 +74,7 @@ def test_import_multiple_findings(
         {"title": "Finding C"},
     ]
     resp = client.post(
-        f"/engagements/{engagement.slug}/findings/import",
+        f"/projects/{Project.slug}/findings/import",
         json=payload,
         headers=_HDR,
     )
@@ -86,10 +86,10 @@ def test_import_multiple_findings(
 
 
 def test_import_empty_list_returns_empty(
-    client: TestClient, engagement: Engagement
+    client: TestClient, Project: Project
 ) -> None:
     resp = client.post(
-        f"/engagements/{engagement.slug}/findings/import",
+        f"/projects/{Project.slug}/findings/import",
         json=[],
         headers=_HDR,
     )
@@ -103,10 +103,10 @@ def test_import_empty_list_returns_empty(
 
 
 def test_import_defaults_source_tool_to_import(
-    client: TestClient, db: Session, engagement: Engagement
+    client: TestClient, db: Session, Project: Project
 ) -> None:
     resp = client.post(
-        f"/engagements/{engagement.slug}/findings/import",
+        f"/projects/{Project.slug}/findings/import",
         json=[{"title": "No tool specified"}],
         headers=_HDR,
     )
@@ -118,10 +118,10 @@ def test_import_defaults_source_tool_to_import(
 
 
 def test_import_respects_explicit_source_tool(
-    client: TestClient, db: Session, engagement: Engagement
+    client: TestClient, db: Session, Project: Project
 ) -> None:
     resp = client.post(
-        f"/engagements/{engagement.slug}/findings/import",
+        f"/projects/{Project.slug}/findings/import",
         json=[{"title": "Nessus finding", "source_tool": "nessus"}],
         headers=_HDR,
     )
@@ -133,10 +133,10 @@ def test_import_respects_explicit_source_tool(
 
 
 def test_import_all_land_as_pending_validation(
-    client: TestClient, db: Session, engagement: Engagement
+    client: TestClient, db: Session, Project: Project
 ) -> None:
     resp = client.post(
-        f"/engagements/{engagement.slug}/findings/import",
+        f"/projects/{Project.slug}/findings/import",
         json=[{"title": "Check me"}, {"title": "Check me too"}],
         headers=_HDR,
     )
@@ -149,10 +149,10 @@ def test_import_all_land_as_pending_validation(
 
 
 def test_import_defaults_phase_to_general(
-    client: TestClient, db: Session, engagement: Engagement
+    client: TestClient, db: Session, Project: Project
 ) -> None:
     resp = client.post(
-        f"/engagements/{engagement.slug}/findings/import",
+        f"/projects/{Project.slug}/findings/import",
         json=[{"title": "No phase"}],
         headers=_HDR,
     )
@@ -166,10 +166,10 @@ def test_import_defaults_phase_to_general(
 
 
 def test_import_writes_audit_log(
-    client: TestClient, db: Session, engagement: Engagement
+    client: TestClient, db: Session, Project: Project
 ) -> None:
     resp = client.post(
-        f"/engagements/{engagement.slug}/findings/import",
+        f"/projects/{Project.slug}/findings/import",
         json=[{"title": "A"}, {"title": "B"}],
         headers=_HDR,
     )
@@ -177,7 +177,7 @@ def test_import_writes_audit_log(
 
     entry = db.execute(
         select(AuditLog).where(
-            AuditLog.engagement_id == engagement.id,
+            AuditLog.project_id == Project.id,
             AuditLog.event_type == "findings.imported",
         )
     ).scalar_one_or_none()
@@ -193,16 +193,16 @@ def test_import_writes_audit_log(
 
 def test_import_404_for_unknown_engagement(client: TestClient) -> None:
     resp = client.post(
-        f"/engagements/does-not-exist-{uuid.uuid4().hex[:6]}/findings/import",
+        f"/projects/does-not-exist-{uuid.uuid4().hex[:6]}/findings/import",
         json=[{"title": "orphan"}],
         headers=_HDR,
     )
     assert resp.status_code == 404
 
 
-def test_import_requires_auth(client: TestClient, engagement: Engagement) -> None:
+def test_import_requires_auth(client: TestClient, Project: Project) -> None:
     resp = client.post(
-        f"/engagements/{engagement.slug}/findings/import",
+        f"/projects/{Project.slug}/findings/import",
         json=[{"title": "unauthed"}],
     )
     assert resp.status_code == 401
@@ -211,17 +211,17 @@ def test_import_requires_auth(client: TestClient, engagement: Engagement) -> Non
 def test_import_409_for_flushed_engagement(
     client: TestClient, db: Session
 ) -> None:
-    eng = Engagement(
+    eng = Project(
         name="Flushed Import",
         slug=f"flushed-import-{uuid.uuid4().hex[:8]}",
-        status=EngagementStatus.flushed,
+        status=ProjectStatus.flushed,
     )
     db.add(eng)
     db.commit()
     db.refresh(eng)
 
     resp = client.post(
-        f"/engagements/{eng.slug}/findings/import",
+        f"/projects/{eng.slug}/findings/import",
         json=[{"title": "should fail"}],
         headers=_HDR,
     )

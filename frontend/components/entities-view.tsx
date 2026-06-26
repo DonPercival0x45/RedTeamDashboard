@@ -38,7 +38,7 @@ function typeLabel(t: string): string {
   return TYPE_LABEL[t] ?? t;
 }
 
-// CHARTER Idea 4: entities correlated across the engagement's findings —
+// CHARTER Idea 4: entities correlated across the Project's findings —
 // searchable, filterable by type, clickable into provenance.
 export function EntitiesView({ slug }: { slug: string }) {
   const [entities, setEntities] = useState<Entity[] | null>(null);

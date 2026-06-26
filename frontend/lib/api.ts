@@ -14,7 +14,7 @@ import type {
   Attachment,
   Authorization,
   CostRollup,
-  Engagement,
+  Project,
   EngagementStatus,
   Entity,
   Finding,
@@ -62,34 +62,34 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 // Engagements
 // ---------------------------------------------------------------------------
 
-export function listEngagements(
+export function listProjects(
   status?: EngagementStatus,
-): Promise<Engagement[]> {
+): Promise<Project[]> {
   const q = status ? `?status=${status}` : "";
-  return request<Engagement[]>(`/engagements${q}`);
+  return request<Project[]>(`/projects${q}`);
 }
 
-export function getEngagement(slug: string): Promise<Engagement> {
-  return request<Engagement>(`/engagements/${slug}`);
+export function getProject(slug: string): Promise<Project> {
+  return request<Project>(`/projects/${slug}`);
 }
 
-export function createEngagement(body: {
+export function createProject(body: {
   name: string;
   slug?: string;
   description?: string;
-}): Promise<Engagement> {
-  return request<Engagement>("/engagements", {
+}): Promise<Project> {
+  return request<Project>("/projects", {
     method: "POST",
     body: JSON.stringify(body),
   });
 }
 
-export function archiveEngagement(slug: string): Promise<Engagement> {
-  return request<Engagement>(`/engagements/${slug}`, { method: "DELETE" });
+export function archiveProject(slug: string): Promise<Project> {
+  return request<Project>(`/projects/${slug}`, { method: "DELETE" });
 }
 
 export function flushEngagement(slug: string): Promise<void> {
-  return request<void>(`/engagements/${slug}/flush`, { method: "POST" });
+  return request<void>(`/projects/${slug}/flush`, { method: "POST" });
 }
 
 // ---------------------------------------------------------------------------
@@ -98,7 +98,7 @@ export function flushEngagement(slug: string): Promise<void> {
 
 export function listScope(slug: string) {
   return request<import("@/lib/types").ScopeItem[]>(
-    `/engagements/${slug}/scope`,
+    `/projects/${slug}/scope`,
   );
 }
 
@@ -112,13 +112,13 @@ export function createScopeItem(
   },
 ) {
   return request<import("@/lib/types").ScopeItem>(
-    `/engagements/${slug}/scope`,
+    `/projects/${slug}/scope`,
     { method: "POST", body: JSON.stringify(body) },
   );
 }
 
 export function deleteScopeItem(slug: string, scopeId: string): Promise<void> {
-  return request<void>(`/engagements/${slug}/scope/${scopeId}`, {
+  return request<void>(`/projects/${slug}/scope/${scopeId}`, {
     method: "DELETE",
   });
 }
@@ -137,7 +137,7 @@ export function importScope(
   text: string,
 ): Promise<import("@/lib/types").ScopeImportResult> {
   return request<import("@/lib/types").ScopeImportResult>(
-    `/engagements/${slug}/scope/import`,
+    `/projects/${slug}/scope/import`,
     { method: "POST", body: JSON.stringify({ text }) },
   );
 }
@@ -154,7 +154,7 @@ export function listFindings(
   if (filters?.phase) q.set("phase", filters.phase);
   if (filters?.status) q.set("status", filters.status);
   const suffix = q.toString() ? `?${q.toString()}` : "";
-  return request<Finding[]>(`/engagements/${slug}/findings${suffix}`);
+  return request<Finding[]>(`/projects/${slug}/findings${suffix}`);
 }
 
 export function listEntities(
@@ -165,7 +165,7 @@ export function listEntities(
   if (filters?.type) params.set("type", filters.type);
   if (filters?.q) params.set("q", filters.q);
   const suffix = params.toString() ? `?${params.toString()}` : "";
-  return request<Entity[]>(`/engagements/${slug}/entities${suffix}`);
+  return request<Entity[]>(`/projects/${slug}/entities${suffix}`);
 }
 
 export function validateFinding(
@@ -184,14 +184,14 @@ export function validateFinding(
 // ---------------------------------------------------------------------------
 
 export function listObservations(slug: string): Promise<Observation[]> {
-  return request<Observation[]>(`/engagements/${slug}/observations`);
+  return request<Observation[]>(`/projects/${slug}/observations`);
 }
 
 export function createObservation(
   slug: string,
   body: { content: string; phase?: FindingPhase | null },
 ): Promise<Observation> {
-  return request<Observation>(`/engagements/${slug}/observations`, {
+  return request<Observation>(`/projects/${slug}/observations`, {
     method: "POST",
     body: JSON.stringify(body),
   });
@@ -209,7 +209,7 @@ export function startRun(
   slug: string,
   body: { prompt: string; model?: RunModel },
 ): Promise<RunStartResponse> {
-  return request<RunStartResponse>(`/engagements/${slug}/runs`, {
+  return request<RunStartResponse>(`/projects/${slug}/runs`, {
     method: "POST",
     body: JSON.stringify(body),
   });
@@ -224,7 +224,7 @@ export function listApprovals(
   status?: ApprovalStatus,
 ): Promise<Approval[]> {
   const q = status ? `?status=${status}` : "";
-  return request<Approval[]>(`/engagements/${slug}/approvals${q}`);
+  return request<Approval[]>(`/projects/${slug}/approvals${q}`);
 }
 
 export function decideApproval(
@@ -252,7 +252,7 @@ export function listAuthorizations(
 ): Promise<Authorization[]> {
   const q = active === undefined ? "" : `?active=${active}`;
   return request<Authorization[]>(
-    `/engagements/${engagementId}/authorizations${q}`,
+    `/projects/${engagementId}/authorizations${q}`,
   );
 }
 
@@ -323,7 +323,7 @@ export function listSuggestions(
   status?: SuggestionStatus,
 ): Promise<Suggestion[]> {
   const q = status ? `?status=${status}` : "";
-  return request<Suggestion[]>(`/engagements/${slug}/suggestions${q}`);
+  return request<Suggestion[]>(`/projects/${slug}/suggestions${q}`);
 }
 
 export function acceptSuggestion(
@@ -343,7 +343,7 @@ export function dismissSuggestion(suggestionId: string): Promise<Suggestion> {
 
 export function listTasks(slug: string, _status?: TaskStatus): Promise<Task[]> {
   // status filter accepted for symmetry but currently always lists all
-  return request<Task[]>(`/engagements/${slug}/tasks`);
+  return request<Task[]>(`/projects/${slug}/tasks`);
 }
 
 // ---------------------------------------------------------------------------
@@ -351,7 +351,7 @@ export function listTasks(slug: string, _status?: TaskStatus): Promise<Task[]> {
 // ---------------------------------------------------------------------------
 
 export function getEngagementCosts(slug: string): Promise<CostRollup> {
-  return request<CostRollup>(`/engagements/${slug}/costs`);
+  return request<CostRollup>(`/projects/${slug}/costs`);
 }
 
 // ---------------------------------------------------------------------------
@@ -359,7 +359,7 @@ export function getEngagementCosts(slug: string): Promise<CostRollup> {
 // ---------------------------------------------------------------------------
 
 export async function downloadEngagementReport(slug: string): Promise<void> {
-  const response = await fetch(`${API_BASE_URL}/engagements/${slug}/report`, {
+  const response = await fetch(`${API_BASE_URL}/projects/${slug}/report`, {
     headers: await authHeaders(),
   });
   if (!response.ok) {
@@ -393,7 +393,7 @@ export function importFindings(
   slug: string,
   findings: FindingImport[],
 ): Promise<Finding[]> {
-  return request<Finding[]>(`/engagements/${slug}/findings/import`, {
+  return request<Finding[]>(`/projects/${slug}/findings/import`, {
     method: "POST",
     body: JSON.stringify(findings),
   });
@@ -415,11 +415,11 @@ export function updateFinding(
 }
 
 // ---------------------------------------------------------------------------
-// Engagement JSON export
+// Project JSON export
 // ---------------------------------------------------------------------------
 
-export async function downloadEngagementExport(slug: string): Promise<void> {
-  const data = await request<Record<string, unknown>>(`/engagements/${slug}/export`);
+export async function downloadProjectExport(slug: string): Promise<void> {
+  const data = await request<Record<string, unknown>>(`/projects/${slug}/export`);
   const json = JSON.stringify(data, null, 2);
   const blob = new Blob([json], { type: "application/json" });
   const url = URL.createObjectURL(blob);

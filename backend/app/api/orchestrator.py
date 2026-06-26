@@ -41,7 +41,7 @@ from app.models import (
     AgentName,
     AgentTrigger,
     AuditLog,
-    Engagement,
+    Project,
     Finding,
     OwnerEligibility,
     Suggestion,
@@ -62,12 +62,12 @@ from app.schemas.orchestrator import (
 router = APIRouter()
 
 
-def _engagement_by_slug(session: Session, slug: str) -> Engagement:
+def _engagement_by_slug(session: Session, slug: str) -> Project:
     eng = session.execute(
-        select(Engagement).where(Engagement.slug == slug)
+        select(Project).where(Project.slug == slug)
     ).scalar_one_or_none()
     if eng is None:
-        raise HTTPException(status_code=404, detail=f"engagement '{slug}' not found")
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
     return eng
 
 
@@ -102,7 +102,7 @@ def analyze_finding(
 
     session.add(
         AuditLog(
-            engagement_id=finding.engagement_id,
+            project_id=finding.project_id,
             actor_type=ActorType.user,
             actor_id=str(user.id),
             event_type="strategic.analyzed",
@@ -142,7 +142,7 @@ def list_suggestions(
     ] = SuggestionStatus.open,
 ) -> list[Suggestion]:
     eng = _engagement_by_slug(session, slug)
-    stmt = select(Suggestion).where(Suggestion.engagement_id == eng.id)
+    stmt = select(Suggestion).where(Suggestion.project_id == eng.id)
     if suggestion_status is not None:
         stmt = stmt.where(Suggestion.status == suggestion_status)
     stmt = stmt.order_by(Suggestion.created_at.desc())
@@ -201,7 +201,7 @@ def accept_suggestion(
             ) from exc
 
         task = Task(
-            engagement_id=suggestion.engagement_id,
+            project_id=suggestion.project_id,
             finding_id=suggestion.finding_id,
             title=suggestion.title,
             kind=task_kind,
@@ -234,7 +234,7 @@ def accept_suggestion(
 
     session.add(
         AuditLog(
-            engagement_id=suggestion.engagement_id,
+            project_id=suggestion.project_id,
             actor_type=ActorType.user,
             actor_id=str(user.id),
             event_type="suggestion.accepted",
@@ -279,7 +279,7 @@ def dismiss_suggestion(
     suggestion.decided_at = datetime.now(tz=UTC)
     session.add(
         AuditLog(
-            engagement_id=suggestion.engagement_id,
+            project_id=suggestion.project_id,
             actor_type=ActorType.user,
             actor_id=str(user.id),
             event_type="suggestion.dismissed",
@@ -307,7 +307,7 @@ def list_tasks(
     ] = None,
 ) -> list[Task]:
     eng = _engagement_by_slug(session, slug)
-    stmt = select(Task).where(Task.engagement_id == eng.id)
+    stmt = select(Task).where(Task.project_id == eng.id)
     if task_status is not None:
         stmt = stmt.where(Task.status == task_status)
     stmt = stmt.order_by(Task.created_at.desc())
@@ -315,7 +315,7 @@ def list_tasks(
 
 
 # ---------------------------------------------------------------------------
-# Costs (Phase 11) — per-engagement LLM spend roll-up over agent_executions
+# Costs (Phase 11) — per-Project LLM spend roll-up over agent_executions
 # ---------------------------------------------------------------------------
 
 
@@ -338,14 +338,14 @@ def engagement_costs(
     session: DbSession,
     _user: CurrentUser,
 ) -> CostRollup:
-    """Roll up every Strategic/Tactical LLM call for the engagement by agent and
+    """Roll up every Strategic/Tactical LLM call for the Project by agent and
     by model, summing tokens and deriving USD via ``app.core.pricing``. Models
     with no pricing entry are counted but contribute $0 and are surfaced in
     ``unpriced_models`` so the UI can flag them."""
     eng = _engagement_by_slug(session, slug)
     rows = list(
         session.execute(
-            select(AgentExecution).where(AgentExecution.engagement_id == eng.id)
+            select(AgentExecution).where(AgentExecution.project_id == eng.id)
         ).scalars()
     )
 
@@ -377,7 +377,7 @@ def engagement_costs(
         model_acc["priced"] = priced
 
     return CostRollup(
-        engagement_id=eng.id,
+        project_id=eng.id,
         engagement_slug=eng.slug,
         total=_as_bucket(total),
         by_agent=[

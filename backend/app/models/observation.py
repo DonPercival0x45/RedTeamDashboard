@@ -11,7 +11,7 @@ from app.models.finding import FindingPhase
 
 
 class Observation(Base, TimestampMixin):
-    """Freeform analyst note attached to an engagement.
+    """Freeform analyst note attached to an Project.
 
     Sits between the live Redis event stream (ephemeral) and a formal Finding
     (requires validation). Use for things noticed during recon that don't yet
@@ -21,9 +21,9 @@ class Observation(Base, TimestampMixin):
     __tablename__ = "observations"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid7)
-    engagement_id: Mapped[uuid.UUID] = mapped_column(
+    project_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("engagements.id", ondelete="CASCADE"),
+        ForeignKey("projects.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )

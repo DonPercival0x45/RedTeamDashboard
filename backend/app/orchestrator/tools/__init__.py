@@ -30,7 +30,7 @@ class ToolSpec:
     # *before* the scope gate, so we authorize and act on the same address
     # (used by IP-kind tools that should also accept hostnames, e.g. portscan).
     resolve_host: bool = False
-    # When True, the dispatch node injects the engagement's ip/cidr scope
+    # When True, the dispatch node injects the Project's ip/cidr scope
     # exclusions as an ``exclude`` arg before the tool runs, so range tools
     # (e.g. subnet_sweep) skip carved-out hosts inside an approved CIDR.
     inject_exclusions: bool = False
@@ -162,7 +162,7 @@ def get_tool(name: str, registry: Mapping[str, ToolSpec] | None = None) -> ToolS
     return (registry or _TOOLS).get(name)
 
 
-# Tool → engagement phase, for tagging the findings a tool produces (Phase 8).
+# Tool → Project phase, for tagging the findings a tool produces (Phase 8).
 # Passive recon → OSINT; active enumeration → Vuln Scan. Unknown → general.
 _TOOL_PHASE: dict[str, str] = {
     "subfinder": "osint",
@@ -178,7 +178,7 @@ _TOOL_PHASE: dict[str, str] = {
 
 
 def phase_for_tool(name: str | None) -> str:
-    """Engagement phase a tool's findings belong to. Falls back to 'general'."""
+    """Project phase a tool's findings belong to. Falls back to 'general'."""
     return _TOOL_PHASE.get(name or "", "general")
 
 

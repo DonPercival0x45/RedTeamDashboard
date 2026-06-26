@@ -1,6 +1,6 @@
 """Session authorizations HTTP surface.
 
-- ``GET  /engagements/{engagement_id}/authorizations?active=true`` — list grants
+- ``GET  /engagements/{project_id}/authorizations?active=true`` — list grants
 - ``POST /authorizations/{id}/revoke``                             — revoke one
 
 Grants are *created* implicitly by approving an interrupt with
@@ -25,15 +25,15 @@ router = APIRouter()
 
 
 @router.get(
-    "/engagements/{engagement_id}/authorizations",
+    "/engagements/{project_id}/authorizations",
     response_model=list[AuthorizationRead],
 )
 def list_authorizations(
-    engagement_id: UUID,
+    project_id: UUID,
     session: DbSession,
     active: Annotated[bool | None, Query(description="Filter by active/revoked.")] = None,
 ) -> list[Authorization]:
-    stmt = select(Authorization).where(Authorization.engagement_id == engagement_id)
+    stmt = select(Authorization).where(Authorization.project_id == project_id)
     if active is True:
         stmt = stmt.where(Authorization.revoked_at.is_(None))
     elif active is False:
@@ -58,7 +58,7 @@ def revoke_authorization(
     grant.revoked_by = user.id
     session.add(
         AuditLog(
-            engagement_id=grant.engagement_id,
+            project_id=grant.project_id,
             actor_type=ActorType.user,
             actor_id=str(user.id),
             event_type="authorization.revoked",

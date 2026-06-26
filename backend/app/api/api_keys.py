@@ -24,9 +24,9 @@ from app.schemas.api_key import APIKeyCreate, APIKeyMintResponse, APIKeyRead
 
 router = APIRouter()
 
-# Prefix the random portion with ``rtd_`` so a leaked key is easy to spot in
+# Prefix the random portion with ``xr_`` so a leaked key is easy to spot in
 # logs and the user knows what they're looking at when they paste one in.
-_KEY_PREFIX = "rtd_"
+_KEY_PREFIX = "xr_"
 
 
 def _generate_key() -> str:
@@ -72,7 +72,7 @@ def mint_api_key(
     session.flush()
     session.add(
         AuditLog(
-            engagement_id=None,
+            project_id=None,
             actor_type=ActorType.user,
             actor_id=str(user.id),
             event_type="api_key.created",
@@ -136,7 +136,7 @@ def revoke_api_key(
     row.revoked_by = user.id
     session.add(
         AuditLog(
-            engagement_id=None,
+            project_id=None,
             actor_type=ActorType.user,
             actor_id=str(user.id),
             event_type="api_key.revoked",

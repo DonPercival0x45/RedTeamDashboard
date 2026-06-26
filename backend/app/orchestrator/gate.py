@@ -3,7 +3,7 @@
 Two composed pure functions:
 
 - ``scope_check(spec, tool_args, scope_items)`` decides whether the tool's target
-  falls inside the engagement's scope. Exclusions beat includes.
+  falls inside the Project's scope. Exclusions beat includes.
 - ``approval_check(spec, scope, authorization_id=...)`` decides whether the call
   auto-approves, needs human interrupt, or is denied.
 

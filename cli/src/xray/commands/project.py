@@ -1,4 +1,4 @@
-"""`rtd engagement ...` — CRUD on engagements + scope items.
+"""`rtd project ...` — CRUD on engagements + scope items.
 
 Mirrors the HTTP surface in ``backend/app/api/engagements.py``. One sub-group
 per concept: engagements themselves + nested scope items.
@@ -11,23 +11,23 @@ import sys
 import click
 from rich.table import Table
 
-from rtd.output import emit, kv_table
+from xray.output import emit, kv_table
 
 
-@click.group(name="engagement")
+@click.group(name="project")
 def engagement_group() -> None:
     """List, create, view, and manage scope items for engagements."""
 
 
 @engagement_group.command("list")
 @click.option("--status", type=click.Choice(["active", "archived", "flushed"]),
-              help="Filter by engagement status.")
+              help="Filter by project status.")
 @click.pass_context
 def list_engagements(ctx: click.Context, status: str | None) -> None:
     """List engagements visible to this profile's API key."""
     params = {"status": status} if status else None
     with ctx.obj.client() as c:
-        rows = c.get("/engagements", params=params)
+        rows = c.get("/projects", params=params)
     t = Table(title="Engagements")
     t.add_column("slug", style="bold")
     t.add_column("name")
@@ -39,21 +39,21 @@ def list_engagements(ctx: click.Context, status: str | None) -> None:
 
 
 @engagement_group.command("create")
-@click.option("--name", required=True, help="Human-readable engagement name.")
+@click.option("--name", required=True, help="Human-readable project name.")
 @click.option("--slug", help="Override the auto-generated slug.")
 @click.pass_context
 def create(ctx: click.Context, name: str, slug: str | None) -> None:
-    """Create a new active engagement."""
+    """Create a new active project."""
     body: dict[str, str] = {"name": name}
     if slug:
         body["slug"] = slug
     with ctx.obj.client() as c:
-        eng = c.post("/engagements", json=body)
+        eng = c.post("/projects", json=body)
     emit(
         eng,
         json_mode=ctx.obj.json_mode,
         table=kv_table(
-            f"Created engagement {eng['slug']!r}",
+            f"Created project {eng['slug']!r}",
             [("id", eng["id"]), ("slug", eng["slug"]), ("name", eng["name"]),
              ("status", eng["status"]), ("created_at", eng["created_at"])],
         ),
@@ -64,9 +64,9 @@ def create(ctx: click.Context, name: str, slug: str | None) -> None:
 @click.argument("slug")
 @click.pass_context
 def view(ctx: click.Context, slug: str) -> None:
-    """Read one engagement by slug."""
+    """Read one project by slug."""
     with ctx.obj.client() as c:
-        eng = c.get(f"/engagements/{slug}")
+        eng = c.get(f"/projects/{slug}")
     emit(
         eng,
         json_mode=ctx.obj.json_mode,
@@ -81,16 +81,16 @@ def view(ctx: click.Context, slug: str) -> None:
 
 @engagement_group.group("scope")
 def scope_group() -> None:
-    """Manage scope items for an engagement."""
+    """Manage scope items for an project."""
 
 
 @scope_group.command("list")
 @click.argument("slug")
 @click.pass_context
 def scope_list(ctx: click.Context, slug: str) -> None:
-    """List scope items on engagement SLUG."""
+    """List scope items on project SLUG."""
     with ctx.obj.client() as c:
-        rows = c.get(f"/engagements/{slug}/scope")
+        rows = c.get(f"/projects/{slug}/scope")
     t = Table(title=f"Scope ({slug})")
     t.add_column("kind", style="bold")
     t.add_column("value")
@@ -119,12 +119,12 @@ def scope_add(
     exclude: bool,
     note: str | None,
 ) -> None:
-    """Add a scope item to engagement SLUG."""
+    """Add a scope item to project SLUG."""
     body: dict[str, object] = {"kind": kind, "value": value, "is_exclusion": exclude}
     if note:
         body["note"] = note
     with ctx.obj.client() as c:
-        item = c.post(f"/engagements/{slug}/scope", json=body)
+        item = c.post(f"/projects/{slug}/scope", json=body)
     emit(item, json_mode=ctx.obj.json_mode,
          table=kv_table("Scope item added",
                         [("id", item["id"]), ("kind", item["kind"]),
@@ -136,10 +136,10 @@ def scope_add(
 @click.argument("scope_id")
 @click.pass_context
 def scope_remove(ctx: click.Context, slug: str, scope_id: str) -> None:
-    """Remove scope item SCOPE_ID from engagement SLUG."""
+    """Remove scope item SCOPE_ID from project SLUG."""
     with ctx.obj.client() as c:
-        c.delete(f"/engagements/{slug}/scope/{scope_id}")
-    from rtd.output import console
+        c.delete(f"/projects/{slug}/scope/{scope_id}")
+    from xray.output import console
     console.print(f"removed scope item [bold]{scope_id}[/bold]")
 
 
@@ -152,11 +152,11 @@ def scope_remove(ctx: click.Context, slug: str, scope_id: str) -> None:
 @click.argument("slug")
 @click.pass_context
 def export_cmd(ctx: click.Context, slug: str) -> None:
-    """Export engagement SLUG data to blob storage. Requires admin key."""
+    """Export project SLUG data to blob storage. Requires admin key."""
     with ctx.obj.client() as c:
-        result = c.post(f"/engagements/{slug}/export")
+        result = c.post(f"/projects/{slug}/export")
     if result.get("blob_url"):
-        from rtd.output import console
+        from xray.output import console
         console.print(f"exported: [bold]{result['blob_url']}[/bold]")
     else:
         emit(result, json_mode=ctx.obj.json_mode, table=kv_table(
@@ -169,13 +169,13 @@ def export_cmd(ctx: click.Context, slug: str) -> None:
 @click.argument("slug")
 @click.pass_context
 def archive_cmd(ctx: click.Context, slug: str) -> None:
-    """Export and archive engagement SLUG. Requires admin key.
+    """Export and archive project SLUG. Requires admin key.
 
-    Marks the engagement as done. It stays in the database but is excluded
+    Marks the project as done. It stays in the database but is excluded
     from active views. Reversible via PATCH /engagements/{slug}.
     """
     with ctx.obj.client() as c:
-        result = c.delete(f"/engagements/{slug}")
+        result = c.delete(f"/projects/{slug}")
     emit(
         result,
         json_mode=ctx.obj.json_mode,
@@ -192,19 +192,19 @@ def archive_cmd(ctx: click.Context, slug: str) -> None:
 @click.option("--yes", is_flag=True, help="Skip confirmation prompt.")
 @click.pass_context
 def flush_cmd(ctx: click.Context, slug: str, yes: bool) -> None:
-    """Permanently delete ALL data for engagement SLUG.
+    """Permanently delete ALL data for project SLUG.
 
     An export is created in blob storage first (if configured).
     This cannot be undone.
     """
     if not yes:
         click.confirm(
-            f"Permanently flush ALL data for engagement '{slug}'? This cannot be undone.",
+            f"Permanently flush ALL data for project '{slug}'? This cannot be undone.",
             abort=True,
         )
     with ctx.obj.client() as c:
-        c.post(f"/engagements/{slug}/flush")
-    from rtd.output import console
+        c.post(f"/projects/{slug}/flush")
+    from xray.output import console
     console.print(f"[bold red]flushed[/bold red] {slug!r}")
 
 
@@ -224,16 +224,16 @@ PHASE_LABELS = {
 
 @engagement_group.group("observations")
 def observations_group() -> None:
-    """Manage freeform observations for an engagement."""
+    """Manage freeform observations for an project."""
 
 
 @observations_group.command("list")
 @click.argument("slug")
 @click.pass_context
 def observations_list(ctx: click.Context, slug: str) -> None:
-    """List observations for engagement SLUG."""
+    """List observations for project SLUG."""
     with ctx.obj.client() as c:
-        rows = c.get(f"/engagements/{slug}/observations")
+        rows = c.get(f"/projects/{slug}/observations")
     t = Table(title=f"Observations ({slug})")
     t.add_column("id", style="dim")
     t.add_column("phase")
@@ -260,12 +260,12 @@ def observations_list(ctx: click.Context, slug: str) -> None:
 )
 @click.pass_context
 def observations_add(ctx: click.Context, slug: str, content: str, phase: str | None) -> None:
-    """Add an observation to engagement SLUG."""
+    """Add an observation to project SLUG."""
     body: dict[str, object] = {"content": content}
     if phase:
         body["phase"] = phase
     with ctx.obj.client() as c:
-        obs = c.post(f"/engagements/{slug}/observations", json=body)
+        obs = c.post(f"/projects/{slug}/observations", json=body)
     emit(
         obs,
         json_mode=ctx.obj.json_mode,
@@ -283,7 +283,7 @@ def observations_delete(ctx: click.Context, observation_id: str) -> None:
     """Delete observation OBSERVATION_ID."""
     with ctx.obj.client() as c:
         c.delete(f"/observations/{observation_id}")
-    from rtd.output import console
+    from xray.output import console
     console.print(f"deleted observation [bold]{observation_id}[/bold]")
 
 
@@ -297,7 +297,7 @@ def observations_delete(ctx: click.Context, observation_id: str) -> None:
 @click.argument("file", type=click.Path(exists=True, dir_okay=False))
 @click.pass_context
 def import_findings_cmd(ctx: click.Context, slug: str, file: str) -> None:
-    """Import findings from FILE (JSON array) into engagement SLUG.
+    """Import findings from FILE (JSON array) into project SLUG.
 
     All imported findings land as pending_validation for analyst review.
 
@@ -306,23 +306,23 @@ def import_findings_cmd(ctx: click.Context, slug: str, file: str) -> None:
     details.
 
     Example:
-        rtd engagement import-findings my-eng findings.json
+        rtd project import-findings my-eng findings.json
     """
     with open(file) as fh:
         try:
             payload = json.load(fh)
         except json.JSONDecodeError as exc:
-            from rtd.output import console
+            from xray.output import console
             console.print(f"[red]invalid JSON:[/red] {exc}")
             sys.exit(1)
 
     if not isinstance(payload, list):
-        from rtd.output import console
+        from xray.output import console
         console.print("[red]FILE must contain a JSON array of findings[/red]")
         sys.exit(1)
 
     with ctx.obj.client() as c:
-        findings = c.post(f"/engagements/{slug}/findings/import", json=payload)
+        findings = c.post(f"/projects/{slug}/findings/import", json=payload)
 
     t = Table(title=f"Imported findings → {slug}")
     t.add_column("title")
@@ -332,7 +332,7 @@ def import_findings_cmd(ctx: click.Context, slug: str, file: str) -> None:
     for f in findings:
         phase_display = PHASE_LABELS.get(f.get("phase"), f.get("phase", ""))
         t.add_row(f["title"][:60], f["severity"], phase_display, f.get("target") or "")
-    from rtd.output import console
+    from xray.output import console
     emit(findings, json_mode=ctx.obj.json_mode, table=t)
     if not ctx.obj.json_mode:
         console.print(f"[green]{len(findings)} finding(s) imported as pending_validation[/green]")

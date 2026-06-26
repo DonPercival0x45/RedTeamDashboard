@@ -3,7 +3,7 @@
 Covers the tools an external agent (Claude Code, Cursor, etc.) uses when
 acting as Strategic with the analyst's own API key:
 
-- ``get_finding_context`` returns engagement + finding + scope + tools.
+- ``get_finding_context`` returns Project + finding + scope + tools.
 - ``propose_strategic_suggestion`` writes a Suggestion + AgentExecution row
   tagged ``model_provider='mcp:external'`` so the Costs tab can distinguish
   analyst-brought agents.
@@ -11,7 +11,7 @@ acting as Strategic with the analyst's own API key:
   CHARTER invariant (agents scan, analysts exploit). Server-side guard,
   independent of the in-process Strategic's defense-in-depth filter.
 - ``propose_strategic_suggestion`` refuses unknown tool names.
-- ``list_open_suggestions`` returns only open rows for the engagement.
+- ``list_open_suggestions`` returns only open rows for the Project.
 
 Auth context (the ContextVars MCPAuthMiddleware sets) is wired by hand here
 so tests don't need to spin up the full ASGI stack.
@@ -38,8 +38,8 @@ from app.models import (
     AgentName,
     APIKey,
     APIKeyScope,
-    Engagement,
-    EngagementStatus,
+    Project,
+    ProjectStatus,
     Finding,
     FindingPhase,
     FindingStatus,
@@ -53,11 +53,11 @@ from app.models import (
 
 
 @pytest.fixture()
-def engagement(db: Session) -> Iterator[Engagement]:
-    eng = Engagement(
+def Project(db: Session) -> Iterator[Project]:
+    eng = Project(
         name="MCP Strategic",
         slug=f"mcp-strategic-{uuid.uuid4().hex[:8]}",
-        status=EngagementStatus.active,
+        status=ProjectStatus.active,
         description="external agent plays Strategic",
     )
     db.add(eng)
@@ -65,7 +65,7 @@ def engagement(db: Session) -> Iterator[Engagement]:
     db.refresh(eng)
     db.add(
         ScopeItem(
-            engagement_id=eng.id,
+            project_id=eng.id,
             kind=ScopeKind.domain,
             value="acme.test",
             is_exclusion=False,
@@ -80,9 +80,9 @@ def engagement(db: Session) -> Iterator[Engagement]:
 
 
 @pytest.fixture()
-def finding(db: Session, engagement: Engagement) -> Finding:
+def finding(db: Session, Project: Project) -> Finding:
     row = Finding(
-        engagement_id=engagement.id,
+        project_id=Project.id,
         title="crt.sh discovery",
         severity=Severity.info,
         details={"certs": 12},
@@ -104,7 +104,7 @@ def cli_key_user(db: Session) -> tuple[APIKey, User]:
     db.add(user)
     db.commit()
     db.refresh(user)
-    raw = f"rtd_mcp_{uuid.uuid4().hex}"
+    raw = f"xr_mcp_{uuid.uuid4().hex}"
     key = APIKey(
         name="mcp-strategic-test",
         scope=APIKeyScope.cli,
@@ -134,11 +134,11 @@ def with_mcp_auth(cli_key_user: tuple[APIKey, User]) -> Iterator[None]:
 
 
 def test_get_finding_context_returns_full_picture(
-    engagement: Engagement, finding: Finding
+    Project: Project, finding: Finding
 ) -> None:
-    ctx = get_finding_context(engagement.slug, str(finding.id))
+    ctx = get_finding_context(Project.slug, str(finding.id))
     assert "error" not in ctx
-    assert ctx["engagement"]["slug"] == engagement.slug
+    assert ctx["Project"]["slug"] == Project.slug
     assert ctx["finding"]["id"] == str(finding.id)
     assert ctx["finding"]["source_tool"] == "crt_sh"
     assert any(i["value"] == "acme.test" for i in ctx["scope"]["include"])
@@ -146,8 +146,8 @@ def test_get_finding_context_returns_full_picture(
     assert any("never propose exploit" in r.lower() for r in ctx["charter_rules"])
 
 
-def test_get_finding_context_404s_unknown_finding(engagement: Engagement) -> None:
-    ctx = get_finding_context(engagement.slug, str(uuid.uuid4()))
+def test_get_finding_context_404s_unknown_finding(Project: Project) -> None:
+    ctx = get_finding_context(Project.slug, str(uuid.uuid4()))
     assert "error" in ctx
 
 
@@ -157,11 +157,11 @@ def test_get_finding_context_404s_unknown_finding(engagement: Engagement) -> Non
 def test_propose_writes_suggestion_and_execution(
     db: Session,
     with_mcp_auth: None,
-    engagement: Engagement,
+    Project: Project,
     finding: Finding,
 ) -> None:
     out = propose_strategic_suggestion(
-        engagement.slug,
+        Project.slug,
         str(finding.id),
         title="Resolve discovered hosts",
         body="Map subdomains to IPs.",
@@ -189,11 +189,11 @@ def test_propose_writes_suggestion_and_execution(
 
 def test_propose_refuses_exploit_task_kind(
     with_mcp_auth: None,
-    engagement: Engagement,
+    Project: Project,
     finding: Finding,
 ) -> None:
     out = propose_strategic_suggestion(
-        engagement.slug,
+        Project.slug,
         str(finding.id),
         title="RCE",
         body="bad",
@@ -207,11 +207,11 @@ def test_propose_refuses_exploit_task_kind(
 
 def test_propose_refuses_unknown_tool(
     with_mcp_auth: None,
-    engagement: Engagement,
+    Project: Project,
     finding: Finding,
 ) -> None:
     out = propose_strategic_suggestion(
-        engagement.slug,
+        Project.slug,
         str(finding.id),
         title="bogus",
         body="",
@@ -229,11 +229,11 @@ def test_propose_refuses_unknown_tool(
 def test_list_open_only_returns_open_rows(
     db: Session,
     with_mcp_auth: None,
-    engagement: Engagement,
+    Project: Project,
     finding: Finding,
 ) -> None:
     out = propose_strategic_suggestion(
-        engagement.slug,
+        Project.slug,
         str(finding.id),
         title="Probe HTTPS",
         body="",
@@ -245,7 +245,7 @@ def test_list_open_only_returns_open_rows(
     assert "error" not in out, out
     sid = uuid.UUID(out["suggestion_id"])
 
-    listed = list_open_suggestions(engagement.slug)
+    listed = list_open_suggestions(Project.slug)
     assert any(s["id"] == str(sid) for s in listed)
 
     # Dismiss it directly in DB; list_open should no longer return it.
@@ -254,7 +254,7 @@ def test_list_open_only_returns_open_rows(
     suggestion.status = SuggestionStatus.dismissed
     db.commit()
 
-    listed = list_open_suggestions(engagement.slug)
+    listed = list_open_suggestions(Project.slug)
     assert not any(s["id"] == str(sid) for s in listed)
 
 

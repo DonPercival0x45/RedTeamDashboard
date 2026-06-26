@@ -4,8 +4,8 @@ from __future__ import annotations
 import click
 from rich.table import Table
 
-from rtd.config import ConfigError
-from rtd.output import console, emit
+from xray.config import ConfigError
+from xray.output import console, emit
 
 
 @click.group(name="profile")

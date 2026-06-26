@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Red Team Dashboard — Deployment Kit teardown.
+# Project X-Ray — Deployment Kit teardown.
 #
 # Deletes the whole resource group (irreversible). Optionally purges the
 # Key Vault soft-delete so the name can be reused immediately instead of
@@ -20,7 +20,7 @@ usage() {
 Usage: $0 [options]
 
 Options:
-  --env NAME    Env name to tear down. Resource group is rtd-<env>. (default: prod)
+  --env NAME    Env name to tear down. Resource group is xray-<env>. (default: prod)
   --purge       Also purge the Key Vault soft-delete so the name is reusable.
   --yes         Skip the confirmation prompt.
   -h, --help    Show this help.
@@ -38,7 +38,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-RG_NAME="rtd-${ENV_NAME}"
+RG_NAME="xray-${ENV_NAME}"
 
 red() { printf "\033[31m%s\033[0m\n" "$*"; }
 

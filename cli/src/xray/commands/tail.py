@@ -14,8 +14,8 @@ from typing import Any
 
 import click
 
-from rtd.client import stream_events
-from rtd.output import console
+from xray.client import stream_events
+from xray.output import console
 
 
 @click.command()
@@ -30,7 +30,7 @@ def tail(
     thread_id: str | None,
     last_event_id: str | None,
 ) -> None:
-    """Stream events for engagement SLUG until you Ctrl-C."""
+    """Stream events for project SLUG until you Ctrl-C."""
     _tail_events(ctx, slug, thread_id=thread_id, last_event_id=last_event_id)
 
 
@@ -52,7 +52,7 @@ def _tail_events(
     try:
         with stream_events(
             profile,
-            f"/engagements/{slug}/events",
+            f"/projects/{slug}/events",
             params=params or None,
             last_event_id=last_event_id,
         ) as events:

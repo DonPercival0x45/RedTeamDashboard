@@ -1,5 +1,5 @@
 <!--
-RedTeamDashboard — Defensive Security Operations and Governance Platform
+ProjectXRay — Defensive Security Operations and Governance Platform
 
 This documentation describes a platform for managing authorized security engagements.
 All work described is conducted with explicit approval and scope boundaries.
@@ -19,7 +19,7 @@ work conducted by analysts during authorized engagements, not unauthorized intru
 
 **Prerequisites:**
 - Backend and frontend running locally
-- Postgres on localhost:5432 (database `rtd`, user `rtd`, password `rtd`)
+- Postgres on localhost:5432 (database `XR`, user `XR`, password `XR`)
 - Redis on localhost:6379
 - Test engagement with some agent executions (for cost rollup)
 
@@ -33,9 +33,9 @@ work conducted by analysts during authorized engagements, not unauthorized intru
 cd backend
 
 # Set environment variables
-export DATABASE_URL="postgresql+psycopg://rtd:rtd@localhost:5432/rtd"
+export DATABASE_URL="postgresql+psycopg://XR:XR@localhost:5432/XR"
 export REDIS_URL="redis://localhost:6379/0"
-export RTD_MASTER_KEY="$(python -c 'import base64;print(base64.urlsafe_b64encode(b"0"*32).decode())')"
+export xr_MASTER_KEY="$(python -c 'import base64;print(base64.urlsafe_b64encode(b"0"*32).decode())')"
 
 # Run cost tests
 python -m pytest tests/test_costs.py -v
@@ -89,7 +89,7 @@ cd backend
 # Create a test engagement with agent executions
 python -c "
 import os
-os.environ['DATABASE_URL'] = 'postgresql+psycopg://rtd:rtd@localhost:5432/rtd'
+os.environ['DATABASE_URL'] = 'postgresql+psycopg://XR:XR@localhost:5432/XR'
 os.environ['REDIS_URL'] = 'redis://localhost:6379/0'
 
 from sqlalchemy import create_engine
@@ -152,9 +152,9 @@ Now test the API:
 ```bash
 # Start the backend (in one terminal)
 cd backend
-export DATABASE_URL="postgresql+psycopg://rtd:rtd@localhost:5432/rtd"
+export DATABASE_URL="postgresql+psycopg://XR:XR@localhost:5432/XR"
 export REDIS_URL="redis://localhost:6379/0"
-export RTD_MASTER_KEY="$(python -c 'import base64;print(base64.urlsafe_b64encode(b"0"*32).decode())')"
+export xr_MASTER_KEY="$(python -c 'import base64;print(base64.urlsafe_b64encode(b"0"*32).decode())')"
 uvicorn app.main:app --reload
 
 # In another terminal, test the API
@@ -272,7 +272,7 @@ Create an execution with an unpriced model:
 cd backend
 python -c "
 import os
-os.environ['DATABASE_URL'] = 'postgresql+psycopg://rtd:rtd@localhost:5432/rtd'
+os.environ['DATABASE_URL'] = 'postgresql+psycopg://XR:XR@localhost:5432/XR'
 os.environ['REDIS_URL'] = 'redis://localhost:6379/0'
 
 from sqlalchemy import create_engine
@@ -357,7 +357,7 @@ echo "✅ No trigger terms in MCP server"
 ```bash
 cd cli
 pip install -e . > /dev/null 2>&1
-rtd engagement --help | grep -q "Validation"
+XR engagement --help | grep -q "Validation"
 echo "✅ CLI uses mapped labels"
 ```
 
@@ -420,9 +420,9 @@ echo ""
 # Backend tests
 echo "1. Backend cost tests..."
 cd backend
-export DATABASE_URL="postgresql+psycopg://rtd:rtd@localhost:5432/rtd"
+export DATABASE_URL="postgresql+psycopg://XR:XR@localhost:5432/XR"
 export REDIS_URL="redis://localhost:6379/0"
-export RTD_MASTER_KEY="$(python -c 'import base64;print(base64.urlsafe_b64encode(b"0"*32).decode())')"
+export xr_MASTER_KEY="$(python -c 'import base64;print(base64.urlsafe_b64encode(b"0"*32).decode())')"
 python -m pytest tests/test_costs.py -q
 if [ $? -eq 0 ]; then
     echo "✅ Cost tests pass"
@@ -459,7 +459,7 @@ After testing, clean up the test engagement:
 cd backend
 python -c "
 import os
-os.environ['DATABASE_URL'] = 'postgresql+psycopg://rtd:rtd@localhost:5432/rtd'
+os.environ['DATABASE_URL'] = 'postgresql+psycopg://XR:XR@localhost:5432/XR'
 os.environ['REDIS_URL'] = 'redis://localhost:6379/0'
 
 from sqlalchemy import create_engine

@@ -29,8 +29,8 @@ from app.main import app
 from app.models import (
     AgentName,
     AgentTrigger,
-    Engagement,
-    EngagementStatus,
+    Project,
+    ProjectStatus,
     Finding,
     FindingPhase,
     FindingStatus,
@@ -57,11 +57,11 @@ def client() -> TestClient:
 
 
 @pytest.fixture()
-def engagement(db: Session) -> Iterator[Engagement]:
-    eng = Engagement(
+def Project(db: Session) -> Iterator[Project]:
+    eng = Project(
         name="Phase9 Orchestrator",
         slug=f"phase9-{uuid.uuid4().hex[:8]}",
-        status=EngagementStatus.active,
+        status=ProjectStatus.active,
         description="Strategic + Tactical wiring",
     )
     db.add(eng)
@@ -69,7 +69,7 @@ def engagement(db: Session) -> Iterator[Engagement]:
     db.refresh(eng)
     db.add(
         ScopeItem(
-            engagement_id=eng.id,
+            project_id=eng.id,
             kind=ScopeKind.domain,
             value="acme.test",
             is_exclusion=False,
@@ -84,9 +84,9 @@ def engagement(db: Session) -> Iterator[Engagement]:
 
 
 @pytest.fixture()
-def finding(db: Session, engagement: Engagement) -> Finding:
+def finding(db: Session, Project: Project) -> Finding:
     row = Finding(
-        engagement_id=engagement.id,
+        project_id=Project.id,
         title="subfinder hit",
         severity=Severity.info,
         details={"hosts": ["a.acme.test", "b.acme.test"]},
@@ -132,7 +132,7 @@ class _FakeChatLLM:
 
 
 def test_strategic_writes_suggestions_and_execution(
-    db: Session, engagement: Engagement, finding: Finding
+    db: Session, Project: Project, finding: Finding
 ) -> None:
     fake = _FakeChatLLM(
         tasks=[
@@ -172,7 +172,7 @@ def test_strategic_writes_suggestions_and_execution(
 
 
 def test_strategic_drops_exploit_proposals(
-    db: Session, engagement: Engagement, finding: Finding
+    db: Session, Project: Project, finding: Finding
 ) -> None:
     fake = _FakeChatLLM(
         tasks=[
@@ -227,9 +227,9 @@ class _FakeRedis:
         return "0-1"
 
 
-def test_tactical_refuses_exploit(db: Session, engagement: Engagement) -> None:
+def test_tactical_refuses_exploit(db: Session, Project: Project) -> None:
     task = Task(
-        engagement_id=engagement.id,
+        project_id=Project.id,
         title="exploit attempt",
         kind=TaskKind.exploit,
         owner_eligibility=OwnerEligibility.either,
@@ -246,10 +246,10 @@ def test_tactical_refuses_exploit(db: Session, engagement: Engagement) -> None:
 
 
 def test_tactical_dispatches_scan_task(
-    db: Session, engagement: Engagement
+    db: Session, Project: Project
 ) -> None:
     task = Task(
-        engagement_id=engagement.id,
+        project_id=Project.id,
         title="Subdomain enum",
         kind=TaskKind.enum,
         owner_eligibility=OwnerEligibility.agent,
@@ -318,7 +318,7 @@ def test_accept_dispatches_agent_eligible(
     monkeypatch: pytest.MonkeyPatch,
     client: TestClient,
     db: Session,
-    engagement: Engagement,
+    Project: Project,
     finding: Finding,
 ) -> None:
     # Stub the Redis dependency so the worker doesn't actually get pinged.
@@ -331,7 +331,7 @@ def test_accept_dispatches_agent_eligible(
     app.dependency_overrides[deps_mod.redis_client] = _fake_redis_dep
     try:
         suggestion = Suggestion(
-            engagement_id=engagement.id,
+            project_id=Project.id,
             finding_id=finding.id,
             title="Probe",
             body="cheap recon",
@@ -374,12 +374,12 @@ def test_accept_dispatches_agent_eligible(
 def test_dismiss_closes_suggestion(
     client: TestClient,
     db: Session,
-    engagement: Engagement,
+    Project: Project,
 ) -> None:
     from app.models import SuggestionKind
 
     suggestion = Suggestion(
-        engagement_id=engagement.id,
+        project_id=Project.id,
         title="Not useful",
         kind=SuggestionKind.task,
         payload={

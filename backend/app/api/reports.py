@@ -1,8 +1,8 @@
-"""PDF engagement report.
+"""PDF Project report.
 
 GET /engagements/{slug}/report -> application/pdf
 
-Pulls engagement + scope + findings + approvals + audit_log from the DB,
+Pulls Project + scope + findings + approvals + audit_log from the DB,
 renders the Jinja2 template, hands HTML to WeasyPrint for PDF rendering.
 The template (``app/templates/report.html``) is where layout + styling
 live; this endpoint is just the wiring.
@@ -21,7 +21,7 @@ from app.api.deps import CurrentUser, DbSession
 from app.models import (
     Approval,
     AuditLog,
-    Engagement,
+    Project,
     Finding,
     FindingStatus,
     Observation,
@@ -47,15 +47,15 @@ def engagement_report(
     user: CurrentUser,  # noqa: ARG001 — gates the endpoint
 ) -> Response:
     eng = session.execute(
-        select(Engagement).where(Engagement.slug == slug)
+        select(Project).where(Project.slug == slug)
     ).scalar_one_or_none()
     if eng is None:
-        raise HTTPException(status_code=404, detail="engagement not found")
+        raise HTTPException(status_code=404, detail="Project not found")
 
     scope_items = list(
         session.execute(
             select(ScopeItem)
-            .where(ScopeItem.engagement_id == eng.id)
+            .where(ScopeItem.project_id == eng.id)
             .order_by(ScopeItem.created_at)
         ).scalars()
     )
@@ -64,7 +64,7 @@ def engagement_report(
         session.execute(
             select(Finding)
             .where(
-                Finding.engagement_id == eng.id,
+                Finding.project_id == eng.id,
                 Finding.status == FindingStatus.validated,
             )
             .order_by(Finding.created_at.desc())
@@ -73,28 +73,28 @@ def engagement_report(
     approvals = list(
         session.execute(
             select(Approval)
-            .where(Approval.engagement_id == eng.id)
+            .where(Approval.project_id == eng.id)
             .order_by(Approval.created_at.desc())
         ).scalars()
     )
     observations = list(
         session.execute(
             select(Observation)
-            .where(Observation.engagement_id == eng.id)
+            .where(Observation.project_id == eng.id)
             .order_by(Observation.created_at)
         ).scalars()
     )
     audit = list(
         session.execute(
             select(AuditLog)
-            .where(AuditLog.engagement_id == eng.id)
+            .where(AuditLog.project_id == eng.id)
             .order_by(AuditLog.created_at)
         ).scalars()
     )
 
     template = _env.get_template("report.html")
     html = template.render(
-        engagement=eng,
+        Project=eng,
         scope_items=scope_items,
         findings=findings,
         observations=observations,

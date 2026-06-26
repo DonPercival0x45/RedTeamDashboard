@@ -77,7 +77,7 @@ def _audit(
 ) -> None:
     session.add(
         AuditLog(
-            engagement_id=None,
+            project_id=None,
             actor_type=ActorType.user,
             actor_id=str(user_id),
             event_type=event_type,
