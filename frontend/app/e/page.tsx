@@ -28,7 +28,13 @@ import { GrantsCard } from "@/components/grants-card";
 import { RunPrompt } from "@/components/run-prompt";
 import { ScopeEditor } from "@/components/scope-editor";
 import { WorkflowTemplatesView } from "@/components/workflow-templates-view";
-import { archiveEngagement, downloadEngagementExport, getEngagement, listFindings } from "@/lib/api";
+import {
+  archiveEngagement,
+  downloadEngagementExport,
+  flushEngagement,
+  getEngagement,
+  listFindings,
+} from "@/lib/api";
 import { subscribeToEvents } from "@/lib/events";
 import type { Engagement, Finding } from "@/lib/types";
 
@@ -241,6 +247,30 @@ function EngagementDetail({ slug }: { slug: string }) {
     }
   };
 
+  // Hard delete: irreversibly drops the engagement row and cascades through
+  // findings, scope, approvals, audit log, tasks, leases, attachments,
+  // entities, observations. Type-to-confirm because there is no undo.
+  const onDelete = async () => {
+    if (!engagement) return;
+    const typed = window.prompt(
+      `Permanently delete "${engagement.slug}" and ALL of its data ` +
+        `(findings, observations, scope items, audit log, attachments, ` +
+        `entities, tasks). This CANNOT be undone.\n\n` +
+        `Type the slug exactly to confirm:`,
+    );
+    if (typed === null) return;
+    if (typed !== engagement.slug) {
+      window.alert("Slug didn't match — no delete performed.");
+      return;
+    }
+    try {
+      await flushEngagement(slug);
+      router.push("/");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
   if (!engagement) {
     return (
       <p className="text-sm text-muted-foreground">
@@ -272,10 +302,22 @@ function EngagementDetail({ slug }: { slug: string }) {
             </p>
           )}
         </div>
-        {canWrite && engagement.status === "active" && (
-          <Button variant="outline" size="sm" onClick={onArchive}>
-            Archive
-          </Button>
+        {canWrite && (
+          <div className="flex gap-2">
+            {engagement.status === "active" && (
+              <Button variant="outline" size="sm" onClick={onArchive}>
+                Archive
+              </Button>
+            )}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={onDelete}
+              className="text-critical hover:bg-critical/10"
+            >
+              Delete
+            </Button>
+          </div>
         )}
       </div>
 
