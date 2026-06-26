@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useRef, useState } from "react";
-import { Upload } from "lucide-react";
+import { Download, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { importProviderKeys } from "@/lib/api";
@@ -78,6 +78,18 @@ export function ProviderKeyImporter({
     }
   };
 
+  const downloadTemplate = useCallback(() => {
+    const blob = new Blob([SAMPLE], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "provider-keys-template.json";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, []);
+
   const onFileChosen = useCallback(
     async (event: React.ChangeEvent<HTMLInputElement>) => {
       const file = event.target.files?.[0];
@@ -111,29 +123,42 @@ export function ProviderKeyImporter({
         <div>
           <p className="text-sm font-medium">Bulk import</p>
           <p className="text-xs text-muted-foreground">
-            Upload a .json file or paste the JSON below. Entries with{" "}
+            Download the <strong>Template</strong> for a prefilled JSON with
+            placeholders, fill in your values, then upload the .json or paste
+            it below. Entries with{" "}
             <code className="font-mono">is_local: true</code> omit{" "}
             <code className="font-mono">api_key</code>;{" "}
             <code className="font-mono">mcp_server</code> entries require an{" "}
             <code className="font-mono">endpoint</code>.
           </p>
         </div>
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          onClick={() => fileRef.current?.click()}
-        >
-          <Upload className="mr-1.5 h-3.5 w-3.5" />
-          File
-        </Button>
-        <input
-          ref={fileRef}
-          type="file"
-          accept=".json,application/json"
-          className="hidden"
-          onChange={onFileChosen}
-        />
+        <div className="flex gap-2">
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={downloadTemplate}
+          >
+            <Download className="mr-1.5 h-3.5 w-3.5" />
+            Template
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={() => fileRef.current?.click()}
+          >
+            <Upload className="mr-1.5 h-3.5 w-3.5" />
+            File
+          </Button>
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".json,application/json"
+            className="hidden"
+            onChange={onFileChosen}
+          />
+        </div>
       </div>
 
       <Textarea
