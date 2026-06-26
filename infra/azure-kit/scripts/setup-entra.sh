@@ -86,34 +86,51 @@ OBJECT_ID="$(az ad app show --id "$APP_ID" --query id -o tsv)"
 bold "[2/5] Setting identifier URI api://$APP_ID…"
 az ad app update --id "$APP_ID" --identifier-uris "api://$APP_ID" --only-show-errors
 
-bold "[3/5] Exposing the 'access_as_user' scope…"
+bold "[3/5] Exposing the 'access_as_user' scope + v2.0 access tokens…"
+# requestedAccessTokenVersion=2 makes the app issue v2.0-style access tokens
+# with issuer 'https://login.microsoftonline.com/<tenant>/v2.0' (the modern
+# default). Without it, Entra issues v1.0 tokens with issuer
+# 'https://sts.windows.net/<tenant>/', which the backend's
+# settings.entra_issuer (pinned to /v2.0) rejects as 'Invalid issuer' and
+# every /me/* call returns 401.
 SCOPE_ID="$(python3 -c 'import uuid;print(uuid.uuid4())')"
 SCOPE_BODY="$(python3 - "$SCOPE_ID" <<'PY'
 import json, sys
 sid = sys.argv[1]
-print(json.dumps({"api": {"oauth2PermissionScopes": [{
-    "id": sid,
-    "value": "access_as_user",
-    "type": "User",
-    "isEnabled": True,
-    "adminConsentDisplayName": "Access the Red Team Dashboard API",
-    "adminConsentDescription": "Allows the signed-in analyst to access the RTD API on their behalf.",
-    "userConsentDisplayName": "Access the Red Team Dashboard API",
-    "userConsentDescription": "Allows the app to access the RTD API on your behalf.",
-}]}}))
+print(json.dumps({"api": {
+    "requestedAccessTokenVersion": 2,
+    "oauth2PermissionScopes": [{
+        "id": sid,
+        "value": "access_as_user",
+        "type": "User",
+        "isEnabled": True,
+        "adminConsentDisplayName": "Access the Red Team Dashboard API",
+        "adminConsentDescription": "Allows the signed-in analyst to access the RTD API on their behalf.",
+        "userConsentDisplayName": "Access the Red Team Dashboard API",
+        "userConsentDescription": "Allows the app to access the RTD API on your behalf.",
+    }],
+}}))
 PY
 )"
 # Only set the scope if one doesn't already exist (avoid duplicate-value error).
+# We still PATCH requestedAccessTokenVersion every run — idempotent, and ensures
+# pre-existing apps created before this fix still get bumped to v2.0.
 EXISTING_SCOPE="$(az ad app show --id "$APP_ID" --query "api.oauth2PermissionScopes[?value=='access_as_user'] | [0].id" -o tsv)"
 if [[ -z "$EXISTING_SCOPE" ]]; then
     az rest --method PATCH \
         --uri "https://graph.microsoft.com/v1.0/applications/${OBJECT_ID}" \
         --headers "Content-Type=application/json" \
         --body "$SCOPE_BODY" --only-show-errors
-    green "    scope access_as_user created (id=$SCOPE_ID)"
+    green "    scope access_as_user created (id=$SCOPE_ID) + v2.0 tokens enabled"
 else
     SCOPE_ID="$EXISTING_SCOPE"
-    green "    scope access_as_user already present (id=$SCOPE_ID)"
+    # Scope exists; still PATCH the token-version setting so older apps are
+    # brought into compliance with this script's contract.
+    az rest --method PATCH \
+        --uri "https://graph.microsoft.com/v1.0/applications/${OBJECT_ID}" \
+        --headers "Content-Type=application/json" \
+        --body '{"api":{"requestedAccessTokenVersion":2}}' --only-show-errors
+    green "    scope access_as_user already present (id=$SCOPE_ID); v2.0 tokens ensured"
 fi
 
 bold "[4/5] Configuring SPA redirect URIs…"
