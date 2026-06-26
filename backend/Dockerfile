@@ -1,3 +1,18 @@
+# --- subfinder builder stage -------------------------------------------------
+# Build subfinder from source against the latest patched Go toolchain. The
+# pre-built release binaries on github.com/projectdiscovery/subfinder/releases
+# embed whatever Go stdlib was current at release time, which means Trivy will
+# flag them every time a new Go-stdlib CVE drops (and Go drops CVEs every
+# month or so). Building from source against `golang:1.25` keeps the embedded
+# stdlib current and clears the recurring CVE wall on the backend image.
+ARG SUBFINDER_VERSION=v2.14.0
+FROM golang:1.25 AS subfinder-builder
+ARG SUBFINDER_VERSION
+ENV CGO_ENABLED=0 \
+    GOFLAGS=-trimpath
+RUN go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@${SUBFINDER_VERSION}
+
+# --- runtime stage -----------------------------------------------------------
 FROM python:3.12-slim AS base
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -11,7 +26,6 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends \
         build-essential \
         curl \
-        unzip \
         libcairo2 \
         libpango-1.0-0 \
         libpangoft2-1.0-0 \
@@ -21,18 +35,8 @@ RUN apt-get update \
         fonts-dejavu-core \
  && rm -rf /var/lib/apt/lists/*
 
-# ProjectDiscovery subfinder — passive subdomain enumeration. Aggregates
-# crt.sh + 30+ other sources (the dashboard's Phase 0 stub only used crt.sh
-# directly, which both duplicated the standalone crt_sh tool and surfaced
-# crt.sh's frequent 502s as run errors). Pinned to a known release so a
-# silent upstream change doesn't break the orchestrator's tool contract.
-ARG SUBFINDER_VERSION=2.14.0
-RUN curl -fsSL -o /tmp/subfinder.zip \
-        "https://github.com/projectdiscovery/subfinder/releases/download/v${SUBFINDER_VERSION}/subfinder_${SUBFINDER_VERSION}_linux_amd64.zip" \
- && unzip -j /tmp/subfinder.zip subfinder -d /usr/local/bin/ \
- && chmod +x /usr/local/bin/subfinder \
- && rm /tmp/subfinder.zip \
- && /usr/local/bin/subfinder -version
+COPY --from=subfinder-builder /go/bin/subfinder /usr/local/bin/subfinder
+RUN /usr/local/bin/subfinder -version
 
 COPY pyproject.toml ./
 RUN pip install --upgrade pip \
