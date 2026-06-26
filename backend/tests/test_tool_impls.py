@@ -10,6 +10,7 @@ parsing, normalization, and error paths in each impl.
 """
 from __future__ import annotations
 
+import subprocess
 from typing import Any
 
 import dns.resolver
@@ -17,6 +18,7 @@ import httpx
 import pytest
 import respx
 
+from app.orchestrator.tools import subfinder as sf_module
 from app.orchestrator.tools.crt_sh import crt_sh_impl
 from app.orchestrator.tools.dns_lookup import dns_lookup_impl
 from app.orchestrator.tools.httpx_probe import httpx_probe_impl
@@ -86,9 +88,6 @@ def test_subfinder_aggregates_real_binary_output(
     """Real subfinder Go binary shells out and emits one JSON record per
     line (NDJSON) with ``host``, ``input``, ``source`` fields. The wrapper
     deduplicates hosts and surfaces which passive sources contributed."""
-    import subprocess
-    from app.orchestrator.tools import subfinder as sf
-
     fake_stdout = (
         '{"host": "acme.com", "input": "acme.com", "source": "crtsh"}\n'
         '{"host": "www.acme.com", "input": "acme.com", "source": "crtsh"}\n'
@@ -102,7 +101,7 @@ def test_subfinder_aggregates_real_binary_output(
             args=args[0], returncode=0, stdout=fake_stdout, stderr=""
         )
 
-    monkeypatch.setattr(sf.subprocess, "run", fake_run)
+    monkeypatch.setattr(sf_module.subprocess, "run", fake_run)
 
     result = subfinder_impl({"domain": "acme.com"})
     assert result.ok, result.error
@@ -123,13 +122,11 @@ def test_subfinder_aggregates_real_binary_output(
 def test_subfinder_binary_not_installed(monkeypatch: pytest.MonkeyPatch) -> None:
     """When the binary is missing from the image, surface a clear error
     instead of a generic subprocess crash."""
-    import subprocess
-    from app.orchestrator.tools import subfinder as sf
 
     def fake_run(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess:
         raise FileNotFoundError("subfinder")
 
-    monkeypatch.setattr(sf.subprocess, "run", fake_run)
+    monkeypatch.setattr(sf_module.subprocess, "run", fake_run)
     result = subfinder_impl({"domain": "acme.com"})
     assert not result.ok
     assert "subfinder binary not found" in (result.error or "")
