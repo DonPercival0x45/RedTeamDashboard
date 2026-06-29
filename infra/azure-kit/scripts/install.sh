@@ -39,10 +39,17 @@ ENTRA_CLIENT_ID=""
 ANTHROPIC_KEY="${ANTHROPIC_API_KEY:-}"
 OPENAI_KEY="${OPENAI_API_KEY:-}"
 # Comma-separated list of IPv4 CIDRs the SWA will accept browser traffic
-# from. Empty → no restriction (wide open). Set via --allowed-ips or
-# RTD_VIEWER_ALLOWED_IPS env. Standard SKU is required for this to take
-# effect (the kit provisions Standard by default since 2026-06-29).
+# from. Empty → no restriction (wide open). Resolution precedence (highest
+# first), all evaluated post-Bicep:
+#   1. --allowed-ips flag (explicit; empty value clears the lock)
+#   2. SWA Environment Variables blade (Azure Portal → Static Web App →
+#      Settings → Environment variables → RTD_VIEWER_ALLOWED_IPS)
+#   3. RTD_VIEWER_ALLOWED_IPS shell env
+# Whatever resolves is written BACK to the SWA env vars at the end so the
+# next install picks it up automatically — set once in the Portal, install
+# many times. Standard SKU is required for the IP block to take effect.
 ALLOWED_IPS="${RTD_VIEWER_ALLOWED_IPS:-}"
+ALLOWED_IPS_FROM_FLAG=false
 NON_INTERACTIVE=false
 
 usage() {
@@ -65,8 +72,11 @@ Options:
   --entra-client-id ID    Entra app (client) id for analyst SSO. Optional.
   --allowed-ips CSV       Comma-separated IPv4 CIDRs the viewer SWA accepts
                           browser traffic from (e.g. '1.2.3.4/32,5.6.7.8/32').
-                          Empty → no IP restriction. Falls back to env
-                          RTD_VIEWER_ALLOWED_IPS. Standard SKU required.
+                          Empty → no IP restriction. Persists to the SWA's
+                          Azure-side Environment Variables blade for the
+                          next install. Falls back to: SWA env vars (if
+                          already set), then shell RTD_VIEWER_ALLOWED_IPS.
+                          Standard SKU required.
   --yes                   Skip the confirmation prompt; useful in CI/automation.
   -h, --help              Show this help.
 EOF
@@ -85,7 +95,7 @@ while [[ $# -gt 0 ]]; do
         --openai-key)        OPENAI_KEY="$2";          shift 2 ;;
         --entra-tenant-id)   ENTRA_TENANT_ID="$2";    shift 2 ;;
         --entra-client-id)   ENTRA_CLIENT_ID="$2";    shift 2 ;;
-        --allowed-ips)       ALLOWED_IPS="$2";         shift 2 ;;
+        --allowed-ips)       ALLOWED_IPS="$2"; ALLOWED_IPS_FROM_FLAG=true; shift 2 ;;
         --yes)               NON_INTERACTIVE=true;     shift ;;
         -h|--help)           usage ;;
         *) echo "unknown arg: $1" >&2; usage ;;
@@ -258,6 +268,37 @@ else
     TMP_DIR="$(mktemp -d)"
     tar -C "$FRONTEND_DIR" --exclude=node_modules --exclude=.next --exclude=out -cf - . \
         | tar -C "$TMP_DIR" -xf -
+
+    # Resolve the IP allowlist BEFORE the build so the substitution can use
+    # the right value. Precedence: --allowed-ips flag wins; otherwise pull
+    # from the SWA's Azure-side Environment Variables (set in Portal or by
+    # a previous install). Shell env was already captured into ALLOWED_IPS
+    # at startup and is the floor.
+    if [[ "$ALLOWED_IPS_FROM_FLAG" != "true" ]]; then
+        SWA_STORED_IPS="$(az staticwebapp appsettings list \
+            -n "$VIEWER_NAME" -g "$RG_OUT" \
+            --query "properties.RTD_VIEWER_ALLOWED_IPS" -o tsv 2>/dev/null || true)"
+        if [[ -n "$SWA_STORED_IPS" && "$SWA_STORED_IPS" != "None" ]]; then
+            ALLOWED_IPS="$SWA_STORED_IPS"
+            blue "    IP allowlist sourced from SWA Environment Variables"
+        fi
+    fi
+
+    # Fetch the last 20 GitHub Releases and stamp them into the viewer's
+    # static assets. The What's-New banner reads /releases.json on load to
+    # decide whether a new version landed since the analyst last visited.
+    # Public repo → no auth header needed. Failure here is non-fatal: the
+    # banner just won't show.
+    mkdir -p "$TMP_DIR/public"
+    if curl -sf -H "Accept: application/vnd.github+json" \
+        "https://api.github.com/repos/${IMAGE_REPO_OWNER}/RedTeamDashboard/releases?per_page=20" \
+        -o "$TMP_DIR/public/releases.json"; then
+        echo "    fetched releases.json ($(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$TMP_DIR/public/releases.json") entries)"
+    else
+        red "    couldn't fetch GitHub releases — viewer ships with empty release list"
+        echo "[]" > "$TMP_DIR/public/releases.json"
+    fi
+
     echo "    building viewer (API=https://$APP_FQDN, SSO=$SSO_STATE)…"
     if docker run --rm \
         -e NEXT_OUTPUT=export \
@@ -301,6 +342,25 @@ PY
                 deploy /work --deployment-token $DEPLOY_TOKEN \
                 --env production --no-use-keychain"
         green "    viewer deployed."
+
+        # Persist the resolved IP allowlist back to the SWA's Environment
+        # Variables blade so the next install (by anyone with az access)
+        # inherits it without needing the flag. Operators can also edit
+        # via the Portal directly. Setting to empty clears the lock.
+        if az staticwebapp appsettings set \
+            -n "$VIEWER_NAME" -g "$RG_OUT" \
+            --setting-names "RTD_VIEWER_ALLOWED_IPS=$ALLOWED_IPS" \
+            --only-show-errors -o none 2>/dev/null; then
+            if [[ -n "$ALLOWED_IPS" ]]; then
+                green "    SWA app settings: RTD_VIEWER_ALLOWED_IPS=$ALLOWED_IPS"
+            else
+                blue "    SWA app settings: RTD_VIEWER_ALLOWED_IPS cleared (open allowlist)"
+            fi
+        else
+            red "    couldn't write RTD_VIEWER_ALLOWED_IPS to SWA app settings — "
+            red "    next install will need --allowed-ips again. Set it manually in "
+            red "    Portal → $VIEWER_NAME → Settings → Environment variables."
+        fi
     else
         red "    viewer build failed — see output above. SWA left empty."
         SWA_SKIPPED=true

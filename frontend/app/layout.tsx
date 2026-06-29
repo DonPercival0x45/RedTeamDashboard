@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { AuthGate } from "@/components/auth-gate";
 import { IdentityMenu } from "@/components/identity-menu";
+import { WhatsNewBanner } from "@/components/whats-new-banner";
 import { AuthProvider } from "@/lib/auth";
 import "./globals.css";
 
@@ -32,6 +33,7 @@ export default function RootLayout({
               <IdentityMenu />
             </div>
           </header>
+          <WhatsNewBanner />
           <AuthGate>
             <main className="container py-8">{children}</main>
           </AuthGate>
