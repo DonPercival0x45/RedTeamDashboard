@@ -97,21 +97,35 @@ Recent additions on `phase-11-costs` (June 2026):
 The viewer SWA is **Standard SKU** (bumped from Free 2026-06-29) so the
 `networking.allowedIpRanges` block in `staticwebapp.config.json` takes
 effect. The config file is generated at deploy time from
-`frontend/staticwebapp.config.json.template` by `install.sh`:
+`frontend/staticwebapp.config.json.template` by `install.sh`.
+
+**IP allowlist source of truth: the SWA's Environment Variables blade**
+(Azure Portal → `rtd-<env>-viewer` → Settings → Environment variables →
+`RTD_VIEWER_ALLOWED_IPS`). install.sh resolves the value with this
+precedence on every run:
+
+1. `--allowed-ips` CLI flag — explicit override; empty value clears the lock
+2. SWA Environment Variables (`RTD_VIEWER_ALLOWED_IPS`)
+3. Shell env var `RTD_VIEWER_ALLOWED_IPS`
+
+Whatever resolves is written **back** to the SWA's env vars at the end
+of every install — so "set once, install many times" works for anyone
+with az access. Operators can also edit directly in the Portal between
+installs; install.sh picks up the change on the next run.
 
 ```bash
+# First install on an env — seed the IPs:
 ./scripts/install.sh --env 5qprod \
     --allowed-ips '1.2.3.4/32,5.6.7.8/32' \
     [other args]
+
+# Later installs — IPs auto-resolve from SWA app settings, no flag needed:
+./scripts/install.sh --env 5qprod [other args]
 ```
 
-Empty `--allowed-ips` (or omitted) → the `networking` block is dropped
-and the SWA stays open. To change IPs later, re-run install.sh with a
-new `--allowed-ips` value — Bicep is idempotent and the viewer rebuild
-+ `swa deploy` only takes ~2-3 min. The IP list can also be set via
-the `RTD_VIEWER_ALLOWED_IPS` env var.
-
-MSAL.js stays as the only auth layer (no SWA-level `auth` block).
+Empty resolved value → the `networking` block is dropped and the SWA
+stays open. MSAL.js stays as the only auth layer (no SWA-level `auth`
+block).
 
 ## Planner context sync
 

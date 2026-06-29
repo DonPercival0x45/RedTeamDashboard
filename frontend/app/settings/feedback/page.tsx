@@ -26,7 +26,7 @@ import type {
   RoadmapSuggestionStatus,
 } from "@/lib/types";
 
-// Tenant-global suggestion box. Any authenticated analyst drops in a product
+// Tenant-global feedback surface. Any authenticated analyst drops in a product
 // idea; the planner agent emits pros/cons; an admin approves or rejects.
 // Approved items export to ROADMAP.md for Claude Code to pick up as PR work.
 
@@ -45,7 +45,7 @@ const STATUS_CLASS: Record<RoadmapSuggestionStatus, string> = {
   rejected: "border-rose-500/40 bg-rose-500/10 text-rose-200",
 };
 
-export default function SettingsSuggestionsPage() {
+export default function SettingsFeedbackPage() {
   const [me, setMe] = useState<Me | null>(null);
   const [rows, setRows] = useState<RoadmapSuggestion[] | null>(null);
   const [filter, setFilter] = useState<FilterChip>("all");
@@ -124,7 +124,9 @@ export default function SettingsSuggestionsPage() {
 
   const onDelete = useCallback(
     async (row: RoadmapSuggestion) => {
-      if (!window.confirm("Delete this suggestion? This can't be undone.")) {
+      if (
+        !window.confirm("Delete this feedback entry? This can't be undone.")
+      ) {
         return;
       }
       try {
@@ -147,11 +149,11 @@ export default function SettingsSuggestionsPage() {
           ← engagements
         </Link>
         <h1 className="mt-2 text-2xl font-semibold tracking-tight">
-          Suggestion box
+          Feedback
         </h1>
         <p className="mt-1 text-sm text-muted-foreground">
           Drop in product ideas, scope adjustments, or anything you want the
-          team to consider. A planning agent reads your suggestion against the
+          team to consider. A planning agent reads your entry against the
           project charter and current handoff, then writes pros and cons.
           Admins approve or reject; approved items export to{" "}
           <code className="text-foreground">ROADMAP.md</code> so Claude Code
@@ -161,7 +163,7 @@ export default function SettingsSuggestionsPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">New suggestion</CardTitle>
+          <CardTitle className="text-base">New feedback</CardTitle>
           <CardDescription>
             Be specific — the agent gives a better read when the idea names the
             user-visible behavior, the phase or area it touches, and any
@@ -196,7 +198,7 @@ export default function SettingsSuggestionsPage() {
         <CardHeader>
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <CardTitle className="text-base">Suggestions</CardTitle>
+              <CardTitle className="text-base">All feedback</CardTitle>
               <CardDescription>
                 Newest first. Approved items land in the export.
               </CardDescription>
@@ -240,8 +242,8 @@ export default function SettingsSuggestionsPage() {
           {visible !== null && visible.length === 0 && (
             <p className="text-sm text-muted-foreground">
               {filter === "all"
-                ? "No suggestions yet — submit the first one above."
-                : `No ${STATUS_LABEL[filter as RoadmapSuggestionStatus].toLowerCase()} suggestions.`}
+                ? "No feedback yet — submit the first one above."
+                : `No ${STATUS_LABEL[filter as RoadmapSuggestionStatus].toLowerCase()} feedback.`}
             </p>
           )}
           {visible?.map((row) => (

@@ -497,6 +497,16 @@ export type RoadmapSuggestionStatus =
   | "approved"
   | "rejected";
 
+// One entry as returned by the GitHub Releases API (only the fields the
+// What's-New surface actually uses).
+export interface ReleaseNote {
+  tag_name: string;
+  name: string | null;
+  published_at: string;
+  body: string | null;
+  html_url: string;
+}
+
 export interface RoadmapSuggestion {
   id: string;
   author_user_id: string | null;
