@@ -92,6 +92,27 @@ Recent additions on `phase-11-costs` (June 2026):
 - **Suggestion box + planner agent** — `RoadmapSuggestion` model + migration `0017`; `/settings/suggestions` UI; tenant-global PlanningAgent reads `CHARTER.md` + `docs/HANDOFF.md` and emits pros/cons; admin (`users.is_admin`) approves; `GET /roadmap-suggestions/export` returns ROADMAP.md.
 - **Ephemeral BYO keys** — migration `0018` drops `user_provider_keys` (and the `provider_key_kind` enum). Keys now live in Redis under `provider_keys:<user_id>` with a 30-min sliding TTL (`provider_key_ttl_seconds`). Resolver is `app/services/ephemeral_provider_key.resolve_for_user(redis, user_id=..., provider=...)` — takes a Redis client, not a Session. Strategic / Tactical / Planner all require `acting_user_id` as a kwarg (no engagement-creator fallback). The worker envelope and every `finding.created` event carry `acting_user_id`; producers MUST stamp it.
 
+## Viewer SWA: Standard SKU + IP allowlist
+
+The viewer SWA is **Standard SKU** (bumped from Free 2026-06-29) so the
+`networking.allowedIpRanges` block in `staticwebapp.config.json` takes
+effect. The config file is generated at deploy time from
+`frontend/staticwebapp.config.json.template` by `install.sh`:
+
+```bash
+./scripts/install.sh --env 5qprod \
+    --allowed-ips '1.2.3.4/32,5.6.7.8/32' \
+    [other args]
+```
+
+Empty `--allowed-ips` (or omitted) → the `networking` block is dropped
+and the SWA stays open. To change IPs later, re-run install.sh with a
+new `--allowed-ips` value — Bicep is idempotent and the viewer rebuild
++ `swa deploy` only takes ~2-3 min. The IP list can also be set via
+the `RTD_VIEWER_ALLOWED_IPS` env var.
+
+MSAL.js stays as the only auth layer (no SWA-level `auth` block).
+
 ## Planner context sync
 
 The planner agent reads `CHARTER.md` + `docs/HANDOFF.md` from

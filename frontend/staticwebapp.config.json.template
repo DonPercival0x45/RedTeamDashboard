@@ -1,0 +1,22 @@
+{
+  "$comment": "Template — install.sh substitutes a networking.allowedIpRanges block at deploy time when --allowed-ips is set. Operator can edit this file directly to tweak routes, headers, or fallback behavior; IPs are wired in by the install script and not stored here in git.",
+
+  "navigationFallback": {
+    "rewrite": "/index.html",
+    "exclude": ["/images/*.{png,jpg,gif}", "/css/*", "/*.{json,xml,txt}"]
+  },
+
+  "globalHeaders": {
+    "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "strict-origin-when-cross-origin"
+  },
+
+  "responseOverrides": {
+    "404": {
+      "rewrite": "/index.html",
+      "statusCode": 200
+    }
+  }
+}

@@ -38,6 +38,11 @@ ENTRA_TENANT_ID=""
 ENTRA_CLIENT_ID=""
 ANTHROPIC_KEY="${ANTHROPIC_API_KEY:-}"
 OPENAI_KEY="${OPENAI_API_KEY:-}"
+# Comma-separated list of IPv4 CIDRs the SWA will accept browser traffic
+# from. Empty → no restriction (wide open). Set via --allowed-ips or
+# RTD_VIEWER_ALLOWED_IPS env. Standard SKU is required for this to take
+# effect (the kit provisions Standard by default since 2026-06-29).
+ALLOWED_IPS="${RTD_VIEWER_ALLOWED_IPS:-}"
 NON_INTERACTIVE=false
 
 usage() {
@@ -58,6 +63,10 @@ Options:
                           OPENAI_API_KEY env var.
   --entra-tenant-id ID    Entra tenant id for analyst SSO (from setup-entra.sh). Optional.
   --entra-client-id ID    Entra app (client) id for analyst SSO. Optional.
+  --allowed-ips CSV       Comma-separated IPv4 CIDRs the viewer SWA accepts
+                          browser traffic from (e.g. '1.2.3.4/32,5.6.7.8/32').
+                          Empty → no IP restriction. Falls back to env
+                          RTD_VIEWER_ALLOWED_IPS. Standard SKU required.
   --yes                   Skip the confirmation prompt; useful in CI/automation.
   -h, --help              Show this help.
 EOF
@@ -76,6 +85,7 @@ while [[ $# -gt 0 ]]; do
         --openai-key)        OPENAI_KEY="$2";          shift 2 ;;
         --entra-tenant-id)   ENTRA_TENANT_ID="$2";    shift 2 ;;
         --entra-client-id)   ENTRA_CLIENT_ID="$2";    shift 2 ;;
+        --allowed-ips)       ALLOWED_IPS="$2";         shift 2 ;;
         --yes)               NON_INTERACTIVE=true;     shift ;;
         -h|--help)           usage ;;
         *) echo "unknown arg: $1" >&2; usage ;;
@@ -257,6 +267,34 @@ else
         -e NEXT_PUBLIC_ENTRA_API_SCOPE="$ENTRA_SCOPE" \
         -v "$TMP_DIR:/app" -w /app node:lts \
         sh -c "npm ci --no-audit --no-fund && npm run build"; then
+        # Stamp staticwebapp.config.json into the built output. The
+        # template lives in the repo (frontend/staticwebapp.config.json.template);
+        # IPs are deploy-time params. Empty IP list → networking block
+        # omitted (wide open). Standard SKU honors allowedIpRanges; on
+        # Free SKU the block is ignored.
+        if [[ -f "$TMP_DIR/staticwebapp.config.json.template" ]]; then
+            echo "    writing staticwebapp.config.json (allowed-ips=${ALLOWED_IPS:-<none>})…"
+            python3 - "$TMP_DIR/staticwebapp.config.json.template" "$TMP_DIR/out/staticwebapp.config.json" "$ALLOWED_IPS" <<'PY'
+import json, sys
+template_path, out_path, ips_csv = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(template_path) as f:
+    config = json.load(f)
+# Strip the explanatory $comment field — SWA ignores it but no need to ship.
+config.pop("$comment", None)
+ips = [ip.strip() for ip in ips_csv.split(",") if ip.strip()]
+if ips:
+    config["networking"] = {"allowedIpRanges": ips}
+with open(out_path, "w") as f:
+    json.dump(config, f, indent=2)
+PY
+            if [[ -n "$ALLOWED_IPS" ]]; then
+                green "    IP allowlist: $ALLOWED_IPS"
+            else
+                blue "    no --allowed-ips supplied; SWA stays open to all IPs"
+            fi
+        else
+            red "    template missing at $TMP_DIR/staticwebapp.config.json.template — skipping IP gating"
+        fi
         DEPLOY_TOKEN="$(az staticwebapp secrets list -n "$VIEWER_NAME" -g "$RG_OUT" --query 'properties.apiKey' -o tsv)"
         docker run --rm -v "$TMP_DIR/out:/work" node:lts sh -c \
             "cd /tmp && SWA_CLI_TELEMETRY_OPTOUT=1 npx -y @azure/static-web-apps-cli@latest \
