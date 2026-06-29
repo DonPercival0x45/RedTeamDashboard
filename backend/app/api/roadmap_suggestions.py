@@ -24,7 +24,13 @@ from fastapi.responses import PlainTextResponse
 from sqlalchemy import select
 
 from app.agents.planner import render_approved_roadmap  # noqa: F401 — re-exported via service
-from app.api.deps import CurrentAdminUser, CurrentUser, DbSession, RedisClient
+from app.api.deps import (
+    CurrentAdminUser,
+    CurrentNonGuestUser,
+    CurrentUser,
+    DbSession,
+    RedisClient,
+)
 from app.models import (
     ActorType,
     AuditLog,
@@ -80,7 +86,7 @@ def create_suggestion(
     body: RoadmapSuggestionCreate,
     session: DbSession,
     redis_client: RedisClient,
-    user: CurrentUser,
+    user: CurrentNonGuestUser,
 ) -> RoadmapSuggestion:
     row, execution = suggestion_svc.create_and_evaluate(
         session,

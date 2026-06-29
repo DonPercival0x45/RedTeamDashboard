@@ -451,11 +451,14 @@ export interface CostRollup {
 
 // ── /me + roadmap suggestions ────────────────────────────────────────────
 
+export type UserRole = "admin" | "user" | "guest";
+
 export interface Me {
   id: string;
   email: string;
   display_name: string | null;
   is_admin: boolean;
+  role: UserRole;
 }
 
 export type RoadmapSuggestionStatus =

@@ -162,38 +162,50 @@ export default function SettingsFeedbackPage() {
         </p>
       </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">New feedback</CardTitle>
-          <CardDescription>
-            Be specific — the agent gives a better read when the idea names the
-            user-visible behavior, the phase or area it touches, and any
-            constraints.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <Textarea
-            value={body}
-            onChange={(e) => setBody(e.target.value)}
-            placeholder="e.g. Add a 'starred findings' filter so I can pin a short shortlist while I write the report."
-            rows={5}
-            disabled={submitting}
-          />
-          <div className="flex items-center justify-between">
-            <p className="text-xs text-muted-foreground">
-              {submitting
-                ? "Agent is evaluating…"
-                : `${body.trim().length} characters`}
-            </p>
-            <Button
-              onClick={onSubmit}
-              disabled={submitting || body.trim().length < 4}
-            >
-              {submitting ? "Submitting…" : "Submit for review"}
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
+      {me?.role !== "guest" && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">New feedback</CardTitle>
+            <CardDescription>
+              Be specific — the agent gives a better read when the idea
+              names the user-visible behavior, the phase or area it
+              touches, and any constraints.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <Textarea
+              value={body}
+              onChange={(e) => setBody(e.target.value)}
+              placeholder="e.g. Add a 'starred findings' filter so I can pin a short shortlist while I write the report."
+              rows={5}
+              disabled={submitting}
+            />
+            <div className="flex items-center justify-between">
+              <p className="text-xs text-muted-foreground">
+                {submitting
+                  ? "Agent is evaluating…"
+                  : `${body.trim().length} characters`}
+              </p>
+              <Button
+                onClick={onSubmit}
+                disabled={submitting || body.trim().length < 4}
+              >
+                {submitting ? "Submitting…" : "Submit for review"}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {me?.role === "guest" && (
+        <Card>
+          <CardContent className="py-4 text-sm text-muted-foreground">
+            Your role is <strong className="text-foreground">guest</strong>{" "}
+            — you can read feedback but can't submit new entries. Ask an
+            admin to upgrade you.
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader>

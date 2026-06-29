@@ -267,6 +267,19 @@ def test_flush_removes_engagement_and_streams(
     eng = _create(client, f"Flush me {uuid.uuid4().hex[:6]}")
     # Don't add to cleanup_slugs — we're flushing manually below.
 
+    # Flush is admin-only as of v0.5.0 (hard delete = backend change). Promote
+    # the test user so the call lands at the route rather than at the gate.
+    from app.models import User
+
+    test_user = db.execute(
+        select(User).where(User.email == "engagement-test@example.com")
+    ).scalar_one_or_none()
+    if test_user is not None:
+        from app.models import UserRole
+
+        test_user.role = UserRole.admin
+        db.commit()
+
     # Seed an inbound stream message so we can confirm the redis cleanup.
     redis_client.xadd(
         inbound_stream(uuid.UUID(eng["id"])),

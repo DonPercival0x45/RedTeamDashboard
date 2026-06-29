@@ -30,7 +30,7 @@ from app.models.suggestion import (
     SuggestionStatus,
 )
 from app.models.task import OwnerEligibility, Task, TaskKind, TaskStatus
-from app.models.user import User
+from app.models.user import User, UserRole
 
 __all__ = [
     "APIKey",
@@ -70,5 +70,6 @@ __all__ = [
     "TaskKind",
     "TaskStatus",
     "User",
+    "UserRole",
     "scope_satisfies",
 ]
