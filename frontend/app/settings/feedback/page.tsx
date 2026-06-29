@@ -11,6 +11,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { DiscordChannelConnect } from "@/components/discord-channel-connect";
 import { Textarea } from "@/components/ui/textarea";
 import {
   createRoadmapSuggestion,
@@ -19,6 +20,7 @@ import {
   downloadRoadmapMarkdown,
   getMe,
   listRoadmapSuggestions,
+  reEvaluateRoadmapSuggestion,
 } from "@/lib/api";
 import type {
   Me,
@@ -122,6 +124,18 @@ export default function SettingsFeedbackPage() {
     [reload],
   );
 
+  const onReEvaluate = useCallback(
+    async (row: RoadmapSuggestion) => {
+      try {
+        await reEvaluateRoadmapSuggestion(row.id);
+        await reload();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [reload],
+  );
+
   const onDelete = useCallback(
     async (row: RoadmapSuggestion) => {
       if (
@@ -161,38 +175,50 @@ export default function SettingsFeedbackPage() {
         </p>
       </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">New feedback</CardTitle>
-          <CardDescription>
-            Be specific — the agent gives a better read when the idea names the
-            user-visible behavior, the phase or area it touches, and any
-            constraints.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <Textarea
-            value={body}
-            onChange={(e) => setBody(e.target.value)}
-            placeholder="e.g. Add a 'starred findings' filter so I can pin a short shortlist while I write the report."
-            rows={5}
-            disabled={submitting}
-          />
-          <div className="flex items-center justify-between">
-            <p className="text-xs text-muted-foreground">
-              {submitting
-                ? "Agent is evaluating…"
-                : `${body.trim().length} characters`}
-            </p>
-            <Button
-              onClick={onSubmit}
-              disabled={submitting || body.trim().length < 4}
-            >
-              {submitting ? "Submitting…" : "Submit for review"}
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
+      {me?.role !== "guest" && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">New feedback</CardTitle>
+            <CardDescription>
+              Be specific — the agent gives a better read when the idea
+              names the user-visible behavior, the phase or area it
+              touches, and any constraints.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <Textarea
+              value={body}
+              onChange={(e) => setBody(e.target.value)}
+              placeholder="e.g. Add a 'starred findings' filter so I can pin a short shortlist while I write the report."
+              rows={5}
+              disabled={submitting}
+            />
+            <div className="flex items-center justify-between">
+              <p className="text-xs text-muted-foreground">
+                {submitting
+                  ? "Agent is evaluating…"
+                  : `${body.trim().length} characters`}
+              </p>
+              <Button
+                onClick={onSubmit}
+                disabled={submitting || body.trim().length < 4}
+              >
+                {submitting ? "Submitting…" : "Submit for review"}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {me?.role === "guest" && (
+        <Card>
+          <CardContent className="py-4 text-sm text-muted-foreground">
+            Your role is <strong className="text-foreground">guest</strong>{" "}
+            — you can read feedback but can&apos;t submit new entries. Ask an
+            admin to upgrade you.
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader>
@@ -253,10 +279,13 @@ export default function SettingsFeedbackPage() {
               me={me}
               onDecide={onDecide}
               onDelete={onDelete}
+              onReEvaluate={onReEvaluate}
             />
           ))}
         </CardContent>
       </Card>
+
+      {me?.is_admin && <DiscordChannelConnect />}
     </div>
   );
 }
@@ -266,6 +295,7 @@ function SuggestionRow({
   me,
   onDecide,
   onDelete,
+  onReEvaluate,
 }: {
   row: RoadmapSuggestion;
   me: Me | null;
@@ -274,11 +304,23 @@ function SuggestionRow({
     decision: "approved" | "rejected",
   ) => void;
   onDelete: (row: RoadmapSuggestion) => void;
+  onReEvaluate: (row: RoadmapSuggestion) => void;
 }) {
   const isAdmin = me?.is_admin ?? false;
+  const isGuest = me?.role === "guest";
   const isAuthor = me?.id !== undefined && row.author_user_id === me.id;
   const canDelete =
     isAdmin || (isAuthor && row.status === "pending_review");
+  const [reEvaluating, setReEvaluating] = useState(false);
+
+  const handleReEvaluate = async () => {
+    setReEvaluating(true);
+    try {
+      await onReEvaluate(row);
+    } finally {
+      setReEvaluating(false);
+    }
+  };
 
   const evaluating =
     row.agent_summary === null &&
@@ -355,6 +397,18 @@ function SuggestionRow({
           )}
         </p>
         <div className="flex gap-2">
+          {!isGuest && (
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={handleReEvaluate}
+              disabled={reEvaluating}
+              title="Re-run the planner agent on this entry — useful if the first eval failed or the project context has shifted."
+              className="text-muted-foreground hover:text-foreground"
+            >
+              {reEvaluating ? "Re-running…" : "AI Feedback"}
+            </Button>
+          )}
           {isAdmin && row.status === "pending_review" && (
             <>
               <Button

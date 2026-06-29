@@ -170,40 +170,6 @@ export interface DarkwebImportResult {
   entities: StoredEntity[];
 }
 
-// Phase 10 — workflow templates (starter packs).
-export interface WorkflowTemplateStep {
-  tool: string;
-  kind: string; // TaskKind value: "scan" | "enum" | "exploit"
-  owner_eligibility: string; // "agent" | "analyst" | "either"
-  title: string;
-  rationale?: string | null;
-}
-
-export interface WorkflowTemplate {
-  id: string;
-  name: string;
-  description: string | null;
-  is_system: boolean;
-  target_kind: string; // "domain" | "cidr" | "url" | "ip"
-  steps: WorkflowTemplateStep[];
-}
-
-export interface AppliedTask {
-  id: string;
-  title: string;
-  kind: string;
-  owner_eligibility: string;
-  status: string;
-  payload: Record<string, unknown>;
-}
-
-export interface ApplyTemplateResponse {
-  template_id: string;
-  template_name: string;
-  target: string;
-  tasks: AppliedTask[];
-}
-
 // Attachment metadata (raw bytes fetched separately via GET /attachments/{id})
 export interface Attachment {
   id: string;
@@ -252,7 +218,7 @@ export interface Observation {
 
 // ─── BYO provider keys ─────────────────────────────────────────────────────
 
-export type ProviderKeyKind = "model_provider" | "mcp_server";
+export type ProviderKeyKind = "model_provider" | "mcp_server" | "other";
 
 export interface ProviderKey {
   id: string;
@@ -485,11 +451,14 @@ export interface CostRollup {
 
 // ── /me + roadmap suggestions ────────────────────────────────────────────
 
+export type UserRole = "admin" | "user" | "guest";
+
 export interface Me {
   id: string;
   email: string;
   display_name: string | null;
   is_admin: boolean;
+  role: UserRole;
 }
 
 export type RoadmapSuggestionStatus =
@@ -519,6 +488,42 @@ export interface RoadmapSuggestion {
   reviewed_by_user_id: string | null;
   reviewed_at: string | null;
   review_note: string | null;
+  source: string;
+  created_at: string;
+  updated_at: string;
+}
+
+// ── External integrations (Discord today) ────────────────────────────────
+
+export type IntegrationType = "discord";
+
+export interface Integration {
+  id: string;
+  type: IntegrationType;
+  enabled: boolean;
+  // For Discord: { webhook_url?, bot_token?, channel_id? }
+  // bot_token comes back masked (…1234) — empty string in PUT means "leave
+  // the stored value alone".
+  config: Record<string, unknown>;
+  created_by_user_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface IntegrationUpsert {
+  type: IntegrationType;
+  enabled: boolean;
+  config: Record<string, unknown>;
+}
+
+// ── Admin user management ────────────────────────────────────────────────
+
+export interface AdminUser {
+  id: string;
+  email: string;
+  display_name: string | null;
+  role: UserRole;
+  is_active: boolean;
   created_at: string;
   updated_at: string;
 }

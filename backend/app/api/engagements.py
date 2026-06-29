@@ -51,7 +51,14 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, Up
 from pydantic import BaseModel
 from sqlalchemy import select, text
 
-from app.api.deps import CurrentUser, DbSession, RedisClient, RequireScope
+from app.api.deps import (
+    CurrentAdminUser,
+    CurrentNonGuestUser,
+    CurrentUser,
+    DbSession,
+    RedisClient,
+    RequireScope,
+)
 from app.core.blob import upload_engagement_export
 from app.models import (
     ActorType,
@@ -251,7 +258,7 @@ def _finding_to_read(f: Finding) -> dict[str, Any]:
 def create_engagement(
     body: EngagementCreate,
     session: DbSession,
-    user: CurrentUser,
+    user: CurrentNonGuestUser,
 ) -> Engagement:
     base_slug = _slugify(body.slug) if body.slug else _slugify(body.name)
     slug = _unique_slug(session, base_slug)
@@ -293,6 +300,7 @@ def update_engagement(
     slug: str,
     body: EngagementUpdate,
     session: DbSession,
+    _user: CurrentNonGuestUser,
 ) -> Engagement:
     eng = _get_engagement_or_404(session, slug)
     _reject_flushed(eng)
@@ -340,7 +348,7 @@ def export_engagement(slug: str, session: DbSession) -> dict[str, Any]:
     "/engagements/{slug}",
     response_model=EngagementRead,
 )
-def archive_engagement(slug: str, session: DbSession, _user: CurrentUser) -> Engagement:
+def archive_engagement(slug: str, session: DbSession, _user: CurrentNonGuestUser) -> Engagement:
     eng = _get_engagement_or_404(session, slug)
     _reject_flushed(eng)
     if eng.status is not EngagementStatus.archived:
@@ -361,9 +369,13 @@ def flush_engagement(
     slug: str,
     session: DbSession,
     redis_client: RedisClient,
-    _user: CurrentUser,
+    _user: CurrentAdminUser,
 ) -> Response:
-    """Permanently delete all engagement data. Export to blob first, then purge."""
+    """Permanently delete all engagement data. Export to blob first, then purge.
+
+    Admin-only — hard delete is irreversible; non-guest users still get
+    archive via DELETE /engagements/{slug}.
+    """
     eng = _get_engagement_or_404(session, slug)
     eid = eng.id
     slug_val = eng.slug
@@ -1161,7 +1173,7 @@ def start_run(
     body: RunStart,
     session: DbSession,
     redis_client: RedisClient,
-    user: CurrentUser,
+    user: CurrentNonGuestUser,
 ) -> RunStartResponse:
     eng = _get_engagement_or_404(session, slug)
     if eng.status is not EngagementStatus.active:

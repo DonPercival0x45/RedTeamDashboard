@@ -29,7 +29,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.db.session import SessionLocal
-from app.models import APIKey, APIKeyScope, User, scope_satisfies
+from app.models import APIKey, APIKeyScope, User, UserRole, scope_satisfies
 
 
 def db_session() -> Iterator[Session]:
@@ -282,16 +282,34 @@ def current_user(
 def require_admin_user(
     user: Annotated[User, Depends(current_user)],
 ) -> User:
-    """Gate ``CurrentUser``-style endpoints behind the ``users.is_admin`` flag.
+    """Gate ``CurrentUser``-style endpoints behind ``role=admin``.
 
     Distinct from :func:`RequireScope` (which gates API-key-authenticated
     routes by privilege tier). This one gates browser-SSO routes by user
     role — needed because the API-key-scope model doesn't reach Entra
     sessions, and we want admin-only actions reachable from the UI.
     """
-    if not user.is_admin:
+    if user.role != UserRole.admin:
         raise HTTPException(
             status_code=403, detail="this action requires admin"
+        )
+    return user
+
+
+def require_non_guest_user(
+    user: Annotated[User, Depends(current_user)],
+) -> User:
+    """Gate mutation endpoints behind ``role IN (admin, user)``.
+
+    The ``guest`` role is read-only (view engagements/findings/feedback
+    but no submit/run/approve). Every mutation endpoint should depend on
+    this (or on ``require_admin_user`` for the admin-only subset)
+    instead of plain ``current_user`` — otherwise guests can mutate.
+    """
+    if user.role == UserRole.guest:
+        raise HTTPException(
+            status_code=403,
+            detail="guest role is read-only; ask an admin to upgrade you",
         )
     return user
 
@@ -301,4 +319,5 @@ RedisClient = Annotated[redis_lib.Redis, Depends(redis_client)]
 AsyncRedisClient = Annotated[aioredis.Redis, Depends(async_redis_client)]
 CurrentUser = Annotated[User, Depends(current_user)]
 CurrentAdminUser = Annotated[User, Depends(require_admin_user)]
+CurrentNonGuestUser = Annotated[User, Depends(require_non_guest_user)]
 CurrentAPIKey = Annotated[APIKey, Depends(api_key_auth)]

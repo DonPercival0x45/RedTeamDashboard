@@ -24,6 +24,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
+from app.api.admin_users import router as admin_users_router
 from app.api.api_keys import router as api_keys_router
 from app.api.approvals import router as approvals_router
 from app.api.authorizations import router as authorizations_router
@@ -31,15 +32,14 @@ from app.api.deps import AsyncRedisClient, DbSession
 from app.api.engagements import router as engagements_router
 from app.api.entities import router as entities_router
 from app.api.events import router as events_router
+from app.api.integrations import router as integrations_router
 from app.api.me import router as me_router
 from app.api.orchestrator import router as orchestrator_router
 from app.api.provider_keys import router as provider_keys_router
 from app.api.reports import router as reports_router
 from app.api.roadmap_suggestions import router as roadmap_suggestions_router
-from app.api.workflow_templates import router as workflow_templates_router
 from app.core.config import settings
 from app.core.logging import configure_logging
-from app.db.session import SessionLocal
 from app.mcp.auth import MCPAuthMiddleware
 from app.mcp.server import mcp
 
@@ -49,28 +49,8 @@ log = structlog.get_logger()
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    """Startup/shutdown hooks for the API process.
-
-    On startup we idempotently seed the ``is_system=True`` workflow
-    templates (Phase 10) so the starter packs (Network Recon, OSINT
-    Enum, Web App) exist after any deploy. The seed function is a
-    no-op when the named rows already exist, so it's safe on every
-    boot. Failures are caught + logged but never block startup —
-    we'd rather serve traffic without templates than refuse to come up.
-    """
-    try:
-        from app.services.workflow_templates import seed_system_templates
-
-        session = SessionLocal()
-        try:
-            inserted = seed_system_templates(session)
-            session.commit()
-            if inserted:
-                log.info("startup.workflow_templates_seeded", inserted=inserted)
-        finally:
-            session.close()
-    except Exception:  # noqa: BLE001 — never block startup on seed
-        log.exception("startup.workflow_templates_seed_failed")
+    """Startup/shutdown hooks for the API process. Currently a no-op —
+    the workflow-templates seed was removed in v0.5.0 (feature dropped)."""
     yield
 
 
@@ -95,10 +75,11 @@ app.include_router(events_router)
 app.include_router(orchestrator_router)
 app.include_router(provider_keys_router)
 app.include_router(reports_router)
-app.include_router(workflow_templates_router)
 app.include_router(entities_router)
 app.include_router(me_router)
 app.include_router(roadmap_suggestions_router)
+app.include_router(integrations_router)
+app.include_router(admin_users_router)
 
 # MCP server — auth-gated SSE endpoint for agent clients (Claude Code, etc.)
 # Agents connect via: claude mcp add rtd --transport sse --url https://<fqdn>/mcp/sse

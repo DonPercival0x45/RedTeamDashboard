@@ -17,7 +17,7 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import select
 
-from app.api.deps import CurrentUser, DbSession, RedisClient
+from app.api.deps import CurrentNonGuestUser, DbSession, RedisClient
 from app.models import (
     ActorType,
     Approval,
@@ -65,7 +65,7 @@ def decide_approval(
     body: ApprovalDecision,
     session: DbSession,
     redis_client: RedisClient,
-    user: CurrentUser,
+    user: CurrentNonGuestUser,
 ) -> Approval:
     approval = session.get(Approval, approval_id)
     if approval is None:

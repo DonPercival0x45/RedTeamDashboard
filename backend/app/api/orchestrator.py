@@ -33,7 +33,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.agents import StrategicAgent, TacticalAgent, TacticalRefusedExploit
-from app.api.deps import CurrentUser, DbSession, RedisClient
+from app.api.deps import CurrentNonGuestUser, CurrentUser, DbSession, RedisClient
 from app.core import pricing
 from app.models import (
     ActorType,
@@ -84,7 +84,7 @@ def analyze_finding(
     finding_id: uuid.UUID,
     session: DbSession,
     redis_client: RedisClient,
-    user: CurrentUser,
+    user: CurrentNonGuestUser,
 ) -> AnalyzeFindingResponse:
     """Run the Strategic watcher synchronously over one finding.
 
@@ -164,7 +164,7 @@ def accept_suggestion(
     suggestion_id: uuid.UUID,
     session: DbSession,
     redis_client: RedisClient,
-    user: CurrentUser,
+    user: CurrentNonGuestUser,
 ) -> AcceptSuggestionResponse:
     """Accept a Strategic suggestion.
 
@@ -274,7 +274,7 @@ def accept_suggestion(
 def dismiss_suggestion(
     suggestion_id: uuid.UUID,
     session: DbSession,
-    user: CurrentUser,
+    user: CurrentNonGuestUser,
 ) -> Suggestion:
     suggestion = session.get(Suggestion, suggestion_id)
     if suggestion is None:

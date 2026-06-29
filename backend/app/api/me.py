@@ -24,8 +24,15 @@ class MeRead(BaseModel):
     email: str
     display_name: str | None
     is_admin: bool
+    role: str
 
 
 @router.get("/me", response_model=MeRead)
 def get_me(user: CurrentUser) -> MeRead:
-    return MeRead.model_validate(user)
+    return MeRead(
+        id=user.id,
+        email=user.email,
+        display_name=user.display_name,
+        is_admin=user.is_admin,
+        role=user.role.value,
+    )

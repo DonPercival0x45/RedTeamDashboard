@@ -17,7 +17,7 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import select
 
-from app.api.deps import CurrentUser, DbSession
+from app.api.deps import CurrentNonGuestUser, DbSession
 from app.models import ActorType, AuditLog, Authorization
 from app.schemas.authorization import AuthorizationRead
 
@@ -46,7 +46,7 @@ def list_authorizations(
 def revoke_authorization(
     authorization_id: UUID,
     session: DbSession,
-    user: CurrentUser,
+    user: CurrentNonGuestUser,
 ) -> Authorization:
     grant = session.get(Authorization, authorization_id)
     if grant is None:

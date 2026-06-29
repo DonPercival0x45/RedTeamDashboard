@@ -23,8 +23,14 @@ from fastapi import APIRouter, HTTPException, Query, Response, status
 from fastapi.responses import PlainTextResponse
 from sqlalchemy import select
 
-from app.agents.planner import PlanningAgent, render_approved_roadmap
-from app.api.deps import CurrentAdminUser, CurrentUser, DbSession, RedisClient
+from app.agents.planner import render_approved_roadmap  # noqa: F401 — re-exported via service
+from app.api.deps import (
+    CurrentAdminUser,
+    CurrentNonGuestUser,
+    CurrentUser,
+    DbSession,
+    RedisClient,
+)
 from app.models import (
     ActorType,
     AuditLog,
@@ -36,6 +42,7 @@ from app.schemas.roadmap_suggestion import (
     RoadmapSuggestionDecision,
     RoadmapSuggestionRead,
 )
+from app.services import roadmap_suggestions as suggestion_svc
 
 logger = structlog.get_logger(__name__)
 
@@ -79,21 +86,14 @@ def create_suggestion(
     body: RoadmapSuggestionCreate,
     session: DbSession,
     redis_client: RedisClient,
-    user: CurrentUser,
+    user: CurrentNonGuestUser,
 ) -> RoadmapSuggestion:
-    approved_md = render_approved_roadmap(_load_all(session))
-
-    row = RoadmapSuggestion(
+    row, execution = suggestion_svc.create_and_evaluate(
+        session,
+        redis_client,
         author_user_id=user.id,
-        body=body.body.strip(),
-        status=RoadmapSuggestionStatus.pending_review,
-    )
-    session.add(row)
-    session.flush()
-
-    agent = PlanningAgent(redis_client=redis_client)
-    execution = agent.evaluate(
-        session, suggestion=row, approved_roadmap=approved_md
+        body=body.body,
+        source="ui",
     )
 
     _audit(
@@ -104,10 +104,13 @@ def create_suggestion(
             "id": str(row.id),
             "execution_id": str(execution.id),
             "execution_status": execution.status.value,
+            "source": row.source,
         },
     )
     session.commit()
     session.refresh(row)
+    # Fire-and-forget Discord notification (skips Discord-sourced rows).
+    suggestion_svc.notify_discord_if_configured(session, row)
     return row
 
 
@@ -160,6 +163,64 @@ def get_suggestion(
     row = session.get(RoadmapSuggestion, suggestion_id)
     if row is None:
         raise HTTPException(status_code=404, detail="suggestion not found")
+    return row
+
+
+# ── re-evaluate (re-run planner agent on an existing row) ────────────────
+
+
+@router.post(
+    "/roadmap-suggestions/{suggestion_id}/re-evaluate",
+    response_model=RoadmapSuggestionRead,
+)
+def re_evaluate_suggestion(
+    suggestion_id: uuid.UUID,
+    session: DbSession,
+    redis_client: RedisClient,
+    user: CurrentNonGuestUser,
+) -> RoadmapSuggestion:
+    """Re-run the planner agent on an existing feedback row.
+
+    Used when the first eval failed (no BYO key cached at the time),
+    when the project context has shifted since the row was submitted,
+    or when the analyst wants a fresh take. The kicker's BYO key drives
+    the call — not the original author's — so a teammate with an active
+    key can fix a stale row even if the author is offline.
+
+    The original body is preserved verbatim; only agent_summary /
+    agent_pros / agent_cons get replaced.
+    """
+    row = session.get(RoadmapSuggestion, suggestion_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="suggestion not found")
+
+    from app.agents.planner import PlanningAgent, render_approved_roadmap
+
+    approved_md = render_approved_roadmap(_load_all(session))
+    agent = PlanningAgent(redis_client=redis_client)
+    # Temporarily swap the row's author into the kicker's id so the
+    # planner's _resolve_llm picks up the right BYO key. Restore after.
+    original_author = row.author_user_id
+    row.author_user_id = user.id
+    try:
+        execution = agent.evaluate(
+            session, suggestion=row, approved_roadmap=approved_md
+        )
+    finally:
+        row.author_user_id = original_author
+
+    _audit(
+        session,
+        user.id,
+        "roadmap_suggestion.re_evaluated",
+        {
+            "id": str(row.id),
+            "execution_id": str(execution.id),
+            "execution_status": execution.status.value,
+        },
+    )
+    session.commit()
+    session.refresh(row)
     return row
 
 

@@ -25,6 +25,7 @@ from app.orchestrator.llm import default_provider_model, make_llm
 from app.worker.authz import make_db_authorizer
 from app.worker.checkpoint import build_postgres_checkpointer
 from app.worker.consumer import StreamConsumer
+from app.worker.discord_bot import DiscordBotThread
 from app.worker.lease_sweeper import LeaseSweeperThread
 from app.worker.runner import RunRunner
 from app.worker.strategic_consumer import StrategicConsumer
@@ -180,9 +181,26 @@ def main() -> None:
     )
     sweeper_thread.start()
 
+    # Discord bot — daemon thread; gracefully no-ops if discord.py is
+    # absent OR no enabled Discord integration row exists in the DB.
+    # Restart the worker after editing the integration config in the UI
+    # to pick up the new token/channel.
+    discord_bot = DiscordBotThread(
+        session_factory=SessionLocal,
+        redis_client=redis_client,
+    )
+    discord_thread = threading.Thread(
+        target=discord_bot.run,
+        args=(stop_event,),
+        name="discord-bot",
+        daemon=True,
+    )
+    discord_thread.start()
+
     consumer.run_forever(stop_event)
     strategic_thread.join(timeout=5.0)
     sweeper_thread.join(timeout=5.0)
+    discord_thread.join(timeout=5.0)
     sys.exit(0)
 
 

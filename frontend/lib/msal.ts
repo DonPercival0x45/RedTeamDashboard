@@ -3,6 +3,7 @@
 // configured; in dev mode every export is a harmless no-op.
 
 import {
+  BrowserAuthError,
   InteractionRequiredAuthError,
   type AccountInfo,
   PublicClientApplication,
@@ -18,6 +19,15 @@ export const msalInstance: PublicClientApplication | null = ENTRA_ENABLED
           typeof window !== "undefined" ? window.location.origin : undefined,
       },
       cache: { cacheLocation: "localStorage" },
+      // Mobile Safari + browsers with third-party cookies blocked can't
+      // load Microsoft's silent-renew iframe in time and the default 6s
+      // monitor window times out. Bumping to 20s reduces the rate of
+      // `monitor_window_timeout` errors before we fall back to redirect.
+      system: {
+        iframeHashTimeout: 20000,
+        windowHashTimeout: 20000,
+        loadFrameTimeout: 20000,
+      },
     })
   : null;
 
@@ -56,7 +66,22 @@ export async function getAccessToken(): Promise<string | null> {
     });
     return result.accessToken;
   } catch (err) {
-    if (err instanceof InteractionRequiredAuthError) {
+    // Three classes of "silent didn't work, ask the user":
+    //   1. InteractionRequiredAuthError — consent / MFA / re-auth needed
+    //   2. BrowserAuthError with monitor_window_timeout — the silent iframe
+    //      couldn't load login.microsoftonline.com in time (mobile Safari,
+    //      third-party cookies disabled, restrictive network)
+    //   3. Anything else network/transient that prevented silent renewal
+    // For all of them, fall back to an interactive redirect rather than
+    // throwing into a "Loading…" wall.
+    const isMonitorTimeout =
+      err instanceof BrowserAuthError &&
+      err.errorCode === "monitor_window_timeout";
+    if (
+      err instanceof InteractionRequiredAuthError ||
+      isMonitorTimeout ||
+      err instanceof BrowserAuthError
+    ) {
       await msalInstance.acquireTokenRedirect({ scopes: SCOPES });
       return null;
     }

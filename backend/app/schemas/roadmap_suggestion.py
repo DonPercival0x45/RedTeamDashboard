@@ -47,5 +47,6 @@ class RoadmapSuggestionRead(BaseModel):
     reviewed_by_user_id: UUID | None
     reviewed_at: datetime | None
     review_note: str | None
+    source: str
     created_at: datetime
     updated_at: datetime

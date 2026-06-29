@@ -21,7 +21,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
       <div className="container flex min-h-[60vh] flex-col items-center justify-center gap-4 text-center">
         <span className="h-4 w-1.5 rounded-full bg-critical" />
         <h1 className="text-xl font-semibold tracking-tight">
-          Red Team Dashboard
+          Project XR@Y
         </h1>
         <p className="max-w-sm text-sm text-muted-foreground">
           Sign in with your organization account to access engagements.

@@ -18,9 +18,13 @@ import type {
   EngagementStatus,
   Entity,
   Finding,
+  AdminUser,
   FindingImport,
   FindingPhase,
   FindingValidationStatus,
+  Integration,
+  IntegrationType,
+  IntegrationUpsert,
   Me,
   Observation,
   RoadmapSuggestion,
@@ -33,6 +37,7 @@ import type {
   SuggestionStatus,
   Task,
   TaskStatus,
+  UserRole,
 } from "@/lib/types";
 
 // Auth-only headers (no Content-Type — request() adds that for JSON bodies).
@@ -505,32 +510,6 @@ export async function importEntitiesDarkweb(
   >;
 }
 
-// ---------------------------------------------------------------------------
-// Workflow templates (Phase 10 starter packs)
-// ---------------------------------------------------------------------------
-
-export function listWorkflowTemplates(): Promise<
-  import("@/lib/types").WorkflowTemplate[]
-> {
-  return request<import("@/lib/types").WorkflowTemplate[]>(
-    "/workflow-templates",
-  );
-}
-
-export function applyWorkflowTemplate(
-  slug: string,
-  templateId: string,
-  target: string,
-): Promise<import("@/lib/types").ApplyTemplateResponse> {
-  return request<import("@/lib/types").ApplyTemplateResponse>(
-    `/engagements/${slug}/templates/${templateId}/apply`,
-    {
-      method: "POST",
-      body: JSON.stringify({ target }),
-    },
-  );
-}
-
 export function updateFinding(
   findingId: string,
   body: {
@@ -648,6 +627,60 @@ export function decideRoadmapSuggestion(
 
 export function deleteRoadmapSuggestion(id: string): Promise<void> {
   return request<void>(`/roadmap-suggestions/${id}`, { method: "DELETE" });
+}
+
+export function reEvaluateRoadmapSuggestion(
+  id: string,
+): Promise<RoadmapSuggestion> {
+  return request<RoadmapSuggestion>(
+    `/roadmap-suggestions/${id}/re-evaluate`,
+    { method: "POST" },
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Integrations (admin-only)
+// ---------------------------------------------------------------------------
+
+export function getIntegration(
+  type: IntegrationType,
+): Promise<Integration | null> {
+  return request<Integration>(`/integrations/${type}`).catch((err) => {
+    // 404 = not configured yet — surface as null instead of throwing.
+    if (err instanceof Error && err.message.startsWith("404")) return null;
+    throw err;
+  });
+}
+
+export function upsertIntegration(
+  body: IntegrationUpsert,
+): Promise<Integration> {
+  return request<Integration>(`/integrations/${body.type}`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
+
+export function deleteIntegration(type: IntegrationType): Promise<void> {
+  return request<void>(`/integrations/${type}`, { method: "DELETE" });
+}
+
+// ---------------------------------------------------------------------------
+// Admin users (admin-only)
+// ---------------------------------------------------------------------------
+
+export function listAdminUsers(): Promise<AdminUser[]> {
+  return request<AdminUser[]>("/admin/users");
+}
+
+export function updateUserRole(
+  userId: string,
+  role: UserRole,
+): Promise<AdminUser> {
+  return request<AdminUser>(`/admin/users/${userId}/role`, {
+    method: "PATCH",
+    body: JSON.stringify({ role }),
+  });
 }
 
 export async function downloadRoadmapMarkdown(): Promise<void> {
