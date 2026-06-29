@@ -46,12 +46,12 @@ export default function SettingsWhatsNewPage() {
           ← engagements
         </Link>
         <h1 className="mt-2 text-2xl font-semibold tracking-tight">
-          What's new
+          What&apos;s new
         </h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Release notes pulled from this deployment's GitHub Releases at
+          Release notes pulled from this deployment&apos;s GitHub Releases at
           install time. The newest version is highlighted; the banner stops
-          nagging you about it once you've visited this page.
+          nagging you about it once you&apos;ve visited this page.
         </p>
       </div>
 

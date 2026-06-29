@@ -35,7 +35,7 @@ export function IdentityMenu() {
         href="/settings/whats-new"
         className="text-xs text-muted-foreground hover:text-foreground"
       >
-        What's new
+        What&apos;s new
       </Link>
       {enabled && (
         <Button variant="outline" size="sm" onClick={signOut}>
