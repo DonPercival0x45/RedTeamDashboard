@@ -7,8 +7,8 @@ import { AuthProvider } from "@/lib/auth";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Red Team Dashboard",
-  description: "Red team operations — engagements, agents, findings, reporting",
+  title: "Project XR@Y",
+  description: "Project XR@Y — engagements, agents, findings, reporting",
 };
 
 export default function RootLayout({
@@ -27,7 +27,7 @@ export default function RootLayout({
                 {/* The lone accent in the chrome — a single ember mark. */}
                 <span className="h-3.5 w-1 rounded-full bg-critical" />
                 <span className="text-sm font-semibold tracking-tight">
-                  Red Team Dashboard
+                  Project XR@Y
                 </span>
               </Link>
               <IdentityMenu />
