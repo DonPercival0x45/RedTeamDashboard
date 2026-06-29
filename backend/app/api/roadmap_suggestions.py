@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
-from typing import Any
+from typing import Annotated, Any
 
 import structlog
 from fastapi import APIRouter, HTTPException, Query, Response, status
@@ -121,9 +121,9 @@ def create_suggestion(
 def list_suggestions(
     session: DbSession,
     user: CurrentUser,
-    status_filter: RoadmapSuggestionStatus | None = Query(
-        default=None, alias="status"
-    ),
+    status_filter: Annotated[
+        RoadmapSuggestionStatus | None, Query(alias="status")
+    ] = None,
 ) -> list[RoadmapSuggestion]:
     q = select(RoadmapSuggestion).order_by(RoadmapSuggestion.created_at.desc())
     if status_filter is not None:

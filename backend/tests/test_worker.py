@@ -412,8 +412,6 @@ def test_run_runner_calls_factory_with_envelope_model() -> None:
         mcp_url: Any = None,
         lease_token: Any = None,
     ) -> Any:
-        # Stage 1.5: signature accepts mcp_url / lease_token; legacy
-        # envelopes here don't set them, so we only assert on model + allowed.
         del mcp_url, lease_token
         received.append((model, allowed_tools))
         return object()
@@ -423,25 +421,30 @@ def test_run_runner_calls_factory_with_envelope_model() -> None:
         redis_client=None,  # type: ignore[arg-type]
         session_factory=SessionLocal,
     )
-    runner._resolve_graph(
-        {"type": "run.start", "model": {"provider": "anthropic", "name": "x"}}
+    # No model on envelope → factory called with model=None. The runner
+    # skips the BYO-key resolution block entirely so the missing Redis
+    # client doesn't trip anything.
+    runner._resolve_graph({"type": "run.start"})
+    assert received == [(None, None)]
+
+
+def test_run_runner_raises_when_model_envelope_lacks_acting_user() -> None:
+    """An envelope that carries ``model`` but no ``acting_user_id`` is a
+    protocol error — the runner refuses rather than silently falling
+    back to env-var keys. Producers (Tactical + POST /runs) must always
+    stamp the kicker's id."""
+    def factory(*_args: Any, **_kw: Any) -> Any:
+        return object()
+
+    runner = RunRunner(
+        graph_factory=factory,
+        redis_client=None,  # type: ignore[arg-type]
+        session_factory=SessionLocal,
     )
-    runner._resolve_graph({"type": "run.start"})  # no model => None
-    # Phase user-byo-keys-wireup: the runner now extends model with
-    # api_key + endpoint fields populated from the acting user's
-    # UserProviderKey lookup. Without acting_user_id on the envelope (this
-    # test) both are None.
-    # Phase mcp-leases: the runner now also resolves allowed_tools from
-    # the envelope's lease_token. No token here → None (full registry).
-    assert received == [
-        (
+    with pytest.raises(RuntimeError, match="acting_user_id"):
+        runner._resolve_graph(
             {
-                "provider": "anthropic",
-                "name": "x",
-                "api_key": None,
-                "endpoint": None,
-            },
-            None,
-        ),
-        (None, None),
-    ]
+                "type": "run.start",
+                "model": {"provider": "anthropic", "name": "x"},
+            }
+        )

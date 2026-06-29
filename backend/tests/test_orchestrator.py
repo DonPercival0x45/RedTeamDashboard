@@ -43,9 +43,21 @@ from app.models import (
     Task,
     TaskKind,
     TaskStatus,
+    User,
 )
 
 HDR = {"X-User-Id": "phase9@example.com"}
+
+
+def _seed_user(db: Session, email_prefix: str) -> User:
+    u = User(
+        email=f"{email_prefix}-{uuid.uuid4().hex[:8]}@example.com",
+        display_name=email_prefix,
+    )
+    db.add(u)
+    db.commit()
+    db.refresh(u)
+    return u
 
 
 # ── shared fixtures ────────────────────────────────────────────────────────
@@ -154,9 +166,13 @@ def test_strategic_writes_suggestions_and_execution(
             },
         ]
     )
+    user = _seed_user(db, "kicker")
     agent = StrategicAgent(llm=fake, provider="test", model_name="fake-1")
     execution, suggestions = agent.analyze_finding(
-        db, finding=finding, trigger=AgentTrigger.manual
+        db,
+        finding=finding,
+        trigger=AgentTrigger.manual,
+        acting_user_id=user.id,
     )
     db.commit()
 
@@ -171,90 +187,117 @@ def test_strategic_writes_suggestions_and_execution(
         assert s.payload["tool"] in {"crt_sh", "dns_lookup"}
 
 
-def test_strategic_threads_engagement_creator_key_into_make_chat_model(
+def test_strategic_threads_kicker_key_into_make_chat_model(
     monkeypatch: pytest.MonkeyPatch,
     db: Session,
     engagement: Engagement,
     finding: Finding,
 ) -> None:
-    """Background Strategic uses the engagement creator's stored UserProviderKey,
-    not env. This is the second half of #147 (BYO wireup); the first half
-    (start_run → worker) was verified end-to-end via smoke test."""
-    from app.models import ProviderKeyKind, User, UserProviderKey
-    from app.services.secret_box import encrypt
+    """Strategic uses the KICKING analyst's ephemeral key — not the engagement
+    creator's. This is the post-2026-06-29 invariant: no cross-user key reuse."""
+    import redis as redis_lib
 
-    creator = User(
-        email=f"creator-{uuid.uuid4().hex[:8]}@example.com",
-        display_name="creator",
-    )
-    db.add(creator)
+    from app.core.config import settings
+    from app.services import ephemeral_provider_key as keys
+
+    kicker = _seed_user(db, "kicker")
+    # The engagement was created by SOMEONE ELSE — Strategic must NOT touch
+    # that user's key. Pin a different user as creator to prove it.
+    other = _seed_user(db, "creator-other")
+    engagement.created_by = other.id
     db.commit()
-    db.refresh(creator)
-    db.add(
-        UserProviderKey(
-            user_id=creator.id,
-            kind=ProviderKeyKind.model_provider,
-            name="creator-anthropic",
-            provider="anthropic",
-            is_local=False,
-            models=["claude-opus-4-7"],
-            encrypted_key=encrypt("sk-ant-stored-9999"),
-            key_last4="9999",
+
+    redis_client = redis_lib.Redis.from_url(
+        settings.redis_url, decode_responses=True
+    )
+    try:
+        keys.delete_all(redis_client, user_id=kicker.id)
+        keys.delete_all(redis_client, user_id=other.id)
+        keys.store(
+            redis_client,
+            user_id=kicker.id,
+            entry={
+                "id": str(uuid.uuid4()),
+                "user_id": str(kicker.id),
+                "kind": "model_provider",
+                "name": "kicker-anthropic",
+                "provider": "anthropic",
+                "is_local": False,
+                "models": ["claude-opus-4-7"],
+                "endpoint": None,
+                "api_key": "sk-ant-kicker-9999",
+                "key_last4": "9999",
+                "extra": {},
+            },
         )
-    )
-    engagement.created_by = creator.id
-    db.commit()
 
-    captured: dict[str, Any] = {}
-    fake = _FakeChatLLM(tasks=[])
+        captured: dict[str, Any] = {}
+        fake = _FakeChatLLM(tasks=[])
 
-    def _stub_make_chat_model(
-        _provider: str, _name: str, **kw: Any
-    ) -> Any:
-        captured.update(kw)
-        return fake
+        def _stub_make_chat_model(_provider: str, _name: str, **kw: Any) -> Any:
+            captured.update(kw)
+            return fake
 
-    monkeypatch.setattr(
-        "app.agents.strategic._make_chat_model", _stub_make_chat_model
-    )
+        monkeypatch.setattr(
+            "app.agents.strategic._make_chat_model", _stub_make_chat_model
+        )
 
-    agent = StrategicAgent(provider="anthropic", model_name="claude-opus-4-7")
-    execution, _ = agent.analyze_finding(
-        db, finding=finding, trigger=AgentTrigger.manual
-    )
-    db.commit()
+        agent = StrategicAgent(
+            provider="anthropic",
+            model_name="claude-opus-4-7",
+            redis_client=redis_client,
+        )
+        execution, _ = agent.analyze_finding(
+            db,
+            finding=finding,
+            trigger=AgentTrigger.manual,
+            acting_user_id=kicker.id,
+        )
+        db.commit()
 
-    assert captured.get("api_key") == "sk-ant-stored-9999"
-    assert execution.status.value == "completed"
+        assert captured.get("api_key") == "sk-ant-kicker-9999"
+        assert execution.status.value == "completed"
+    finally:
+        keys.delete_all(redis_client, user_id=kicker.id)
+        keys.delete_all(redis_client, user_id=other.id)
+        redis_client.close()
 
 
-def test_strategic_records_failed_execution_when_creator_has_no_key(
+def test_strategic_records_failed_execution_when_kicker_has_no_key(
     db: Session, engagement: Engagement, finding: Finding
 ) -> None:
-    """Engagement creator with no key for the chosen provider → execution
-    recorded as failed with the resolver's error message. Doesn't crash the
-    background consumer; analyst sees the failure in the Costs tab."""
-    from app.models import User
+    """Kicker has no key for the chosen provider → execution recorded as failed
+    with the resolver's error message. Doesn't crash the background consumer;
+    analyst sees the failure in the Costs tab."""
+    import redis as redis_lib
 
-    creator = User(
-        email=f"no-key-{uuid.uuid4().hex[:8]}@example.com",
-        display_name="no-key",
+    from app.core.config import settings
+    from app.services import ephemeral_provider_key as keys
+
+    kicker = _seed_user(db, "no-key")
+    redis_client = redis_lib.Redis.from_url(
+        settings.redis_url, decode_responses=True
     )
-    db.add(creator)
-    db.commit()
-    db.refresh(creator)
-    engagement.created_by = creator.id
-    db.commit()
+    try:
+        keys.delete_all(redis_client, user_id=kicker.id)  # ensure none
+        agent = StrategicAgent(
+            provider="anthropic",
+            model_name="claude-opus-4-7",
+            redis_client=redis_client,
+        )
+        execution, suggestions = agent.analyze_finding(
+            db,
+            finding=finding,
+            trigger=AgentTrigger.manual,
+            acting_user_id=kicker.id,
+        )
+        db.commit()
 
-    agent = StrategicAgent(provider="anthropic", model_name="claude-opus-4-7")
-    execution, suggestions = agent.analyze_finding(
-        db, finding=finding, trigger=AgentTrigger.manual
-    )
-    db.commit()
-
-    assert execution.status.value == "failed"
-    assert "anthropic" in execution.error.lower()
-    assert suggestions == []
+        assert execution.status.value == "failed"
+        assert "anthropic" in execution.error.lower()
+        assert suggestions == []
+    finally:
+        redis_client.close()
 
 
 def test_strategic_drops_exploit_proposals(
@@ -280,9 +323,13 @@ def test_strategic_drops_exploit_proposals(
             },
         ]
     )
+    user = _seed_user(db, "kicker-drop-exploit")
     agent = StrategicAgent(llm=fake, provider="test", model_name="fake-1")
     execution, suggestions = agent.analyze_finding(
-        db, finding=finding, trigger=AgentTrigger.manual
+        db,
+        finding=finding,
+        trigger=AgentTrigger.manual,
+        acting_user_id=user.id,
     )
     db.commit()
     assert len(suggestions) == 1
@@ -326,9 +373,10 @@ def test_tactical_refuses_exploit(db: Session, engagement: Engagement) -> None:
     db.commit()
     db.refresh(task)
 
+    user = _seed_user(db, "tactical-exploit")
     tactical = TacticalAgent(_FakeRedis())
     with pytest.raises(TacticalRefusedExploit):
-        tactical.dispatch(db, task=task)
+        tactical.dispatch(db, task=task, acting_user_id=user.id)
 
 
 def test_tactical_dispatches_scan_task(
@@ -346,8 +394,11 @@ def test_tactical_dispatches_scan_task(
     db.commit()
     db.refresh(task)
 
+    user = _seed_user(db, "tactical-scan")
     redis = _FakeRedis()
-    thread_id = TacticalAgent(redis).dispatch(db, task=task)
+    thread_id = TacticalAgent(redis).dispatch(
+        db, task=task, acting_user_id=user.id
+    )
     db.commit()
 
     assert task.status == TaskStatus.dispatched
@@ -392,12 +443,29 @@ def test_analyze_endpoint_returns_suggestions(
         "app.agents.strategic._make_chat_model", _stub_make_chat_model
     )
 
+    # Ephemeral keys: the analyze endpoint resolves the BYO key against
+    # the kicking analyst's Redis cache. The HDR identity needs a seeded
+    # key before the call so the resolver doesn't trip.
+    client.post(
+        "/me/provider-keys",
+        json={
+            "name": "test-anthropic",
+            "provider": "anthropic",
+            "kind": "model_provider",
+            "api_key": "sk-ant-stub-xxxx",
+        },
+        headers=HDR,
+    )
+
     res = client.post(f"/findings/{finding.id}/analyze", headers=HDR)
     assert res.status_code == 200, res.text
     body = res.json()
     assert "execution_id" in body
     assert len(body["suggestions"]) == 1
     assert body["suggestions"][0]["status"] == "open"
+
+    # Clean up the seeded key so it doesn't leak into other tests.
+    client.delete("/me/provider-keys", headers=HDR)
 
 
 def test_accept_dispatches_agent_eligible(

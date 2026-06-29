@@ -60,7 +60,7 @@ def stub_strategic_policy(monkeypatch: pytest.MonkeyPatch) -> None:
     that DO care about the LLM path (Stage 3 tests) inject their own LLM
     via ``StrategicAgent(llm=...)`` and don't request this fixture.
     """
-    def _stub(self, session, *, task, pack_defaults):
+    def _stub(self, session, *, task, pack_defaults, acting_user_id):
         return list(pack_defaults), self._decide_requires_container(task)
 
     monkeypatch.setattr(StrategicAgent, "_provision_policy", _stub)
@@ -111,7 +111,7 @@ def test_strategic_provision_lease_uses_pack_defaults(
     db: Session, engagement: Engagement, stub_strategic_policy: None
 ) -> None:
     task = _make_enum_task(db, engagement)
-    lease = StrategicAgent().provision_lease(db, task=task)
+    lease = StrategicAgent().provision_lease(db, task=task, acting_user_id=uuid.uuid4())
     db.commit()
     assert lease.status == MCPLeaseStatus.active.value
     assert "subfinder" in lease.allowed_tools
@@ -125,7 +125,7 @@ def test_tactical_dispatch_mints_lease_and_stamps_envelope(
 ) -> None:
     task = _make_enum_task(db, engagement)
     redis = _FakeRedis()
-    TacticalAgent(redis).dispatch(db, task=task)
+    TacticalAgent(redis).dispatch(db, task=task, acting_user_id=uuid.uuid4())
     db.commit()
 
     # Envelope carries mcp_url + lease_token.
@@ -149,7 +149,7 @@ def test_strategic_release_lease_is_idempotent(
     db: Session, engagement: Engagement, stub_strategic_policy: None
 ) -> None:
     task = _make_enum_task(db, engagement)
-    lease = StrategicAgent().provision_lease(db, task=task)
+    lease = StrategicAgent().provision_lease(db, task=task, acting_user_id=uuid.uuid4())
     db.commit()
 
     agent = StrategicAgent()
@@ -178,7 +178,7 @@ def test_strategic_default_policy_provisions_requires_container_false(
     so every dispatch keeps the colocated path until Stage 3 LLM-driven
     policy ships."""
     task = _make_enum_task(db, engagement)
-    lease = StrategicAgent().provision_lease(db, task=task)
+    lease = StrategicAgent().provision_lease(db, task=task, acting_user_id=uuid.uuid4())
     db.commit()
     assert lease.requires_container is False
 
@@ -190,7 +190,7 @@ def test_strategic_provision_lease_honours_explicit_requires_container(
     waiting for the LLM policy."""
     task = _make_enum_task(db, engagement)
     lease = StrategicAgent().provision_lease(
-        db, task=task, requires_container=True
+        db, task=task, requires_container=True, acting_user_id=uuid.uuid4()
     )
     db.commit()
     assert lease.requires_container is True
@@ -221,7 +221,7 @@ def test_tactical_routes_to_colocated_when_aca_disabled(
     )
 
     redis = _FakeRedis()
-    TacticalAgent(redis).dispatch(db, task=task)
+    TacticalAgent(redis).dispatch(db, task=task, acting_user_id=uuid.uuid4())
     db.commit()
 
     envelope = json.loads(redis.xadd_calls[0][1]["data"])
@@ -248,7 +248,7 @@ def test_tactical_routes_to_colocated_when_lease_does_not_require_container(
     # Default Strategic policy returns False — no override.
 
     redis = _FakeRedis()
-    TacticalAgent(redis).dispatch(db, task=task)
+    TacticalAgent(redis).dispatch(db, task=task, acting_user_id=uuid.uuid4())
     db.commit()
 
     envelope = json.loads(redis.xadd_calls[0][1]["data"])
@@ -275,7 +275,7 @@ def test_tactical_routes_to_aca_mcp_when_lease_and_settings_agree(
 
     task = _make_enum_task(db, engagement)
     redis = _FakeRedis()
-    TacticalAgent(redis).dispatch(db, task=task)
+    TacticalAgent(redis).dispatch(db, task=task, acting_user_id=uuid.uuid4())
     db.commit()
 
     envelope = json.loads(redis.xadd_calls[0][1]["data"])
@@ -308,7 +308,7 @@ def test_tactical_routes_to_colocated_when_aca_url_blank(
 
     task = _make_enum_task(db, engagement)
     redis = _FakeRedis()
-    TacticalAgent(redis).dispatch(db, task=task)
+    TacticalAgent(redis).dispatch(db, task=task, acting_user_id=uuid.uuid4())
     db.commit()
 
     envelope = json.loads(redis.xadd_calls[0][1]["data"])
