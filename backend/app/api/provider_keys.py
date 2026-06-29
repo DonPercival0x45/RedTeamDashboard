@@ -25,7 +25,7 @@ from typing import Any
 import structlog
 from fastapi import APIRouter, HTTPException, Response, status
 
-from app.api.deps import CurrentUser, DbSession, RedisClient
+from app.api.deps import CurrentNonGuestUser, DbSession, RedisClient
 from app.db.base import uuid7
 from app.models import ActorType, AuditLog
 from app.schemas.provider_key import (
@@ -114,7 +114,7 @@ def _names_for_user(redis: RedisClient, user_id: uuid.UUID) -> set[str]:
 
 @router.get("/me/provider-keys", response_model=list[ProviderKeyRead])
 def list_my_provider_keys(
-    redis: RedisClient, user: CurrentUser
+    redis: RedisClient, user: CurrentNonGuestUser
 ) -> list[ProviderKeyRead]:
     return [
         _entry_to_read(e) for e in keys.list_all(redis, user_id=user.id)
@@ -125,7 +125,7 @@ def list_my_provider_keys(
     "/me/provider-keys/{key_id}", response_model=ProviderKeyRead
 )
 def get_my_provider_key(
-    key_id: uuid.UUID, redis: RedisClient, user: CurrentUser
+    key_id: uuid.UUID, redis: RedisClient, user: CurrentNonGuestUser
 ) -> ProviderKeyRead:
     entry = keys.get_one(redis, user_id=user.id, key_id=key_id)
     if entry is None:
@@ -145,7 +145,7 @@ def create_my_provider_key(
     body: ProviderKeyEntry,
     session: DbSession,
     redis: RedisClient,
-    user: CurrentUser,
+    user: CurrentNonGuestUser,
 ) -> ProviderKeyRead:
     if body.name.strip() in _names_for_user(redis, user.id):
         raise HTTPException(
@@ -179,7 +179,7 @@ def import_my_provider_keys(
     body: ProviderKeyImport,
     session: DbSession,
     redis: RedisClient,
-    user: CurrentUser,
+    user: CurrentNonGuestUser,
 ) -> ProviderKeyImportResult:
     existing = _names_for_user(redis, user.id)
 
@@ -254,7 +254,7 @@ def update_my_provider_key(
     body: ProviderKeyUpdate,
     session: DbSession,
     redis: RedisClient,
-    user: CurrentUser,
+    user: CurrentNonGuestUser,
 ) -> ProviderKeyRead:
     entry = keys.get_one(redis, user_id=user.id, key_id=key_id)
     if entry is None:
@@ -305,7 +305,7 @@ def delete_my_provider_key(
     key_id: uuid.UUID,
     session: DbSession,
     redis: RedisClient,
-    user: CurrentUser,
+    user: CurrentNonGuestUser,
 ) -> Response:
     entry = keys.get_one(redis, user_id=user.id, key_id=key_id)
     if entry is None:
@@ -332,7 +332,7 @@ def delete_my_provider_key(
 def delete_all_my_provider_keys(
     session: DbSession,
     redis: RedisClient,
-    user: CurrentUser,
+    user: CurrentNonGuestUser,
 ) -> Response:
     """Wipe every cached key for the acting user. Called by the frontend
     on sign-out so a tab close doesn't leave plaintext keys reachable

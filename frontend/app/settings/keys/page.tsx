@@ -12,14 +12,15 @@ import {
 import { ProviderKeyImporter } from "@/components/provider-key-importer";
 import { ProviderKeyList } from "@/components/provider-key-list";
 import { QuickAddKey } from "@/components/quick-add-key";
-import { listProviderKeys } from "@/lib/api";
-import type { ProviderKey, ProviderKeyImportResult } from "@/lib/types";
+import { getMe, listProviderKeys } from "@/lib/api";
+import type { Me, ProviderKey, ProviderKeyImportResult } from "@/lib/types";
 
 // Per-user BYO key vault. Analysts upload a JSON list of credentials the
 // system encrypts and stores; only the masked tail comes back over the wire.
 // Phase 7+: keys are scoped to the acting analyst's Entra identity.
 
 export default function SettingsKeysPage() {
+  const [me, setMe] = useState<Me | null>(null);
   const [keys, setKeys] = useState<ProviderKey[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [lastImport, setLastImport] =
@@ -35,7 +36,12 @@ export default function SettingsKeysPage() {
   }, []);
 
   useEffect(() => {
-    reload();
+    void getMe()
+      .then((m) => {
+        setMe(m);
+        if (m.role !== "guest") void reload();
+      })
+      .catch(() => setMe(null));
   }, [reload]);
 
   return (
@@ -66,6 +72,20 @@ export default function SettingsKeysPage() {
         </div>
       </div>
 
+      {me?.role === "guest" && (
+        <Card>
+          <CardContent className="py-6 text-sm text-muted-foreground">
+            Your role is <strong className="text-foreground">guest</strong>{" "}
+            — you can read engagements but can't upload, list, or use BYO
+            provider keys. Ask an admin to upgrade you to{" "}
+            <strong className="text-foreground">user</strong> in the
+            Management tab.
+          </CardContent>
+        </Card>
+      )}
+
+      {me?.role !== "guest" && (
+      <>
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Quick add</CardTitle>
@@ -128,6 +148,8 @@ export default function SettingsKeysPage() {
           )}
         </CardContent>
       </Card>
+      </>
+      )}
     </div>
   );
 }
