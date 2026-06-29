@@ -436,26 +436,15 @@ def test_analyze_endpoint_returns_suggestions(
         ]
     )
 
-    def _stub_make_chat_model(_provider: str, _name: str, **_kw: Any) -> Any:
-        return fake
+    # Bypass _resolve_llm wholesale so the test doesn't depend on which
+    # provider the env's default points at, or on the kicking analyst
+    # having a Redis-cached key. The endpoint constructs the agent
+    # internally with no llm= override; patching the method at class
+    # level reaches that instance.
+    def _stub_resolve_llm(self: StrategicAgent, *, acting_user_id: Any) -> Any:
+        return (fake, "test", "fake-1")
 
-    monkeypatch.setattr(
-        "app.agents.strategic._make_chat_model", _stub_make_chat_model
-    )
-
-    # Ephemeral keys: the analyze endpoint resolves the BYO key against
-    # the kicking analyst's Redis cache. The HDR identity needs a seeded
-    # key before the call so the resolver doesn't trip.
-    client.post(
-        "/me/provider-keys",
-        json={
-            "name": "test-anthropic",
-            "provider": "anthropic",
-            "kind": "model_provider",
-            "api_key": "sk-ant-stub-xxxx",
-        },
-        headers=HDR,
-    )
+    monkeypatch.setattr(StrategicAgent, "_resolve_llm", _stub_resolve_llm)
 
     res = client.post(f"/findings/{finding.id}/analyze", headers=HDR)
     assert res.status_code == 200, res.text
@@ -463,9 +452,6 @@ def test_analyze_endpoint_returns_suggestions(
     assert "execution_id" in body
     assert len(body["suggestions"]) == 1
     assert body["suggestions"][0]["status"] == "open"
-
-    # Clean up the seeded key so it doesn't leak into other tests.
-    client.delete("/me/provider-keys", headers=HDR)
 
 
 def test_accept_dispatches_agent_eligible(
