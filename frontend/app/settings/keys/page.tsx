@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/card";
 import { ProviderKeyImporter } from "@/components/provider-key-importer";
 import { ProviderKeyList } from "@/components/provider-key-list";
+import { QuickAddKey } from "@/components/quick-add-key";
 import { listProviderKeys } from "@/lib/api";
 import type { ProviderKey, ProviderKeyImportResult } from "@/lib/types";
 
@@ -67,10 +68,24 @@ export default function SettingsKeysPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Upload</CardTitle>
+          <CardTitle className="text-base">Quick add</CardTitle>
           <CardDescription>
-            Bring your own keys for any model provider (Anthropic, OpenAI,
-            Azure, Ollama, …) or MCP server (GitHub, web search, …).
+            Drop in one API key — pick the provider, paste, save. Use this
+            for the common case; the bulk JSON importer below is still here
+            for multi-key uploads.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <QuickAddKey onCreated={async () => { await reload(); }} />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Bulk import (JSON)</CardTitle>
+          <CardDescription>
+            Paste or upload a JSON list of credentials — useful when you
+            have several keys to migrate at once.
           </CardDescription>
         </CardHeader>
         <CardContent>

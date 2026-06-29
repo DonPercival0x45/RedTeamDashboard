@@ -15,6 +15,7 @@ from app.models.authorization import Authorization
 from app.models.engagement import Engagement, EngagementStatus
 from app.models.entity import Entity
 from app.models.finding import Finding, FindingPhase, FindingStatus, Severity
+from app.models.integration import Integration, IntegrationType
 from app.models.mcp_lease import MCPLease, MCPLeaseStatus
 from app.models.observation import Observation
 from app.models.roadmap_suggestion import (
@@ -30,7 +31,6 @@ from app.models.suggestion import (
 )
 from app.models.task import OwnerEligibility, Task, TaskKind, TaskStatus
 from app.models.user import User
-from app.models.workflow_template import WorkflowTemplate
 
 __all__ = [
     "APIKey",
@@ -51,6 +51,8 @@ __all__ = [
     "Finding",
     "FindingPhase",
     "FindingStatus",
+    "Integration",
+    "IntegrationType",
     "MCPLease",
     "MCPLeaseStatus",
     "Observation",
@@ -68,6 +70,5 @@ __all__ = [
     "TaskKind",
     "TaskStatus",
     "User",
-    "WorkflowTemplate",
     "scope_satisfies",
 ]

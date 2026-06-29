@@ -19,10 +19,13 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 class ProviderKeyKind(enum.StrEnum):
     """``model_provider`` — LLM credentials (Anthropic, OpenAI, Azure, …).
     ``mcp_server`` — external MCP server endpoints (GitHub MCP, web search,
-    …). Same storage shape, different consumers."""
+    …). ``other`` — catch-all for credentials the analyst wants stored but
+    not auto-consumed by the agent stack (third-party APIs, vault tokens,
+    etc.). Same storage shape, different consumers."""
 
     model_provider = "model_provider"
     mcp_server = "mcp_server"
+    other = "other"
 
 
 class ProviderKeyEntry(BaseModel):

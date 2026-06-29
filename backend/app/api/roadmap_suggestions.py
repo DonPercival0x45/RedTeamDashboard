@@ -23,7 +23,7 @@ from fastapi import APIRouter, HTTPException, Query, Response, status
 from fastapi.responses import PlainTextResponse
 from sqlalchemy import select
 
-from app.agents.planner import PlanningAgent, render_approved_roadmap
+from app.agents.planner import render_approved_roadmap  # noqa: F401 — re-exported via service
 from app.api.deps import CurrentAdminUser, CurrentUser, DbSession, RedisClient
 from app.models import (
     ActorType,
@@ -36,6 +36,7 @@ from app.schemas.roadmap_suggestion import (
     RoadmapSuggestionDecision,
     RoadmapSuggestionRead,
 )
+from app.services import roadmap_suggestions as suggestion_svc
 
 logger = structlog.get_logger(__name__)
 
@@ -81,19 +82,12 @@ def create_suggestion(
     redis_client: RedisClient,
     user: CurrentUser,
 ) -> RoadmapSuggestion:
-    approved_md = render_approved_roadmap(_load_all(session))
-
-    row = RoadmapSuggestion(
+    row, execution = suggestion_svc.create_and_evaluate(
+        session,
+        redis_client,
         author_user_id=user.id,
-        body=body.body.strip(),
-        status=RoadmapSuggestionStatus.pending_review,
-    )
-    session.add(row)
-    session.flush()
-
-    agent = PlanningAgent(redis_client=redis_client)
-    execution = agent.evaluate(
-        session, suggestion=row, approved_roadmap=approved_md
+        body=body.body,
+        source="ui",
     )
 
     _audit(
@@ -104,10 +98,13 @@ def create_suggestion(
             "id": str(row.id),
             "execution_id": str(execution.id),
             "execution_status": execution.status.value,
+            "source": row.source,
         },
     )
     session.commit()
     session.refresh(row)
+    # Fire-and-forget Discord notification (skips Discord-sourced rows).
+    suggestion_svc.notify_discord_if_configured(session, row)
     return row
 
 

@@ -18,7 +18,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Text
+from sqlalchemy import DateTime, Enum, ForeignKey, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -78,3 +78,10 @@ class RoadmapSuggestion(Base, TimestampMixin):
         DateTime(timezone=True), nullable=True
     )
     review_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Where the row came from. ``ui`` means an analyst submitted via
+    # /settings/feedback; ``discord:<username>`` means the Discord bot
+    # relayed a message from a configured channel. Used for the outbound
+    # webhook loop-prevention guard.
+    source: Mapped[str] = mapped_column(
+        String(120), nullable=False, default="ui", server_default="ui"
+    )

@@ -11,6 +11,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { DiscordChannelConnect } from "@/components/discord-channel-connect";
 import { Textarea } from "@/components/ui/textarea";
 import {
   createRoadmapSuggestion,
@@ -257,6 +258,8 @@ export default function SettingsFeedbackPage() {
           ))}
         </CardContent>
       </Card>
+
+      {me?.is_admin && <DiscordChannelConnect />}
     </div>
   );
 }
