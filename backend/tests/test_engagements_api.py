@@ -78,8 +78,8 @@ def _create(client: TestClient, name: str, slug: str | None = None) -> dict[str,
 def _seed_provider_key(client: TestClient, provider: str = "ollama") -> None:
     """Ensure the test user has a BYO provider key for the chosen provider.
 
-    Phase: user-byo-keys-wireup made ``start_run`` require a UserProviderKey
-    on the acting user. Run tests need one seeded before they can enqueue
+    The ephemeral-keys model makes ``start_run`` require a cached BYO key
+    for the acting user. Run tests need one seeded before they can enqueue
     a run.start. Ollama (keyless local) is the cheapest seed.
     """
     body = {
@@ -482,7 +482,8 @@ def test_run_endpoint_enqueues_run_start(
     assert payload["thread_id"] == body["thread_id"]
     assert payload["prompt"] == "enumerate acme.com"
     # BYO-keys wireup: the envelope carries the acting user id (NOT plaintext
-    # api_key — that's resolved lazily by the worker via UserProviderKey).
+    # api_key — that's resolved lazily by the worker via the ephemeral
+    # Redis-backed provider-key store).
     assert "acting_user_id" in payload
     assert "api_key" not in payload
 
@@ -568,7 +569,12 @@ def test_run_endpoint_passes_through_explicit_model(
     assert payload["model"] == chosen
 
     cached = redis_client.hgetall(f"run:model:{body['thread_id']}")
-    assert cached == chosen
+    # The cache hash also stores acting_user_id so the approval-resume
+    # envelope can carry the kicker forward. Assert on the model fields
+    # only, not exact equality.
+    assert cached["provider"] == chosen["provider"]
+    assert cached["name"] == chosen["name"]
+    assert "acting_user_id" in cached
 
 
 def test_run_endpoint_rejects_when_no_user_provider_key(

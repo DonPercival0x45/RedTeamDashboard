@@ -61,9 +61,15 @@ class TacticalAgent:
         session: Session,
         *,
         task: Task,
+        acting_user_id: uuid.UUID,
         trigger: AgentTrigger = AgentTrigger.manual,
     ) -> uuid.UUID:
         """Dispatch ``task`` as a worker run; return the new ``thread_id``.
+
+        ``acting_user_id`` is the analyst who triggered this dispatch
+        (accepted the suggestion, clicked Start). Stamped onto the worker
+        envelope so the worker resolves the BYO key against the kicker's
+        Redis cache — not the engagement creator's.
 
         Caller commits the session. The function mutates ``task`` (status,
         dispatched_at, run_id) and adds an ``AgentExecution`` row to record
@@ -107,7 +113,9 @@ class TacticalAgent:
         from app.agents.strategic import StrategicAgent
         from app.core.config import settings
 
-        lease = StrategicAgent().provision_lease(session, task=task)
+        lease = StrategicAgent(redis_client=self._redis).provision_lease(
+            session, task=task, acting_user_id=acting_user_id
+        )
 
         # Stage 2 routing: when Strategic marked the lease as needing an
         # isolated MCP host AND the deployment has provisioned a secondary
@@ -137,6 +145,7 @@ class TacticalAgent:
             thread_id,
             provider=provider,
             model_name=model_name,
+            acting_user_id=acting_user_id,
         )
 
         now = datetime.now(tz=UTC)
@@ -182,6 +191,9 @@ class TacticalAgent:
                     "model": {"provider": provider, "name": model_name},
                     "mcp_url": mcp_url,
                     "lease_token": str(lease.id),
+                    # The worker resolves the BYO key off this id at run
+                    # time (ephemeral Redis cache). Required — no fallback.
+                    "acting_user_id": str(acting_user_id),
                 }
             ),
         )

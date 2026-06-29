@@ -123,7 +123,7 @@ def test_policy_narrows_tools_and_persists_requires_container(
         )
     )
     agent = StrategicAgent(provider="test", model_name="fake-llm", llm=fake)
-    lease = agent.provision_lease(db, task=task)
+    lease = agent.provision_lease(db, task=task, acting_user_id=uuid.uuid4())
     db.commit()
 
     db.refresh(lease)
@@ -158,7 +158,7 @@ def test_policy_filters_out_widening_attempt(
         )
     )
     agent = StrategicAgent(provider="test", model_name="fake-llm", llm=fake)
-    lease = agent.provision_lease(db, task=task)
+    lease = agent.provision_lease(db, task=task, acting_user_id=uuid.uuid4())
     db.commit()
 
     db.refresh(lease)
@@ -185,7 +185,7 @@ def test_policy_reinserts_dispatch_tool_when_llm_drops_it(
         )
     )
     agent = StrategicAgent(provider="test", model_name="fake-llm", llm=fake)
-    lease = agent.provision_lease(db, task=task)
+    lease = agent.provision_lease(db, task=task, acting_user_id=uuid.uuid4())
     db.commit()
 
     db.refresh(lease)
@@ -208,7 +208,7 @@ def test_policy_falls_back_when_no_provider_key(
     # fake so the test doesn't depend on env vars.
     fake = _FakeLeaseLLM(RuntimeError("no key configured"))
     agent = StrategicAgent(provider="test", model_name="fake-llm", llm=fake)
-    lease = agent.provision_lease(db, task=task)
+    lease = agent.provision_lease(db, task=task, acting_user_id=uuid.uuid4())
     db.commit()
 
     db.refresh(lease)
@@ -238,7 +238,9 @@ def test_policy_explicit_kwarg_bypasses_llm(
         )
     )
     agent = StrategicAgent(provider="test", model_name="fake-llm", llm=fake)
-    lease = agent.provision_lease(db, task=task, requires_container=True)
+    lease = agent.provision_lease(
+        db, task=task, requires_container=True, acting_user_id=uuid.uuid4()
+    )
     db.commit()
 
     db.refresh(lease)
@@ -265,7 +267,7 @@ def test_policy_full_lease_record_via_engagement_relation(
         )
     )
     agent = StrategicAgent(provider="test", model_name="fake-llm", llm=fake)
-    agent.provision_lease(db, task=task)
+    agent.provision_lease(db, task=task, acting_user_id=uuid.uuid4())
     db.commit()
 
     leases = list(

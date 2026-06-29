@@ -64,7 +64,8 @@ def main() -> None:
         that anyway. Per-run rebuild lets each run pick its own provider.
 
         BYO-keys: ``api_key`` and ``endpoint`` arrive in ``model`` via the
-        runner's per-envelope lookup (acting user's ``UserProviderKey``).
+        runner's per-envelope lookup against the kicker's ephemeral
+        Redis-cached provider key.
 
         MCP leases: ``allowed_tools`` arrives from the runner's lease
         lookup. We filter the global tool registry down to the lease's
@@ -149,7 +150,10 @@ def main() -> None:
     # runs on every finding.created. Lives in a sibling thread so the
     # existing run-command consumer in the main thread is untouched.
     strategic = StrategicConsumer(
-        agent=StrategicAgent(),
+        # Strategic needs the redis client so it can resolve the kicking
+        # analyst's ephemeral BYO key per call (no engagement-creator
+        # fallback anymore — locked 2026-06-29).
+        agent=StrategicAgent(redis_client=redis_client),
         redis_client=redis_client,
         session_factory=SessionLocal,
     )

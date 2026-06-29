@@ -162,7 +162,23 @@ class StrategicConsumer:
                         msg_id=msg_id,
                     )
                     return
-                self._analyze(uuid.UUID(finding_id_raw))
+                acting_user_id_raw = envelope.get("acting_user_id")
+                if not acting_user_id_raw:
+                    # The producer (worker/runner.py) MUST stamp this on
+                    # every emitted event. A missing id means we don't
+                    # know whose ephemeral key to use, so skipping is
+                    # safer than running on someone else's credentials.
+                    logger.warning(
+                        "strategic.finding_event_missing_acting_user",
+                        stream=stream_name,
+                        msg_id=msg_id,
+                        finding_id=finding_id_raw,
+                    )
+                    return
+                self._analyze(
+                    uuid.UUID(finding_id_raw),
+                    acting_user_id=uuid.UUID(acting_user_id_raw),
+                )
                 return
             if event_type in ("run.completed", "run.errored"):
                 # Release any active MCP lease for the task this run dispatched.
@@ -237,7 +253,9 @@ class StrategicConsumer:
         finally:
             session.close()
 
-    def _analyze(self, finding_id: uuid.UUID) -> None:
+    def _analyze(
+        self, finding_id: uuid.UUID, *, acting_user_id: uuid.UUID
+    ) -> None:
         session = self._session_factory()
         try:
             finding = session.get(Finding, finding_id)
@@ -245,7 +263,10 @@ class StrategicConsumer:
                 logger.warning("strategic.finding_not_found", finding_id=str(finding_id))
                 return
             execution, suggestions = self._agent.analyze_finding(
-                session, finding=finding, trigger=AgentTrigger.finding
+                session,
+                finding=finding,
+                trigger=AgentTrigger.finding,
+                acting_user_id=acting_user_id,
             )
             session.commit()
             logger.info(

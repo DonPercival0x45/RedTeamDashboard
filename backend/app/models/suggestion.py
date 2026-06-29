@@ -30,10 +30,15 @@ class SuggestionStatus(enum.StrEnum):
 
 class AgentName(enum.StrEnum):
     """The orchestrator agent that produced the row. Mirrored on
-    ``AgentExecution`` so a Suggestion can be traced back to the run."""
+    ``AgentExecution`` so a Suggestion can be traced back to the run.
+
+    ``planner`` is tenant-global (the /settings/suggestions "suggestion box"
+    agent), unlike strategic/tactical which are engagement-scoped — so its
+    ``AgentExecution`` rows carry a NULL ``engagement_id``."""
 
     strategic = "strategic"
     tactical = "tactical"
+    planner = "planner"
 
 
 class Suggestion(Base, TimestampMixin):

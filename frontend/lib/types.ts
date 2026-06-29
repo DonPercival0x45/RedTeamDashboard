@@ -482,3 +482,33 @@ export interface CostRollup {
   by_model: ModelCost[];
   unpriced_models: string[];
 }
+
+// ── /me + roadmap suggestions ────────────────────────────────────────────
+
+export interface Me {
+  id: string;
+  email: string;
+  display_name: string | null;
+  is_admin: boolean;
+}
+
+export type RoadmapSuggestionStatus =
+  | "pending_review"
+  | "approved"
+  | "rejected";
+
+export interface RoadmapSuggestion {
+  id: string;
+  author_user_id: string | null;
+  body: string;
+  agent_pros: string[];
+  agent_cons: string[];
+  agent_summary: string | null;
+  agent_execution_id: string | null;
+  status: RoadmapSuggestionStatus;
+  reviewed_by_user_id: string | null;
+  reviewed_at: string | null;
+  review_note: string | null;
+  created_at: string;
+  updated_at: string;
+}

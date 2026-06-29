@@ -157,12 +157,20 @@ def decide_approval(
     if body.reason:
         resume_payload["reason"] = body.reason
 
-    # Carry the original run's model choice forward so the worker uses the
-    # same LLM on resume. Missing only if the cache TTL expired (>6h since
-    # run.start) — in that case the worker falls back to env defaults.
+    # Carry the original run's model + the kicking analyst's id forward
+    # so the worker resolves the SAME analyst's ephemeral BYO key on
+    # resume (not the approving user's). Missing only if the cache TTL
+    # expired (>6h since run.start) — in that case the worker raises
+    # because no acting_user_id means no resolvable key.
     cached_model = load_run_model(redis_client, approval.thread_id)
     if cached_model is not None:
+        # Split: ``model`` carries (provider, name) only; ``acting_user_id``
+        # rides as its own envelope field so the worker reads it the same
+        # way it does on run.start.
+        acting_user_id = cached_model.pop("acting_user_id", None)
         resume_payload["model"] = cached_model
+        if acting_user_id:
+            resume_payload["acting_user_id"] = acting_user_id
 
     redis_client.xadd(
         inbound_stream(approval.engagement_id),

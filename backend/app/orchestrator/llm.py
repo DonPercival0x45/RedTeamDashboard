@@ -51,10 +51,11 @@ def make_llm(
     every other lib to be installed.
 
     ``api_key`` / ``endpoint`` are the BYO-key wiring path: when present,
-    they override the env defaults (resolved per-run from the acting user's
-    UserProviderKey by ``app.services.provider_key_resolver``). When omitted,
-    the LLM constructors fall back to their library's env-var auto-detection
-    so the existing test paths + dev fallback still work.
+    they override the env defaults (resolved per-run from the kicking
+    analyst's ephemeral Redis cache by
+    ``app.services.ephemeral_provider_key``). When omitted, the LLM
+    constructors fall back to their library's env-var auto-detection so
+    the existing test paths still work.
 
     ``registry`` narrows the tool surface bound to the LLM — Stage 1 of the
     MCP lease wiring filtered the dispatch node but left the LLM seeing
