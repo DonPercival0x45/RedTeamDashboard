@@ -218,7 +218,7 @@ export interface Observation {
 
 // ─── BYO provider keys ─────────────────────────────────────────────────────
 
-export type ProviderKeyKind = "model_provider" | "mcp_server";
+export type ProviderKeyKind = "model_provider" | "mcp_server" | "other";
 
 export interface ProviderKey {
   id: string;

@@ -40,7 +40,6 @@ from app.api.reports import router as reports_router
 from app.api.roadmap_suggestions import router as roadmap_suggestions_router
 from app.core.config import settings
 from app.core.logging import configure_logging
-from app.db.session import SessionLocal
 from app.mcp.auth import MCPAuthMiddleware
 from app.mcp.server import mcp
 

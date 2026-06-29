@@ -16,6 +16,7 @@ integration row to pick up new config — we don't hot-reload.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import threading
 from collections.abc import Callable
 from typing import Any
@@ -152,7 +153,7 @@ async def _run_client(
         )
 
     @client.event
-    async def on_message(message: "discord.Message") -> None:
+    async def on_message(message: discord.Message) -> None:
         # Skip our own messages and anything outside the configured channel.
         if message.author == client.user:
             return
@@ -190,10 +191,9 @@ async def _run_client(
                 source=source,
             )
             # Acknowledge in the channel so the poster knows it landed.
-            try:
+            # Reaction perms missing → silently swallow.
+            with contextlib.suppress(Exception):
                 await message.add_reaction("✅")
-            except Exception:  # noqa: BLE001 — reaction perms missing → don't fail
-                pass
         except Exception:
             session.rollback()
             logger.exception(

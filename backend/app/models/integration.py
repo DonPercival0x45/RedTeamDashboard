@@ -12,10 +12,9 @@ from __future__ import annotations
 
 import enum
 import uuid
-from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey
+from sqlalchemy import Boolean, Enum, ForeignKey
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 

@@ -68,7 +68,7 @@ def post_feedback_notification(
     fail because the operator's webhook is wrong/expired/rate-limited.
     """
     payload: dict[str, Any] = {
-        "username": "Project XR@Y Feedback",
+        "username": "RTD Feedback",
         "embeds": [_embed_for(suggestion)],
     }
     try:

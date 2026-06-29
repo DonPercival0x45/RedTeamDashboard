@@ -11,6 +11,7 @@ import uuid
 from typing import Any
 
 import structlog
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.agents.planner import PlanningAgent, render_approved_roadmap
@@ -23,7 +24,6 @@ from app.models import (
 )
 from app.services import discord as discord_svc
 from app.services import integrations as integration_svc
-from sqlalchemy import select
 
 logger = structlog.get_logger(__name__)
 
