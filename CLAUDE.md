@@ -89,6 +89,20 @@ Recent additions on `phase-11-costs` (June 2026):
 - **JSON export** — `GET /engagements/{slug}/export` wraps `_build_export_payload`; browser download from Report tab.
 - **Finding summary editor** — `PATCH /findings/{id}` updates title/summary/severity/phase; summary field added to `FindingRead` and the slide-over.
 - **Screenshot/file attachments** — `Attachment` model + migration `0009`; upload/list/serve/delete endpoints; auth-gated image thumbnails in the finding slide-over.
+- **Suggestion box + planner agent** — `RoadmapSuggestion` model + migration `0017`; `/settings/suggestions` UI; tenant-global PlanningAgent reads `CHARTER.md` + `docs/HANDOFF.md` and emits pros/cons; admin (`users.is_admin`) approves; `GET /roadmap-suggestions/export` returns ROADMAP.md.
+- **Ephemeral BYO keys** — migration `0018` drops `user_provider_keys` (and the `provider_key_kind` enum). Keys now live in Redis under `provider_keys:<user_id>` with a 30-min sliding TTL (`provider_key_ttl_seconds`). Resolver is `app/services/ephemeral_provider_key.resolve_for_user(redis, user_id=..., provider=...)` — takes a Redis client, not a Session. Strategic / Tactical / Planner all require `acting_user_id` as a kwarg (no engagement-creator fallback). The worker envelope and every `finding.created` event carry `acting_user_id`; producers MUST stamp it.
+
+## Planner context sync
+
+The planner agent reads `CHARTER.md` + `docs/HANDOFF.md` from
+`backend/app/agents/planner_context/`. These are COPIES of the root-level
+files — the Docker build context is `backend/` and can't reach above. If you
+edit the root docs, refresh the copies:
+
+```bash
+cp CHARTER.md backend/app/agents/planner_context/CHARTER.md
+cp docs/HANDOFF.md backend/app/agents/planner_context/HANDOFF.md
+```
 
 ## Codebase Sanitization
 

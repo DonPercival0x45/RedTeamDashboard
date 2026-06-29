@@ -132,14 +132,19 @@ class Settings(BaseSettings):
     azure_storage_account_name: str = ""
     azure_storage_container_name: str = "engagement-exports"
 
-    # BYO provider keys (Phase: user-byo-keys). Fernet master key — analysts'
-    # uploaded LLM / MCP API keys are encrypted with this before they hit
-    # Postgres. Production must override via env / KV secret
-    # `provider-key-master`. Generate a real key with:
-    #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-    # The default below is a deterministic dev-only Fernet key — NEVER USE
-    # IN PROD; rotating it loses access to every previously-uploaded key.
+    # BYO provider keys are now ephemeral — stored in Redis under a per-
+    # user hash with a sliding TTL, never persisted at rest. The Fernet
+    # master key field below is retained ONLY for one release so prior
+    # deploys can still import the module; nothing reads it anymore and
+    # the next release deletes it. New TTL knob controls how long an
+    # uploaded key survives idle.
     provider_key_master: str = "ZmVybmV0LWRldi1ub3QtZm9yLXByb2QtMzJieXRlc18="
+    # Sliding TTL on the per-user Redis hash holding the analyst's BYO
+    # keys. Refreshed on every read or write. 30 min default — short
+    # enough that an unattended browser doesn't leave keys reachable;
+    # long enough that an active analyst session doesn't constantly
+    # re-prompt for a re-upload.
+    provider_key_ttl_seconds: int = 1800
 
 
 settings = Settings()

@@ -83,6 +83,7 @@ def _engagement_by_slug(session: Session, slug: str) -> Engagement:
 def analyze_finding(
     finding_id: uuid.UUID,
     session: DbSession,
+    redis_client: RedisClient,
     user: CurrentUser,
 ) -> AnalyzeFindingResponse:
     """Run the Strategic watcher synchronously over one finding.
@@ -90,14 +91,20 @@ def analyze_finding(
     Used by the findings slide-over's Agent button: the analyst clicks,
     Strategic plans, suggestions render inline. The event-driven path (worker
     subscriber) writes to the same tables out-of-band.
+
+    The BYO key resolves against the CLICKING analyst's ephemeral Redis
+    cache — not the engagement creator's.
     """
     finding = session.get(Finding, finding_id)
     if finding is None:
         raise HTTPException(status_code=404, detail="finding not found")
 
-    agent = StrategicAgent()
+    agent = StrategicAgent(redis_client=redis_client)
     execution, suggestions = agent.analyze_finding(
-        session, finding=finding, trigger=AgentTrigger.manual
+        session,
+        finding=finding,
+        trigger=AgentTrigger.manual,
+        acting_user_id=user.id,
     )
 
     session.add(
@@ -224,7 +231,10 @@ def accept_suggestion(
             tactical = TacticalAgent(redis_client)
             try:
                 tactical.dispatch(
-                    session, task=task, trigger=AgentTrigger.manual
+                    session,
+                    task=task,
+                    trigger=AgentTrigger.manual,
+                    acting_user_id=user.id,
                 )
                 dispatched = True
             except TacticalRefusedExploit:

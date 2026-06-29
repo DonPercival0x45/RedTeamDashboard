@@ -17,6 +17,10 @@ from app.models.entity import Entity
 from app.models.finding import Finding, FindingPhase, FindingStatus, Severity
 from app.models.mcp_lease import MCPLease, MCPLeaseStatus
 from app.models.observation import Observation
+from app.models.roadmap_suggestion import (
+    RoadmapSuggestion,
+    RoadmapSuggestionStatus,
+)
 from app.models.scope_item import ScopeItem, ScopeKind
 from app.models.suggestion import (
     AgentName,
@@ -26,7 +30,6 @@ from app.models.suggestion import (
 )
 from app.models.task import OwnerEligibility, Task, TaskKind, TaskStatus
 from app.models.user import User
-from app.models.user_provider_key import ProviderKeyKind, UserProviderKey
 from app.models.workflow_template import WorkflowTemplate
 
 __all__ = [
@@ -52,8 +55,9 @@ __all__ = [
     "MCPLeaseStatus",
     "Observation",
     "OwnerEligibility",
-    "ProviderKeyKind",
     "RiskLevel",
+    "RoadmapSuggestion",
+    "RoadmapSuggestionStatus",
     "ScopeItem",
     "ScopeKind",
     "Severity",
@@ -64,7 +68,6 @@ __all__ = [
     "TaskKind",
     "TaskStatus",
     "User",
-    "UserProviderKey",
     "WorkflowTemplate",
     "scope_satisfies",
 ]

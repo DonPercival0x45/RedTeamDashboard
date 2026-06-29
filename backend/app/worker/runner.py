@@ -145,11 +145,13 @@ class RunRunner:
     def _resolve_graph(self, envelope: Mapping[str, Any]) -> Any:
         """Static graph for tests; factory-built per-run graph in prod.
 
-        BYO-keys path: when ``acting_user_id`` is on the envelope, look up
-        the user's stored ``UserProviderKey`` for the chosen provider and
-        thread the decrypted api_key + endpoint into the model mapping so
-        ``graph_factory`` can pass them into ``make_llm``. NoProviderKeyError
-        bubbles up to ``handle()`` which surfaces it as a ``run.errored``.
+        BYO-keys path: ``acting_user_id`` MUST be on the envelope. Look up
+        the kicking analyst's ephemeral Redis-cached key for the chosen
+        provider and thread the plaintext api_key + endpoint into the model
+        mapping so ``graph_factory`` can pass them into ``make_llm``.
+        :class:`NoProviderKeyError` (no key cached / TTL expired) bubbles
+        up to ``handle()`` which surfaces it as a ``run.errored`` with
+        "re-upload at /settings/keys" guidance for the analyst.
 
         MCP lease path: when ``lease_token`` is on the envelope, look up
         the lease and pass its ``allowed_tools`` to the factory so the
@@ -169,22 +171,26 @@ class RunRunner:
                 "endpoint": None,
             }
             acting_user_id_raw = envelope.get("acting_user_id")
-            if acting_user_id_raw and provider:
-                import uuid as _uuid
+            if not (acting_user_id_raw and provider):
+                # Defense-in-depth: producers (Tactical + direct POST
+                # /runs) MUST stamp acting_user_id. Missing here means a
+                # protocol violation — fail loudly rather than fall back.
+                raise RuntimeError(
+                    "envelope missing acting_user_id — every run must "
+                    "carry the kicking analyst's id so the worker can "
+                    "resolve their ephemeral BYO key"
+                )
+            import uuid as _uuid
 
-                from app.services.provider_key_resolver import resolve_for_user
+            from app.services.ephemeral_provider_key import resolve_for_user
 
-                session = self._session_factory()
-                try:
-                    resolved = resolve_for_user(
-                        session,
-                        user_id=_uuid.UUID(str(acting_user_id_raw)),
-                        provider=provider,
-                    )
-                    model["api_key"] = resolved.api_key
-                    model["endpoint"] = resolved.endpoint
-                finally:
-                    session.close()
+            resolved = resolve_for_user(
+                self._redis,
+                user_id=_uuid.UUID(str(acting_user_id_raw)),
+                provider=provider,
+            )
+            model["api_key"] = resolved.api_key
+            model["endpoint"] = resolved.endpoint
         allowed_tools = self._resolve_allowed_tools(envelope)
         mcp_url_raw = envelope.get("mcp_url")
         lease_token_raw = envelope.get("lease_token")
@@ -228,12 +234,24 @@ class RunRunner:
         if not thread_id:
             raise ValueError("envelope missing thread_id")
 
+        # The kicking analyst's id rides the envelope so every finding.created
+        # event we emit can carry it — strategic_consumer needs it to resolve
+        # the kicker's BYO key (no engagement-creator fallback anymore).
+        acting_user_id = envelope.get("acting_user_id")
+        acting_user_id_str = (
+            str(acting_user_id) if acting_user_id else None
+        )
+
         try:
             graph = self._resolve_graph(envelope)
             if kind == "run.start":
-                self._start(engagement_id, thread_id, envelope, graph)
+                self._start(
+                    engagement_id, thread_id, envelope, graph, acting_user_id_str
+                )
             elif kind == "run.resume":
-                self._resume(engagement_id, thread_id, envelope, graph)
+                self._resume(
+                    engagement_id, thread_id, envelope, graph, acting_user_id_str
+                )
             else:
                 raise ValueError(f"unknown envelope type: {kind!r}")
         except Exception as exc:
@@ -263,6 +281,7 @@ class RunRunner:
         thread_id: str,
         envelope: Mapping[str, Any],
         graph: Any,
+        acting_user_id: str | None,
     ) -> None:
         prompt = str(envelope.get("prompt") or "")
         snapshots = self._load_scope(engagement_id)
@@ -293,7 +312,9 @@ class RunRunner:
             engagement_id,
             {"type": "run.started", **started_payload},
         )
-        self._drive(engagement_id, thread_id, initial_state, config, graph)
+        self._drive(
+            engagement_id, thread_id, initial_state, config, graph, acting_user_id
+        )
 
     def _resume(
         self,
@@ -301,6 +322,7 @@ class RunRunner:
         thread_id: str,
         envelope: Mapping[str, Any],
         graph: Any,
+        acting_user_id: str | None,
     ) -> None:
         resume_value: dict[str, Any] = {"approved": bool(envelope.get("approved"))}
         if "edited_args" in envelope and isinstance(envelope["edited_args"], dict):
@@ -315,7 +337,14 @@ class RunRunner:
             approved=resume_value["approved"],
         )
         config = self._config(thread_id)
-        self._drive(engagement_id, thread_id, Command(resume=resume_value), config, graph)
+        self._drive(
+            engagement_id,
+            thread_id,
+            Command(resume=resume_value),
+            config,
+            graph,
+            acting_user_id,
+        )
 
     # ------------------------------------------------------------------
     # Graph driving + event emission
@@ -328,6 +357,7 @@ class RunRunner:
         input_: Any,
         config: dict[str, Any],
         graph: Any,
+        acting_user_id: str | None,
     ) -> None:
         for chunk in graph.stream(input_, config=config):
             for node in chunk:
@@ -339,7 +369,9 @@ class RunRunner:
                     thread_id=thread_id,
                     node=node,
                 )
-            self._emit_from_chunk(engagement_id, thread_id, chunk)
+            self._emit_from_chunk(
+                engagement_id, thread_id, chunk, acting_user_id
+            )
 
         snapshot = graph.get_state(config)
         if not snapshot.next:
@@ -370,6 +402,7 @@ class RunRunner:
         engagement_id: uuid.UUID,
         thread_id: str,
         chunk: Mapping[str, Any],
+        acting_user_id: str | None,
     ) -> None:
         # langgraph yields a special ``__interrupt__`` chunk when interrupt()
         # fires. The payload is a tuple of Interrupt(value=...) objects.
@@ -416,6 +449,10 @@ class RunRunner:
                         "finding_id": str(row.id),
                         "phase": row.phase.value,
                         "status": row.status.value,
+                        # Stamped so the strategic-watcher consumer can
+                        # resolve THIS analyst's ephemeral BYO key — no
+                        # engagement-creator fallback.
+                        "acting_user_id": acting_user_id,
                     },
                 )
             for denial in update.get("denials") or []:

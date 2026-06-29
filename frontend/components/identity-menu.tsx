@@ -25,6 +25,12 @@ export function IdentityMenu() {
       >
         Keys
       </Link>
+      <Link
+        href="/settings/suggestions"
+        className="text-xs text-muted-foreground hover:text-foreground"
+      >
+        Suggestions
+      </Link>
       {enabled && (
         <Button variant="outline" size="sm" onClick={signOut}>
           Sign out

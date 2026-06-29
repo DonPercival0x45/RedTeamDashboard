@@ -10,6 +10,7 @@
 // here are small and msal-react's react peer range lags React 19.
 
 import { createContext, useContext, useEffect, useState } from "react";
+import { flushMyProviderKeys } from "@/lib/api";
 import { DEV_USER, ENTRA, ENTRA_ENABLED } from "@/lib/config";
 import { activeAccount, ensureMsalReady, msalInstance } from "@/lib/msal";
 
@@ -75,7 +76,15 @@ function MsalAuthProvider({ children }: { children: React.ReactNode }) {
       void instance.loginRedirect({ scopes: [ENTRA.apiScope] });
     },
     signOut: () => {
-      void instance.logoutRedirect();
+      // Wipe the ephemeral provider-keys cache before tearing down the
+      // session. Best-effort — if the API call fails (network blip,
+      // already expired), we still continue to logoutRedirect so the
+      // Entra session ends.
+      void flushMyProviderKeys()
+        .catch(() => undefined)
+        .finally(() => {
+          void instance.logoutRedirect();
+        });
     },
   };
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

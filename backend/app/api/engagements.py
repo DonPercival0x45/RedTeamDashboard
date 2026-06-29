@@ -1125,27 +1125,27 @@ def delete_attachment(
 
 
 def _require_user_provider_key(
-    session: DbSession, *, user_id: uuid.UUID, provider: str
+    redis_client: RedisClient, *, user_id: uuid.UUID, provider: str
 ) -> None:
-    """Raise 400 if the acting user has no ``UserProviderKey`` for ``provider``.
+    """Raise 400 if the acting user has no ephemeral key cached for ``provider``.
 
-    Pre-Phase-9 the system fell back to ``settings.{provider}_api_key`` if the
-    user had nothing on file; the BYO charter explicitly drops that fallback
-    so the analyst stays in control. The hint in the error message points at
-    the Settings page so a fresh login knows where to go.
+    Keys live in Redis with a sliding TTL (locked 2026-06-29) — when the
+    analyst's session goes idle, this helper trips. The error message
+    points at the Settings page so a fresh-or-stale-session analyst
+    knows exactly where to go.
     """
-    from app.services.provider_key_resolver import (
+    from app.services.ephemeral_provider_key import (
         NoProviderKeyError,
         resolve_for_user,
     )
 
     try:
-        resolve_for_user(session, user_id=user_id, provider=provider)
+        resolve_for_user(redis_client, user_id=user_id, provider=provider)
     except NoProviderKeyError as exc:
         raise HTTPException(
             status_code=400,
             detail=(
-                f"no provider key configured for '{provider}'. "
+                f"no provider key cached for '{provider}'. "
                 "Upload one at /settings/keys before kicking off a run."
             ),
         ) from exc
@@ -1178,7 +1178,7 @@ def start_run(
         provider, model_name = body.model.provider, body.model.name
     else:
         provider, model_name = default_provider_model()
-    _require_user_provider_key(session, user_id=user.id, provider=provider)
+    _require_user_provider_key(redis_client, user_id=user.id, provider=provider)
     effective_model = RunModel(provider=provider, name=model_name)
 
     thread_id = uuid.uuid4()
@@ -1189,6 +1189,7 @@ def start_run(
         thread_id,
         provider=effective_model.provider,
         model_name=effective_model.name,
+        acting_user_id=user.id,
     )
 
     # Stage 3+1: every worker run carries an MCP lease — the Stage 1.5
@@ -1263,8 +1264,9 @@ def start_run(
     session.commit()
 
     # NB: we put ``acting_user_id`` on the envelope, NOT the decrypted key.
-    # The worker re-resolves at run-time via UserProviderKey lookup. This
-    # keeps plaintext API keys out of the Redis stream.
+    # The worker re-resolves at run-time via the ephemeral Redis-backed
+    # provider-key store. This keeps plaintext API keys out of the Redis
+    # stream payloads (which are persisted longer than the live key TTL).
     redis_client.xadd(
         inbound_stream(eng.id),
         encode_command(

@@ -50,11 +50,19 @@ export default function SettingsKeysPage() {
           Provider keys
         </h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          API credentials this tool uses on your behalf. Keys are stored
-          encrypted in the database and never returned over the wire after
-          upload — only a 4-char tail is shown back. Rotate by uploading
-          again with the same name (after deleting the old one).
+          API credentials this tool uses on your behalf. Keys never leave
+          this browser as plaintext after upload — only a 4-char tail is
+          shown back. Rotate by uploading again with the same name (after
+          deleting the old one).
         </p>
+        <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-200">
+          <span className="font-semibold uppercase tracking-wide">Session-only.</span>{" "}
+          Your keys are held briefly in this session — they expire after
+          30 minutes of inactivity, on sign-out, or if the backend
+          restarts. Re-upload whenever you come back. Only you can use
+          your own keys; no other analyst (and no future you) can see
+          them once they expire.
+        </div>
       </div>
 
       <Card>

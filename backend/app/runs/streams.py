@@ -54,11 +54,20 @@ def store_run_model(
     *,
     provider: str,
     model_name: str,
+    acting_user_id: uuid.UUID | str | None = None,
 ) -> None:
-    """HSET the (provider, name) for a thread; TTL'd so abandoned runs expire."""
+    """HSET the (provider, name) for a thread; TTL'd so abandoned runs expire.
+
+    ``acting_user_id`` is the kicking analyst's id — stashed so the approval
+    endpoint can carry it forward on ``run.resume`` envelopes (the worker
+    re-resolves the BYO key off this id, NOT off the approving analyst).
+    """
     client: object = redis_client
     key = run_model_key(thread_id)
-    client.hset(key, mapping={"provider": provider, "name": model_name})  # type: ignore[attr-defined]
+    mapping: dict[str, str] = {"provider": provider, "name": model_name}
+    if acting_user_id is not None:
+        mapping["acting_user_id"] = str(acting_user_id)
+    client.hset(key, mapping=mapping)  # type: ignore[attr-defined]
     client.expire(key, _RUN_MODEL_TTL_SECONDS)  # type: ignore[attr-defined]
 
 
@@ -66,8 +75,16 @@ def load_run_model(
     redis_client: object,
     thread_id: uuid.UUID | str,
 ) -> dict[str, str] | None:
-    """HGETALL — returns ``None`` if the thread has no recorded model."""
+    """HGETALL — returns ``None`` if the thread has no recorded model.
+
+    Returned dict carries ``provider``, ``name``, and (if present)
+    ``acting_user_id``. Callers that need to compose a ``run.resume``
+    envelope pull ``acting_user_id`` from here.
+    """
     raw = redis_client.hgetall(run_model_key(thread_id))  # type: ignore[attr-defined]
     if not raw:
         return None
-    return {"provider": raw["provider"], "name": raw["name"]}
+    out: dict[str, str] = {"provider": raw["provider"], "name": raw["name"]}
+    if "acting_user_id" in raw:
+        out["acting_user_id"] = raw["acting_user_id"]
+    return out

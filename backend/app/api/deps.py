@@ -279,8 +279,26 @@ def current_user(
     return upsert_user(session, x_user_id)
 
 
+def require_admin_user(
+    user: Annotated[User, Depends(current_user)],
+) -> User:
+    """Gate ``CurrentUser``-style endpoints behind the ``users.is_admin`` flag.
+
+    Distinct from :func:`RequireScope` (which gates API-key-authenticated
+    routes by privilege tier). This one gates browser-SSO routes by user
+    role — needed because the API-key-scope model doesn't reach Entra
+    sessions, and we want admin-only actions reachable from the UI.
+    """
+    if not user.is_admin:
+        raise HTTPException(
+            status_code=403, detail="this action requires admin"
+        )
+    return user
+
+
 DbSession = Annotated[Session, Depends(db_session)]
 RedisClient = Annotated[redis_lib.Redis, Depends(redis_client)]
 AsyncRedisClient = Annotated[aioredis.Redis, Depends(async_redis_client)]
 CurrentUser = Annotated[User, Depends(current_user)]
+CurrentAdminUser = Annotated[User, Depends(require_admin_user)]
 CurrentAPIKey = Annotated[APIKey, Depends(api_key_auth)]

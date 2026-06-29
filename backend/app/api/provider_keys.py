@@ -1,4 +1,4 @@
-"""HTTP surface for analyst-uploaded BYO provider keys.
+"""HTTP surface for ephemeral BYO provider keys.
 
 Endpoints (all scoped to the acting user — no admin path)::
 
@@ -7,11 +7,15 @@ Endpoints (all scoped to the acting user — no admin path)::
     POST   /me/provider-keys/import            -> bulk upload from a JSON blob
     GET    /me/provider-keys/{id}              -> read one (masked)
     PATCH  /me/provider-keys/{id}              -> rename / rotate / re-target
-    DELETE /me/provider-keys/{id}              -> remove
+    DELETE /me/provider-keys/{id}              -> remove one
+    DELETE /me/provider-keys                   -> remove ALL (sign-out flow)
 
-The encrypted key NEVER leaves the backend in a response. The only way to
-view the plaintext is to re-upload — by design, so a compromised viewer
-session can't exfiltrate the key.
+The plaintext API key NEVER leaves the backend in a response. The only
+way to view the plaintext is to re-upload.
+
+**Ephemeral storage** (locked 2026-06-29): entries live in a per-user
+Redis hash with a sliding TTL. They evaporate on TTL expiry, sign-out,
+Redis restart, or explicit delete. Re-upload on every new analyst session.
 """
 from __future__ import annotations
 
@@ -20,15 +24,10 @@ from typing import Any
 
 import structlog
 from fastapi import APIRouter, HTTPException, Response, status
-from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 
-from app.api.deps import CurrentUser, DbSession
-from app.models import (
-    ActorType,
-    AuditLog,
-    UserProviderKey,
-)
+from app.api.deps import CurrentUser, DbSession, RedisClient
+from app.db.base import uuid7
+from app.models import ActorType, AuditLog
 from app.schemas.provider_key import (
     ProviderKeyEntry,
     ProviderKeyImport,
@@ -37,36 +36,51 @@ from app.schemas.provider_key import (
     ProviderKeyRead,
     ProviderKeyUpdate,
 )
-from app.services.secret_box import encrypt, last4
+from app.services import ephemeral_provider_key as keys
+from app.services.secret_box import last4
 
 logger = structlog.get_logger(__name__)
 
 router = APIRouter()
 
 
-def _row_to_read(row: UserProviderKey) -> ProviderKeyRead:
-    return ProviderKeyRead.model_validate(row)
+# ── helpers ──────────────────────────────────────────────────────────────
 
 
-def _build_row(
-    user_id: uuid.UUID, entry: ProviderKeyEntry
-) -> UserProviderKey:
-    """Construct a UserProviderKey row from a parsed entry. Encrypts the key
-    plaintext immediately so it never lingers as a string field on the row."""
-    encrypted = encrypt(entry.api_key) if entry.api_key else None
-    tail = last4(entry.api_key) if entry.api_key else None
-    return UserProviderKey(
-        user_id=user_id,
-        kind=entry.kind,
-        name=entry.name.strip(),
-        provider=entry.provider.strip().lower(),
-        is_local=entry.is_local,
-        models=list(entry.models),
-        endpoint=entry.endpoint.strip() if entry.endpoint else None,
-        encrypted_key=encrypted,
-        key_last4=tail,
-        extra=dict(entry.extra),
+def _entry_to_read(entry: dict[str, Any]) -> ProviderKeyRead:
+    """Project a Redis entry into the read shape (masked — no plaintext)."""
+    return ProviderKeyRead.model_validate(
+        {
+            "id": entry["id"],
+            "user_id": entry["user_id"],
+            "kind": entry.get("kind", "model_provider"),
+            "name": entry["name"],
+            "provider": entry["provider"],
+            "is_local": bool(entry.get("is_local", False)),
+            "models": list(entry.get("models") or []),
+            "endpoint": entry.get("endpoint"),
+            "key_last4": entry.get("key_last4"),
+            "extra": dict(entry.get("extra") or {}),
+            "created_at": entry["created_at"],
+            "updated_at": entry["updated_at"],
+        }
     )
+
+
+def _new_entry(user_id: uuid.UUID, body: ProviderKeyEntry) -> dict[str, Any]:
+    return {
+        "id": str(uuid7()),
+        "user_id": str(user_id),
+        "kind": body.kind.value,
+        "name": body.name.strip(),
+        "provider": body.provider.strip().lower(),
+        "is_local": bool(body.is_local),
+        "models": list(body.models),
+        "endpoint": body.endpoint.strip() if body.endpoint else None,
+        "api_key": body.api_key,
+        "key_last4": last4(body.api_key) if body.api_key else None,
+        "extra": dict(body.extra),
+    }
 
 
 def _audit(
@@ -84,6 +98,15 @@ def _audit(
             payload=payload,
         )
     )
+    session.commit()
+
+
+def _names_for_user(redis: RedisClient, user_id: uuid.UUID) -> set[str]:
+    return {
+        e["name"]
+        for e in keys.list_all(redis, user_id=user_id)
+        if "name" in e
+    }
 
 
 # ── list / read ──────────────────────────────────────────────────────────
@@ -91,26 +114,23 @@ def _audit(
 
 @router.get("/me/provider-keys", response_model=list[ProviderKeyRead])
 def list_my_provider_keys(
-    session: DbSession, user: CurrentUser
-) -> list[UserProviderKey]:
-    rows = list(
-        session.execute(
-            select(UserProviderKey)
-            .where(UserProviderKey.user_id == user.id)
-            .order_by(UserProviderKey.created_at)
-        ).scalars()
-    )
-    return rows
+    redis: RedisClient, user: CurrentUser
+) -> list[ProviderKeyRead]:
+    return [
+        _entry_to_read(e) for e in keys.list_all(redis, user_id=user.id)
+    ]
 
 
-@router.get("/me/provider-keys/{key_id}", response_model=ProviderKeyRead)
+@router.get(
+    "/me/provider-keys/{key_id}", response_model=ProviderKeyRead
+)
 def get_my_provider_key(
-    key_id: uuid.UUID, session: DbSession, user: CurrentUser
-) -> UserProviderKey:
-    row = session.get(UserProviderKey, key_id)
-    if row is None or row.user_id != user.id:
+    key_id: uuid.UUID, redis: RedisClient, user: CurrentUser
+) -> ProviderKeyRead:
+    entry = keys.get_one(redis, user_id=user.id, key_id=key_id)
+    if entry is None:
         raise HTTPException(status_code=404, detail="provider key not found")
-    return row
+    return _entry_to_read(entry)
 
 
 # ── create one ───────────────────────────────────────────────────────────
@@ -122,33 +142,31 @@ def get_my_provider_key(
     status_code=status.HTTP_201_CREATED,
 )
 def create_my_provider_key(
-    body: ProviderKeyEntry, session: DbSession, user: CurrentUser
-) -> UserProviderKey:
-    row = _build_row(user.id, body)
-    session.add(row)
-    try:
-        session.flush()
-    except IntegrityError as exc:
-        session.rollback()
+    body: ProviderKeyEntry,
+    session: DbSession,
+    redis: RedisClient,
+    user: CurrentUser,
+) -> ProviderKeyRead:
+    if body.name.strip() in _names_for_user(redis, user.id):
         raise HTTPException(
             status_code=409,
             detail=f"a provider key named '{body.name}' already exists",
-        ) from exc
+        )
+    entry = _new_entry(user.id, body)
+    stored = keys.store(redis, user_id=user.id, entry=entry)
     _audit(
         session,
         user.id,
         "provider_key.created",
         {
-            "id": str(row.id),
-            "name": row.name,
-            "provider": row.provider,
-            "kind": row.kind.value,
-            "is_local": row.is_local,
+            "id": stored["id"],
+            "name": stored["name"],
+            "provider": stored["provider"],
+            "kind": stored["kind"],
+            "is_local": stored["is_local"],
         },
     )
-    session.commit()
-    session.refresh(row)
-    return row
+    return _entry_to_read(stored)
 
 
 # ── bulk import ──────────────────────────────────────────────────────────
@@ -158,28 +176,20 @@ def create_my_provider_key(
     "/me/provider-keys/import", response_model=ProviderKeyImportResult
 )
 def import_my_provider_keys(
-    body: ProviderKeyImport, session: DbSession, user: CurrentUser
+    body: ProviderKeyImport,
+    session: DbSession,
+    redis: RedisClient,
+    user: CurrentUser,
 ) -> ProviderKeyImportResult:
-    """Bulk-upload a list of provider entries.
+    existing = _names_for_user(redis, user.id)
 
-    Each entry is validated independently — bad rows go to ``errors`` while
-    the rest still import. Existing names (per the unique constraint) land
-    in ``duplicates``; this slice does NOT overwrite — the analyst rotates
-    via PATCH or deletes + re-imports.
-    """
-    existing_names = {
-        n
-        for n in session.execute(
-            select(UserProviderKey.name).where(UserProviderKey.user_id == user.id)
-        ).scalars()
-    }
-
-    created: list[UserProviderKey] = []
+    created: list[dict[str, Any]] = []
     duplicates: list[ProviderKeyImportErrorRow] = []
     errors: list[ProviderKeyImportErrorRow] = []
 
     for index, entry in enumerate(body.providers):
-        if entry.name.strip() in existing_names:
+        name = entry.name.strip()
+        if name in existing:
             duplicates.append(
                 ProviderKeyImportErrorRow(
                     index=index,
@@ -192,13 +202,14 @@ def import_my_provider_keys(
             )
             continue
         try:
-            row = _build_row(user.id, entry)
-            session.add(row)
-            session.flush()
-            existing_names.add(row.name)
-            created.append(row)
-        except Exception as exc:  # noqa: BLE001 — any persist failure is reported
-            session.rollback()
+            stored = keys.store(
+                redis,
+                user_id=user.id,
+                entry=_new_entry(user.id, entry),
+            )
+            existing.add(name)
+            created.append(stored)
+        except Exception as exc:  # noqa: BLE001 — any failure → report
             logger.warning(
                 "provider_key.import_row_failed",
                 index=index,
@@ -224,12 +235,9 @@ def import_my_provider_keys(
                 "error_count": len(errors),
             },
         )
-    session.commit()
-    for r in created:
-        session.refresh(r)
 
     return ProviderKeyImportResult(
-        created=[_row_to_read(r) for r in created],
+        created=[_entry_to_read(e) for e in created],
         errors=errors,
         duplicates=duplicates,
     )
@@ -245,48 +253,47 @@ def update_my_provider_key(
     key_id: uuid.UUID,
     body: ProviderKeyUpdate,
     session: DbSession,
+    redis: RedisClient,
     user: CurrentUser,
-) -> UserProviderKey:
-    row = session.get(UserProviderKey, key_id)
-    if row is None or row.user_id != user.id:
+) -> ProviderKeyRead:
+    entry = keys.get_one(redis, user_id=user.id, key_id=key_id)
+    if entry is None:
         raise HTTPException(status_code=404, detail="provider key not found")
 
     rotated = False
     if body.name is not None:
-        row.name = body.name.strip()
+        new_name = body.name.strip()
+        if new_name != entry.get("name") and new_name in _names_for_user(
+            redis, user.id
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="another provider key already uses that name",
+            )
+        entry["name"] = new_name
     if body.models is not None:
-        row.models = list(body.models)
+        entry["models"] = list(body.models)
     if body.endpoint is not None:
-        row.endpoint = body.endpoint.strip() or None
+        entry["endpoint"] = body.endpoint.strip() or None
     if body.api_key is not None:
-        row.encrypted_key = encrypt(body.api_key)
-        row.key_last4 = last4(body.api_key)
+        entry["api_key"] = body.api_key
+        entry["key_last4"] = last4(body.api_key)
         rotated = True
     if body.extra is not None:
-        row.extra = dict(body.extra)
+        entry["extra"] = dict(body.extra)
 
-    try:
-        session.flush()
-    except IntegrityError as exc:
-        session.rollback()
-        raise HTTPException(
-            status_code=409,
-            detail="another provider key already uses that name",
-        ) from exc
-
+    stored = keys.store(redis, user_id=user.id, entry=entry)
     _audit(
         session,
         user.id,
         "provider_key.updated",
         {
-            "id": str(row.id),
+            "id": stored["id"],
             "rotated": rotated,
             "fields": sorted(body.model_dump(exclude_unset=True)),
         },
     )
-    session.commit()
-    session.refresh(row)
-    return row
+    return _entry_to_read(stored)
 
 
 @router.delete(
@@ -295,19 +302,47 @@ def update_my_provider_key(
     response_class=Response,
 )
 def delete_my_provider_key(
-    key_id: uuid.UUID, session: DbSession, user: CurrentUser
+    key_id: uuid.UUID,
+    session: DbSession,
+    redis: RedisClient,
+    user: CurrentUser,
 ) -> Response:
-    row = session.get(UserProviderKey, key_id)
-    if row is None or row.user_id != user.id:
+    entry = keys.get_one(redis, user_id=user.id, key_id=key_id)
+    if entry is None:
         raise HTTPException(status_code=404, detail="provider key not found")
-    name = row.name
-    provider = row.provider
-    session.delete(row)
+    keys.delete(redis, user_id=user.id, key_id=key_id)
     _audit(
         session,
         user.id,
         "provider_key.deleted",
-        {"id": str(key_id), "name": name, "provider": provider},
+        {
+            "id": str(key_id),
+            "name": entry.get("name"),
+            "provider": entry.get("provider"),
+        },
     )
-    session.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.delete(
+    "/me/provider-keys",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+)
+def delete_all_my_provider_keys(
+    session: DbSession,
+    redis: RedisClient,
+    user: CurrentUser,
+) -> Response:
+    """Wipe every cached key for the acting user. Called by the frontend
+    on sign-out so a tab close doesn't leave plaintext keys reachable
+    until TTL expiry."""
+    count = keys.delete_all(redis, user_id=user.id)
+    if count:
+        _audit(
+            session,
+            user.id,
+            "provider_key.flushed_all",
+            {"removed_count": count},
+        )
     return Response(status_code=status.HTTP_204_NO_CONTENT)

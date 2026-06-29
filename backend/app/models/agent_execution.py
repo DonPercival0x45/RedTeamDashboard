@@ -42,10 +42,10 @@ class AgentExecution(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid7
     )
-    engagement_id: Mapped[uuid.UUID] = mapped_column(
+    engagement_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("engagements.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
         index=True,
     )
     agent: Mapped[AgentName] = mapped_column(

@@ -1,19 +1,28 @@
 """Wire schemas for BYO model + MCP credentials uploaded by the analyst.
 
-Mirrors ``app/models/user_provider_key.py``. Crucial invariant: server-bound
+Keys are now ephemeral — held in Redis under a per-user hash with a sliding
+TTL, never at rest in the DB. Crucial invariant unchanged: server-bound
 shapes (``ProviderKeyImport``, ``ProviderKeyCreate``, ``ProviderKeyUpdate``)
 accept the plaintext ``api_key`` field; the read shape (``ProviderKeyRead``)
 NEVER carries it — only ``key_last4`` for UI masking.
 """
 from __future__ import annotations
 
+import enum
 from datetime import datetime
 from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.models.user_provider_key import ProviderKeyKind
+
+class ProviderKeyKind(enum.StrEnum):
+    """``model_provider`` — LLM credentials (Anthropic, OpenAI, Azure, …).
+    ``mcp_server`` — external MCP server endpoints (GitHub MCP, web search,
+    …). Same storage shape, different consumers."""
+
+    model_provider = "model_provider"
+    mcp_server = "mcp_server"
 
 
 class ProviderKeyEntry(BaseModel):

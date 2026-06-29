@@ -17,3 +17,4 @@ class User(Base, TimestampMixin):
     display_name: Mapped[str | None] = mapped_column(String(200))
     entra_oid: Mapped[str | None] = mapped_column(String(64), unique=True, index=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    is_admin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)

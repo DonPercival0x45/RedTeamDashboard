@@ -21,7 +21,10 @@ import type {
   FindingImport,
   FindingPhase,
   FindingValidationStatus,
+  Me,
   Observation,
+  RoadmapSuggestion,
+  RoadmapSuggestionStatus,
   RunModel,
   RunStartResponse,
   Severity,
@@ -599,4 +602,69 @@ export async function loadAttachmentBlob(attachmentId: string): Promise<string> 
 
 export function deleteAttachment(attachmentId: string): Promise<void> {
   return request<void>(`/attachments/${attachmentId}`, { method: "DELETE" });
+}
+
+// ---------------------------------------------------------------------------
+// /me + roadmap suggestions
+// ---------------------------------------------------------------------------
+
+export function getMe(): Promise<Me> {
+  return request<Me>("/me");
+}
+
+export function flushMyProviderKeys(): Promise<void> {
+  // Wipe every cached BYO key for the acting user. Called from the
+  // sign-out path so a tab close doesn't leave plaintext keys reachable
+  // in Redis until TTL expiry. Best-effort — a failure here doesn't
+  // block sign-out (Entra still tears down the session).
+  return request<void>("/me/provider-keys", { method: "DELETE" });
+}
+
+export function listRoadmapSuggestions(
+  status?: RoadmapSuggestionStatus,
+): Promise<RoadmapSuggestion[]> {
+  const q = status ? `?status=${status}` : "";
+  return request<RoadmapSuggestion[]>(`/roadmap-suggestions${q}`);
+}
+
+export function createRoadmapSuggestion(body: {
+  body: string;
+}): Promise<RoadmapSuggestion> {
+  return request<RoadmapSuggestion>("/roadmap-suggestions", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function decideRoadmapSuggestion(
+  id: string,
+  decision: { status: "approved" | "rejected"; note?: string | null },
+): Promise<RoadmapSuggestion> {
+  return request<RoadmapSuggestion>(`/roadmap-suggestions/${id}/decision`, {
+    method: "PATCH",
+    body: JSON.stringify(decision),
+  });
+}
+
+export function deleteRoadmapSuggestion(id: string): Promise<void> {
+  return request<void>(`/roadmap-suggestions/${id}`, { method: "DELETE" });
+}
+
+export async function downloadRoadmapMarkdown(): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/roadmap-suggestions/export`, {
+    headers: await authHeaders(),
+  });
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`${response.status} ${response.statusText}: ${text}`);
+  }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "ROADMAP.md";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }

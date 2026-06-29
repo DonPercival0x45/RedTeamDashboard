@@ -323,10 +323,10 @@ def _make_chat_model(
     Strategic doesn't tool-call, it returns structured JSON. Imports lazily so
     the unused providers' SDKs aren't required at import time.
 
-    ``api_key`` / ``endpoint`` come from the engagement creator's stored
-    UserProviderKey (BYO). When None, the SDK falls back to env-var
-    auto-detection — fine for tests and for engagements whose creator was
-    deleted (FK SET NULL).
+    ``api_key`` / ``endpoint`` come from the KICKING analyst's ephemeral
+    Redis-cached key (resolved by :func:`_resolve_llm`). When the analyst
+    has no key for the provider, the resolver raises and this factory is
+    not called.
     """
     provider = provider.lower()
     if provider == "anthropic":
@@ -367,7 +367,14 @@ def _make_chat_model(
 
 
 class StrategicAgent:
-    """Pure-watcher planner. ``analyze_finding`` is the only entry point."""
+    """Pure-watcher planner. ``analyze_finding`` is the only entry point.
+
+    The ``acting_user_id`` on every call MUST be the kicking analyst — the
+    person who caused this Strategic invocation (clicked Analyze, kicked
+    the run that produced the finding, accepted the suggestion that became
+    the task). The engagement creator is no longer consulted. This closes
+    the cross-user-key-reuse path locked 2026-06-29.
+    """
 
     def __init__(
         self,
@@ -375,30 +382,33 @@ class StrategicAgent:
         provider: str | None = None,
         model_name: str | None = None,
         llm: Any | None = None,
+        redis_client: Any | None = None,
     ) -> None:
         """Use ``llm=...`` in tests to inject a fake; otherwise the agent
-        resolves the active provider/model from settings on first ``invoke``."""
+        resolves the active provider/model from settings on first ``invoke``.
+
+        ``redis_client`` is required for any real LLM call (the agent looks
+        up the kicking analyst's ephemeral key in Redis). Tests that inject
+        ``llm`` can omit it.
+        """
         self._llm = llm
         self._provider = provider
         self._model_name = model_name
+        self._redis = redis_client
 
     def _resolve_llm(
         self,
         *,
-        session: Session | None = None,
-        acting_user_id: uuid.UUID | None = None,
+        acting_user_id: uuid.UUID,
     ) -> tuple[Any, str, str]:
-        """Build the LLM, threading the acting user's stored API key (BYO).
+        """Build the LLM using the kicking analyst's ephemeral BYO key.
 
-        ``session`` + ``acting_user_id`` are the engagement creator's identity.
-        When both are provided, we look up their UserProviderKey row for the
-        resolved provider and pass the decrypted key into ``_make_chat_model``.
-        Raises ``NoProviderKeyError`` if the user has no key — the caller's
-        try/except will record this as a failed AgentExecution with the
-        message visible in the Costs tab.
+        ``acting_user_id`` is required and unambiguous — there is no
+        engagement-creator fallback. If the kicker has no Redis-cached key
+        for the resolved provider, :class:`NoProviderKeyError` propagates
+        and the caller records the failure on the AgentExecution row
+        (visible in the Costs tab).
 
-        When ``acting_user_id`` is None (e.g. engagement creator was deleted —
-        FK SET NULL), we skip the lookup and let SDK env-detection take over.
         Tests inject ``self._llm`` directly and bypass this whole path.
         """
         if self._llm is not None:
@@ -411,18 +421,24 @@ class StrategicAgent:
         model_name = self._model_name
         if not (provider and model_name):
             provider, model_name = default_provider_model()
-        api_key: str | None = None
-        endpoint: str | None = None
-        if session is not None and acting_user_id is not None:
-            from app.services.provider_key_resolver import resolve_for_user
-
-            resolved = resolve_for_user(
-                session, user_id=acting_user_id, provider=provider
+        if self._redis is None:
+            raise RuntimeError(
+                "StrategicAgent needs a redis_client to resolve the "
+                "acting analyst's BYO key — construct with "
+                "StrategicAgent(redis_client=...)"
             )
-            api_key = resolved.api_key
-            endpoint = resolved.endpoint
+        from app.services.ephemeral_provider_key import resolve_for_user
+
+        resolved = resolve_for_user(
+            self._redis, user_id=acting_user_id, provider=provider
+        )
         return (
-            _make_chat_model(provider, model_name, api_key=api_key, endpoint=endpoint),
+            _make_chat_model(
+                provider,
+                model_name,
+                api_key=resolved.api_key,
+                endpoint=resolved.endpoint,
+            ),
             provider,
             model_name,
         )
@@ -433,8 +449,14 @@ class StrategicAgent:
         *,
         finding: Finding,
         trigger: AgentTrigger,
+        acting_user_id: uuid.UUID,
     ) -> tuple[AgentExecution, list[Suggestion]]:
         """Run Strategic over a finding and persist suggestions + execution row.
+
+        ``acting_user_id`` is the kicking analyst — for ``finding`` trigger,
+        the analyst whose run produced the finding; for ``manual``, the
+        analyst who clicked Analyze. The BYO key lookup uses this id, not
+        the engagement creator's.
 
         Caller commits the session — we add but don't commit so this composes
         cleanly inside an API request transaction.
@@ -465,10 +487,13 @@ class StrategicAgent:
         session.flush()  # need execution.id below if we want to backref
 
         try:
-            # BYO key: Strategic uses the engagement creator's stored key.
-            # If the creator was deleted (FK SET NULL), fall through to env.
+            # BYO key: Strategic uses the KICKING analyst's ephemeral key.
+            # No engagement-creator fallback — that was the cross-user
+            # reuse bug. If the kicker has no key cached in Redis, this
+            # raises NoProviderKeyError and lands as a failed
+            # AgentExecution surfacing "re-upload at /settings/keys".
             llm, provider, model_name = self._resolve_llm(
-                session=session, acting_user_id=engagement.created_by
+                acting_user_id=acting_user_id
             )
             execution.model_provider = provider
             execution.model_name = model_name
@@ -525,6 +550,7 @@ class StrategicAgent:
         session: Session,
         *,
         task: Any,
+        acting_user_id: uuid.UUID,
         ttl_seconds: int = 3600,
         requires_container: bool | None = None,
     ) -> Any:
@@ -557,7 +583,10 @@ class StrategicAgent:
 
         if requires_container is None:
             allowed_tools, requires_container = self._provision_policy(
-                session, task=task, pack_defaults=pack_defaults
+                session,
+                task=task,
+                pack_defaults=pack_defaults,
+                acting_user_id=acting_user_id,
             )
         else:
             # Explicit override — bypass the LLM. Callers who pass this
@@ -591,6 +620,7 @@ class StrategicAgent:
         *,
         task: Any,
         pack_defaults: list[str],
+        acting_user_id: uuid.UUID,
     ) -> tuple[list[str], bool]:
         """Stage 3: ask the LLM to narrow the pack and pick the container
         target. Returns ``(allowed_tools, requires_container)``. Writes
@@ -628,10 +658,7 @@ class StrategicAgent:
 
         try:
             llm, provider, model_name = self._resolve_llm(
-                session=session,
-                acting_user_id=(
-                    engagement.created_by if engagement is not None else None
-                ),
+                acting_user_id=acting_user_id
             )
             execution.model_provider = provider
             execution.model_name = model_name
