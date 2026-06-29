@@ -257,7 +257,7 @@ export function DiscordChannelConnect() {
             />
             <span>
               Enabled — when off, no Discord notifications are sent and the
-              bot doesn't connect.
+              bot doesn&apos;t connect.
             </span>
           </label>
 

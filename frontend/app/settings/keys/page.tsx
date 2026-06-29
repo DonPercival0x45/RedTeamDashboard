@@ -76,7 +76,7 @@ export default function SettingsKeysPage() {
         <Card>
           <CardContent className="py-6 text-sm text-muted-foreground">
             Your role is <strong className="text-foreground">guest</strong>{" "}
-            — you can read engagements but can't upload, list, or use BYO
+            — you can read engagements but can&apos;t upload, list, or use BYO
             provider keys. Ask an admin to upgrade you to{" "}
             <strong className="text-foreground">user</strong> in the
             Management tab.

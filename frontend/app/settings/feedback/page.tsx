@@ -214,7 +214,7 @@ export default function SettingsFeedbackPage() {
         <Card>
           <CardContent className="py-4 text-sm text-muted-foreground">
             Your role is <strong className="text-foreground">guest</strong>{" "}
-            — you can read feedback but can't submit new entries. Ask an
+            — you can read feedback but can&apos;t submit new entries. Ask an
             admin to upgrade you.
           </CardContent>
         </Card>
