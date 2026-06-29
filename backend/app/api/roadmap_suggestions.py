@@ -166,6 +166,64 @@ def get_suggestion(
     return row
 
 
+# ── re-evaluate (re-run planner agent on an existing row) ────────────────
+
+
+@router.post(
+    "/roadmap-suggestions/{suggestion_id}/re-evaluate",
+    response_model=RoadmapSuggestionRead,
+)
+def re_evaluate_suggestion(
+    suggestion_id: uuid.UUID,
+    session: DbSession,
+    redis_client: RedisClient,
+    user: CurrentNonGuestUser,
+) -> RoadmapSuggestion:
+    """Re-run the planner agent on an existing feedback row.
+
+    Used when the first eval failed (no BYO key cached at the time),
+    when the project context has shifted since the row was submitted,
+    or when the analyst wants a fresh take. The kicker's BYO key drives
+    the call — not the original author's — so a teammate with an active
+    key can fix a stale row even if the author is offline.
+
+    The original body is preserved verbatim; only agent_summary /
+    agent_pros / agent_cons get replaced.
+    """
+    row = session.get(RoadmapSuggestion, suggestion_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="suggestion not found")
+
+    from app.agents.planner import PlanningAgent, render_approved_roadmap
+
+    approved_md = render_approved_roadmap(_load_all(session))
+    agent = PlanningAgent(redis_client=redis_client)
+    # Temporarily swap the row's author into the kicker's id so the
+    # planner's _resolve_llm picks up the right BYO key. Restore after.
+    original_author = row.author_user_id
+    row.author_user_id = user.id
+    try:
+        execution = agent.evaluate(
+            session, suggestion=row, approved_roadmap=approved_md
+        )
+    finally:
+        row.author_user_id = original_author
+
+    _audit(
+        session,
+        user.id,
+        "roadmap_suggestion.re_evaluated",
+        {
+            "id": str(row.id),
+            "execution_id": str(execution.id),
+            "execution_status": execution.status.value,
+        },
+    )
+    session.commit()
+    session.refresh(row)
+    return row
+
+
 # ── decide (admin only) ──────────────────────────────────────────────────
 
 

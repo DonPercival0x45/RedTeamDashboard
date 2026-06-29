@@ -20,6 +20,7 @@ import {
   downloadRoadmapMarkdown,
   getMe,
   listRoadmapSuggestions,
+  reEvaluateRoadmapSuggestion,
 } from "@/lib/api";
 import type {
   Me,
@@ -115,6 +116,18 @@ export default function SettingsFeedbackPage() {
           status: decision,
           note: note || null,
         });
+        await reload();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [reload],
+  );
+
+  const onReEvaluate = useCallback(
+    async (row: RoadmapSuggestion) => {
+      try {
+        await reEvaluateRoadmapSuggestion(row.id);
         await reload();
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
@@ -266,6 +279,7 @@ export default function SettingsFeedbackPage() {
               me={me}
               onDecide={onDecide}
               onDelete={onDelete}
+              onReEvaluate={onReEvaluate}
             />
           ))}
         </CardContent>
@@ -281,6 +295,7 @@ function SuggestionRow({
   me,
   onDecide,
   onDelete,
+  onReEvaluate,
 }: {
   row: RoadmapSuggestion;
   me: Me | null;
@@ -289,11 +304,23 @@ function SuggestionRow({
     decision: "approved" | "rejected",
   ) => void;
   onDelete: (row: RoadmapSuggestion) => void;
+  onReEvaluate: (row: RoadmapSuggestion) => void;
 }) {
   const isAdmin = me?.is_admin ?? false;
+  const isGuest = me?.role === "guest";
   const isAuthor = me?.id !== undefined && row.author_user_id === me.id;
   const canDelete =
     isAdmin || (isAuthor && row.status === "pending_review");
+  const [reEvaluating, setReEvaluating] = useState(false);
+
+  const handleReEvaluate = async () => {
+    setReEvaluating(true);
+    try {
+      await onReEvaluate(row);
+    } finally {
+      setReEvaluating(false);
+    }
+  };
 
   const evaluating =
     row.agent_summary === null &&
@@ -370,6 +397,18 @@ function SuggestionRow({
           )}
         </p>
         <div className="flex gap-2">
+          {!isGuest && (
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={handleReEvaluate}
+              disabled={reEvaluating}
+              title="Re-run the planner agent on this entry — useful if the first eval failed or the project context has shifted."
+              className="text-muted-foreground hover:text-foreground"
+            >
+              {reEvaluating ? "Re-running…" : "AI Feedback"}
+            </Button>
+          )}
           {isAdmin && row.status === "pending_review" && (
             <>
               <Button

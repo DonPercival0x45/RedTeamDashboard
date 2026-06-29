@@ -24,6 +24,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
+from app.api.admin_users import router as admin_users_router
 from app.api.api_keys import router as api_keys_router
 from app.api.approvals import router as approvals_router
 from app.api.authorizations import router as authorizations_router
@@ -79,6 +80,7 @@ app.include_router(entities_router)
 app.include_router(me_router)
 app.include_router(roadmap_suggestions_router)
 app.include_router(integrations_router)
+app.include_router(admin_users_router)
 
 # MCP server — auth-gated SSE endpoint for agent clients (Claude Code, etc.)
 # Agents connect via: claude mcp add rtd --transport sse --url https://<fqdn>/mcp/sse

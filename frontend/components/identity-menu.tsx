@@ -1,9 +1,16 @@
 "use client";
 
 import Link from "next/link";
-import type { ReactNode } from "react";
-import { AlertCircle, HelpCircle, Key, MessageSquare } from "lucide-react";
+import { useEffect, useState, type ReactNode } from "react";
+import {
+  AlertCircle,
+  HelpCircle,
+  Key,
+  MessageSquare,
+  UserCog,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { getMe } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 
 // Hover tooltip for the icon-only menu entries. Pure CSS via group-hover
@@ -43,6 +50,15 @@ function IconLink({
 // without forcing the analyst to learn the icons cold.
 export function IdentityMenu() {
   const { enabled, identity, signOut } = useAuth();
+  const [isAdmin, setIsAdmin] = useState(false);
+
+  useEffect(() => {
+    if (!identity) return;
+    void getMe()
+      .then((m) => setIsAdmin(m.is_admin))
+      .catch(() => setIsAdmin(false));
+  }, [identity]);
+
   if (!identity) return null;
   return (
     <div className="flex items-center gap-3 text-sm">
@@ -62,6 +78,11 @@ export function IdentityMenu() {
         <AlertCircle className="h-4 w-4" />
         <HelpCircle className="-ml-1.5 h-4 w-4" />
       </IconLink>
+      {isAdmin && (
+        <IconLink href="/settings/management" label="Management (admin)">
+          <UserCog className="h-4 w-4" />
+        </IconLink>
+      )}
       {enabled && (
         <Button variant="outline" size="sm" onClick={signOut}>
           Sign out

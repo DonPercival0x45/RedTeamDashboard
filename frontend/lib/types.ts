@@ -515,3 +515,15 @@ export interface IntegrationUpsert {
   enabled: boolean;
   config: Record<string, unknown>;
 }
+
+// ── Admin user management ────────────────────────────────────────────────
+
+export interface AdminUser {
+  id: string;
+  email: string;
+  display_name: string | null;
+  role: UserRole;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}

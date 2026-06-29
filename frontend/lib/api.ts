@@ -18,6 +18,7 @@ import type {
   EngagementStatus,
   Entity,
   Finding,
+  AdminUser,
   FindingImport,
   FindingPhase,
   FindingValidationStatus,
@@ -36,6 +37,7 @@ import type {
   SuggestionStatus,
   Task,
   TaskStatus,
+  UserRole,
 } from "@/lib/types";
 
 // Auth-only headers (no Content-Type — request() adds that for JSON bodies).
@@ -627,6 +629,15 @@ export function deleteRoadmapSuggestion(id: string): Promise<void> {
   return request<void>(`/roadmap-suggestions/${id}`, { method: "DELETE" });
 }
 
+export function reEvaluateRoadmapSuggestion(
+  id: string,
+): Promise<RoadmapSuggestion> {
+  return request<RoadmapSuggestion>(
+    `/roadmap-suggestions/${id}/re-evaluate`,
+    { method: "POST" },
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Integrations (admin-only)
 // ---------------------------------------------------------------------------
@@ -652,6 +663,24 @@ export function upsertIntegration(
 
 export function deleteIntegration(type: IntegrationType): Promise<void> {
   return request<void>(`/integrations/${type}`, { method: "DELETE" });
+}
+
+// ---------------------------------------------------------------------------
+// Admin users (admin-only)
+// ---------------------------------------------------------------------------
+
+export function listAdminUsers(): Promise<AdminUser[]> {
+  return request<AdminUser[]>("/admin/users");
+}
+
+export function updateUserRole(
+  userId: string,
+  role: UserRole,
+): Promise<AdminUser> {
+  return request<AdminUser>(`/admin/users/${userId}/role`, {
+    method: "PATCH",
+    body: JSON.stringify({ role }),
+  });
 }
 
 export async function downloadRoadmapMarkdown(): Promise<void> {
