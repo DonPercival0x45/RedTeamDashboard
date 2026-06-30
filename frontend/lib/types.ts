@@ -344,6 +344,11 @@ export interface AnalyzeFindingResponse {
   suggestions: Suggestion[];
 }
 
+export interface TriageFindingResponse {
+  execution_id: string;
+  summary: string;
+}
+
 export interface AcceptSuggestionResponse {
   suggestion: Suggestion;
   task: Task | null;

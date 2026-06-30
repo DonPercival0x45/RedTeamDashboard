@@ -57,6 +57,7 @@ from app.schemas.orchestrator import (
     AnalyzeFindingResponse,
     SuggestionRead,
     TaskRead,
+    TriageFindingResponse,
 )
 
 router = APIRouter()
@@ -127,6 +128,85 @@ def analyze_finding(
     return AnalyzeFindingResponse(
         execution_id=execution.id,
         suggestions=[SuggestionRead.model_validate(s) for s in suggestions],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Triage a finding (LLM-written summary for the slide-over textarea)
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/findings/{finding_id}/triage",
+    response_model=TriageFindingResponse,
+)
+def triage_finding(
+    finding_id: uuid.UUID,
+    session: DbSession,
+    redis_client: RedisClient,
+    user: CurrentNonGuestUser,
+) -> TriageFindingResponse:
+    """Generate an analyst-facing summary for a finding via the LLM.
+
+    Wired to the "AI Triage" button in the Findings slide-over: the
+    response's ``summary`` drops into the Summary textarea, the analyst
+    edits and saves manually (this endpoint does NOT mutate
+    ``findings.summary``). One ``AgentExecution`` row is written so the
+    Costs tab roll-up keeps a single accounting view of LLM spend.
+
+    BYO key resolves against the clicking analyst's ephemeral Redis
+    cache. A missing key surfaces as a 400 pointing at /settings/keys.
+    """
+    from app.services.ephemeral_provider_key import NoProviderKeyError
+    from app.services.triage import triage_finding_summary
+
+    finding = session.get(Finding, finding_id)
+    if finding is None:
+        raise HTTPException(status_code=404, detail="finding not found")
+
+    try:
+        execution, summary = triage_finding_summary(
+            session,
+            redis_client,
+            finding=finding,
+            acting_user_id=user.id,
+        )
+    except NoProviderKeyError as exc:
+        session.rollback()
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"No provider key configured for the LLM call ({exc}). "
+                "Add one under /settings/keys."
+            ),
+        ) from exc
+    except Exception as exc:
+        # The service marked the AgentExecution row failed before re-raising,
+        # so a row exists for the Costs tab to surface the failed call. Commit
+        # that row so the analyst can see it, then return 502.
+        session.commit()
+        raise HTTPException(
+            status_code=502, detail=f"triage failed: {exc}"
+        ) from exc
+
+    session.add(
+        AuditLog(
+            engagement_id=finding.engagement_id,
+            actor_type=ActorType.user,
+            actor_id=str(user.id),
+            event_type="finding.triaged",
+            payload={
+                "finding_id": str(finding.id),
+                "execution_id": str(execution.id),
+                "summary_chars": len(summary),
+            },
+        )
+    )
+    session.commit()
+
+    return TriageFindingResponse(
+        execution_id=execution.id,
+        summary=summary,
     )
 
 

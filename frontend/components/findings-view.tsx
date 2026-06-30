@@ -12,6 +12,7 @@ import {
   dismissSuggestion,
   listAttachments,
   loadAttachmentBlob,
+  triageFinding,
   updateFinding,
   uploadAttachment,
   validateFinding,
@@ -473,6 +474,10 @@ function FindingSlideOver({
   const [savingSummary, setSavingSummary] = useState(false);
   const [summaryError, setSummaryError] = useState<string | null>(null);
 
+  // AI Triage — populates the textarea with an LLM-written summary; the
+  // analyst then edits + clicks Save. Does NOT auto-save.
+  const [triaging, setTriaging] = useState(false);
+
   // Attachments
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -496,6 +501,19 @@ function FindingSlideOver({
       setSummaryError(err instanceof Error ? err.message : String(err));
     } finally {
       setSavingSummary(false);
+    }
+  };
+
+  const doTriage = async () => {
+    setTriaging(true);
+    setSummaryError(null);
+    try {
+      const res = await triageFinding(finding.id);
+      setSummary(res.summary);
+    } catch (err) {
+      setSummaryError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setTriaging(false);
     }
   };
 
@@ -635,13 +653,22 @@ function FindingSlideOver({
             rows={4}
             className="mt-2 text-sm"
           />
-          <div className="mt-2 flex items-center gap-2">
+          <div className="mt-2 flex flex-wrap items-center gap-2">
             <Button
               size="sm"
               disabled={savingSummary || summary === (finding.summary ?? "")}
               onClick={doSaveSummary}
             >
               {savingSummary ? "Saving…" : "Save summary"}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={triaging || savingSummary}
+              onClick={doTriage}
+              title="Ask the LLM to draft a report-ready summary into the textarea. You can edit, then Save."
+            >
+              {triaging ? "Triaging…" : "AI Triage"}
             </Button>
             {summaryError && (
               <p className="text-xs text-critical">{summaryError}</p>
@@ -701,14 +728,6 @@ function FindingSlideOver({
             stop at the approval gate.
           </p>
           <div className="mt-3 flex gap-2">
-            <Button
-              size="sm"
-              variant="outline"
-              disabled
-              title="Analyst-driven attack path — coming next"
-            >
-              Analyst (manual)
-            </Button>
             <Button
               size="sm"
               variant="outline"

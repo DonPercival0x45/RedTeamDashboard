@@ -62,6 +62,16 @@ class AnalyzeFindingResponse(BaseModel):
     suggestions: list[SuggestionRead]
 
 
+class TriageFindingResponse(BaseModel):
+    """What ``POST /findings/{id}/triage`` returns. The frontend drops
+    ``summary`` into the slide-over textarea; the analyst edits + saves
+    manually. ``execution_id`` is included so the Costs tab can attribute
+    the call back to a single row."""
+
+    execution_id: UUID
+    summary: str
+
+
 class AcceptSuggestionResponse(BaseModel):
     """Returned by ``POST /suggestions/{id}/accept``.
 

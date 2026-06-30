@@ -9,6 +9,7 @@ import { getAccessToken } from "@/lib/msal";
 import type {
   AcceptSuggestionResponse,
   AnalyzeFindingResponse,
+  TriageFindingResponse,
   Approval,
   ApprovalStatus,
   Attachment,
@@ -362,6 +363,14 @@ export function analyzeFinding(
   findingId: string,
 ): Promise<AnalyzeFindingResponse> {
   return request<AnalyzeFindingResponse>(`/findings/${findingId}/analyze`, {
+    method: "POST",
+  });
+}
+
+export function triageFinding(
+  findingId: string,
+): Promise<TriageFindingResponse> {
+  return request<TriageFindingResponse>(`/findings/${findingId}/triage`, {
     method: "POST",
   });
 }
