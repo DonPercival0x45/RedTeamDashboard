@@ -6,6 +6,11 @@ model from ``settings`` — used when a run doesn't pick one explicitly.
 
 Tests inject a fake by passing ``llm=...`` to ``build_graph`` and never reach
 this module.
+
+v0.8.1: providers expanded to match the /settings/keys Quick Add list (12
+total). The 8 OpenAI-compatible vendors (xAI, Together, Groq, DeepSeek,
+Mistral, Google, Cohere, Custom) route through ChatOpenAI with a
+per-provider base_url — no new langchain packages required.
 """
 from __future__ import annotations
 
@@ -13,6 +18,20 @@ from collections.abc import Mapping
 from typing import Any
 
 from app.orchestrator.tools import ToolSpec, all_tools
+
+# v0.8.1: per-provider default base URLs for OpenAI-compatible vendors.
+# An analyst-supplied endpoint on their BYO key wins over these defaults.
+# ``custom`` has no default — the analyst MUST upload an endpoint.
+_OPENAI_COMPATIBLE_BASES: dict[str, str] = {
+    "xai": "https://api.x.ai/v1",
+    "together": "https://api.together.xyz/v1",
+    "groq": "https://api.groq.com/openai/v1",
+    "deepseek": "https://api.deepseek.com/v1",
+    "mistral": "https://api.mistral.ai/v1",
+    "google": "https://generativelanguage.googleapis.com/v1beta/openai",
+    "cohere": "https://api.cohere.com/compatibility/v1",
+    "custom": "",
+}
 
 
 def tool_schemas(registry: Mapping[str, ToolSpec] | None = None) -> list[dict[str, Any]]:
@@ -111,10 +130,25 @@ def make_llm(
             azure_deployment=model_name or settings.azure_openai_deployment,
             api_version=settings.azure_openai_api_version,
         )
+    elif provider in _OPENAI_COMPATIBLE_BASES:
+        from langchain_openai import ChatOpenAI
+
+        base = endpoint or _OPENAI_COMPATIBLE_BASES[provider]
+        if not base:
+            raise RuntimeError(
+                f"provider={provider!r} requires an endpoint on the BYO "
+                "key — re-upload at /settings/keys with the API base URL "
+                "filled in."
+            )
+        kwargs = {"model": model_name, "base_url": base}
+        if api_key:
+            kwargs["api_key"] = api_key
+        llm = ChatOpenAI(**kwargs)
     else:
         raise ValueError(
             f"unknown LLM provider {provider!r}; expected one of: "
-            "anthropic, openai, ollama, azure"
+            "anthropic, openai, ollama, azure, google, xai, mistral, "
+            "cohere, together, groq, deepseek, custom"
         )
 
     return llm.bind_tools(tool_schemas(registry))

@@ -42,13 +42,16 @@ const SEVERITY_RANK: Record<Severity, number> = {
   info: 0,
 };
 
-// Monochrome by default; the lone ember accent is reserved for critical.
+// v0.8.1: severity colour map locked per user spec.
+//   critical = red   high = pink   medium = yellow   low = green   info = blue
+// Used by the severity Badge in the findings table and by the
+// SeverityMetricCard tiles up top.
 const SEVERITY_CLASS: Record<Severity, string> = {
-  critical: "border-critical/50 bg-critical/15 text-critical",
-  high: "border-zinc-500/40 text-zinc-100",
-  medium: "border-zinc-600/40 text-zinc-300",
-  low: "border-zinc-700/40 text-zinc-400",
-  info: "border-zinc-800 text-zinc-500",
+  critical: "border-rose-500/50 bg-rose-500/15 text-rose-200",
+  high: "border-pink-400/50 bg-pink-400/15 text-pink-200",
+  medium: "border-yellow-400/50 bg-yellow-400/15 text-yellow-100",
+  low: "border-emerald-500/50 bg-emerald-500/15 text-emerald-200",
+  info: "border-sky-500/50 bg-sky-500/15 text-sky-200",
 };
 
 const STATUS_LABEL: Record<FindingValidationStatus, string> = {
@@ -123,9 +126,8 @@ export function FindingsView({
   const counts = {
     critical: findings.filter((f) => f.severity === "critical").length,
     high: findings.filter((f) => f.severity === "high").length,
-    medlow: findings.filter((f) =>
-      ["medium", "low", "info"].includes(f.severity),
-    ).length,
+    medium: findings.filter((f) => f.severity === "medium").length,
+    low: findings.filter((f) => f.severity === "low").length,
     pending: findings.filter((f) => f.status === "pending_validation").length,
   };
 
@@ -163,12 +165,23 @@ export function FindingsView({
 
   return (
     <div className="space-y-6">
-      {/* Key metrics */}
+      {/* Key metrics. v0.8.1: colour-coded per severity. The combined
+          Med/Low tile splits diagonally so Medium (yellow) sits in the
+          top-left and Low (green) in the bottom-right. Pending validation
+          uses an amber fill per the analyst preference. */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <MetricCard label="Critical" value={counts.critical} accent />
-        <MetricCard label="High" value={counts.high} />
-        <MetricCard label="Med / Low" value={counts.medlow} />
-        <MetricCard label="Pending validation" value={counts.pending} />
+        <SeverityMetricCard
+          label="Critical"
+          value={counts.critical}
+          tone="critical"
+        />
+        <SeverityMetricCard label="High" value={counts.high} tone="high" />
+        <MediumLowSplitCard medium={counts.medium} low={counts.low} />
+        <SeverityMetricCard
+          label="Pending validation"
+          value={counts.pending}
+          tone="pending"
+        />
       </div>
 
       {/* Filters + sort + import toggle */}
@@ -335,27 +348,86 @@ export function FindingsView({
   );
 }
 
-function MetricCard({
+type SeverityTone = "critical" | "high" | "pending";
+
+const SEVERITY_TONE_CLASS: Record<SeverityTone, string> = {
+  critical: "border-rose-500/50 bg-rose-500/10 text-rose-100",
+  high: "border-pink-400/50 bg-pink-400/10 text-pink-100",
+  pending: "border-amber-400/50 bg-amber-400/10 text-amber-100",
+};
+
+const SEVERITY_TONE_VALUE_CLASS: Record<SeverityTone, string> = {
+  critical: "text-rose-50",
+  high: "text-pink-50",
+  pending: "text-amber-50",
+};
+
+function SeverityMetricCard({
   label,
   value,
-  accent,
+  tone,
 }: {
   label: string;
   value: number;
-  accent?: boolean;
+  tone: SeverityTone;
 }) {
   return (
-    <div className="rounded-lg border border-border p-4">
+    <div
+      className={cn(
+        "rounded-lg border p-4 transition-colors",
+        SEVERITY_TONE_CLASS[tone],
+      )}
+    >
       <div
         className={cn(
           "text-2xl font-semibold tabular-nums",
-          accent && value > 0 ? "text-critical" : "text-foreground",
+          SEVERITY_TONE_VALUE_CLASS[tone],
         )}
       >
         {value}
       </div>
-      <div className="mt-1 text-xs uppercase tracking-wide text-muted-foreground">
+      <div className="mt-1 text-xs uppercase tracking-wide opacity-80">
         {label}
+      </div>
+    </div>
+  );
+}
+
+// Combined Medium + Low card, split diagonally:
+//   Medium (yellow) in the top-left half with its label + count in the
+//   top-left corner; Low (green) in the bottom-right half with its label +
+//   count in the bottom-right corner. The diagonal is rendered as a CSS
+//   linear-gradient with a hard stop at 50%.
+function MediumLowSplitCard({
+  medium,
+  low,
+}: {
+  medium: number;
+  low: number;
+}) {
+  return (
+    <div
+      className="relative h-[88px] overflow-hidden rounded-lg border border-yellow-400/40"
+      style={{
+        background:
+          "linear-gradient(135deg, rgba(250, 204, 21, 0.18) 0%, rgba(250, 204, 21, 0.18) 49.5%, rgba(255, 255, 255, 0.18) 49.5%, rgba(255, 255, 255, 0.18) 50.5%, rgba(16, 185, 129, 0.18) 50.5%, rgba(16, 185, 129, 0.18) 100%)",
+      }}
+    >
+      <div className="absolute left-3 top-2 leading-tight">
+        <div className="text-2xl font-semibold tabular-nums text-yellow-50">
+          {medium}
+        </div>
+        <div className="text-[10px] uppercase tracking-wide text-yellow-100/85">
+          Medium
+        </div>
+      </div>
+      <div className="absolute bottom-2 right-3 text-right leading-tight">
+        <div className="text-[10px] uppercase tracking-wide text-emerald-100/85">
+          Low
+        </div>
+        <div className="text-2xl font-semibold tabular-nums text-emerald-50">
+          {low}
+        </div>
       </div>
     </div>
   );

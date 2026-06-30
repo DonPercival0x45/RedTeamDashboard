@@ -26,18 +26,36 @@ interface LastDispatched {
 // Default model names by provider. Pre-filled when the user picks a
 // provider; the actual model name is free-form (no backend whitelist) so
 // rotating to a new release is just a text edit, not a code change.
+// v0.8.1: list mirrors the /settings/keys Quick Add presets so an
+// analyst's stored key always has a matching dropdown entry here.
 const DEFAULT_MODELS: Record<LLMProvider, string> = {
   anthropic: "claude-opus-4-7",
   openai: "gpt-4o-mini",
   azure: "",
   ollama: "llama3.1:8b",
+  google: "gemini-2.0-pro",
+  xai: "grok-3",
+  mistral: "mistral-large-latest",
+  cohere: "command-r-plus",
+  together: "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
+  groq: "llama-3.3-70b-versatile",
+  deepseek: "deepseek-chat",
+  custom: "",
 };
 
 const PROVIDER_OPTIONS: { value: LLMProvider; label: string }[] = [
-  { value: "anthropic", label: "Anthropic (Claude)" },
+  { value: "anthropic", label: "Anthropic" },
   { value: "openai", label: "OpenAI" },
+  { value: "google", label: "Google (Gemini)" },
   { value: "azure", label: "Azure OpenAI" },
+  { value: "xai", label: "xAI (Grok)" },
+  { value: "mistral", label: "Mistral" },
+  { value: "cohere", label: "Cohere" },
+  { value: "together", label: "Together AI" },
+  { value: "groq", label: "Groq" },
+  { value: "deepseek", label: "DeepSeek" },
   { value: "ollama", label: "Ollama (local)" },
+  { value: "custom", label: "Custom (OpenAI-compatible)" },
 ];
 
 export function RunPrompt({
