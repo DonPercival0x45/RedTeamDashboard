@@ -16,6 +16,7 @@ import type {
   CostRollup,
   Engagement,
   EngagementStatus,
+  EngagementTimeFrame,
   Entity,
   Finding,
   AdminUser,
@@ -85,6 +86,9 @@ export function createEngagement(body: {
   name: string;
   slug?: string;
   description?: string;
+  time_frame?: EngagementTimeFrame;
+  start_date?: string | null;
+  end_date?: string | null;
 }): Promise<Engagement> {
   return request<Engagement>("/engagements", {
     method: "POST",
@@ -700,4 +704,19 @@ export async function downloadRoadmapMarkdown(): Promise<void> {
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+}
+
+export interface RoadmapPushResult {
+  commit_sha: string | null;
+  html_url: string | null;
+  owner: string;
+  repo: string;
+  branch: string;
+  path: string;
+}
+
+export function pushRoadmapToGitHub(): Promise<RoadmapPushResult> {
+  return request<RoadmapPushResult>("/roadmap-suggestions/push", {
+    method: "POST",
+  });
 }

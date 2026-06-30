@@ -267,6 +267,9 @@ def create_engagement(
         slug=slug,
         description=body.description,
         status=EngagementStatus.active,
+        time_frame=body.time_frame,
+        start_date=body.start_date,
+        end_date=body.end_date,
         created_by=user.id,
     )
     session.add(eng)

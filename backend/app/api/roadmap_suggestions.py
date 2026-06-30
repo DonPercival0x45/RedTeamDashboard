@@ -153,6 +153,93 @@ def export_roadmap(session: DbSession, user: CurrentUser) -> PlainTextResponse:
     )
 
 
+# Same path-ordering caveat applies — declare /push before /{suggestion_id}.
+@router.post("/roadmap-suggestions/push", status_code=status.HTTP_200_OK)
+def push_roadmap_to_github(
+    session: DbSession,
+    admin: CurrentAdminUser,
+) -> dict[str, Any]:
+    """Render the approved roadmap and commit it to GitHub.
+
+    Reads the ``github_push`` integration row for ``{pat_token, owner,
+    repo, branch, path}``, asks the Contents API for the file's current
+    SHA, then PUTs the rendered markdown body. Returns the resulting
+    commit SHA + html_url so the UI can link the analyst straight to the
+    new commit.
+    """
+    from app.models import Integration, IntegrationType
+    from app.services.github_push import GitHubPushError, push_roadmap
+
+    integ = session.execute(
+        select(Integration).where(Integration.type == IntegrationType.github_push)
+    ).scalar_one_or_none()
+    if integ is None or not integ.enabled:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "GitHub push integration not configured or disabled. "
+                "Set it up under /settings/feedback."
+            ),
+        )
+    cfg = integ.config or {}
+    missing = [
+        k for k in ("pat_token", "owner", "repo", "branch", "path") if not cfg.get(k)
+    ]
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"GitHub integration missing fields: {', '.join(missing)}",
+        )
+
+    body = render_approved_roadmap(_load_all(session)) or (
+        "# Red Team Dashboard — Approved Roadmap\n\n"
+        "(no approved suggestions yet)\n"
+    )
+
+    try:
+        commit = push_roadmap(
+            pat_token=cfg["pat_token"],
+            owner=cfg["owner"],
+            repo=cfg["repo"],
+            path=cfg["path"],
+            branch=cfg["branch"],
+            body=body,
+            commit_message=(
+                f"feedback: refresh ROADMAP.md ({len(body.splitlines())} lines)"
+            ),
+        )
+    except GitHubPushError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    commit_obj = commit.get("commit") or {}
+    content_obj = commit.get("content") or {}
+    commit_sha = commit_obj.get("sha") or content_obj.get("sha")
+    html_url = commit_obj.get("html_url") or content_obj.get("html_url")
+
+    _audit(
+        session,
+        admin.id,
+        "roadmap.pushed_to_github",
+        {
+            "owner": cfg["owner"],
+            "repo": cfg["repo"],
+            "branch": cfg["branch"],
+            "path": cfg["path"],
+            "commit_sha": commit_sha,
+            "body_bytes": len(body.encode("utf-8")),
+        },
+    )
+    session.commit()
+    return {
+        "commit_sha": commit_sha,
+        "html_url": html_url,
+        "owner": cfg["owner"],
+        "repo": cfg["repo"],
+        "branch": cfg["branch"],
+        "path": cfg["path"],
+    }
+
+
 @router.get(
     "/roadmap-suggestions/{suggestion_id}",
     response_model=RoadmapSuggestionRead,

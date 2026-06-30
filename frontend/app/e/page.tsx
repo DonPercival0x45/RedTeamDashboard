@@ -41,6 +41,21 @@ import type { Engagement, Finding } from "@/lib/types";
 // statically exported for Azure SWA (no dynamic route segments). The engagement
 // opens on Findings — the work product is front and center (see CHARTER).
 
+function formatTimeFrame(eng: Engagement): string {
+  switch (eng.time_frame) {
+    case "repeatable":
+      return "repeatable";
+    case "point_in_time_continuous":
+      return "point-in-time, continuous";
+    case "point_in_time":
+      return "point-in-time";
+    case "custom":
+      return eng.start_date && eng.end_date
+        ? `custom ${eng.start_date} → ${eng.end_date}`
+        : "custom";
+  }
+}
+
 function ReportView({ slug }: { slug: string }) {
   const [exportBusy, setExportBusy] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
@@ -293,7 +308,7 @@ function EngagementDetail({ slug }: { slug: string }) {
             {engagement.name}
           </h1>
           <p className="mt-1 font-mono text-xs text-muted-foreground">
-            {engagement.slug} · {engagement.status} · stream {streamState}
+            {engagement.slug} · {engagement.status} · {formatTimeFrame(engagement)} · stream {streamState}
           </p>
           {engagement.description && (
             <p className="mt-2 max-w-2xl text-sm text-muted-foreground">

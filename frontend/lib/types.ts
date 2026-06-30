@@ -38,12 +38,21 @@ export type ApprovalStatus =
   | "edited"
   | "auto";
 
+export type EngagementTimeFrame =
+  | "repeatable"
+  | "point_in_time_continuous"
+  | "point_in_time"
+  | "custom";
+
 export interface Engagement {
   id: string;
   name: string;
   slug: string;
   description: string | null;
   status: EngagementStatus;
+  time_frame: EngagementTimeFrame;
+  start_date: string | null;
+  end_date: string | null;
   created_by: string | null;
   archived_at: string | null;
   flushed_at: string | null;
@@ -495,7 +504,7 @@ export interface RoadmapSuggestion {
 
 // ── External integrations (Discord today) ────────────────────────────────
 
-export type IntegrationType = "discord";
+export type IntegrationType = "discord" | "github_push";
 
 export interface Integration {
   id: string;
