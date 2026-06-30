@@ -1538,12 +1538,45 @@ def start_run(
     # mount root) once auth passes.
     mcp_url = f"{settings.public_base_url.rstrip('/')}/mcp/sse"
 
-    # Commit lease + audit BEFORE enqueueing on Redis. The worker reads the
-    # envelope in another process within ~2ms; if we xadd before commit, the
-    # worker's `validate_token` lookup races the API session's commit and
-    # returns None (lease not yet visible) — surfaced as a confusing
-    # "invalid, released, or expired" ValueError. Crash between commit and
-    # xadd leaves an orphan lease that the periodic sweeper reclaims.
+    # v0.8.1: stamp an AgentExecution row for the run itself so the Status
+    # tab paints a green "active" box AS SOON AS the analyst clicks Run.
+    # Without this the Status tab is empty for the entire duration of the
+    # worker scan — only Strategic / Triage rows that fire AFTER findings
+    # land become visible. Uses AgentName.tactical (the closest semantic
+    # fit — Tactical dispatches; Strategic plans) and stashes the
+    # thread_id in input.thread_id so a future commit can lazily mark it
+    # completed/failed by matching against run.completed/run.errored
+    # events on the outbound stream. For v0.8.1 the row stays in
+    # 'running' status until that lazy update lands — analyst sees
+    # activity, not a stale-but-correct state.
+    from app.models import AgentExecution, AgentExecutionStatus, AgentName, AgentTrigger
+
+    run_execution = AgentExecution(
+        engagement_id=eng.id,
+        agent=AgentName.tactical,
+        trigger=AgentTrigger.manual,
+        input={
+            "thread_id": str(thread_id),
+            "prompt_len": len(body.prompt),
+            "model": {
+                "provider": effective_model.provider,
+                "name": effective_model.name,
+            },
+        },
+        model_provider=effective_model.provider,
+        model_name=effective_model.name,
+        status=AgentExecutionStatus.running,
+        started_at=datetime.now(tz=UTC),
+    )
+    session.add(run_execution)
+
+    # Commit lease + audit + the run-execution row BEFORE enqueueing on
+    # Redis. The worker reads the envelope in another process within
+    # ~2ms; if we xadd before commit, the worker's `validate_token`
+    # lookup races the API session's commit and returns None (lease not
+    # yet visible) — surfaced as a confusing "invalid, released, or
+    # expired" ValueError. Crash between commit and xadd leaves an
+    # orphan lease that the periodic sweeper reclaims.
     session.add(
         AuditLog(
             engagement_id=eng.id,
