@@ -20,7 +20,7 @@ endpoints.
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -277,6 +277,121 @@ def _approval_to_entity(row: Approval) -> StatusEntity:
 # ── read endpoint ────────────────────────────────────────────────────────
 
 
+# v0.8.3: hard timeout for dispatched/running Tasks the worker never
+# completed. Real OSINT runs almost always finish in well under this.
+# Any Task still in dispatched state past this window gets cancelled
+# on the next Status read.
+_STALE_TASK_TIMEOUT = timedelta(minutes=30)
+
+
+def _reconcile_stale_tasks(
+    session: Session,
+    eng_id: Any,
+) -> None:
+    """v0.8.3: cancel Tasks that have been dispatched > 30 minutes.
+
+    These are rows whose worker message was lost (consumer rename on
+    worker restart, Redis hiccup) or where the worker processed them
+    but failed to update the DB. Without this sweep they sit in
+    ``dispatched`` state forever — the four 4-day-old "ACTIVE" boxes
+    on the 5qprod tenant that this fix was born from.
+
+    Conservatism: only sweeps when the task has gone past the timeout
+    AND has no completed_at. Tasks in ``pending`` are left alone
+    (analyst hasn't accepted them yet).
+    """
+    cutoff = datetime.now(tz=UTC) - _STALE_TASK_TIMEOUT
+    stale = list(
+        session.execute(
+            select(Task).where(
+                Task.engagement_id == eng_id,
+                Task.status.in_(
+                    (TaskStatus.dispatched, TaskStatus.running)
+                ),
+                Task.completed_at.is_(None),
+                Task.dispatched_at.isnot(None),
+                Task.dispatched_at < cutoff,
+            )
+        ).scalars()
+    )
+    if not stale:
+        return
+    now = datetime.now(tz=UTC)
+    for row in stale:
+        row.status = TaskStatus.cancelled
+        row.completed_at = now
+    session.commit()
+
+
+def _reconcile_running_tasks_from_stream(
+    session: Session,
+    redis_client: Any,
+    eng_id: Any,
+) -> None:
+    """v0.8.3: same shape as the AgentExecution reconcile — but for Tasks.
+
+    Tasks carry a ``run_id``. Scan the engagement's outbound stream for
+    ``run.completed`` / ``run.errored`` events; flip any matching Task
+    rows that are still ``dispatched`` or ``running`` to
+    completed / failed accordingly. Lazy (on Status read), bounded by
+    the last 500 events on the stream.
+    """
+    pending = list(
+        session.execute(
+            select(Task).where(
+                Task.engagement_id == eng_id,
+                Task.status.in_(
+                    (TaskStatus.dispatched, TaskStatus.running)
+                ),
+                Task.run_id.isnot(None),
+            )
+        ).scalars()
+    )
+    if not pending:
+        return
+
+    try:
+        raw = redis_client.xrange(outbound_stream(eng_id), count=500)
+    except Exception:  # noqa: BLE001
+        return
+
+    terminal: dict[str, tuple[str, str | None]] = {}
+    for _msg_id, fields in raw or []:
+        try:
+            payload = decode_envelope(fields)
+        except (ValueError, KeyError):
+            continue
+        event_type = payload.get("type")
+        if event_type not in ("run.completed", "run.errored"):
+            continue
+        thread_id = str(payload.get("thread_id") or "")
+        if not thread_id:
+            continue
+        terminal[thread_id] = (
+            event_type,
+            str(payload.get("error") or "") if event_type == "run.errored" else None,
+        )
+
+    if not terminal:
+        return
+
+    now = datetime.now(tz=UTC)
+    dirty = False
+    for row in pending:
+        rid = str(row.run_id) if row.run_id else ""
+        if rid and rid in terminal:
+            event_type, _err = terminal[rid]
+            row.status = (
+                TaskStatus.completed
+                if event_type == "run.completed"
+                else TaskStatus.failed
+            )
+            row.completed_at = now
+            dirty = True
+    if dirty:
+        session.commit()
+
+
 def _reconcile_running_runs(
     session: Session,
     redis_client: Any,
@@ -373,7 +488,13 @@ def get_engagement_status(
     """
     eng = _engagement_by_slug(session, slug)
 
+    # v0.8.3: three lazy reconciles before the read. Order matters
+    # marginally: the stream-match passes run first because the
+    # stale-task sweep is the catch-all for the worker-lost-message
+    # case where there's no stream event to match against.
     _reconcile_running_runs(session, redis_client, eng.id)
+    _reconcile_running_tasks_from_stream(session, redis_client, eng.id)
+    _reconcile_stale_tasks(session, eng.id)
 
     agents = list(
         session.execute(
