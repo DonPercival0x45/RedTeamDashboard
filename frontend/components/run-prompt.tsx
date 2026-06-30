@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { CheckCircle2, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -13,8 +13,9 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { startRun } from "@/lib/api";
-import type { LLMProvider } from "@/lib/types";
+import { listProviderKeys, startRun } from "@/lib/api";
+import { CUSTOM_VALUE, getPresetModels } from "@/lib/llm-providers";
+import type { LLMProvider, ProviderKey } from "@/lib/types";
 
 interface LastDispatched {
   threadId: string;
@@ -69,12 +70,30 @@ export function RunPrompt({
     "enumerate acme.com subdomains and probe what's live",
   );
   const [provider, setProvider] = useState<LLMProvider>("anthropic");
-  const [modelName, setModelName] = useState<string>(DEFAULT_MODELS.anthropic);
+  // v0.8.3: model is now a hybrid dropdown. ``modelSelect`` is what's
+  // selected in the <select>; CUSTOM_VALUE means the analyst chose
+  // "Custom…" and the actual string lives in ``customModel``. The
+  // ``modelName`` derived value is what we send to the API.
+  const [modelSelect, setModelSelect] = useState<string>(
+    DEFAULT_MODELS.anthropic,
+  );
+  const [customModel, setCustomModel] = useState<string>("");
+  const [keys, setKeys] = useState<ProviderKey[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastDispatched, setLastDispatched] = useState<LastDispatched | null>(
     null,
   );
+
+  // Fetch the analyst's stored BYO keys once on mount so the dropdown
+  // can surface their per-key model names at the top of the list. The
+  // call is best-effort — a 401 / Redis miss just leaves us showing
+  // the preset list, which is correct for a first-time user.
+  useEffect(() => {
+    listProviderKeys()
+      .then((rows) => setKeys(rows ?? []))
+      .catch(() => setKeys([]));
+  }, []);
 
   // Auto-dismiss the success banner after 12s so it doesn't sit stale forever.
   // 12s is long enough for the analyst to read + click the Status link.
@@ -84,15 +103,52 @@ export function RunPrompt({
     return () => clearTimeout(t);
   }, [lastDispatched]);
 
+  // Hybrid model-list build, recomputed on provider or keys change:
+  //   stored = models the analyst saved with their BYO key for THIS provider
+  //   presets = the built-in default list (PROVIDER_PRESETS.modelsDefault)
+  //   custom  = always last so the analyst can type anything
+  const { storedModels, presetModels } = useMemo(() => {
+    const stored = new Set<string>();
+    for (const k of keys) {
+      if (k.provider === provider) {
+        for (const m of k.models ?? []) {
+          if (m && m.trim()) stored.add(m);
+        }
+      }
+    }
+    const storedArr = Array.from(stored);
+    const presets = getPresetModels(provider).filter(
+      (m) => !stored.has(m),
+    );
+    return { storedModels: storedArr, presetModels: presets };
+  }, [keys, provider]);
+
+  const isCustom = modelSelect === CUSTOM_VALUE;
+  const effectiveModel = isCustom ? customModel.trim() : modelSelect;
+
   const onProviderChange = (next: LLMProvider) => {
     setProvider(next);
-    setModelName(DEFAULT_MODELS[next]);
+    // Pick a sensible default for the new provider: first stored, else
+    // first preset, else fall straight into Custom (the textbox).
+    const storedForNext = keys
+      .filter((k) => k.provider === next)
+      .flatMap((k) => k.models ?? [])
+      .filter((m) => !!m.trim());
+    const presetForNext = getPresetModels(next);
+    if (storedForNext.length > 0) {
+      setModelSelect(storedForNext[0]);
+    } else if (presetForNext.length > 0) {
+      setModelSelect(presetForNext[0]);
+    } else {
+      setModelSelect(CUSTOM_VALUE);
+      setCustomModel(DEFAULT_MODELS[next] || "");
+    }
   };
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!prompt.trim()) return;
-    if (!modelName.trim()) {
+    if (!effectiveModel) {
       setError("model name is required");
       return;
     }
@@ -101,12 +157,12 @@ export function RunPrompt({
     try {
       const result = await startRun(slug, {
         prompt: prompt.trim(),
-        model: { provider, name: modelName.trim() },
+        model: { provider, name: effectiveModel },
       });
       setLastDispatched({
         threadId: result.thread_id,
         provider,
-        modelName: modelName.trim(),
+        modelName: effectiveModel,
         at: Date.now(),
       });
       onStarted?.(result.thread_id);
@@ -157,12 +213,45 @@ export function RunPrompt({
             </div>
             <div className="space-y-2">
               <Label htmlFor="model-name">Model</Label>
-              <Input
+              <select
                 id="model-name"
-                value={modelName}
-                onChange={(event) => setModelName(event.target.value)}
-                placeholder={DEFAULT_MODELS[provider] || "deployment name"}
-              />
+                value={modelSelect}
+                onChange={(event) => setModelSelect(event.target.value)}
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+              >
+                {storedModels.length > 0 && (
+                  <optgroup label="From your keys">
+                    {storedModels.map((m) => (
+                      <option key={`stored-${m}`} value={m}>
+                        {m}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+                {presetModels.length > 0 && (
+                  <optgroup label="Defaults">
+                    {presetModels.map((m) => (
+                      <option key={`preset-${m}`} value={m}>
+                        {m}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+                <option value={CUSTOM_VALUE}>Custom…</option>
+              </select>
+              {isCustom && (
+                <Input
+                  value={customModel}
+                  onChange={(event) => setCustomModel(event.target.value)}
+                  placeholder={
+                    DEFAULT_MODELS[provider] ||
+                    (provider === "azure"
+                      ? "deployment name"
+                      : "model identifier")
+                  }
+                  autoFocus
+                />
+              )}
             </div>
           </div>
           {error && <p className="text-sm text-destructive">{error}</p>}

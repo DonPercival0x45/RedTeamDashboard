@@ -11,94 +11,19 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { createProviderKey } from "@/lib/api";
+import {
+  CUSTOM_VALUE,
+  PROVIDER_PRESETS,
+  type ProviderPreset,
+} from "@/lib/llm-providers";
 import type { ProviderKey } from "@/lib/types";
 
 type Kind = "model_provider" | "mcp_server" | "other";
 
-interface Preset {
-  slug: string; // sent to backend as `provider`
-  label: string; // shown in the dropdown
-  isLocal: boolean;
-  endpoint?: string; // pre-fills the endpoint field
-  modelsDefault?: string[];
-  // Whether the endpoint field is REQUIRED for this provider.
-  endpointRequired?: boolean;
-}
-
-// Default list — top cloud LLM providers as of 2026. Operators can also
-// pick `Custom…` to type a slug for anything not on the list (the backend
-// accepts any free-form provider string).
-const PROVIDER_PRESETS: Preset[] = [
-  {
-    slug: "anthropic",
-    label: "Anthropic",
-    isLocal: false,
-    modelsDefault: ["claude-opus-4-7", "claude-sonnet-4-6"],
-  },
-  {
-    slug: "openai",
-    label: "OpenAI",
-    isLocal: false,
-    modelsDefault: ["gpt-4o", "gpt-4o-mini"],
-  },
-  {
-    slug: "google",
-    label: "Google (Gemini)",
-    isLocal: false,
-    modelsDefault: ["gemini-2.0-pro", "gemini-2.0-flash"],
-  },
-  {
-    slug: "azure",
-    label: "Azure OpenAI",
-    isLocal: false,
-    endpointRequired: true,
-    endpoint: "https://<resource>.openai.azure.com",
-  },
-  {
-    slug: "xai",
-    label: "xAI (Grok)",
-    isLocal: false,
-    modelsDefault: ["grok-3"],
-  },
-  {
-    slug: "mistral",
-    label: "Mistral",
-    isLocal: false,
-    modelsDefault: ["mistral-large-latest"],
-  },
-  {
-    slug: "cohere",
-    label: "Cohere",
-    isLocal: false,
-    modelsDefault: ["command-r-plus"],
-  },
-  {
-    slug: "together",
-    label: "Together AI",
-    isLocal: false,
-  },
-  {
-    slug: "groq",
-    label: "Groq",
-    isLocal: false,
-    modelsDefault: ["llama-3.3-70b-versatile"],
-  },
-  {
-    slug: "deepseek",
-    label: "DeepSeek",
-    isLocal: false,
-    modelsDefault: ["deepseek-chat"],
-  },
-  {
-    slug: "ollama",
-    label: "Ollama (local)",
-    isLocal: true,
-    endpoint: "http://localhost:11434",
-    modelsDefault: ["llama3.1:8b"],
-  },
-];
-
-const CUSTOM_VALUE = "__custom__";
+// v0.8.3: PROVIDER_PRESETS + CUSTOM_VALUE lifted to lib/llm-providers.ts so
+// RunPrompt and QuickAddKey share one source of truth. Local alias kept for
+// the limited downstream call sites that referenced the old `Preset` name.
+type Preset = ProviderPreset;
 
 export function QuickAddKey({
   onCreated,
