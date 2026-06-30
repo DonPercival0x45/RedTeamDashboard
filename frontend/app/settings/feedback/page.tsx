@@ -98,7 +98,35 @@ export default function SettingsFeedbackPage() {
       setBody("");
       await reload();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      // The backend returns 409 when an open/approved row already has this
+      // body verbatim (v0.8 dedup). Surface a friendly message instead of
+      // the raw "409 Conflict: {detail: …}" the generic request() helper
+      // produces. We don't have a typed error layer yet, so parse from the
+      // message string.
+      const raw = err instanceof Error ? err.message : String(err);
+      const isDupe = raw.startsWith("409");
+      if (isDupe) {
+        const match = raw.match(/\{.*\}$/);
+        if (match) {
+          try {
+            const parsed = JSON.parse(match[0]) as {
+              detail?: { message?: string; existing_status?: string };
+            };
+            const friendly = parsed.detail?.message;
+            if (friendly) {
+              setError(friendly);
+              return;
+            }
+          } catch {
+            // fall through to raw
+          }
+        }
+        setError(
+          "A suggestion with this exact body already exists. Check the list below.",
+        );
+        return;
+      }
+      setError(raw);
     } finally {
       setSubmitting(false);
     }
