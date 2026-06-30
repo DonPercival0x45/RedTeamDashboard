@@ -121,6 +121,24 @@ export interface Finding {
   phase: FindingPhase;
   status: FindingValidationStatus;
   validated_at: string | null;
+  observed_at: string | null;
+  burp_serial_number: string | null;
+  created_at: string;
+}
+
+// Sort order for GET /engagements/{slug}/findings?sort=…
+export type FindingSort = "newest" | "severity" | "observed";
+
+// One entry in a finding's immutable summary history. Newest first.
+// `findings.summary` on the parent row is the denormalized cache of the
+// latest entry's body (for the Report tab / JSON export).
+export interface FindingSummaryEntry {
+  id: string;
+  finding_id: string;
+  body: string;
+  author_user_id: string | null;
+  author_email: string | null;
+  author_display_name: string | null;
   created_at: string;
 }
 
@@ -133,6 +151,8 @@ export interface FindingImport {
   target?: string;
   source_tool?: string;
   details?: Record<string, unknown>;
+  observed_at?: string | null;
+  burp_serial_number?: string | null;
 }
 
 // Response shape for POST /engagements/{slug}/findings/import/nessus
@@ -142,6 +162,17 @@ export interface NessusImportResult {
   skipped_info: number;
   skipped_out_of_scope: number;
   total_items: number;
+}
+
+// Response shape for POST /engagements/{slug}/findings/import/burp
+// (v0.7.0 — Burp Pro Issue Export XML upload).
+export interface BurpImportResult {
+  imported: Finding[];
+  skipped_info: number;
+  skipped_out_of_scope: number;
+  skipped_duplicate: number;
+  total_items: number;
+  export_time: string | null;
 }
 
 // Phase 10 — stored entities (Maltego import target + future sources).
@@ -324,6 +355,11 @@ export interface Suggestion {
 export interface AnalyzeFindingResponse {
   execution_id: string;
   suggestions: Suggestion[];
+}
+
+export interface TriageFindingResponse {
+  execution_id: string;
+  summary: string;
 }
 
 export interface AcceptSuggestionResponse {

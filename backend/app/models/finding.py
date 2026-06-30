@@ -100,3 +100,13 @@ class Finding(Base, TimestampMixin):
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
     )
     validated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # When the issue was actually observed in a scan, vs ``created_at``
+    # which is when the dashboard ingested it. Optional — manual finds
+    # and live OSINT pulls leave it null and the UI falls back to created_at.
+    observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # Burp Pro Issue Export <serialNumber>. Stamped by the Burp importer
+    # so re-imports of the same XML dedup by (engagement_id, this column).
+    # Null for every non-Burp source.
+    burp_serial_number: Mapped[str | None] = mapped_column(String(64))

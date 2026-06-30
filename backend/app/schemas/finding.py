@@ -30,6 +30,8 @@ class FindingRead(BaseModel):
     phase: FindingPhase
     status: FindingStatus
     validated_at: datetime | None = None
+    observed_at: datetime | None = None
+    burp_serial_number: str | None = None
     created_at: datetime
 
 
@@ -47,6 +49,34 @@ class FindingValidate(BaseModel):
     # report while keeping an audit trail.
     decision: FindingStatus = FindingStatus.validated
     reason: str | None = None
+
+
+class FindingSummaryCreate(BaseModel):
+    """Body for POST /findings/{id}/summaries.
+
+    A new entry is APPENDED to the immutable history; nothing is replaced.
+    Empty bodies are rejected — clearing the displayed summary is done by
+    leaving the cache untouched and showing only the history.
+    """
+
+    body: str = Field(min_length=1, max_length=20_000)
+
+
+class FindingSummaryRead(BaseModel):
+    """One row from the finding's summary history.
+
+    Author display fields are joined at read time; they survive the row's
+    author being deleted (set null) so the historical record never loses
+    its "who said this" attribution to a placeholder.
+    """
+
+    id: UUID
+    finding_id: UUID
+    body: str
+    author_user_id: UUID | None = None
+    author_email: str | None = None
+    author_display_name: str | None = None
+    created_at: datetime
 
 
 class AttachmentRead(BaseModel):

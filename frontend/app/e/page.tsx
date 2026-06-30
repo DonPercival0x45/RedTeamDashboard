@@ -224,6 +224,8 @@ function EngagementDetail({ slug }: { slug: string }) {
               phase: event.phase,
               status: event.status,
               validated_at: null,
+              observed_at: null,
+              burp_serial_number: null,
               created_at: new Date().toISOString(),
             };
             return [created, ...prev];

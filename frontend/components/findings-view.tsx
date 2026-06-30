@@ -8,20 +8,25 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   acceptSuggestion,
   analyzeFinding,
+  createFindingSummary,
   deleteAttachment,
   dismissSuggestion,
   listAttachments,
+  listFindingSummaries,
   loadAttachmentBlob,
-  updateFinding,
+  triageFinding,
   uploadAttachment,
   validateFinding,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { FindingImporter } from "@/components/finding-importer";
+import { BurpImporter } from "@/components/burp-importer";
 import type {
   Attachment,
   Finding,
   FindingPhase,
+  FindingSort,
+  FindingSummaryEntry,
   FindingValidationStatus,
   Severity,
   Suggestion,
@@ -76,8 +81,25 @@ const STATUS_FILTERS: (FindingValidationStatus | "all")[] = [
   "validated",
 ];
 
+const SORT_LABEL: Record<FindingSort, string> = {
+  newest: "Newest first",
+  severity: "Severity",
+  observed: "Observed date",
+};
+
 function shortId(id: string): string {
   return id.replace(/-/g, "").slice(0, 6).toUpperCase();
+}
+
+function formatShortDate(value: string | null): string {
+  if (!value) return "—";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleDateString(undefined, {
+    year: "2-digit",
+    month: "short",
+    day: "numeric",
+  });
 }
 
 // ── component ────────────────────────────────────────────────────────────
@@ -93,8 +115,10 @@ export function FindingsView({
 }) {
   const [phase, setPhase] = useState<FindingPhase | "all">("all");
   const [status, setStatus] = useState<FindingValidationStatus | "all">("all");
+  const [sort, setSort] = useState<FindingSort>("newest");
   const [selected, setSelected] = useState<Finding | null>(null);
   const [showImporter, setShowImporter] = useState(false);
+  const [showBurpImporter, setShowBurpImporter] = useState(false);
 
   const counts = {
     critical: findings.filter((f) => f.severity === "critical").length,
@@ -105,10 +129,32 @@ export function FindingsView({
     pending: findings.filter((f) => f.status === "pending_validation").length,
   };
 
+  const compareFindings = (a: Finding, b: Finding): number => {
+    switch (sort) {
+      case "severity": {
+        const sev = SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity];
+        if (sev !== 0) return sev;
+        return b.created_at.localeCompare(a.created_at);
+      }
+      case "observed": {
+        // Nulls last, then newest first.
+        const ao = a.observed_at;
+        const bo = b.observed_at;
+        if (ao && bo) return bo.localeCompare(ao);
+        if (ao && !bo) return -1;
+        if (!ao && bo) return 1;
+        return b.created_at.localeCompare(a.created_at);
+      }
+      default:
+        return b.created_at.localeCompare(a.created_at);
+    }
+  };
+
   const visible = findings
     .filter((f) => phase === "all" || f.phase === phase)
     .filter((f) => status === "all" || f.status === status)
-    .sort((a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity]);
+    .slice()
+    .sort(compareFindings);
 
   const handleUpdated = (f: Finding) => {
     onUpdated(f);
@@ -125,7 +171,7 @@ export function FindingsView({
         <MetricCard label="Pending validation" value={counts.pending} />
       </div>
 
-      {/* Filters + import toggle */}
+      {/* Filters + sort + import toggle */}
       <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
         <FilterRow
           options={PHASE_FILTERS}
@@ -141,15 +187,44 @@ export function FindingsView({
             v === "all" ? "All status" : STATUS_LABEL[v as FindingValidationStatus]
           }
         />
-        <Button
-          size="sm"
-          variant="outline"
-          className="ml-auto"
-          onClick={() => setShowImporter((v) => !v)}
-        >
-          <Upload className="mr-1.5 h-3.5 w-3.5" />
-          {showImporter ? "Close import" : "Import"}
-        </Button>
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <span className="hidden sm:inline">Sort by</span>
+          <select
+            value={sort}
+            onChange={(e) => setSort(e.target.value as FindingSort)}
+            className="rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+          >
+            {(Object.keys(SORT_LABEL) as FindingSort[]).map((opt) => (
+              <option key={opt} value={opt}>
+                {SORT_LABEL[opt]}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="ml-auto flex gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              setShowImporter((v) => !v);
+              if (!showImporter) setShowBurpImporter(false);
+            }}
+          >
+            <Upload className="mr-1.5 h-3.5 w-3.5" />
+            {showImporter ? "Close import" : "Import"}
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              setShowBurpImporter((v) => !v);
+              if (!showBurpImporter) setShowImporter(false);
+            }}
+          >
+            <Upload className="mr-1.5 h-3.5 w-3.5" />
+            {showBurpImporter ? "Close Burp" : "Import Burp XML"}
+          </Button>
+        </div>
       </div>
 
       {/* Inline importer panel */}
@@ -159,6 +234,15 @@ export function FindingsView({
           onImported={(newFindings) => {
             newFindings.forEach((f) => onUpdated(f));
             setShowImporter(false);
+          }}
+        />
+      )}
+      {showBurpImporter && (
+        <BurpImporter
+          slug={slug}
+          onImported={(newFindings) => {
+            newFindings.forEach((f) => onUpdated(f));
+            setShowBurpImporter(false);
           }}
         />
       )}
@@ -176,6 +260,7 @@ export function FindingsView({
                 <th className="px-3 py-2 w-20">ID</th>
                 <th className="px-3 py-2">Finding</th>
                 <th className="px-3 py-2">Detail</th>
+                <th className="px-3 py-2 w-28">Dates</th>
                 <th className="px-3 py-2 w-28">Status</th>
                 <th className="px-3 py-2 w-24">Severity</th>
               </tr>
@@ -206,6 +291,21 @@ export function FindingsView({
                   </td>
                   <td className="px-3 py-2.5 font-mono text-xs text-muted-foreground">
                     {f.target ?? "—"}
+                  </td>
+                  <td className="px-3 py-2.5 text-xs text-muted-foreground">
+                    <div title={`Created ${new Date(f.created_at).toLocaleString()}`}>
+                      <span className="text-muted-foreground/60">+</span>{" "}
+                      {formatShortDate(f.created_at)}
+                    </div>
+                    {f.observed_at && (
+                      <div
+                        title={`Observed ${new Date(f.observed_at).toLocaleString()}`}
+                        className="text-muted-foreground/80"
+                      >
+                        <span className="text-muted-foreground/60">○</span>{" "}
+                        {formatShortDate(f.observed_at)}
+                      </div>
+                    )}
                   </td>
                   <td className="px-3 py-2.5">
                     <span className="text-xs text-muted-foreground">
@@ -371,10 +471,21 @@ function FindingSlideOver({
   const [dispatchedIds, setDispatchedIds] = useState<Set<string>>(new Set());
   const [decidingId, setDecidingId] = useState<string | null>(null);
 
-  // Summary editor
-  const [summary, setSummary] = useState(finding.summary ?? "");
+  // Summary editor — the textarea is for the NEXT entry. v0.7.0 made it
+  // append-only: every Save records an immutable history row below.
+  const [summary, setSummary] = useState("");
   const [savingSummary, setSavingSummary] = useState(false);
   const [summaryError, setSummaryError] = useState<string | null>(null);
+
+  // AI Triage — populates the textarea with an LLM-written summary; the
+  // analyst then edits + clicks Save. Does NOT auto-save.
+  const [triaging, setTriaging] = useState(false);
+
+  // Summary history (newest first). Refreshed after each Save.
+  const [summaries, setSummaries] = useState<FindingSummaryEntry[] | null>(null);
+  const [viewingSummary, setViewingSummary] = useState<FindingSummaryEntry | null>(
+    null,
+  );
 
   // Attachments
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -382,23 +493,51 @@ function FindingSlideOver({
   const [uploadError, setUploadError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  // Load attachments when the slide-over opens
+  // Load attachments + summary history when the slide-over opens
   useEffect(() => {
     listAttachments(finding.id)
       .then(setAttachments)
       .catch(() => setAttachments([]));
+    listFindingSummaries(finding.id)
+      .then(setSummaries)
+      .catch(() => setSummaries([]));
   }, [finding.id]);
 
   const doSaveSummary = async () => {
+    const trimmed = summary.trim();
+    if (!trimmed) {
+      setSummaryError("Write a summary first — empty entries aren't recorded.");
+      return;
+    }
     setSavingSummary(true);
     setSummaryError(null);
     try {
-      const updated = await updateFinding(finding.id, { summary: summary || null });
-      onUpdated(updated);
+      const entry = await createFindingSummary(finding.id, trimmed);
+      // Prepend the new row to the history; clear the textarea so the
+      // analyst can start fresh next time.
+      setSummaries((prev) => [entry, ...(prev ?? [])]);
+      setSummary("");
+      // Refresh the parent's cached finding.summary so the Report tab
+      // and table can see the new latest. Local-only update; no extra
+      // server round-trip.
+      onUpdated({ ...finding, summary: entry.body });
     } catch (err) {
       setSummaryError(err instanceof Error ? err.message : String(err));
     } finally {
       setSavingSummary(false);
+    }
+  };
+
+  const doTriage = async () => {
+    setTriaging(true);
+    setSummaryError(null);
+    try {
+      const res = await triageFinding(finding.id);
+      setSummary(res.summary);
+    } catch (err) {
+      setSummaryError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setTriaging(false);
     }
   };
 
@@ -528,7 +667,9 @@ function FindingSlideOver({
           {JSON.stringify(finding.data, null, 2)}
         </pre>
 
-        {/* Summary — analyst narrative that flows into the report */}
+        {/* Summary — analyst narrative that flows into the report. Each
+            Save appends an immutable entry to history below; the textarea
+            clears so the next observation lands as its own row. */}
         <div className="mt-5">
           <h3 className="text-sm font-medium">Summary</h3>
           <Textarea
@@ -538,18 +679,68 @@ function FindingSlideOver({
             rows={4}
             className="mt-2 text-sm"
           />
-          <div className="mt-2 flex items-center gap-2">
+          <div className="mt-2 flex flex-wrap items-center gap-2">
             <Button
               size="sm"
-              disabled={savingSummary || summary === (finding.summary ?? "")}
+              disabled={savingSummary || !summary.trim()}
               onClick={doSaveSummary}
             >
               {savingSummary ? "Saving…" : "Save summary"}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={triaging || savingSummary}
+              onClick={doTriage}
+              title="Ask the LLM to draft a report-ready summary into the textarea. You can edit, then Save."
+            >
+              {triaging ? "Triaging…" : "AI Triage"}
             </Button>
             {summaryError && (
               <p className="text-xs text-critical">{summaryError}</p>
             )}
           </div>
+        </div>
+
+        {/* Summary history — newest first. Click a card to read the full body. */}
+        <div className="mt-5">
+          <h3 className="text-sm font-medium">Summary history</h3>
+          {summaries === null ? (
+            <p className="mt-2 text-xs text-muted-foreground">Loading…</p>
+          ) : summaries.length === 0 ? (
+            <p className="mt-2 text-xs text-muted-foreground">
+              No summaries recorded yet. Save one above to start the history.
+            </p>
+          ) : (
+            <ul className="mt-2 space-y-2">
+              {summaries.map((entry) => (
+                <li key={entry.id}>
+                  <button
+                    type="button"
+                    onClick={() => setViewingSummary(entry)}
+                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-left transition-colors hover:border-foreground/40 hover:bg-secondary/40"
+                  >
+                    <p className="line-clamp-2 text-xs text-foreground">
+                      {entry.body}
+                    </p>
+                    <p className="mt-1.5 text-[10px] text-muted-foreground">
+                      {entry.author_display_name ||
+                        entry.author_email ||
+                        "(unknown analyst)"}{" "}
+                      ·{" "}
+                      {new Date(entry.created_at).toLocaleString(undefined, {
+                        year: "numeric",
+                        month: "short",
+                        day: "numeric",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
+                    </p>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
 
         {/* Screenshots / evidence attachments */}
@@ -604,14 +795,6 @@ function FindingSlideOver({
             stop at the approval gate.
           </p>
           <div className="mt-3 flex gap-2">
-            <Button
-              size="sm"
-              variant="outline"
-              disabled
-              title="Analyst-driven attack path — coming next"
-            >
-              Analyst (manual)
-            </Button>
             <Button
               size="sm"
               variant="outline"
@@ -726,6 +909,50 @@ function FindingSlideOver({
           </div>
         </div>
       </aside>
+
+      {/* Summary detail popup — opens when the analyst clicks a row in
+          Summary history. z-60 so it sits over the slide-over. */}
+      {viewingSummary && (
+        <>
+          <div
+            className="fixed inset-0 z-[60] bg-black/70"
+            onClick={() => setViewingSummary(null)}
+            aria-hidden
+          />
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Summary detail"
+            className="fixed left-1/2 top-1/2 z-[70] flex max-h-[80vh] w-[min(640px,92vw)] -translate-x-1/2 -translate-y-1/2 flex-col rounded-lg border border-border bg-popover p-5 shadow-xl"
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h3 className="text-sm font-semibold text-foreground">
+                  Summary recorded{" "}
+                  {new Date(viewingSummary.created_at).toLocaleString()}
+                </h3>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  by{" "}
+                  {viewingSummary.author_display_name ||
+                    viewingSummary.author_email ||
+                    "(unknown analyst)"}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setViewingSummary(null)}
+                className="text-muted-foreground hover:text-foreground"
+                aria-label="Close"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="mt-4 overflow-y-auto whitespace-pre-wrap text-sm text-foreground">
+              {viewingSummary.body}
+            </div>
+          </div>
+        </>
+      )}
     </>
   );
 }

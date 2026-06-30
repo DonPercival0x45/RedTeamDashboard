@@ -34,8 +34,10 @@ IMAGE_REPO_OWNER="donpercival0x45"
 IMAGE_TAG="latest"
 LLM_PROVIDER="anthropic"
 PG_PW=""
-ENTRA_TENANT_ID=""
-ENTRA_CLIENT_ID=""
+ENTRA_TENANT_ID="${RTD_ENTRA_TENANT_ID:-}"
+ENTRA_CLIENT_ID="${RTD_ENTRA_CLIENT_ID:-}"
+ENTRA_TENANT_ID_FROM_FLAG=false
+ENTRA_CLIENT_ID_FROM_FLAG=false
 ANTHROPIC_KEY="${ANTHROPIC_API_KEY:-}"
 OPENAI_KEY="${OPENAI_API_KEY:-}"
 # Comma-separated list of IPv4 CIDRs the SWA will accept browser traffic
@@ -48,6 +50,12 @@ OPENAI_KEY="${OPENAI_API_KEY:-}"
 # Whatever resolves is written BACK to the SWA env vars at the end so the
 # next install picks it up automatically — set once in the Portal, install
 # many times. Standard SKU is required for the IP block to take effect.
+#
+# The same precedence applies to RTD_ENTRA_TENANT_ID and RTD_ENTRA_CLIENT_ID:
+# pass --entra-tenant-id / --entra-client-id once, and every subsequent
+# install resolves them from the SWA blade so the analyst's SSO doesn't
+# silently regress to "analyst@localhost" if a teammate runs install.sh
+# without the flags (see the v0.7.0 fix for the 2026-06-30 5qprod gotcha).
 ALLOWED_IPS="${RTD_VIEWER_ALLOWED_IPS:-}"
 ALLOWED_IPS_FROM_FLAG=false
 NON_INTERACTIVE=false
@@ -68,8 +76,14 @@ Options:
                           llm-provider is anthropic.
   --openai-key KEY        OpenAI API key to store in Key Vault. Falls back to
                           OPENAI_API_KEY env var.
-  --entra-tenant-id ID    Entra tenant id for analyst SSO (from setup-entra.sh). Optional.
-  --entra-client-id ID    Entra app (client) id for analyst SSO. Optional.
+  --entra-tenant-id ID    Entra tenant id for analyst SSO (from setup-entra.sh).
+                          Optional. Persists to the SWA's Environment Variables
+                          blade (RTD_ENTRA_TENANT_ID) for subsequent installs.
+                          Falls back to: SWA env vars, then shell RTD_ENTRA_TENANT_ID.
+  --entra-client-id ID    Entra app (client) id for analyst SSO.
+                          Optional. Persists to the SWA's Environment Variables
+                          blade (RTD_ENTRA_CLIENT_ID) for subsequent installs.
+                          Falls back to: SWA env vars, then shell RTD_ENTRA_CLIENT_ID.
   --allowed-ips CSV       Comma-separated IPv4 CIDRs the viewer SWA accepts
                           browser traffic from (e.g. '1.2.3.4/32,5.6.7.8/32').
                           Empty → no IP restriction. Persists to the SWA's
@@ -93,8 +107,8 @@ while [[ $# -gt 0 ]]; do
         --postgres-password) PG_PW="$2";              shift 2 ;;
         --anthropic-key)     ANTHROPIC_KEY="$2";      shift 2 ;;
         --openai-key)        OPENAI_KEY="$2";          shift 2 ;;
-        --entra-tenant-id)   ENTRA_TENANT_ID="$2";    shift 2 ;;
-        --entra-client-id)   ENTRA_CLIENT_ID="$2";    shift 2 ;;
+        --entra-tenant-id)   ENTRA_TENANT_ID="$2"; ENTRA_TENANT_ID_FROM_FLAG=true; shift 2 ;;
+        --entra-client-id)   ENTRA_CLIENT_ID="$2"; ENTRA_CLIENT_ID_FROM_FLAG=true; shift 2 ;;
         --allowed-ips)       ALLOWED_IPS="$2"; ALLOWED_IPS_FROM_FLAG=true; shift 2 ;;
         --yes)               NON_INTERACTIVE=true;     shift ;;
         -h|--help)           usage ;;
@@ -284,6 +298,34 @@ else
         fi
     fi
 
+    # Same precedence for the Entra IDs — read from SWA Environment Variables
+    # if no CLI flag was passed. Without this, an operator running install.sh
+    # without --entra-* drops the viewer back to "analyst@localhost" because
+    # ENTRA_ENABLED in the bundle goes false (tenantId/clientId empty).
+    if [[ "$ENTRA_TENANT_ID_FROM_FLAG" != "true" ]]; then
+        SWA_STORED_TENANT="$(az staticwebapp appsettings list \
+            -n "$VIEWER_NAME" -g "$RG_OUT" \
+            --query "properties.RTD_ENTRA_TENANT_ID" -o tsv 2>/dev/null || true)"
+        if [[ -n "$SWA_STORED_TENANT" && "$SWA_STORED_TENANT" != "None" ]]; then
+            ENTRA_TENANT_ID="$SWA_STORED_TENANT"
+            blue "    Entra tenant id sourced from SWA Environment Variables"
+        fi
+    fi
+    if [[ "$ENTRA_CLIENT_ID_FROM_FLAG" != "true" ]]; then
+        SWA_STORED_CLIENT="$(az staticwebapp appsettings list \
+            -n "$VIEWER_NAME" -g "$RG_OUT" \
+            --query "properties.RTD_ENTRA_CLIENT_ID" -o tsv 2>/dev/null || true)"
+        if [[ -n "$SWA_STORED_CLIENT" && "$SWA_STORED_CLIENT" != "None" ]]; then
+            ENTRA_CLIENT_ID="$SWA_STORED_CLIENT"
+            blue "    Entra client id sourced from SWA Environment Variables"
+        fi
+    fi
+    # Refresh the derived scope + SSO state in case the SWA-stored values
+    # changed what we resolved at boot (variables set at L265-267).
+    ENTRA_SCOPE=""
+    [[ -n "$ENTRA_CLIENT_ID" ]] && ENTRA_SCOPE="api://$ENTRA_CLIENT_ID/access_as_user"
+    [[ -n "$ENTRA_CLIENT_ID" ]] && SSO_STATE="on" || SSO_STATE="off (API-key auth)"
+
     # Fetch the last 20 GitHub Releases and stamp them into the viewer's
     # static assets. The What's-New banner reads /releases.json on load to
     # decide whether a new version landed since the analyst last visited.
@@ -359,6 +401,28 @@ PY
         else
             red "    couldn't write RTD_VIEWER_ALLOWED_IPS to SWA app settings — "
             red "    next install will need --allowed-ips again. Set it manually in "
+            red "    Portal → $VIEWER_NAME → Settings → Environment variables."
+        fi
+
+        # Same idea for the Entra IDs — persist them so re-installs don't
+        # need --entra-tenant-id / --entra-client-id again. Empty values
+        # are passed through too (clears the SSO if someone explicitly
+        # wants to turn it off via a future install).
+        if az staticwebapp appsettings set \
+            -n "$VIEWER_NAME" -g "$RG_OUT" \
+            --setting-names \
+                "RTD_ENTRA_TENANT_ID=$ENTRA_TENANT_ID" \
+                "RTD_ENTRA_CLIENT_ID=$ENTRA_CLIENT_ID" \
+            --only-show-errors -o none 2>/dev/null; then
+            if [[ -n "$ENTRA_TENANT_ID" && -n "$ENTRA_CLIENT_ID" ]]; then
+                green "    SWA app settings: RTD_ENTRA_{TENANT,CLIENT}_ID persisted"
+            else
+                blue "    SWA app settings: RTD_ENTRA_{TENANT,CLIENT}_ID cleared (SSO off)"
+            fi
+        else
+            red "    couldn't write RTD_ENTRA_* to SWA app settings — "
+            red "    next install will need --entra-tenant-id / --entra-client-id"
+            red "    flags again to preserve SSO. Set them manually in"
             red "    Portal → $VIEWER_NAME → Settings → Environment variables."
         fi
     else

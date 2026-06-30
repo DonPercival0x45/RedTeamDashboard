@@ -39,6 +39,7 @@ class AgentName(enum.StrEnum):
     strategic = "strategic"
     tactical = "tactical"
     planner = "planner"
+    triage = "triage"
 
 
 class Suggestion(Base, TimestampMixin):

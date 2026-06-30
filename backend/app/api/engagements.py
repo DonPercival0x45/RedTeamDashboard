@@ -49,7 +49,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
 from pydantic import BaseModel
-from sqlalchemy import select, text
+from sqlalchemy import case, select, text
 
 from app.api.deps import (
     CurrentAdminUser,
@@ -69,10 +69,12 @@ from app.models import (
     Finding,
     FindingPhase,
     FindingStatus,
+    FindingSummary,
     Observation,
     ScopeItem,
     Severity,
     TaskKind,
+    User,
 )
 from app.models.api_key import APIKeyScope
 from app.orchestrator.llm import default_provider_model
@@ -96,6 +98,8 @@ from app.schemas.finding import (
     AttachmentRead,
     EntityRead,
     FindingRead,
+    FindingSummaryCreate,
+    FindingSummaryRead,
     FindingUpdate,
     FindingValidate,
 )
@@ -241,6 +245,8 @@ def _finding_to_read(f: Finding) -> dict[str, Any]:
         "phase": f.phase,
         "status": f.status,
         "validated_at": f.validated_at,
+        "observed_at": f.observed_at,
+        "burp_serial_number": f.burp_serial_number,
         "created_at": f.created_at,
     }
 
@@ -619,6 +625,19 @@ def delete_scope_item(
 # ---------------------------------------------------------------------------
 
 
+_FINDING_SORTS = ("newest", "severity", "observed")
+
+# Postgres has no native ordinal for the Severity enum (textual), so we
+# project it to an int with CASE for "severity" sorts. critical first.
+_SEVERITY_RANK = case(
+    (Finding.severity == Severity.critical, 4),
+    (Finding.severity == Severity.high, 3),
+    (Finding.severity == Severity.medium, 2),
+    (Finding.severity == Severity.low, 1),
+    else_=0,
+)
+
+
 @router.get(
     "/engagements/{slug}/findings",
     response_model=list[FindingRead],
@@ -630,14 +649,42 @@ def list_findings(
     status: Annotated[
         FindingStatus | None, Query(description="Filter by validation status.")
     ] = None,
+    sort: Annotated[
+        str,
+        Query(
+            description=(
+                "Sort order. 'newest' (default) = created_at desc; "
+                "'severity' = critical→info then newest; "
+                "'observed' = observed_at desc, NULLs last, then newest."
+            ),
+        ),
+    ] = "newest",
 ) -> list[dict[str, Any]]:
+    if sort not in _FINDING_SORTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"invalid sort '{sort}'; must be one of {_FINDING_SORTS}",
+        )
     eng = _get_engagement_or_404(session, slug)
     stmt = select(Finding).where(Finding.engagement_id == eng.id)
     if phase is not None:
         stmt = stmt.where(Finding.phase == phase)
     if status is not None:
         stmt = stmt.where(Finding.status == status)
-    rows = session.execute(stmt.order_by(Finding.created_at.desc())).scalars()
+
+    if sort == "severity":
+        stmt = stmt.order_by(_SEVERITY_RANK.desc(), Finding.created_at.desc())
+    elif sort == "observed":
+        # Postgres puts NULLs LAST when using DESC by default; explicit
+        # nullslast() for clarity. Tie-break on created_at so the result
+        # is stable for findings that share an observed_at.
+        stmt = stmt.order_by(
+            Finding.observed_at.desc().nullslast(), Finding.created_at.desc()
+        )
+    else:  # newest
+        stmt = stmt.order_by(Finding.created_at.desc())
+
+    rows = session.execute(stmt).scalars()
     return [_finding_to_read(f) for f in rows]
 
 
@@ -777,6 +824,8 @@ class FindingImport(BaseModel):
     target: str | None = None
     source_tool: str | None = "import"
     details: dict[str, Any] = {}
+    observed_at: datetime | None = None
+    burp_serial_number: str | None = None
 
 
 class NessusImportResult(BaseModel):
@@ -794,6 +843,22 @@ class NessusImportResult(BaseModel):
     total_items: int
 
 
+class BurpImportResult(BaseModel):
+    """Response shape for the Burp Pro Issue Export XML importer.
+
+    ``skipped_duplicate`` counts <issue> rows whose <serialNumber> was
+    already present in this engagement — re-importing the same export
+    or a re-scan that emits the same serials is a no-op for those rows.
+    """
+
+    imported: list[FindingRead]
+    skipped_info: int
+    skipped_out_of_scope: int
+    skipped_duplicate: int
+    total_items: int
+    export_time: datetime | None = None
+
+
 def _create_findings_from_imports(
     session: Any,
     eng: Engagement,
@@ -801,13 +866,21 @@ def _create_findings_from_imports(
     user: Any,
     *,
     source: str,
-) -> list[Finding]:
+) -> tuple[list[Finding], int]:
     """Persist a list of import-shaped items as Findings + write the audit row.
 
     ``items`` is duck-typed: each must expose ``title``, ``severity``,
     ``phase``, ``summary``, ``target``, ``source_tool``, ``details``.
-    Both ``FindingImport`` (Phase 11 JSON/CSV importer) and
-    ``nessus_import.ParsedItem`` (Phase 10 .nessus parser) satisfy this.
+    Optional: ``observed_at`` (scan-side timestamp) and
+    ``burp_serial_number`` (Burp dedup key). ``FindingImport`` (Phase 11
+    JSON/CSV importer), ``nessus_import.ParsedItem`` (Phase 10 .nessus
+    parser), and ``burp_import.ParsedItem`` (v0.7 Burp Pro parser) all
+    satisfy this protocol.
+
+    Dedup: when an item carries a ``burp_serial_number``, the helper
+    skips it if the same (engagement_id, burp_serial_number) pair
+    already exists. Returns ``(created, skipped_duplicate_count)`` so
+    importers can surface the dedup count on the response.
 
     Phase-based validation gate (refined 2026-06-26): ``osint``-phase
     imports auto-validate at creation because the results are factual.
@@ -820,9 +893,34 @@ def _create_findings_from_imports(
 
     from app.models.finding import default_status_for_phase
 
+    # Pre-load existing Burp serials for this engagement so we dedup in
+    # one query instead of one per row.
+    incoming_serials = {
+        getattr(item, "burp_serial_number", None)
+        for item in items
+        if getattr(item, "burp_serial_number", None)
+    }
+    existing_serials: set[str] = set()
+    if incoming_serials:
+        existing_serials = {
+            row[0]
+            for row in session.execute(
+                select(Finding.burp_serial_number).where(
+                    Finding.engagement_id == eng.id,
+                    Finding.burp_serial_number.in_(incoming_serials),
+                )
+            ).all()
+            if row[0]
+        }
+
     created: list[Finding] = []
+    skipped_duplicate = 0
     now = datetime.now(tz=UTC)
     for item in items:
+        serial = getattr(item, "burp_serial_number", None)
+        if serial and serial in existing_serials:
+            skipped_duplicate += 1
+            continue
         status = default_status_for_phase(item.phase)
         f = Finding(
             engagement_id=eng.id,
@@ -836,9 +934,13 @@ def _create_findings_from_imports(
             status=status,
             validated_at=now if status == FindingStatus.validated else None,
             validated_by=user.id if status == FindingStatus.validated else None,
+            observed_at=getattr(item, "observed_at", None),
+            burp_serial_number=serial,
         )
         session.add(f)
         created.append(f)
+        if serial:
+            existing_serials.add(serial)  # dedup within the same batch too
     if created:
         session.add(
             AuditLog(
@@ -846,10 +948,14 @@ def _create_findings_from_imports(
                 actor_type=ActorType.user,
                 actor_id=str(user.id),
                 event_type="findings.imported",
-                payload={"count": len(created), "source": source},
+                payload={
+                    "count": len(created),
+                    "source": source,
+                    "skipped_duplicate": skipped_duplicate,
+                },
             )
         )
-    return created
+    return created, skipped_duplicate
 
 
 @router.post(
@@ -875,7 +981,7 @@ def import_findings(
     eng = _get_engagement_or_404(session, slug)
     _reject_flushed(eng)
 
-    created = _create_findings_from_imports(
+    created, _skipped = _create_findings_from_imports(
         session, eng, body, user, source="bulk_import"
     )
     session.commit()
@@ -924,7 +1030,7 @@ def import_nessus(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    created = _create_findings_from_imports(
+    created, _skipped = _create_findings_from_imports(
         session, eng, result.items, user, source="nessus_import"
     )
     session.commit()
@@ -939,9 +1045,94 @@ def import_nessus(
     }
 
 
+@router.post(
+    "/engagements/{slug}/findings/import/burp",
+    response_model=BurpImportResult,
+    status_code=status.HTTP_201_CREATED,
+)
+def import_burp(
+    slug: str,
+    session: DbSession,
+    user: CurrentNonGuestUser,
+    file: Annotated[
+        UploadFile,
+        File(..., description="Burp Suite Pro Issue Export XML."),
+    ],
+    include_info: Annotated[
+        bool,
+        Query(description="Import Severity=Information issues. Default False."),
+    ] = False,
+) -> dict[str, Any]:
+    """Import a Burp Pro Issue Export XML file.
+
+    Each ``<issue>`` becomes a Finding with ``phase=vuln_scan`` and
+    ``status=pending_validation`` (analyst must approve before report).
+    Dedup is by ``<serialNumber>`` against this engagement's existing
+    findings — re-importing the same XML is a no-op for already-imported
+    issues. Out-of-scope hosts are dropped silently and counted.
+    """
+    from app.services.burp_import import parse_burp_xml
+
+    eng = _get_engagement_or_404(session, slug)
+    _reject_flushed(eng)
+
+    raw = file.file.read()
+    scope_items = list(
+        session.execute(
+            select(ScopeItem).where(ScopeItem.engagement_id == eng.id)
+        ).scalars()
+    )
+    try:
+        result = parse_burp_xml(
+            raw, include_info=include_info, scope_items=scope_items
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    created, skipped_duplicate = _create_findings_from_imports(
+        session, eng, result.items, user, source="burp_import"
+    )
+    session.commit()
+    for f in created:
+        session.refresh(f)
+
+    return {
+        "imported": [_finding_to_read(f) for f in created],
+        "skipped_info": result.skipped_info,
+        "skipped_out_of_scope": result.skipped_out_of_scope,
+        "skipped_duplicate": skipped_duplicate,
+        "total_items": result.total_items,
+        "export_time": result.export_time,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Finding update (title / summary / severity / phase)
 # ---------------------------------------------------------------------------
+
+
+def _record_finding_summary(
+    session: Any,
+    finding: Finding,
+    body_text: str,
+    author_user_id: uuid.UUID,
+) -> FindingSummary:
+    """Append a summary entry to history AND refresh the cached body.
+
+    Insert path used by both PATCH /findings/{id} (back-compat) and
+    POST /findings/{id}/summaries (the v0.7.0 slide-over). Caller commits.
+    """
+    entry = FindingSummary(
+        finding_id=finding.id,
+        body=body_text,
+        author_user_id=author_user_id,
+    )
+    session.add(entry)
+    # Keep findings.summary as the denormalized cache of the latest body
+    # so downstream consumers (Report tab, JSON export, MCP server)
+    # don't need to join.
+    finding.summary = body_text
+    return entry
 
 
 @router.patch(
@@ -955,7 +1146,12 @@ def update_finding(
     user: CurrentUser,
 ) -> dict[str, Any]:
     """Edit analyst-controlled fields on a finding. Only provided fields change;
-    omitted fields are left as-is. ``summary`` accepts ``null`` to clear it."""
+    omitted fields are left as-is. ``summary`` accepts ``null`` to clear it.
+
+    When ``summary`` is set to a non-empty string, an entry is also
+    appended to the finding's summary history. Setting it to ``null``
+    or ``""`` just clears the cached body without recording history.
+    """
     finding = session.get(Finding, finding_id)
     if finding is None:
         raise HTTPException(status_code=404, detail="finding not found")
@@ -965,7 +1161,10 @@ def update_finding(
         finding.title = body.title
         changed["title"] = body.title
     if "summary" in body.model_fields_set:
-        finding.summary = body.summary
+        if body.summary:
+            _record_finding_summary(session, finding, body.summary, user.id)
+        else:
+            finding.summary = body.summary  # None / empty clears the cache only
         changed["summary"] = body.summary
     if "severity" in body.model_fields_set and body.severity is not None:
         finding.severity = body.severity
@@ -988,6 +1187,91 @@ def update_finding(
         session.refresh(finding)
 
     return _finding_to_read(finding)
+
+
+# ---------------------------------------------------------------------------
+# Finding summary history (v0.7.0)
+# ---------------------------------------------------------------------------
+
+
+def _finding_summary_to_read(
+    entry: FindingSummary, author: User | None
+) -> dict[str, Any]:
+    return {
+        "id": entry.id,
+        "finding_id": entry.finding_id,
+        "body": entry.body,
+        "author_user_id": entry.author_user_id,
+        "author_email": author.email if author else None,
+        "author_display_name": author.display_name if author else None,
+        "created_at": entry.created_at,
+    }
+
+
+@router.post(
+    "/findings/{finding_id}/summaries",
+    response_model=FindingSummaryRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_finding_summary(
+    finding_id: uuid.UUID,
+    body: FindingSummaryCreate,
+    session: DbSession,
+    user: CurrentNonGuestUser,
+) -> dict[str, Any]:
+    """Append a summary entry to a finding's immutable history.
+
+    The frontend uses this from the Findings slide-over: the textarea
+    clears on success, and the history list below renders the new entry
+    at the top. Also refreshes ``findings.summary`` as the denormalized
+    cache so the Report tab / JSON export keep showing the latest.
+    """
+    finding = session.get(Finding, finding_id)
+    if finding is None:
+        raise HTTPException(status_code=404, detail="finding not found")
+
+    entry = _record_finding_summary(session, finding, body.body, user.id)
+    session.add(
+        AuditLog(
+            engagement_id=finding.engagement_id,
+            actor_type=ActorType.user,
+            actor_id=str(user.id),
+            event_type="finding.summary_recorded",
+            payload={
+                "finding_id": str(finding.id),
+                "entry_id": str(entry.id),
+                "body_chars": len(body.body),
+            },
+        )
+    )
+    session.commit()
+    session.refresh(entry)
+    return _finding_summary_to_read(entry, user)
+
+
+@router.get(
+    "/findings/{finding_id}/summaries",
+    response_model=list[FindingSummaryRead],
+)
+def list_finding_summaries(
+    finding_id: uuid.UUID,
+    session: DbSession,
+    _user: CurrentUser,
+) -> list[dict[str, Any]]:
+    """Newest-first list of summary entries for a finding."""
+    finding = session.get(Finding, finding_id)
+    if finding is None:
+        raise HTTPException(status_code=404, detail="finding not found")
+
+    rows = list(
+        session.execute(
+            select(FindingSummary, User)
+            .join(User, User.id == FindingSummary.author_user_id, isouter=True)
+            .where(FindingSummary.finding_id == finding_id)
+            .order_by(FindingSummary.created_at.desc())
+        ).all()
+    )
+    return [_finding_summary_to_read(entry, author) for entry, author in rows]
 
 
 # ---------------------------------------------------------------------------
