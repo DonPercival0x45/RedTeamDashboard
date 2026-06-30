@@ -22,11 +22,13 @@ import type {
   Finding,
   AdminUser,
   BurpImportResult,
+  EngagementStatusResponse,
   FindingImport,
   FindingPhase,
   FindingSort,
   FindingSummaryEntry,
   FindingValidationStatus,
+  StatusEntity,
   Integration,
   IntegrationType,
   IntegrationUpsert,
@@ -795,4 +797,16 @@ export function pushRoadmapToGitHub(): Promise<RoadmapPushResult> {
   return request<RoadmapPushResult>("/roadmap-suggestions/push", {
     method: "POST",
   });
+}
+
+// ── Status tab (v0.8.0) ───────────────────────────────────────────────────
+
+export function getEngagementStatus(
+  slug: string,
+): Promise<EngagementStatusResponse> {
+  return request<EngagementStatusResponse>(`/engagements/${slug}/status`);
+}
+
+export function retryTask(taskId: string): Promise<StatusEntity> {
+  return request<StatusEntity>(`/tasks/${taskId}/retry`, { method: "POST" });
 }
