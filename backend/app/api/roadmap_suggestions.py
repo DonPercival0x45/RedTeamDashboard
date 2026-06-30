@@ -198,18 +198,21 @@ def push_roadmap_to_github(
     commit SHA + html_url so the UI can link the analyst straight to the
     new commit.
     """
-    from app.models import Integration, IntegrationType
+    from app.models import IntegrationPurpose
+    from app.services import integrations as integration_svc
     from app.services.github_push import GitHubPushError, push_roadmap
 
-    integ = session.execute(
-        select(Integration).where(Integration.type == IntegrationType.github_push)
-    ).scalar_one_or_none()
-    if integ is None or not integ.enabled:
+    # v0.9: route by purpose. The first enabled roadmap_push integration
+    # wins (we don't support multi-push here yet — pick one target repo).
+    integ = integration_svc.first_by_purpose(
+        session, IntegrationPurpose.roadmap_push, enabled_only=True
+    )
+    if integ is None:
         raise HTTPException(
             status_code=400,
             detail=(
                 "GitHub push integration not configured or disabled. "
-                "Set it up under /settings/feedback."
+                "Set it up under /settings/integrations."
             ),
         )
     cfg = integ.config or {}

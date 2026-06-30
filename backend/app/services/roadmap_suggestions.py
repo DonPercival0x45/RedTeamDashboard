@@ -17,8 +17,7 @@ from sqlalchemy.orm import Session
 from app.agents.planner import PlanningAgent, render_approved_roadmap
 from app.models import (
     AgentExecution,
-    Integration,
-    IntegrationType,
+    IntegrationPurpose,
     RoadmapSuggestion,
     RoadmapSuggestionStatus,
 )
@@ -72,19 +71,24 @@ def create_and_evaluate(
 def notify_discord_if_configured(
     session: Session, suggestion: RoadmapSuggestion
 ) -> None:
-    """Best-effort outbound: if a Discord integration is enabled with a
-    webhook_url, POST the suggestion to it. Skip Discord-originated rows
-    (loop prevention)."""
+    """Best-effort outbound: for every enabled integration wired to
+    ``purpose='feedback'`` with a ``webhook_url``, POST the suggestion.
+    Skip Discord-originated rows (loop prevention).
+
+    v0.9.0: routes by purpose instead of type. The pre-v0.9 single
+    Discord row continues to work because migration 0028 backfilled
+    it with ``purpose='feedback'``. A multi-Discord deployment with
+    a separate alerts channel keeps the routing clean — only
+    feedback-purposed rows fire here.
+    """
     if suggestion.source.startswith("discord:"):
         return
-    integ: Integration | None = integration_svc.get_by_type(
-        session, IntegrationType.discord
-    )
-    if integ is None or not integ.enabled:
-        return
-    webhook_url = (integ.config or {}).get("webhook_url")
-    if not webhook_url:
-        return
-    discord_svc.post_feedback_notification(
-        webhook_url=webhook_url, suggestion=suggestion
-    )
+    for integ in integration_svc.list_by_purpose(
+        session, IntegrationPurpose.feedback, enabled_only=True
+    ):
+        webhook_url = (integ.config or {}).get("webhook_url")
+        if not webhook_url:
+            continue
+        discord_svc.post_feedback_notification(
+            webhook_url=webhook_url, suggestion=suggestion
+        )

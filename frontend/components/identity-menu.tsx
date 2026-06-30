@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useState, type ReactNode } from "react";
 import {
   AlertCircle,
+  Globe,
   HelpCircle,
   Key,
   MessageSquare,
@@ -79,9 +80,14 @@ export function IdentityMenu() {
         <HelpCircle className="-ml-1.5 h-4 w-4" />
       </IconLink>
       {isAdmin && (
-        <IconLink href="/settings/management" label="Management (admin)">
-          <UserCog className="h-4 w-4" />
-        </IconLink>
+        <>
+          <IconLink href="/settings/integrations" label="Integrations (admin)">
+            <Globe className="h-4 w-4" />
+          </IconLink>
+          <IconLink href="/settings/management" label="Management (admin)">
+            <UserCog className="h-4 w-4" />
+          </IconLink>
+        </>
       )}
       {enabled && (
         <Button variant="outline" size="sm" onClick={signOut}>

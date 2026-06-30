@@ -30,8 +30,8 @@ import type {
   FindingValidationStatus,
   StatusEntity,
   Integration,
-  IntegrationType,
-  IntegrationUpsert,
+  IntegrationCreate,
+  IntegrationUpdate,
   Me,
   Observation,
   RoadmapSuggestion,
@@ -721,30 +721,41 @@ export function reEvaluateRoadmapSuggestion(
 }
 
 // ---------------------------------------------------------------------------
-// Integrations (admin-only)
+// Integrations (admin-only) — v0.9.0 multi-row by id
 // ---------------------------------------------------------------------------
 
-export function getIntegration(
-  type: IntegrationType,
-): Promise<Integration | null> {
-  return request<Integration>(`/integrations/${type}`).catch((err) => {
-    // 404 = not configured yet — surface as null instead of throwing.
+export function listIntegrations(): Promise<Integration[]> {
+  return request<Integration[]>("/integrations");
+}
+
+export function getIntegration(id: string): Promise<Integration | null> {
+  return request<Integration>(`/integrations/${id}`).catch((err) => {
     if (err instanceof Error && err.message.startsWith("404")) return null;
     throw err;
   });
 }
 
-export function upsertIntegration(
-  body: IntegrationUpsert,
+export function createIntegration(
+  body: IntegrationCreate,
 ): Promise<Integration> {
-  return request<Integration>(`/integrations/${body.type}`, {
-    method: "PUT",
+  return request<Integration>("/integrations", {
+    method: "POST",
     body: JSON.stringify(body),
   });
 }
 
-export function deleteIntegration(type: IntegrationType): Promise<void> {
-  return request<void>(`/integrations/${type}`, { method: "DELETE" });
+export function updateIntegration(
+  id: string,
+  body: IntegrationUpdate,
+): Promise<Integration> {
+  return request<Integration>(`/integrations/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
+export function deleteIntegration(id: string): Promise<void> {
+  return request<void>(`/integrations/${id}`, { method: "DELETE" });
 }
 
 // ---------------------------------------------------------------------------

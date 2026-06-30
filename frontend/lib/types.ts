@@ -595,27 +595,54 @@ export interface RoadmapSuggestion {
   updated_at: string;
 }
 
-// ── External integrations (Discord today) ────────────────────────────────
+// ── External integrations — v0.9.0 provider catalog ─────────────────────
 
-export type IntegrationType = "discord" | "github_push";
+// v0.9.0: type is a free-form string now (was a closed union). The
+// provider catalog in lib/integrations-catalog.ts is the source of truth
+// for which slugs the UI knows about; the backend accepts any string so
+// new providers ship as a frontend module edit.
+export type IntegrationType = string;
+
+export type IntegrationPurpose =
+  | "feedback"
+  | "status_alerts"
+  | "roadmap_push"
+  | "manual";
 
 export interface Integration {
   id: string;
   type: IntegrationType;
+  purpose: IntegrationPurpose;
+  name: string;
+  display_name: string | null;
+  logo_url: string | null;
   enabled: boolean;
-  // For Discord: { webhook_url?, bot_token?, channel_id? }
-  // bot_token comes back masked (…1234) — empty string in PUT means "leave
-  // the stored value alone".
+  // Provider-defined JSONB. Secrets (bot_token / pat_token / api_key)
+  // come back masked (…1234); the modal sends the masked string back as
+  // a "keep the stored value" signal on update.
   config: Record<string, unknown>;
   created_by_user_id: string | null;
   created_at: string;
   updated_at: string;
 }
 
-export interface IntegrationUpsert {
+export interface IntegrationCreate {
   type: IntegrationType;
+  purpose: IntegrationPurpose;
+  name: string;
+  display_name?: string | null;
+  logo_url?: string | null;
   enabled: boolean;
   config: Record<string, unknown>;
+}
+
+export interface IntegrationUpdate {
+  purpose?: IntegrationPurpose;
+  name?: string;
+  display_name?: string | null;
+  logo_url?: string | null;
+  enabled?: boolean;
+  config?: Record<string, unknown>;
 }
 
 // ── Admin user management ────────────────────────────────────────────────

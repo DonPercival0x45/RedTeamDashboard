@@ -11,8 +11,10 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { DiscordChannelConnect } from "@/components/discord-channel-connect";
-import { GitHubPushConnect } from "@/components/github-push-connect";
+// v0.9.0: Discord + GitHub-push setup cards moved to /settings/integrations
+// (the new generic 3rd-party app hub). The send-event paths still route
+// through whatever integration rows the admin configures there; this page
+// just shows feedback + the Push to GitHub action.
 import { Textarea } from "@/components/ui/textarea";
 import {
   createRoadmapSuggestion,
@@ -336,12 +338,6 @@ export default function SettingsFeedbackPage() {
         </CardContent>
       </Card>
 
-      {me?.is_admin && (
-        <>
-          <GitHubPushConnect />
-          <DiscordChannelConnect />
-        </>
-      )}
     </div>
   );
 }
