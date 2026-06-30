@@ -16,7 +16,7 @@ from app.models.engagement import Engagement, EngagementStatus, EngagementTimeFr
 from app.models.entity import Entity
 from app.models.finding import Finding, FindingPhase, FindingStatus, Severity
 from app.models.finding_summary import FindingSummary
-from app.models.integration import Integration, IntegrationType
+from app.models.integration import Integration, IntegrationPurpose, IntegrationType
 from app.models.mcp_lease import MCPLease, MCPLeaseStatus
 from app.models.observation import Observation
 from app.models.roadmap_suggestion import (
@@ -55,6 +55,7 @@ __all__ = [
     "FindingStatus",
     "FindingSummary",
     "Integration",
+    "IntegrationPurpose",
     "IntegrationType",
     "MCPLease",
     "MCPLeaseStatus",
