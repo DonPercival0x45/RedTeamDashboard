@@ -327,6 +327,8 @@ def _reconcile_running_tasks_from_stream(
     session: Session,
     redis_client: Any,
     eng_id: Any,
+    *,
+    engagement_slug: str | None = None,
 ) -> None:
     """v0.8.3: same shape as the AgentExecution reconcile — but for Tasks.
 
@@ -377,10 +379,14 @@ def _reconcile_running_tasks_from_stream(
 
     now = datetime.now(tz=UTC)
     dirty = False
+    # v0.9.1: collect transitions first so we can fire Discord pings AFTER
+    # the row is committed (avoids "row says still running" race if the
+    # webhook reads back via /integrations during the post-commit window).
+    transitions: list[tuple[Task, str, str | None]] = []
     for row in pending:
         rid = str(row.run_id) if row.run_id else ""
         if rid and rid in terminal:
-            event_type, _err = terminal[rid]
+            event_type, err = terminal[rid]
             row.status = (
                 TaskStatus.completed
                 if event_type == "run.completed"
@@ -388,14 +394,29 @@ def _reconcile_running_tasks_from_stream(
             )
             row.completed_at = now
             dirty = True
+            transitions.append((row, event_type, err))
     if dirty:
         session.commit()
+        from app.services.status_notifier import notify_status_event
+
+        for row, event_type, err in transitions:
+            is_failed = event_type == "run.errored"
+            notify_status_event(
+                session,
+                kind="task",
+                title=f"Task {'failed' if is_failed else 'completed'}: {row.title}",
+                status="failed" if is_failed else "completed",
+                detail=(err or "")[:500] if is_failed else None,
+                engagement_slug=engagement_slug,
+            )
 
 
 def _reconcile_running_runs(
     session: Session,
     redis_client: Any,
     eng_id: Any,
+    *,
+    engagement_slug: str | None = None,
 ) -> None:
     """v0.8.1: lazy terminal update for run-tied AgentExecution rows.
 
@@ -451,6 +472,8 @@ def _reconcile_running_runs(
 
     now = datetime.now(tz=UTC)
     dirty = False
+    # v0.9.1: collect transitions to fire Discord pings AFTER commit.
+    transitions: list[tuple[AgentExecution, str, str | None]] = []
     for row in pending:
         thread_id = str((row.input or {}).get("thread_id") or "")
         if thread_id and thread_id in terminal:
@@ -462,8 +485,30 @@ def _reconcile_running_runs(
                 row.error = (error or "run errored")[:2000]
             row.completed_at = now
             dirty = True
+            transitions.append((row, event_type, error))
     if dirty:
         session.commit()
+        # v0.9.1: fire Discord status-alert ping for every transition.
+        # The status_notifier looks up enabled integrations with
+        # purpose='status_alerts' and posts to each. Silent no-op if no
+        # such integration is configured. This is the "run-level
+        # completions" hook the v0.8.0 brief promised.
+        from app.services.status_notifier import notify_status_event
+
+        for row, event_type, err in transitions:
+            is_failed = event_type == "run.errored"
+            thread_short = str((row.input or {}).get("thread_id") or "")[:8]
+            notify_status_event(
+                session,
+                kind="run",
+                title=(
+                    f"Run {'failed' if is_failed else 'completed'} "
+                    f"(thread {thread_short})"
+                ),
+                status="failed" if is_failed else "completed",
+                detail=(err or "")[:500] if is_failed else None,
+                engagement_slug=engagement_slug,
+            )
 
 
 @router.get(
@@ -492,8 +537,14 @@ def get_engagement_status(
     # marginally: the stream-match passes run first because the
     # stale-task sweep is the catch-all for the worker-lost-message
     # case where there's no stream event to match against.
-    _reconcile_running_runs(session, redis_client, eng.id)
-    _reconcile_running_tasks_from_stream(session, redis_client, eng.id)
+    # v0.9.1: the two stream-match passes also fire Discord status-alert
+    # pings on each transition (purpose='status_alerts' integration row).
+    _reconcile_running_runs(
+        session, redis_client, eng.id, engagement_slug=eng.slug
+    )
+    _reconcile_running_tasks_from_stream(
+        session, redis_client, eng.id, engagement_slug=eng.slug
+    )
     _reconcile_stale_tasks(session, eng.id)
 
     agents = list(
