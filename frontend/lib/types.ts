@@ -129,10 +129,26 @@ export interface Finding {
 // Sort order for GET /engagements/{slug}/findings?sort=…
 export type FindingSort = "newest" | "severity" | "observed";
 
+// Captured SSE event for the Status tab's Live events panel (v0.8.2).
+// Defined here so both the engagement-page subscriber (which captures
+// the event) and the StatusView (which renders it) can import the shape
+// without circular component imports.
+export interface LoggedEvent {
+  sseId: string;
+  receivedAt: number;
+  event: RunEvent;
+}
+
 // ── Status tab (v0.8.0) ───────────────────────────────────────────────────
 
 export type StatusColor = "active" | "pending" | "completed" | "failed";
 export type StatusKind = "agent" | "task" | "approval";
+
+export interface StatusTransition {
+  status: StatusColor;
+  raw_status: string;
+  at: string;
+}
 
 export interface StatusEntity {
   id: string;
@@ -145,6 +161,7 @@ export interface StatusEntity {
   completed_at: string | null;
   retryable: boolean;
   log: Record<string, unknown>;
+  history: StatusTransition[];
 }
 
 export interface EngagementStatusResponse {

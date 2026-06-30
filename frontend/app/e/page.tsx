@@ -15,7 +15,7 @@ import {
   type PendingApproval,
 } from "@/components/approvals-modal";
 import { DownloadReport } from "@/components/download-report";
-import { EventLog, type LoggedEvent } from "@/components/event-log";
+import type { LoggedEvent } from "@/lib/types";
 import {
   EngagementNav,
   type EngagementView,
@@ -360,7 +360,7 @@ function EngagementDetail({ slug }: { slug: string }) {
 
           {view === "costs" && <CostsView slug={slug} />}
 
-          {view === "status" && <StatusView slug={slug} />}
+          {view === "status" && <StatusView slug={slug} events={events} />}
 
           {view === "scope" && (
             <div className="space-y-6">
@@ -377,7 +377,6 @@ function EngagementDetail({ slug }: { slug: string }) {
                 refreshKey={grantsRefreshKey}
                 canRevoke={canWrite}
               />
-              <EventLog events={events} />
             </div>
           )}
         </div>
