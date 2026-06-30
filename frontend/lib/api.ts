@@ -810,3 +810,11 @@ export function getEngagementStatus(
 export function retryTask(taskId: string): Promise<StatusEntity> {
   return request<StatusEntity>(`/tasks/${taskId}/retry`, { method: "POST" });
 }
+
+export function retryAgentExecution(
+  executionId: string,
+): Promise<StatusEntity> {
+  return request<StatusEntity>(`/agent-executions/${executionId}/retry`, {
+    method: "POST",
+  });
+}

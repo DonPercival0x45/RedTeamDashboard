@@ -25,7 +25,11 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { getEngagementStatus, retryTask } from "@/lib/api";
+import {
+  getEngagementStatus,
+  retryAgentExecution,
+  retryTask,
+} from "@/lib/api";
 import { cn } from "@/lib/utils";
 import type {
   EngagementStatusResponse,
@@ -119,10 +123,15 @@ export function StatusView({ slug }: { slug: string }) {
 
   const onRetry = useCallback(
     async (entity: StatusEntity) => {
-      if (entity.kind !== "task") return;
       setRetryingId(entity.id);
       try {
-        await retryTask(entity.id);
+        if (entity.kind === "task") {
+          await retryTask(entity.id);
+        } else if (entity.kind === "agent") {
+          await retryAgentExecution(entity.id);
+        } else {
+          return;
+        }
         await reload();
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));

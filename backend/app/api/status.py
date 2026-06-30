@@ -25,13 +25,15 @@ from fastapi import APIRouter, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.deps import CurrentNonGuestUser, CurrentUser, DbSession
+from app.api.deps import CurrentNonGuestUser, CurrentUser, DbSession, RedisClient
 from app.models import (
     AgentExecution,
     AgentExecutionStatus,
+    AgentName,
     Approval,
     ApprovalStatus,
     Engagement,
+    Finding,
     Task,
     TaskStatus,
 )
@@ -101,12 +103,14 @@ def _agent_to_entity(row: AgentExecution) -> StatusEntity:
         raw_status=row.status.value,
         started_at=row.started_at,
         completed_at=row.completed_at,
-        # Agent retry needs per-kind dispatch logic (Strategic ↔ finding,
-        # Tactical ↔ task, Triage ↔ finding). Coming in a follow-up commit
-        # — for now the box surfaces the failure but the Retry button
-        # only renders on tasks. Planner has its own re-evaluate button
-        # on /settings/feedback.
-        retryable=False,
+        # Triage retry is wired (POST /agent-executions/{id}/retry). Strategic
+        # and Tactical retry need richer per-kind dispatch — coming in a
+        # follow-up commit. Planner has its own re-evaluate button on
+        # /settings/feedback.
+        retryable=(
+            row.status == AgentExecutionStatus.failed
+            and row.agent == AgentName.triage
+        ),
         log={
             "agent": row.agent.value,
             "trigger": row.trigger.value,
@@ -231,6 +235,115 @@ def get_engagement_status(
 
 
 # ── retry endpoints ──────────────────────────────────────────────────────
+
+
+@router.post(
+    "/agent-executions/{execution_id}/retry",
+    response_model=StatusEntity,
+)
+def retry_agent_execution(
+    execution_id: uuid.UUID,
+    session: DbSession,
+    redis_client: RedisClient,
+    user: CurrentNonGuestUser,
+) -> StatusEntity:
+    """Re-run a failed agent execution.
+
+    v0.8 only wires Triage retry (the simplest dispatch — re-run on the
+    same finding). Strategic / Tactical retry shipping in a follow-up:
+    each agent kind needs its own dispatcher because the source entity
+    (finding vs task) differs. Until then the Status tab's retryable
+    flag is False for Strategic / Tactical failed rows so the UI
+    doesn't promise a button that 501s.
+
+    BYO key resolves against the *clicking* analyst's Redis cache
+    (matches Strategic / Triage policy — preserves the v0.4 cross-user
+    key-reuse lock).
+    """
+    row = session.get(AgentExecution, execution_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="agent execution not found")
+    if row.status != AgentExecutionStatus.failed:
+        raise HTTPException(
+            status_code=400,
+            detail="only failed agent executions can be retried",
+        )
+    if row.agent != AgentName.triage:
+        raise HTTPException(
+            status_code=501,
+            detail=(
+                f"retry for agent kind '{row.agent.value}' isn't wired yet; "
+                "use the original action surface for now (Strategic: 'Agent' "
+                "button on the finding slide-over)"
+            ),
+        )
+
+    # Triage stashed the source finding id under input.finding_id. Look it up.
+    input_payload = row.input or {}
+    finding_id_raw = input_payload.get("finding_id") if isinstance(input_payload, dict) else None
+    if not finding_id_raw:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "this Triage execution has no finding_id in input — can't "
+                "determine what to retry against"
+            ),
+        )
+    try:
+        finding_id = uuid.UUID(str(finding_id_raw))
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"corrupt finding_id on the execution row: {finding_id_raw!r}",
+        ) from exc
+    finding = session.get(Finding, finding_id)
+    if finding is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"finding {finding_id} no longer exists — can't retry the "
+                "triage against a deleted finding"
+            ),
+        )
+
+    from app.services.ephemeral_provider_key import NoProviderKeyError
+    from app.services.status_notifier import notify_status_event
+    from app.services.triage import triage_finding_summary
+
+    try:
+        execution, _summary = triage_finding_summary(
+            session,
+            redis_client,
+            finding=finding,
+            acting_user_id=user.id,
+        )
+    except NoProviderKeyError as exc:
+        session.rollback()
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"No provider key configured for the LLM call ({exc}). "
+                "Add one under /settings/keys."
+            ),
+        ) from exc
+    except Exception as exc:
+        session.commit()
+        eng = session.get(Engagement, finding.engagement_id)
+        notify_status_event(
+            session,
+            kind="agent",
+            title=f"Triage retry failed: {finding.title}",
+            status="failed",
+            detail=str(exc)[:500],
+            engagement_slug=eng.slug if eng else None,
+        )
+        raise HTTPException(
+            status_code=502, detail=f"triage retry failed: {exc}"
+        ) from exc
+
+    session.commit()
+    session.refresh(execution)
+    return _agent_to_entity(execution)
 
 
 @router.post(
