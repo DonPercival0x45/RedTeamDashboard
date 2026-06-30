@@ -193,6 +193,38 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Pre-Bicep: resolve Entra IDs from the existing SWA's Environment
+# Variables blade if no CLI flag was passed. The Bicep deploy below stamps
+# whatever values we have into the backend Container App's env (which gate
+# ``settings.entra_enabled`` server-side — empty values silently drop every
+# Bearer token to a "header required" 401, the v0.7.1 prod bug). This
+# resolve MUST run BEFORE the Bicep deploy so the backend gets the right
+# values; the post-deploy block further down does the same thing for the
+# viewer build / write-back path but lands too late for the backend.
+#
+# On a first install the SWA doesn't exist yet, the query 404s, and we
+# fall through to whatever the CLI flags / shell env provided. No-op.
+SWA_PREDICTED_NAME="rtd-${ENV_NAME}-viewer"
+if [[ "$ENTRA_TENANT_ID_FROM_FLAG" != "true" ]]; then
+    PRE_STORED_TENANT="$(az staticwebapp appsettings list \
+        -n "$SWA_PREDICTED_NAME" -g "$RG_NAME" \
+        --query "properties.RTD_ENTRA_TENANT_ID" -o tsv 2>/dev/null || true)"
+    if [[ -n "$PRE_STORED_TENANT" && "$PRE_STORED_TENANT" != "None" ]]; then
+        ENTRA_TENANT_ID="$PRE_STORED_TENANT"
+        blue "    Entra tenant id pre-resolved from SWA Environment Variables"
+    fi
+fi
+if [[ "$ENTRA_CLIENT_ID_FROM_FLAG" != "true" ]]; then
+    PRE_STORED_CLIENT="$(az staticwebapp appsettings list \
+        -n "$SWA_PREDICTED_NAME" -g "$RG_NAME" \
+        --query "properties.RTD_ENTRA_CLIENT_ID" -o tsv 2>/dev/null || true)"
+    if [[ -n "$PRE_STORED_CLIENT" && "$PRE_STORED_CLIENT" != "None" ]]; then
+        ENTRA_CLIENT_ID="$PRE_STORED_CLIENT"
+        blue "    Entra client id pre-resolved from SWA Environment Variables"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
 # Bicep deploy
 # ---------------------------------------------------------------------------
 
