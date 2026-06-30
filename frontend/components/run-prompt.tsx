@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { CheckCircle2, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -14,6 +15,13 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { startRun } from "@/lib/api";
 import type { LLMProvider } from "@/lib/types";
+
+interface LastDispatched {
+  threadId: string;
+  provider: LLMProvider;
+  modelName: string;
+  at: number;
+}
 
 // Default model names by provider. Pre-filled when the user picks a
 // provider; the actual model name is free-form (no backend whitelist) so
@@ -46,6 +54,17 @@ export function RunPrompt({
   const [modelName, setModelName] = useState<string>(DEFAULT_MODELS.anthropic);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [lastDispatched, setLastDispatched] = useState<LastDispatched | null>(
+    null,
+  );
+
+  // Auto-dismiss the success banner after 12s so it doesn't sit stale forever.
+  // 12s is long enough for the analyst to read + click the Status link.
+  useEffect(() => {
+    if (!lastDispatched) return;
+    const t = setTimeout(() => setLastDispatched(null), 12_000);
+    return () => clearTimeout(t);
+  }, [lastDispatched]);
 
   const onProviderChange = (next: LLMProvider) => {
     setProvider(next);
@@ -65,6 +84,12 @@ export function RunPrompt({
       const result = await startRun(slug, {
         prompt: prompt.trim(),
         model: { provider, name: modelName.trim() },
+      });
+      setLastDispatched({
+        threadId: result.thread_id,
+        provider,
+        modelName: modelName.trim(),
+        at: Date.now(),
       });
       onStarted?.(result.thread_id);
     } catch (err) {
@@ -123,8 +148,41 @@ export function RunPrompt({
             </div>
           </div>
           {error && <p className="text-sm text-destructive">{error}</p>}
-          <Button type="submit" disabled={busy}>
-            {busy ? "Sending…" : "Run"}
+
+          {lastDispatched && (
+            <div
+              role="status"
+              className="flex items-start gap-2 rounded-md border border-emerald-500/50 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-100"
+            >
+              <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-300" />
+              <div className="min-w-0 flex-1">
+                <p className="font-medium text-emerald-50">
+                  Run dispatched to the worker.
+                </p>
+                <p className="mt-0.5 text-xs text-emerald-200/80">
+                  thread{" "}
+                  <code className="font-mono">
+                    {lastDispatched.threadId.slice(0, 8)}
+                  </code>{" "}
+                  · {lastDispatched.provider}/{lastDispatched.modelName}. Watch
+                  the <strong>Status</strong> tab or the event log below for
+                  agent calls + approval gates as they fire.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setLastDispatched(null)}
+                className="text-xs text-emerald-300/70 hover:text-emerald-100"
+                aria-label="Dismiss"
+              >
+                ×
+              </button>
+            </div>
+          )}
+
+          <Button type="submit" disabled={busy} className="gap-1.5">
+            {busy && <Loader2 className="h-4 w-4 animate-spin" />}
+            {busy ? "Dispatching to worker…" : "Run"}
           </Button>
         </form>
       </CardContent>
