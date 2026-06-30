@@ -69,10 +69,12 @@ from app.models import (
     Finding,
     FindingPhase,
     FindingStatus,
+    FindingSummary,
     Observation,
     ScopeItem,
     Severity,
     TaskKind,
+    User,
 )
 from app.models.api_key import APIKeyScope
 from app.orchestrator.llm import default_provider_model
@@ -96,6 +98,8 @@ from app.schemas.finding import (
     AttachmentRead,
     EntityRead,
     FindingRead,
+    FindingSummaryCreate,
+    FindingSummaryRead,
     FindingUpdate,
     FindingValidate,
 )
@@ -1107,6 +1111,30 @@ def import_burp(
 # ---------------------------------------------------------------------------
 
 
+def _record_finding_summary(
+    session: Any,
+    finding: Finding,
+    body_text: str,
+    author_user_id: uuid.UUID,
+) -> FindingSummary:
+    """Append a summary entry to history AND refresh the cached body.
+
+    Insert path used by both PATCH /findings/{id} (back-compat) and
+    POST /findings/{id}/summaries (the v0.7.0 slide-over). Caller commits.
+    """
+    entry = FindingSummary(
+        finding_id=finding.id,
+        body=body_text,
+        author_user_id=author_user_id,
+    )
+    session.add(entry)
+    # Keep findings.summary as the denormalized cache of the latest body
+    # so downstream consumers (Report tab, JSON export, MCP server)
+    # don't need to join.
+    finding.summary = body_text
+    return entry
+
+
 @router.patch(
     "/findings/{finding_id}",
     response_model=FindingRead,
@@ -1118,7 +1146,12 @@ def update_finding(
     user: CurrentUser,
 ) -> dict[str, Any]:
     """Edit analyst-controlled fields on a finding. Only provided fields change;
-    omitted fields are left as-is. ``summary`` accepts ``null`` to clear it."""
+    omitted fields are left as-is. ``summary`` accepts ``null`` to clear it.
+
+    When ``summary`` is set to a non-empty string, an entry is also
+    appended to the finding's summary history. Setting it to ``null``
+    or ``""`` just clears the cached body without recording history.
+    """
     finding = session.get(Finding, finding_id)
     if finding is None:
         raise HTTPException(status_code=404, detail="finding not found")
@@ -1128,7 +1161,10 @@ def update_finding(
         finding.title = body.title
         changed["title"] = body.title
     if "summary" in body.model_fields_set:
-        finding.summary = body.summary
+        if body.summary:
+            _record_finding_summary(session, finding, body.summary, user.id)
+        else:
+            finding.summary = body.summary  # None / empty clears the cache only
         changed["summary"] = body.summary
     if "severity" in body.model_fields_set and body.severity is not None:
         finding.severity = body.severity
@@ -1151,6 +1187,91 @@ def update_finding(
         session.refresh(finding)
 
     return _finding_to_read(finding)
+
+
+# ---------------------------------------------------------------------------
+# Finding summary history (v0.7.0)
+# ---------------------------------------------------------------------------
+
+
+def _finding_summary_to_read(
+    entry: FindingSummary, author: User | None
+) -> dict[str, Any]:
+    return {
+        "id": entry.id,
+        "finding_id": entry.finding_id,
+        "body": entry.body,
+        "author_user_id": entry.author_user_id,
+        "author_email": author.email if author else None,
+        "author_display_name": author.display_name if author else None,
+        "created_at": entry.created_at,
+    }
+
+
+@router.post(
+    "/findings/{finding_id}/summaries",
+    response_model=FindingSummaryRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_finding_summary(
+    finding_id: uuid.UUID,
+    body: FindingSummaryCreate,
+    session: DbSession,
+    user: CurrentNonGuestUser,
+) -> dict[str, Any]:
+    """Append a summary entry to a finding's immutable history.
+
+    The frontend uses this from the Findings slide-over: the textarea
+    clears on success, and the history list below renders the new entry
+    at the top. Also refreshes ``findings.summary`` as the denormalized
+    cache so the Report tab / JSON export keep showing the latest.
+    """
+    finding = session.get(Finding, finding_id)
+    if finding is None:
+        raise HTTPException(status_code=404, detail="finding not found")
+
+    entry = _record_finding_summary(session, finding, body.body, user.id)
+    session.add(
+        AuditLog(
+            engagement_id=finding.engagement_id,
+            actor_type=ActorType.user,
+            actor_id=str(user.id),
+            event_type="finding.summary_recorded",
+            payload={
+                "finding_id": str(finding.id),
+                "entry_id": str(entry.id),
+                "body_chars": len(body.body),
+            },
+        )
+    )
+    session.commit()
+    session.refresh(entry)
+    return _finding_summary_to_read(entry, user)
+
+
+@router.get(
+    "/findings/{finding_id}/summaries",
+    response_model=list[FindingSummaryRead],
+)
+def list_finding_summaries(
+    finding_id: uuid.UUID,
+    session: DbSession,
+    _user: CurrentUser,
+) -> list[dict[str, Any]]:
+    """Newest-first list of summary entries for a finding."""
+    finding = session.get(Finding, finding_id)
+    if finding is None:
+        raise HTTPException(status_code=404, detail="finding not found")
+
+    rows = list(
+        session.execute(
+            select(FindingSummary, User)
+            .join(User, User.id == FindingSummary.author_user_id, isouter=True)
+            .where(FindingSummary.finding_id == finding_id)
+            .order_by(FindingSummary.created_at.desc())
+        ).all()
+    )
+    return [_finding_summary_to_read(entry, author) for entry, author in rows]
 
 
 # ---------------------------------------------------------------------------

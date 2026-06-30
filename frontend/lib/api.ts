@@ -25,6 +25,7 @@ import type {
   FindingImport,
   FindingPhase,
   FindingSort,
+  FindingSummaryEntry,
   FindingValidationStatus,
   Integration,
   IntegrationType,
@@ -183,6 +184,22 @@ export function listFindings(
 // browser MUST set the multipart Content-Type with its own boundary; fetch
 // handles that automatically when `body` is a FormData and no Content-Type
 // header is set on the request.
+export function listFindingSummaries(
+  findingId: string,
+): Promise<FindingSummaryEntry[]> {
+  return request<FindingSummaryEntry[]>(`/findings/${findingId}/summaries`);
+}
+
+export function createFindingSummary(
+  findingId: string,
+  body: string,
+): Promise<FindingSummaryEntry> {
+  return request<FindingSummaryEntry>(`/findings/${findingId}/summaries`, {
+    method: "POST",
+    body: JSON.stringify({ body }),
+  });
+}
+
 export async function importFindingsFromBurp(
   slug: string,
   file: File,

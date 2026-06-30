@@ -129,6 +129,19 @@ export interface Finding {
 // Sort order for GET /engagements/{slug}/findings?sort=…
 export type FindingSort = "newest" | "severity" | "observed";
 
+// One entry in a finding's immutable summary history. Newest first.
+// `findings.summary` on the parent row is the denormalized cache of the
+// latest entry's body (for the Report tab / JSON export).
+export interface FindingSummaryEntry {
+  id: string;
+  finding_id: string;
+  body: string;
+  author_user_id: string | null;
+  author_email: string | null;
+  author_display_name: string | null;
+  created_at: string;
+}
+
 // Payload for POST /engagements/{slug}/findings/import
 export interface FindingImport {
   title: string;

@@ -8,12 +8,13 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   acceptSuggestion,
   analyzeFinding,
+  createFindingSummary,
   deleteAttachment,
   dismissSuggestion,
   listAttachments,
+  listFindingSummaries,
   loadAttachmentBlob,
   triageFinding,
-  updateFinding,
   uploadAttachment,
   validateFinding,
 } from "@/lib/api";
@@ -25,6 +26,7 @@ import type {
   Finding,
   FindingPhase,
   FindingSort,
+  FindingSummaryEntry,
   FindingValidationStatus,
   Severity,
   Suggestion,
@@ -469,8 +471,9 @@ function FindingSlideOver({
   const [dispatchedIds, setDispatchedIds] = useState<Set<string>>(new Set());
   const [decidingId, setDecidingId] = useState<string | null>(null);
 
-  // Summary editor
-  const [summary, setSummary] = useState(finding.summary ?? "");
+  // Summary editor — the textarea is for the NEXT entry. v0.7.0 made it
+  // append-only: every Save records an immutable history row below.
+  const [summary, setSummary] = useState("");
   const [savingSummary, setSavingSummary] = useState(false);
   const [summaryError, setSummaryError] = useState<string | null>(null);
 
@@ -478,25 +481,46 @@ function FindingSlideOver({
   // analyst then edits + clicks Save. Does NOT auto-save.
   const [triaging, setTriaging] = useState(false);
 
+  // Summary history (newest first). Refreshed after each Save.
+  const [summaries, setSummaries] = useState<FindingSummaryEntry[] | null>(null);
+  const [viewingSummary, setViewingSummary] = useState<FindingSummaryEntry | null>(
+    null,
+  );
+
   // Attachments
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  // Load attachments when the slide-over opens
+  // Load attachments + summary history when the slide-over opens
   useEffect(() => {
     listAttachments(finding.id)
       .then(setAttachments)
       .catch(() => setAttachments([]));
+    listFindingSummaries(finding.id)
+      .then(setSummaries)
+      .catch(() => setSummaries([]));
   }, [finding.id]);
 
   const doSaveSummary = async () => {
+    const trimmed = summary.trim();
+    if (!trimmed) {
+      setSummaryError("Write a summary first — empty entries aren't recorded.");
+      return;
+    }
     setSavingSummary(true);
     setSummaryError(null);
     try {
-      const updated = await updateFinding(finding.id, { summary: summary || null });
-      onUpdated(updated);
+      const entry = await createFindingSummary(finding.id, trimmed);
+      // Prepend the new row to the history; clear the textarea so the
+      // analyst can start fresh next time.
+      setSummaries((prev) => [entry, ...(prev ?? [])]);
+      setSummary("");
+      // Refresh the parent's cached finding.summary so the Report tab
+      // and table can see the new latest. Local-only update; no extra
+      // server round-trip.
+      onUpdated({ ...finding, summary: entry.body });
     } catch (err) {
       setSummaryError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -643,7 +667,9 @@ function FindingSlideOver({
           {JSON.stringify(finding.data, null, 2)}
         </pre>
 
-        {/* Summary — analyst narrative that flows into the report */}
+        {/* Summary — analyst narrative that flows into the report. Each
+            Save appends an immutable entry to history below; the textarea
+            clears so the next observation lands as its own row. */}
         <div className="mt-5">
           <h3 className="text-sm font-medium">Summary</h3>
           <Textarea
@@ -656,7 +682,7 @@ function FindingSlideOver({
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <Button
               size="sm"
-              disabled={savingSummary || summary === (finding.summary ?? "")}
+              disabled={savingSummary || !summary.trim()}
               onClick={doSaveSummary}
             >
               {savingSummary ? "Saving…" : "Save summary"}
@@ -674,6 +700,47 @@ function FindingSlideOver({
               <p className="text-xs text-critical">{summaryError}</p>
             )}
           </div>
+        </div>
+
+        {/* Summary history — newest first. Click a card to read the full body. */}
+        <div className="mt-5">
+          <h3 className="text-sm font-medium">Summary history</h3>
+          {summaries === null ? (
+            <p className="mt-2 text-xs text-muted-foreground">Loading…</p>
+          ) : summaries.length === 0 ? (
+            <p className="mt-2 text-xs text-muted-foreground">
+              No summaries recorded yet. Save one above to start the history.
+            </p>
+          ) : (
+            <ul className="mt-2 space-y-2">
+              {summaries.map((entry) => (
+                <li key={entry.id}>
+                  <button
+                    type="button"
+                    onClick={() => setViewingSummary(entry)}
+                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-left transition-colors hover:border-foreground/40 hover:bg-secondary/40"
+                  >
+                    <p className="line-clamp-2 text-xs text-foreground">
+                      {entry.body}
+                    </p>
+                    <p className="mt-1.5 text-[10px] text-muted-foreground">
+                      {entry.author_display_name ||
+                        entry.author_email ||
+                        "(unknown analyst)"}{" "}
+                      ·{" "}
+                      {new Date(entry.created_at).toLocaleString(undefined, {
+                        year: "numeric",
+                        month: "short",
+                        day: "numeric",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
+                    </p>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
 
         {/* Screenshots / evidence attachments */}
@@ -842,6 +909,50 @@ function FindingSlideOver({
           </div>
         </div>
       </aside>
+
+      {/* Summary detail popup — opens when the analyst clicks a row in
+          Summary history. z-60 so it sits over the slide-over. */}
+      {viewingSummary && (
+        <>
+          <div
+            className="fixed inset-0 z-[60] bg-black/70"
+            onClick={() => setViewingSummary(null)}
+            aria-hidden
+          />
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Summary detail"
+            className="fixed left-1/2 top-1/2 z-[70] flex max-h-[80vh] w-[min(640px,92vw)] -translate-x-1/2 -translate-y-1/2 flex-col rounded-lg border border-border bg-popover p-5 shadow-xl"
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h3 className="text-sm font-semibold text-foreground">
+                  Summary recorded{" "}
+                  {new Date(viewingSummary.created_at).toLocaleString()}
+                </h3>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  by{" "}
+                  {viewingSummary.author_display_name ||
+                    viewingSummary.author_email ||
+                    "(unknown analyst)"}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setViewingSummary(null)}
+                className="text-muted-foreground hover:text-foreground"
+                aria-label="Close"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="mt-4 overflow-y-auto whitespace-pre-wrap text-sm text-foreground">
+              {viewingSummary.body}
+            </div>
+          </div>
+        </>
+      )}
     </>
   );
 }
