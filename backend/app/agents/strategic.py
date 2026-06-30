@@ -310,6 +310,23 @@ def _extract_usage(response: Any) -> tuple[int | None, int | None]:
     )
 
 
+# v0.8.1: OpenAI-compatible bases for providers that ship an OpenAI-shaped
+# API surface. The analyst's stored endpoint (per-key, on the BYO upload)
+# wins over this default — useful for self-hosted gateways or future
+# region/edge variants. ``custom`` has no default base; the stored endpoint
+# is mandatory.
+_OPENAI_COMPATIBLE_BASES: dict[str, str] = {
+    "xai": "https://api.x.ai/v1",
+    "together": "https://api.together.xyz/v1",
+    "groq": "https://api.groq.com/openai/v1",
+    "deepseek": "https://api.deepseek.com/v1",
+    "mistral": "https://api.mistral.ai/v1",
+    "google": "https://generativelanguage.googleapis.com/v1beta/openai",
+    "cohere": "https://api.cohere.com/compatibility/v1",
+    "custom": "",
+}
+
+
 def _make_chat_model(
     provider: str,
     name: str,
@@ -327,6 +344,13 @@ def _make_chat_model(
     Redis-cached key (resolved by :func:`_resolve_llm`). When the analyst
     has no key for the provider, the resolver raises and this factory is
     not called.
+
+    v0.8.1: the 8 OpenAI-compatible providers (xAI, Together, Groq,
+    DeepSeek, Mistral, Google, Cohere, Custom) route through ChatOpenAI
+    with a per-provider ``base_url``. No new langchain packages required;
+    those vendors all expose an OpenAI-shaped surface. ``Custom`` requires
+    the analyst to upload the key with an ``endpoint`` so we know where
+    to point.
     """
     provider = provider.lower()
     if provider == "anthropic":
@@ -363,6 +387,19 @@ def _make_chat_model(
             azure_deployment=name or settings.azure_openai_deployment,
             api_version=settings.azure_openai_api_version,
         )
+    if provider in _OPENAI_COMPATIBLE_BASES:
+        from langchain_openai import ChatOpenAI
+
+        base = endpoint or _OPENAI_COMPATIBLE_BASES[provider]
+        if not base:
+            raise ValueError(
+                f"provider '{provider}' requires an endpoint on the BYO key "
+                "(re-upload at /settings/keys with the API base URL filled in)"
+            )
+        kwargs = {"model": name, "base_url": base}
+        if api_key:
+            kwargs["api_key"] = api_key
+        return ChatOpenAI(**kwargs)
     raise ValueError(f"unknown LLM provider {provider!r}")
 
 
@@ -484,7 +521,13 @@ class StrategicAgent:
             started_at=datetime.now(tz=UTC),
         )
         session.add(execution)
-        session.flush()  # need execution.id below if we want to backref
+        # v0.8.1 fix: commit immediately so the Status tab can paint a green
+        # "active" box as the worker run progresses. Previously the row
+        # only became visible to other DB sessions when this whole method
+        # returned and the caller committed — meaning Strategic was
+        # invisible for the full duration of the LLM call.
+        session.commit()
+        session.refresh(execution)
 
         try:
             # BYO key: Strategic uses the KICKING analyst's ephemeral key.
@@ -654,7 +697,10 @@ class StrategicAgent:
             started_at=datetime.now(tz=UTC),
         )
         session.add(execution)
-        session.flush()
+        # v0.8.1 fix: commit immediately — see analyze_finding above for
+        # the rationale (Status tab visibility during LLM call).
+        session.commit()
+        session.refresh(execution)
 
         try:
             llm, provider, model_name = self._resolve_llm(

@@ -9,7 +9,20 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.models import EngagementStatus, EngagementTimeFrame, ScopeKind
 
-LLMProvider = Literal["anthropic", "openai", "azure", "ollama"]
+LLMProvider = Literal[
+    "anthropic",
+    "openai",
+    "azure",
+    "ollama",
+    "google",
+    "xai",
+    "mistral",
+    "cohere",
+    "together",
+    "groq",
+    "deepseek",
+    "custom",
+]
 
 
 class EngagementCreate(BaseModel):

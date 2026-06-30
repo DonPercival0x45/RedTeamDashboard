@@ -20,6 +20,8 @@ endpoints.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
+from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import select
@@ -37,6 +39,8 @@ from app.models import (
     Task,
     TaskStatus,
 )
+from app.runs.events import decode_envelope
+from app.runs.streams import outbound_stream
 from app.schemas.status import (
     EngagementStatusResponse,
     StatusColor,
@@ -186,6 +190,80 @@ def _approval_to_entity(row: Approval) -> StatusEntity:
 # ── read endpoint ────────────────────────────────────────────────────────
 
 
+def _reconcile_running_runs(
+    session: Session,
+    redis_client: Any,
+    eng_id: Any,
+) -> None:
+    """v0.8.1: lazy terminal update for run-tied AgentExecution rows.
+
+    The run-start endpoint stamps an AgentExecution row with
+    ``input.thread_id`` set so the Status tab paints an "active" box
+    immediately. The worker doesn't update the row when it finishes
+    (it can't — the worker only emits events to Redis), so we scan
+    the engagement's outbound stream here for ``run.completed`` /
+    ``run.errored`` events and flip the matching rows.
+
+    Cost is bounded: only checks rows that are still ``running`` AND
+    carry ``input.thread_id``. The XRANGE scan looks at the last 500
+    events on the stream — enough to catch any terminal event from
+    the last few hours of run activity.
+    """
+    pending = list(
+        session.execute(
+            select(AgentExecution).where(
+                AgentExecution.engagement_id == eng_id,
+                AgentExecution.status == AgentExecutionStatus.running,
+                AgentExecution.input["thread_id"].as_string().isnot(None),
+            )
+        ).scalars()
+    )
+    if not pending:
+        return
+
+    try:
+        raw = redis_client.xrange(outbound_stream(eng_id), count=500)
+    except Exception:  # noqa: BLE001 — Redis hiccup must not break the status read
+        return
+
+    terminal: dict[str, tuple[str, str | None]] = {}
+    for _msg_id, fields in raw or []:
+        try:
+            payload = decode_envelope(fields)
+        except (ValueError, KeyError):
+            continue
+        event_type = payload.get("type")
+        if event_type not in ("run.completed", "run.errored"):
+            continue
+        thread_id = str(payload.get("thread_id") or "")
+        if not thread_id:
+            continue
+        # Last terminal event per thread wins.
+        terminal[thread_id] = (
+            event_type,
+            str(payload.get("error") or "") if event_type == "run.errored" else None,
+        )
+
+    if not terminal:
+        return
+
+    now = datetime.now(tz=UTC)
+    dirty = False
+    for row in pending:
+        thread_id = str((row.input or {}).get("thread_id") or "")
+        if thread_id and thread_id in terminal:
+            event_type, error = terminal[thread_id]
+            if event_type == "run.completed":
+                row.status = AgentExecutionStatus.completed
+            else:
+                row.status = AgentExecutionStatus.failed
+                row.error = (error or "run errored")[:2000]
+            row.completed_at = now
+            dirty = True
+    if dirty:
+        session.commit()
+
+
 @router.get(
     "/engagements/{slug}/status",
     response_model=EngagementStatusResponse,
@@ -193,14 +271,22 @@ def _approval_to_entity(row: Approval) -> StatusEntity:
 def get_engagement_status(
     slug: str,
     session: DbSession,
+    redis_client: RedisClient,
     _user: CurrentUser,
 ) -> EngagementStatusResponse:
     """Aggregate live + historical execution state for one engagement.
 
     Each native status enum maps to a display colour the Status tab
     renders as a box border + pill. Newest first within each list.
+
+    v0.8.1: before returning, reconciles any run-tied AgentExecution
+    rows in 'running' state against the outbound stream — flipping
+    them to completed/failed when the worker has emitted the matching
+    terminal event. Lazy on-read so we don't need a background task.
     """
     eng = _engagement_by_slug(session, slug)
+
+    _reconcile_running_runs(session, redis_client, eng.id)
 
     agents = list(
         session.execute(

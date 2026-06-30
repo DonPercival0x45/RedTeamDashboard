@@ -95,7 +95,13 @@ def triage_finding_summary(
         started_at=datetime.now(tz=UTC),
     )
     session.add(execution)
-    session.flush()
+    # v0.8.1 fix: commit immediately so the Status tab sees the row in its
+    # `running` state RIGHT NOW. The previous pattern (flush only, caller
+    # commits) made active rows invisible to other DB sessions for the
+    # entire duration of the LLM call. With this commit, the Status tab
+    # paints a green "active" box within the next 2s poll.
+    session.commit()
+    session.refresh(execution)
 
     try:
         response = llm.invoke(
@@ -116,9 +122,16 @@ def triage_finding_summary(
         execution.tokens_out = tokens_out
         execution.cost_usd = cost
         execution.output = {"summary_chars": len(summary)}
+        session.commit()
+        session.refresh(execution)
         return execution, summary
     except Exception as exc:
         execution.status = AgentExecutionStatus.failed
         execution.completed_at = datetime.now(tz=UTC)
         execution.error = str(exc)[:1000]
+        # Commit the failed-state row so the Status tab can show it as a red
+        # box without waiting for the outer commit. Caller does NOT need to
+        # re-commit; subsequent `session.commit()` in the API endpoint is a
+        # no-op for this row.
+        session.commit()
         raise
