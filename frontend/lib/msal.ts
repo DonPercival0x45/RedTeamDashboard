@@ -48,9 +48,26 @@ export function activeAccount(): AccountInfo | null {
   );
 }
 
-// Acquire an API access token. Silent first; on interaction-required, kick off
-// a redirect (which navigates away, so we return null). Returns null when
-// Entra is disabled.
+// Acquire an API access token. Strategy (v0.7.1):
+//   1. Try acquireTokenSilent — the happy path (cached refresh token still
+//      good).
+//   2. On any silent failure (InteractionRequired, monitor_window_timeout,
+//      any other BrowserAuthError) try acquireTokenPopup. Popup preserves
+//      the page (no reload) so the in-flight click that triggered the
+//      token acquisition can resume against the same API call with a fresh
+//      token. This is the fix for the v0.7.0 "401 X-API-Key required"
+//      production bug: silent failure used to fall straight through to
+//      redirect, which navigated away ASYNCHRONOUSLY — meanwhile the JS
+//      continued, sent an unauthenticated fetch, and the user saw the
+//      backend's "no auth header" 401 before the redirect even fired.
+//   3. If popup itself fails (blocked, dismissed, errored), fall back to
+//      redirect as last resort — loses the in-flight request but the
+//      analyst gets back into a valid session.
+//
+// Returns null when Entra is disabled OR when redirect was kicked off
+// (caller must handle null by aborting whatever it was about to do —
+// authHeaders() converts null into a thrown error so callers can't
+// accidentally fire unauthenticated requests).
 export async function getAccessToken(): Promise<string | null> {
   if (!msalInstance) return null;
   await ensureMsalReady();
@@ -66,25 +83,28 @@ export async function getAccessToken(): Promise<string | null> {
     });
     return result.accessToken;
   } catch (err) {
-    // Three classes of "silent didn't work, ask the user":
-    //   1. InteractionRequiredAuthError — consent / MFA / re-auth needed
-    //   2. BrowserAuthError with monitor_window_timeout — the silent iframe
-    //      couldn't load login.microsoftonline.com in time (mobile Safari,
-    //      third-party cookies disabled, restrictive network)
-    //   3. Anything else network/transient that prevented silent renewal
-    // For all of them, fall back to an interactive redirect rather than
-    // throwing into a "Loading…" wall.
     const isMonitorTimeout =
       err instanceof BrowserAuthError &&
       err.errorCode === "monitor_window_timeout";
-    if (
+    const interactiveNeeded =
       err instanceof InteractionRequiredAuthError ||
       isMonitorTimeout ||
-      err instanceof BrowserAuthError
-    ) {
+      err instanceof BrowserAuthError;
+    if (!interactiveNeeded) throw err;
+
+    // Try popup first — preserves page state.
+    try {
+      const result = await msalInstance.acquireTokenPopup({
+        account,
+        scopes: SCOPES,
+      });
+      return result.accessToken;
+    } catch {
+      // Popup blocked / dismissed / errored. Fall back to redirect; the
+      // caller sees null and authHeaders() throws so the in-flight
+      // request aborts before the navigation lands.
       await msalInstance.acquireTokenRedirect({ scopes: SCOPES });
       return null;
     }
-    throw err;
   }
 }

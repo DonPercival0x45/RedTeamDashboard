@@ -46,10 +46,24 @@ import type {
 } from "@/lib/types";
 
 // Auth-only headers (no Content-Type — request() adds that for JSON bodies).
+//
+// v0.7.1: when ENTRA is enabled and getAccessToken() returns null (popup +
+// redirect both failed, or page navigation is mid-flight), throw instead of
+// returning an empty object. Returning {} used to fire an unauthenticated
+// request that the backend rejected with "X-API-Key, Authorization: Bearer,
+// or X-User-Id header required" — a confusing message that hit the analyst
+// a beat before the MSAL redirect actually navigated. Throwing here keeps
+// the API call from going out at all; the caller's catch surfaces a clear
+// message while the redirect (already kicked off by getAccessToken) lands.
 export async function authHeaders(): Promise<Record<string, string>> {
   if (ENTRA_ENABLED) {
     const token = await getAccessToken();
-    return token ? { Authorization: `Bearer ${token}` } : {};
+    if (!token) {
+      throw new Error(
+        "Re-authenticating with Entra — please retry once the page reloads.",
+      );
+    }
+    return { Authorization: `Bearer ${token}` };
   }
   return { "X-User-Id": DEV_USER };
 }
