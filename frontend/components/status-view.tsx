@@ -113,11 +113,16 @@ export function StatusView({ slug }: { slug: string }) {
 
   useEffect(() => {
     void reload();
-    // Light auto-refresh so active rows tick toward terminal without a
-    // manual reload. 8s feels good for an analyst-visible feed.
+    // v0.8.1: dropped from 8s to 2s — the user complained that the
+    // Status tab didn't show active agents during a worker run. The
+    // root cause (services committing only at the end of the LLM
+    // call, hiding `running` rows from other sessions) is fixed in
+    // app/services/triage.py + app/agents/strategic.py; this polling
+    // cadence lets the analyst see the change immediately rather than
+    // up to 8s later.
     const t = setInterval(() => {
       void reload();
-    }, 8000);
+    }, 2000);
     return () => clearInterval(t);
   }, [reload]);
 

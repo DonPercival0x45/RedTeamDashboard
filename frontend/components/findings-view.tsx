@@ -123,13 +123,26 @@ export function FindingsView({
   const [showImporter, setShowImporter] = useState(false);
   const [showBurpImporter, setShowBurpImporter] = useState(false);
 
+  // v0.8.1: severity-only filter driven by clicking the metric tiles.
+  // "all" means no severity filter active. Pending validation has its own
+  // tile that toggles the status filter to pending_validation instead.
+  const [severityFilter, setSeverityFilter] = useState<Severity | "all">("all");
+
   const counts = {
     critical: findings.filter((f) => f.severity === "critical").length,
     high: findings.filter((f) => f.severity === "high").length,
     medium: findings.filter((f) => f.severity === "medium").length,
     low: findings.filter((f) => f.severity === "low").length,
+    info: findings.filter((f) => f.severity === "info").length,
     pending: findings.filter((f) => f.status === "pending_validation").length,
   };
+
+  const toggleSeverity = (s: Severity) =>
+    setSeverityFilter((prev) => (prev === s ? "all" : s));
+  const togglePending = () =>
+    setStatus((prev) =>
+      prev === "pending_validation" ? "all" : "pending_validation",
+    );
 
   const compareFindings = (a: Finding, b: Finding): number => {
     switch (sort) {
@@ -155,6 +168,7 @@ export function FindingsView({
   const visible = findings
     .filter((f) => phase === "all" || f.phase === phase)
     .filter((f) => status === "all" || f.status === status)
+    .filter((f) => severityFilter === "all" || f.severity === severityFilter)
     .slice()
     .sort(compareFindings);
 
@@ -165,22 +179,49 @@ export function FindingsView({
 
   return (
     <div className="space-y-6">
-      {/* Key metrics. v0.8.1: colour-coded per severity. The combined
-          Med/Low tile splits diagonally so Medium (yellow) sits in the
-          top-left and Low (green) in the bottom-right. Pending validation
-          uses an orange fill per the analyst preference. */}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+      {/* Key metrics. v0.8.1: colour-coded per severity, with each tile
+          acting as a click-to-filter button. Click a tile to filter the
+          findings table by that severity; click the same tile again to
+          clear. The Med/Low tile splits diagonally — Medium (yellow) sits
+          in the top-left and Low (green) in the bottom-right; each half
+          is its own click target. Info gets its own tile (blue). Pending
+          validation toggles the status filter to pending_validation. */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
         <SeverityMetricCard
           label="Critical"
           value={counts.critical}
           tone="critical"
+          active={severityFilter === "critical"}
+          onClick={() => toggleSeverity("critical")}
         />
-        <SeverityMetricCard label="High" value={counts.high} tone="high" />
-        <MediumLowSplitCard medium={counts.medium} low={counts.low} />
+        <SeverityMetricCard
+          label="High"
+          value={counts.high}
+          tone="high"
+          active={severityFilter === "high"}
+          onClick={() => toggleSeverity("high")}
+        />
+        <MediumLowSplitCard
+          medium={counts.medium}
+          low={counts.low}
+          mediumActive={severityFilter === "medium"}
+          lowActive={severityFilter === "low"}
+          onMediumClick={() => toggleSeverity("medium")}
+          onLowClick={() => toggleSeverity("low")}
+        />
+        <SeverityMetricCard
+          label="Info"
+          value={counts.info}
+          tone="info"
+          active={severityFilter === "info"}
+          onClick={() => toggleSeverity("info")}
+        />
         <SeverityMetricCard
           label="Pending validation"
           value={counts.pending}
           tone="pending"
+          active={status === "pending_validation"}
+          onClick={togglePending}
         />
       </div>
 
@@ -348,34 +389,52 @@ export function FindingsView({
   );
 }
 
-type SeverityTone = "critical" | "high" | "pending";
+type SeverityTone = "critical" | "high" | "info" | "pending";
 
 const SEVERITY_TONE_CLASS: Record<SeverityTone, string> = {
   critical: "border-rose-500/50 bg-rose-500/10 text-rose-100",
   high: "border-pink-400/50 bg-pink-400/10 text-pink-100",
+  info: "border-sky-500/50 bg-sky-500/10 text-sky-100",
   pending: "border-orange-500/50 bg-orange-500/10 text-orange-100",
 };
 
 const SEVERITY_TONE_VALUE_CLASS: Record<SeverityTone, string> = {
   critical: "text-rose-50",
   high: "text-pink-50",
+  info: "text-sky-50",
   pending: "text-orange-50",
 };
 
+const SEVERITY_TONE_ACTIVE_RING: Record<SeverityTone, string> = {
+  critical: "ring-rose-300/80",
+  high: "ring-pink-300/80",
+  info: "ring-sky-300/80",
+  pending: "ring-orange-300/80",
+};
+
+// v0.8.1: tiles are buttons; clicking toggles the corresponding filter.
 function SeverityMetricCard({
   label,
   value,
   tone,
+  active,
+  onClick,
 }: {
   label: string;
   value: number;
   tone: SeverityTone;
+  active: boolean;
+  onClick: () => void;
 }) {
   return (
-    <div
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
       className={cn(
-        "rounded-lg border p-4 transition-colors",
+        "rounded-lg border p-4 text-left transition-colors",
         SEVERITY_TONE_CLASS[tone],
+        active && `ring-2 ${SEVERITY_TONE_ACTIVE_RING[tone]}`,
       )}
     >
       <div
@@ -389,31 +448,63 @@ function SeverityMetricCard({
       <div className="mt-1 text-xs uppercase tracking-wide opacity-80">
         {label}
       </div>
-    </div>
+    </button>
   );
 }
 
-// Combined Medium + Low card, split diagonally:
-//   Medium (yellow) in the top-left half with its label + count in the
-//   top-left corner; Low (green) in the bottom-right half with its label +
-//   count in the bottom-right corner. The diagonal is rendered as a CSS
-//   linear-gradient with a hard stop at 50%.
+// Combined Medium + Low card, split diagonally. Each half is its own
+// click target — Medium in the top-left wedge, Low in the bottom-right.
+// The diagonal is rendered as a CSS linear-gradient with a hard stop at
+// 50%; the click hit zones are two absolutely-positioned <button>s
+// covering each wedge.
 function MediumLowSplitCard({
   medium,
   low,
+  mediumActive,
+  lowActive,
+  onMediumClick,
+  onLowClick,
 }: {
   medium: number;
   low: number;
+  mediumActive: boolean;
+  lowActive: boolean;
+  onMediumClick: () => void;
+  onLowClick: () => void;
 }) {
   return (
     <div
-      className="relative h-[88px] overflow-hidden rounded-lg border border-yellow-400/40"
+      className={cn(
+        "relative h-[88px] overflow-hidden rounded-lg border border-yellow-400/40 transition-shadow",
+        (mediumActive || lowActive) && "ring-2",
+        mediumActive && !lowActive && "ring-yellow-300/80",
+        lowActive && !mediumActive && "ring-emerald-300/80",
+        mediumActive && lowActive && "ring-foreground/40",
+      )}
       style={{
         background:
           "linear-gradient(135deg, rgba(250, 204, 21, 0.18) 0%, rgba(250, 204, 21, 0.18) 49.5%, rgba(255, 255, 255, 0.18) 49.5%, rgba(255, 255, 255, 0.18) 50.5%, rgba(16, 185, 129, 0.18) 50.5%, rgba(16, 185, 129, 0.18) 100%)",
       }}
     >
-      <div className="absolute left-3 top-2 leading-tight">
+      {/* Top-left wedge click zone */}
+      <button
+        type="button"
+        onClick={onMediumClick}
+        aria-pressed={mediumActive}
+        aria-label={`Filter to Medium severity${mediumActive ? " (active)" : ""}`}
+        className="absolute inset-0 z-10"
+        style={{ clipPath: "polygon(0 0, 100% 0, 0 100%)" }}
+      />
+      {/* Bottom-right wedge click zone */}
+      <button
+        type="button"
+        onClick={onLowClick}
+        aria-pressed={lowActive}
+        aria-label={`Filter to Low severity${lowActive ? " (active)" : ""}`}
+        className="absolute inset-0 z-10"
+        style={{ clipPath: "polygon(100% 0, 100% 100%, 0 100%)" }}
+      />
+      <div className="pointer-events-none absolute left-3 top-2 leading-tight">
         <div className="text-2xl font-semibold tabular-nums text-yellow-50">
           {medium}
         </div>
@@ -421,7 +512,7 @@ function MediumLowSplitCard({
           Medium
         </div>
       </div>
-      <div className="absolute bottom-2 right-3 text-right leading-tight">
+      <div className="pointer-events-none absolute bottom-2 right-3 text-right leading-tight">
         <div className="text-[10px] uppercase tracking-wide text-emerald-100/85">
           Low
         </div>

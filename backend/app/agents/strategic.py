@@ -521,7 +521,13 @@ class StrategicAgent:
             started_at=datetime.now(tz=UTC),
         )
         session.add(execution)
-        session.flush()  # need execution.id below if we want to backref
+        # v0.8.1 fix: commit immediately so the Status tab can paint a green
+        # "active" box as the worker run progresses. Previously the row
+        # only became visible to other DB sessions when this whole method
+        # returned and the caller committed — meaning Strategic was
+        # invisible for the full duration of the LLM call.
+        session.commit()
+        session.refresh(execution)
 
         try:
             # BYO key: Strategic uses the KICKING analyst's ephemeral key.
@@ -691,7 +697,10 @@ class StrategicAgent:
             started_at=datetime.now(tz=UTC),
         )
         session.add(execution)
-        session.flush()
+        # v0.8.1 fix: commit immediately — see analyze_finding above for
+        # the rationale (Status tab visibility during LLM call).
+        session.commit()
+        session.refresh(execution)
 
         try:
             llm, provider, model_name = self._resolve_llm(
