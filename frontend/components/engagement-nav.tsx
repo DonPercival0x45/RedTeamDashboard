@@ -24,11 +24,11 @@ export type EngagementView =
 const ITEMS: { view: EngagementView; label: string; Icon: LucideIcon }[] = [
   { view: "findings", label: "Findings", Icon: ListChecks },
   { view: "entities", label: "Entities", Icon: Network },
-  { view: "observations", label: "Observations", Icon: MessageSquare },
+  { view: "scope", label: "Scope", Icon: Target },
   { view: "status", label: "Status", Icon: Activity },
   { view: "report", label: "Report", Icon: FileText },
+  { view: "observations", label: "Observations", Icon: MessageSquare },
   { view: "costs", label: "Costs", Icon: DollarSign },
-  { view: "scope", label: "Scope", Icon: Target },
 ];
 
 // Left rail for the engagement workspace. Selecting an item swaps the whole

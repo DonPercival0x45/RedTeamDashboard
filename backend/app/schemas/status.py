@@ -20,6 +20,22 @@ StatusColor = Literal["active", "pending", "completed", "failed"]
 StatusKind = Literal["agent", "task", "approval"]
 
 
+class StatusTransition(BaseModel):
+    """One entry in a box's status timeline.
+
+    ``status`` is the **display** colour the entity reached at ``at``
+    (active / pending / completed / failed) — matches the colour the
+    tile would have if you saw the entity at that moment. Derived
+    server-side from whichever timestamp columns the entity carries
+    (started_at + completed_at for agents; created_at + dispatched_at +
+    completed_at for tasks; created_at + decided_at for approvals).
+    """
+
+    status: StatusColor
+    raw_status: str
+    at: datetime
+
+
 class StatusEntity(BaseModel):
     """One box on the Status tab.
 
@@ -27,6 +43,10 @@ class StatusEntity(BaseModel):
     agents it's the input + output JSONB and the error message; for
     tasks the payload + run_id + dispatched_at; for approvals the
     tool_name, tool_args, risk, and scope check.
+
+    ``history`` is the entity's status timeline — the Expand modal
+    renders it at the top so the analyst can see "this Task went
+    pending → dispatched → completed at these timestamps."
     """
 
     model_config = ConfigDict(from_attributes=False)
@@ -41,6 +61,7 @@ class StatusEntity(BaseModel):
     completed_at: datetime | None = None
     retryable: bool = False
     log: dict[str, Any]
+    history: list[StatusTransition] = []
 
 
 class EngagementStatusResponse(BaseModel):

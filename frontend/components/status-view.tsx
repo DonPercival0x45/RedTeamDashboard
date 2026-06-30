@@ -1,6 +1,6 @@
 "use client";
 
-// Status tab (v0.8.0). Per-engagement timeline of LLM agent calls,
+// Status tab (v0.8.0+). Per-engagement timeline of LLM agent calls,
 // orchestrator tasks, and approval gates. Color-coded per the brief:
 //
 //   green   active     — currently running / in flight
@@ -8,22 +8,25 @@
 //   purple  completed  — terminal success
 //   red     failed     — terminal failure (retry button shows here)
 //
-// Each box has an Expand control that pops a modal with the raw input /
-// output JSONB the backend returned. Failed tasks expose a Retry button;
-// failed agents are display-only for now (per-kind dispatch coming next
-// commit) and approvals are decided via the existing approval flow, not
-// retried.
+// v0.8.2: every entity exposes a `history` timeline (active → completed,
+// pending → dispatched → completed, etc.) rendered at the top of the
+// Expand modal so the analyst can see how the box reached its current
+// colour. The old standalone Event log moved here as a collapsible
+// "Live events" panel below the boxes.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Activity,
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
   Clock,
   RefreshCcw,
   X,
   XCircle,
   type LucideIcon,
 } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   getEngagementStatus,
@@ -33,9 +36,12 @@ import {
 import { cn } from "@/lib/utils";
 import type {
   EngagementStatusResponse,
+  LoggedEvent,
+  RunEvent,
   StatusColor,
   StatusEntity,
   StatusKind,
+  StatusTransition,
 } from "@/lib/types";
 
 const COLOR_BADGE: Record<StatusColor, string> = {
@@ -93,13 +99,63 @@ function fmtDate(value: string | null): string {
   });
 }
 
-export function StatusView({ slug }: { slug: string }) {
+// v0.8.2: Live events log helpers — used to lifted from event-log.tsx.
+
+const EVENT_COLORS: Record<RunEvent["type"], string> = {
+  "run.started": "border-sky-500 text-sky-200",
+  "approval.pending": "border-amber-500 text-amber-200",
+  "tool.denied": "border-orange-500 text-orange-200",
+  "tool.auto_approved": "border-violet-500 text-violet-200",
+  "finding.created": "border-emerald-500 text-emerald-200",
+  "run.completed": "border-zinc-500 text-zinc-300",
+  "run.errored": "border-rose-500 text-rose-200",
+};
+
+function summarizeEvent(event: RunEvent): string {
+  switch (event.type) {
+    case "run.started":
+      return event.prompt;
+    case "approval.pending":
+      return `${event.tool} (${event.risk}) — ${JSON.stringify(event.args)}`;
+    case "tool.denied":
+      return `${event.tool} ${JSON.stringify(event.args)} — ${event.reason}`;
+    case "tool.auto_approved":
+      return `${event.tool} ${JSON.stringify(event.args)} — auto-approved (session grant)`;
+    case "finding.created":
+      return `${event.tool} → ${JSON.stringify(event.data).slice(0, 140)}`;
+    case "run.completed":
+      return `thread ${event.thread_id.slice(0, 8)}…`;
+    case "run.errored":
+      return event.error;
+  }
+}
+
+export function StatusView({
+  slug,
+  events = [],
+}: {
+  slug: string;
+  events?: LoggedEvent[];
+}) {
   const [data, setData] = useState<EngagementStatusResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<StatusKind | "all">("all");
   const [colorFilter, setColorFilter] = useState<StatusColor | "all">("all");
   const [expanded, setExpanded] = useState<StatusEntity | null>(null);
   const [retryingId, setRetryingId] = useState<string | null>(null);
+  // v0.8.2: Live events panel (folded in from the standalone Event log).
+  // Default collapsed so the box grid stays the focus.
+  const [liveEventsOpen, setLiveEventsOpen] = useState(false);
+  const eventsScrollRef = useRef<HTMLUListElement | null>(null);
+
+  // Auto-scroll the events panel to the bottom whenever a new event lands
+  // and the panel is open. Doing this in an effect keeps the scroll
+  // logic out of the render path.
+  useEffect(() => {
+    if (!liveEventsOpen) return;
+    const el = eventsScrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [events.length, liveEventsOpen]);
 
   const reload = useCallback(async () => {
     setError(null);
@@ -248,6 +304,70 @@ export function StatusView({ slug }: { slug: string }) {
         </div>
       )}
 
+      {/* v0.8.2: Live events panel (replaces the standalone Event log
+          card at the bottom of the engagement page). Collapsed by
+          default; expand to see the SSE tail. */}
+      <div className="rounded-lg border border-border bg-card/40">
+        <button
+          type="button"
+          onClick={() => setLiveEventsOpen((v) => !v)}
+          className="flex w-full items-center justify-between gap-2 px-4 py-3 text-left"
+          aria-expanded={liveEventsOpen}
+        >
+          <div className="flex items-center gap-2">
+            {liveEventsOpen ? (
+              <ChevronDown className="h-4 w-4 text-muted-foreground" />
+            ) : (
+              <ChevronRight className="h-4 w-4 text-muted-foreground" />
+            )}
+            <span className="text-sm font-medium">Live events</span>
+            <span className="text-xs text-muted-foreground">
+              ({events.length})
+            </span>
+          </div>
+          <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+            SSE tail · runs:&lt;eid&gt;:events
+          </span>
+        </button>
+        {liveEventsOpen && (
+          <div className="border-t border-border p-3">
+            {events.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                Waiting for events. Start a run to populate.
+              </p>
+            ) : (
+              <ul
+                ref={eventsScrollRef}
+                className="max-h-72 space-y-1.5 overflow-y-auto font-mono text-xs"
+              >
+                {events
+                  .slice()
+                  .reverse()
+                  .map((entry) => (
+                    <li
+                      key={entry.sseId}
+                      className="flex items-start gap-2 rounded border-l-2 border-border bg-secondary/30 px-2 py-1.5"
+                    >
+                      <Badge
+                        variant="outline"
+                        className={cn(
+                          "shrink-0 text-[10px]",
+                          EVENT_COLORS[entry.event.type] ?? "",
+                        )}
+                      >
+                        {entry.event.type}
+                      </Badge>
+                      <span className="break-all text-muted-foreground">
+                        {summarizeEvent(entry.event)}
+                      </span>
+                    </li>
+                  ))}
+              </ul>
+            )}
+          </div>
+        )}
+      </div>
+
       {/* Detail popup */}
       {expanded && (
         <ExpandedDetail
@@ -258,6 +378,60 @@ export function StatusView({ slug }: { slug: string }) {
     </div>
   );
 }
+
+// v0.8.2: status transition timeline rendered at the top of the Expand
+// modal. Each entry is a colour-coded dot + label + timestamp. Active
+// rows that haven't reached terminal show a pulsing dot so the analyst
+// sees the box is still in flight.
+function StatusTimeline({ history }: { history: StatusTransition[] }) {
+  if (history.length === 0) return null;
+  return (
+    <div className="mt-3 rounded-md border border-border bg-secondary/30 p-3">
+      <p className="mb-2 text-[10px] uppercase tracking-wide text-muted-foreground">
+        Status timeline
+      </p>
+      <ol className="space-y-1.5">
+        {history.map((t, idx) => {
+          const isLast = idx === history.length - 1;
+          const isActive = t.status === "active" && isLast;
+          return (
+            <li key={`${t.status}-${t.at}`} className="flex items-center gap-3">
+              <span
+                className={cn(
+                  "h-2.5 w-2.5 rounded-full border",
+                  STATUS_DOT_CLASS[t.status],
+                  isActive && "animate-pulse",
+                )}
+              />
+              <span className="text-xs font-medium uppercase tracking-wide text-foreground">
+                {COLOR_LABEL[t.status]}
+              </span>
+              <span className="text-[10px] text-muted-foreground">
+                {t.raw_status}
+              </span>
+              <span className="ml-auto text-[10px] text-muted-foreground">
+                {new Date(t.at).toLocaleString(undefined, {
+                  month: "short",
+                  day: "numeric",
+                  hour: "2-digit",
+                  minute: "2-digit",
+                  second: "2-digit",
+                })}
+              </span>
+            </li>
+          );
+        })}
+      </ol>
+    </div>
+  );
+}
+
+const STATUS_DOT_CLASS: Record<StatusColor, string> = {
+  active: "border-emerald-400 bg-emerald-500/80",
+  pending: "border-sky-400 bg-sky-500/80",
+  completed: "border-violet-400 bg-violet-500/80",
+  failed: "border-rose-400 bg-rose-500/80",
+};
 
 function StatusBox({
   entity,
@@ -374,6 +548,9 @@ function ExpandedDetail({
             <X className="h-5 w-5" />
           </button>
         </div>
+        {/* v0.8.2: timeline at the top so the analyst sees the
+            transition trail BEFORE the raw payload dump. */}
+        <StatusTimeline history={entity.history} />
         <pre className="mt-4 flex-1 overflow-auto rounded-md border border-border bg-background p-3 font-mono text-xs text-muted-foreground">
           {JSON.stringify(entity.log, null, 2)}
         </pre>

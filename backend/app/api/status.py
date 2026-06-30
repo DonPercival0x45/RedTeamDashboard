@@ -45,6 +45,7 @@ from app.schemas.status import (
     EngagementStatusResponse,
     StatusColor,
     StatusEntity,
+    StatusTransition,
 )
 
 router = APIRouter()
@@ -88,6 +89,89 @@ def _approval_color(s: ApprovalStatus) -> StatusColor:
     return "completed"  # approved | edited | auto
 
 
+# ── status transition history (derived) ─────────────────────────────────
+
+
+def _agent_history(row: AgentExecution) -> list[StatusTransition]:
+    """AgentExecution rows are born running. If they have a completed_at,
+    the entity reached its terminal colour at that time."""
+    history: list[StatusTransition] = []
+    if row.started_at:
+        history.append(
+            StatusTransition(
+                status="active",
+                raw_status=AgentExecutionStatus.running.value,
+                at=row.started_at,
+            )
+        )
+    if row.completed_at and row.status != AgentExecutionStatus.running:
+        history.append(
+            StatusTransition(
+                status=_agent_color(row.status),
+                raw_status=row.status.value,
+                at=row.completed_at,
+            )
+        )
+    return history
+
+
+def _task_history(row: Task) -> list[StatusTransition]:
+    """Tasks pass through pending → dispatched/running → completed/failed.
+    Derive each leg from the explicit timestamps the model stores; for the
+    Task it's the only entity that records a `dispatched_at` separate from
+    `completed_at`."""
+    history: list[StatusTransition] = [
+        StatusTransition(
+            status="pending",
+            raw_status=TaskStatus.pending.value,
+            at=row.created_at,
+        )
+    ]
+    if row.dispatched_at:
+        history.append(
+            StatusTransition(
+                status="active",
+                raw_status=TaskStatus.dispatched.value,
+                at=row.dispatched_at,
+            )
+        )
+    if row.completed_at and row.status not in (
+        TaskStatus.pending,
+        TaskStatus.dispatched,
+        TaskStatus.running,
+    ):
+        history.append(
+            StatusTransition(
+                status=_task_color(row.status),
+                raw_status=row.status.value,
+                at=row.completed_at,
+            )
+        )
+    return history
+
+
+def _approval_history(row: Approval) -> list[StatusTransition]:
+    """Approvals are pending until the analyst decides. The terminal
+    colour reflects the decision (approved/edited/auto → completed;
+    denied → failed)."""
+    history: list[StatusTransition] = [
+        StatusTransition(
+            status="pending",
+            raw_status=ApprovalStatus.pending.value,
+            at=row.created_at,
+        )
+    ]
+    if row.decided_at and row.status != ApprovalStatus.pending:
+        history.append(
+            StatusTransition(
+                status=_approval_color(row.status),
+                raw_status=row.status.value,
+                at=row.decided_at,
+            )
+        )
+    return history
+
+
 # ── entity → StatusEntity adapters ───────────────────────────────────────
 
 
@@ -129,6 +213,7 @@ def _agent_to_entity(row: AgentExecution) -> StatusEntity:
             "output": row.output,
             "error": row.error,
         },
+        history=_agent_history(row),
     )
 
 
@@ -157,6 +242,7 @@ def _task_to_entity(row: Task) -> StatusEntity:
             ),
             "payload": payload,
         },
+        history=_task_history(row),
     )
 
 
@@ -184,6 +270,7 @@ def _approval_to_entity(row: Approval) -> StatusEntity:
                 str(row.authorization_id) if row.authorization_id else None
             ),
         },
+        history=_approval_history(row),
     )
 
 
