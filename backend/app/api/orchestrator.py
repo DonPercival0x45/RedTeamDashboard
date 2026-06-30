@@ -38,6 +38,7 @@ from app.core import pricing
 from app.models import (
     ActorType,
     AgentExecution,
+    AgentExecutionStatus,
     AgentName,
     AgentTrigger,
     AuditLog,
@@ -59,6 +60,7 @@ from app.schemas.orchestrator import (
     TaskRead,
     TriageFindingResponse,
 )
+from app.services.status_notifier import notify_status_event
 
 router = APIRouter()
 
@@ -125,6 +127,19 @@ def analyze_finding(
     for s in suggestions:
         session.refresh(s)
 
+    # v0.8: Strategic catches its own LLM errors and stamps execution
+    # status. Ping Discord if the run failed (no-op when no integration).
+    if execution.status == AgentExecutionStatus.failed:
+        eng = session.get(Engagement, finding.engagement_id)
+        notify_status_event(
+            session,
+            kind="agent",
+            title=f"Strategic failed on: {finding.title}",
+            status="failed",
+            detail=(execution.error or "")[:500],
+            engagement_slug=eng.slug if eng else None,
+        )
+
     return AnalyzeFindingResponse(
         execution_id=execution.id,
         suggestions=[SuggestionRead.model_validate(s) for s in suggestions],
@@ -185,6 +200,16 @@ def triage_finding(
         # so a row exists for the Costs tab to surface the failed call. Commit
         # that row so the analyst can see it, then return 502.
         session.commit()
+        # v0.8: ping Discord on agent failure (no-op if integration not set).
+        eng = session.get(Engagement, finding.engagement_id)
+        notify_status_event(
+            session,
+            kind="agent",
+            title=f"Triage failed: {finding.title}",
+            status="failed",
+            detail=str(exc)[:500],
+            engagement_slug=eng.slug if eng else None,
+        )
         raise HTTPException(
             status_code=502, detail=f"triage failed: {exc}"
         ) from exc

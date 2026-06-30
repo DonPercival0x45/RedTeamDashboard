@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  Activity,
   DollarSign,
   FileText,
   ListChecks,
@@ -17,12 +18,14 @@ export type EngagementView =
   | "observations"
   | "report"
   | "costs"
-  | "scope";
+  | "scope"
+  | "status";
 
 const ITEMS: { view: EngagementView; label: string; Icon: LucideIcon }[] = [
   { view: "findings", label: "Findings", Icon: ListChecks },
   { view: "entities", label: "Entities", Icon: Network },
   { view: "observations", label: "Observations", Icon: MessageSquare },
+  { view: "status", label: "Status", Icon: Activity },
   { view: "report", label: "Report", Icon: FileText },
   { view: "costs", label: "Costs", Icon: DollarSign },
   { view: "scope", label: "Scope", Icon: Target },

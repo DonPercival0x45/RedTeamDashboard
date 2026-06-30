@@ -88,6 +88,37 @@ def create_suggestion(
     redis_client: RedisClient,
     user: CurrentNonGuestUser,
 ) -> RoadmapSuggestion:
+    # v0.8.0 dedup: don't let two analysts land separate rows for the same
+    # idea. Compare on trimmed body against rows that are still live
+    # (pending_review or approved). Rejected rows are fair game to re-raise
+    # — maybe the analyst is trying again with the same wording after a
+    # past rejection.
+    trimmed = body.body.strip()
+    existing = session.execute(
+        select(RoadmapSuggestion).where(
+            RoadmapSuggestion.status.in_(
+                (
+                    RoadmapSuggestionStatus.pending_review,
+                    RoadmapSuggestionStatus.approved,
+                )
+            ),
+        )
+    ).scalars()
+    for prior in existing:
+        if (prior.body or "").strip() == trimmed:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": (
+                        "A suggestion with this exact body already exists "
+                        f"({prior.status.value}). View or edit it instead "
+                        "of adding a duplicate."
+                    ),
+                    "existing_id": str(prior.id),
+                    "existing_status": prior.status.value,
+                },
+            )
+
     row, execution = suggestion_svc.create_and_evaluate(
         session,
         redis_client,

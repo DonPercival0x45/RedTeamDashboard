@@ -129,6 +129,30 @@ export interface Finding {
 // Sort order for GET /engagements/{slug}/findings?sort=…
 export type FindingSort = "newest" | "severity" | "observed";
 
+// ── Status tab (v0.8.0) ───────────────────────────────────────────────────
+
+export type StatusColor = "active" | "pending" | "completed" | "failed";
+export type StatusKind = "agent" | "task" | "approval";
+
+export interface StatusEntity {
+  id: string;
+  kind: StatusKind;
+  title: string;
+  subtitle: string | null;
+  color: StatusColor;
+  raw_status: string;
+  started_at: string | null;
+  completed_at: string | null;
+  retryable: boolean;
+  log: Record<string, unknown>;
+}
+
+export interface EngagementStatusResponse {
+  agents: StatusEntity[];
+  tasks: StatusEntity[];
+  approvals: StatusEntity[];
+}
+
 // One entry in a finding's immutable summary history. Newest first.
 // `findings.summary` on the parent row is the denormalized cache of the
 // latest entry's body (for the Report tab / JSON export).
