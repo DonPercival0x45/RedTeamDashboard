@@ -49,7 +49,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
 from pydantic import BaseModel
-from sqlalchemy import select, text
+from sqlalchemy import case, select, text
 
 from app.api.deps import (
     CurrentAdminUser,
@@ -241,6 +241,8 @@ def _finding_to_read(f: Finding) -> dict[str, Any]:
         "phase": f.phase,
         "status": f.status,
         "validated_at": f.validated_at,
+        "observed_at": f.observed_at,
+        "burp_serial_number": f.burp_serial_number,
         "created_at": f.created_at,
     }
 
@@ -619,6 +621,19 @@ def delete_scope_item(
 # ---------------------------------------------------------------------------
 
 
+_FINDING_SORTS = ("newest", "severity", "observed")
+
+# Postgres has no native ordinal for the Severity enum (textual), so we
+# project it to an int with CASE for "severity" sorts. critical first.
+_SEVERITY_RANK = case(
+    (Finding.severity == Severity.critical, 4),
+    (Finding.severity == Severity.high, 3),
+    (Finding.severity == Severity.medium, 2),
+    (Finding.severity == Severity.low, 1),
+    else_=0,
+)
+
+
 @router.get(
     "/engagements/{slug}/findings",
     response_model=list[FindingRead],
@@ -630,14 +645,42 @@ def list_findings(
     status: Annotated[
         FindingStatus | None, Query(description="Filter by validation status.")
     ] = None,
+    sort: Annotated[
+        str,
+        Query(
+            description=(
+                "Sort order. 'newest' (default) = created_at desc; "
+                "'severity' = critical→info then newest; "
+                "'observed' = observed_at desc, NULLs last, then newest."
+            ),
+        ),
+    ] = "newest",
 ) -> list[dict[str, Any]]:
+    if sort not in _FINDING_SORTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"invalid sort '{sort}'; must be one of {_FINDING_SORTS}",
+        )
     eng = _get_engagement_or_404(session, slug)
     stmt = select(Finding).where(Finding.engagement_id == eng.id)
     if phase is not None:
         stmt = stmt.where(Finding.phase == phase)
     if status is not None:
         stmt = stmt.where(Finding.status == status)
-    rows = session.execute(stmt.order_by(Finding.created_at.desc())).scalars()
+
+    if sort == "severity":
+        stmt = stmt.order_by(_SEVERITY_RANK.desc(), Finding.created_at.desc())
+    elif sort == "observed":
+        # Postgres puts NULLs LAST when using DESC by default; explicit
+        # nullslast() for clarity. Tie-break on created_at so the result
+        # is stable for findings that share an observed_at.
+        stmt = stmt.order_by(
+            Finding.observed_at.desc().nullslast(), Finding.created_at.desc()
+        )
+    else:  # newest
+        stmt = stmt.order_by(Finding.created_at.desc())
+
+    rows = session.execute(stmt).scalars()
     return [_finding_to_read(f) for f in rows]
 
 
@@ -777,6 +820,8 @@ class FindingImport(BaseModel):
     target: str | None = None
     source_tool: str | None = "import"
     details: dict[str, Any] = {}
+    observed_at: datetime | None = None
+    burp_serial_number: str | None = None
 
 
 class NessusImportResult(BaseModel):
@@ -794,6 +839,22 @@ class NessusImportResult(BaseModel):
     total_items: int
 
 
+class BurpImportResult(BaseModel):
+    """Response shape for the Burp Pro Issue Export XML importer.
+
+    ``skipped_duplicate`` counts <issue> rows whose <serialNumber> was
+    already present in this engagement — re-importing the same export
+    or a re-scan that emits the same serials is a no-op for those rows.
+    """
+
+    imported: list[FindingRead]
+    skipped_info: int
+    skipped_out_of_scope: int
+    skipped_duplicate: int
+    total_items: int
+    export_time: datetime | None = None
+
+
 def _create_findings_from_imports(
     session: Any,
     eng: Engagement,
@@ -801,13 +862,21 @@ def _create_findings_from_imports(
     user: Any,
     *,
     source: str,
-) -> list[Finding]:
+) -> tuple[list[Finding], int]:
     """Persist a list of import-shaped items as Findings + write the audit row.
 
     ``items`` is duck-typed: each must expose ``title``, ``severity``,
     ``phase``, ``summary``, ``target``, ``source_tool``, ``details``.
-    Both ``FindingImport`` (Phase 11 JSON/CSV importer) and
-    ``nessus_import.ParsedItem`` (Phase 10 .nessus parser) satisfy this.
+    Optional: ``observed_at`` (scan-side timestamp) and
+    ``burp_serial_number`` (Burp dedup key). ``FindingImport`` (Phase 11
+    JSON/CSV importer), ``nessus_import.ParsedItem`` (Phase 10 .nessus
+    parser), and ``burp_import.ParsedItem`` (v0.7 Burp Pro parser) all
+    satisfy this protocol.
+
+    Dedup: when an item carries a ``burp_serial_number``, the helper
+    skips it if the same (engagement_id, burp_serial_number) pair
+    already exists. Returns ``(created, skipped_duplicate_count)`` so
+    importers can surface the dedup count on the response.
 
     Phase-based validation gate (refined 2026-06-26): ``osint``-phase
     imports auto-validate at creation because the results are factual.
@@ -820,9 +889,34 @@ def _create_findings_from_imports(
 
     from app.models.finding import default_status_for_phase
 
+    # Pre-load existing Burp serials for this engagement so we dedup in
+    # one query instead of one per row.
+    incoming_serials = {
+        getattr(item, "burp_serial_number", None)
+        for item in items
+        if getattr(item, "burp_serial_number", None)
+    }
+    existing_serials: set[str] = set()
+    if incoming_serials:
+        existing_serials = {
+            row[0]
+            for row in session.execute(
+                select(Finding.burp_serial_number).where(
+                    Finding.engagement_id == eng.id,
+                    Finding.burp_serial_number.in_(incoming_serials),
+                )
+            ).all()
+            if row[0]
+        }
+
     created: list[Finding] = []
+    skipped_duplicate = 0
     now = datetime.now(tz=UTC)
     for item in items:
+        serial = getattr(item, "burp_serial_number", None)
+        if serial and serial in existing_serials:
+            skipped_duplicate += 1
+            continue
         status = default_status_for_phase(item.phase)
         f = Finding(
             engagement_id=eng.id,
@@ -836,9 +930,13 @@ def _create_findings_from_imports(
             status=status,
             validated_at=now if status == FindingStatus.validated else None,
             validated_by=user.id if status == FindingStatus.validated else None,
+            observed_at=getattr(item, "observed_at", None),
+            burp_serial_number=serial,
         )
         session.add(f)
         created.append(f)
+        if serial:
+            existing_serials.add(serial)  # dedup within the same batch too
     if created:
         session.add(
             AuditLog(
@@ -846,10 +944,14 @@ def _create_findings_from_imports(
                 actor_type=ActorType.user,
                 actor_id=str(user.id),
                 event_type="findings.imported",
-                payload={"count": len(created), "source": source},
+                payload={
+                    "count": len(created),
+                    "source": source,
+                    "skipped_duplicate": skipped_duplicate,
+                },
             )
         )
-    return created
+    return created, skipped_duplicate
 
 
 @router.post(
@@ -875,7 +977,7 @@ def import_findings(
     eng = _get_engagement_or_404(session, slug)
     _reject_flushed(eng)
 
-    created = _create_findings_from_imports(
+    created, _skipped = _create_findings_from_imports(
         session, eng, body, user, source="bulk_import"
     )
     session.commit()
@@ -924,7 +1026,7 @@ def import_nessus(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    created = _create_findings_from_imports(
+    created, _skipped = _create_findings_from_imports(
         session, eng, result.items, user, source="nessus_import"
     )
     session.commit()
@@ -936,6 +1038,67 @@ def import_nessus(
         "skipped_info": result.skipped_info,
         "skipped_out_of_scope": result.skipped_out_of_scope,
         "total_items": result.total_items,
+    }
+
+
+@router.post(
+    "/engagements/{slug}/findings/import/burp",
+    response_model=BurpImportResult,
+    status_code=status.HTTP_201_CREATED,
+)
+def import_burp(
+    slug: str,
+    session: DbSession,
+    user: CurrentNonGuestUser,
+    file: Annotated[
+        UploadFile,
+        File(..., description="Burp Suite Pro Issue Export XML."),
+    ],
+    include_info: Annotated[
+        bool,
+        Query(description="Import Severity=Information issues. Default False."),
+    ] = False,
+) -> dict[str, Any]:
+    """Import a Burp Pro Issue Export XML file.
+
+    Each ``<issue>`` becomes a Finding with ``phase=vuln_scan`` and
+    ``status=pending_validation`` (analyst must approve before report).
+    Dedup is by ``<serialNumber>`` against this engagement's existing
+    findings — re-importing the same XML is a no-op for already-imported
+    issues. Out-of-scope hosts are dropped silently and counted.
+    """
+    from app.services.burp_import import parse_burp_xml
+
+    eng = _get_engagement_or_404(session, slug)
+    _reject_flushed(eng)
+
+    raw = file.file.read()
+    scope_items = list(
+        session.execute(
+            select(ScopeItem).where(ScopeItem.engagement_id == eng.id)
+        ).scalars()
+    )
+    try:
+        result = parse_burp_xml(
+            raw, include_info=include_info, scope_items=scope_items
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    created, skipped_duplicate = _create_findings_from_imports(
+        session, eng, result.items, user, source="burp_import"
+    )
+    session.commit()
+    for f in created:
+        session.refresh(f)
+
+    return {
+        "imported": [_finding_to_read(f) for f in created],
+        "skipped_info": result.skipped_info,
+        "skipped_out_of_scope": result.skipped_out_of_scope,
+        "skipped_duplicate": skipped_duplicate,
+        "total_items": result.total_items,
+        "export_time": result.export_time,
     }
 
 

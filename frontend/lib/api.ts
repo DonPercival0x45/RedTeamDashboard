@@ -20,8 +20,10 @@ import type {
   Entity,
   Finding,
   AdminUser,
+  BurpImportResult,
   FindingImport,
   FindingPhase,
+  FindingSort,
   FindingValidationStatus,
   Integration,
   IntegrationType,
@@ -160,13 +162,47 @@ export function importScope(
 
 export function listFindings(
   slug: string,
-  filters?: { phase?: FindingPhase; status?: FindingValidationStatus },
+  filters?: {
+    phase?: FindingPhase;
+    status?: FindingValidationStatus;
+    sort?: FindingSort;
+  },
 ): Promise<Finding[]> {
   const q = new URLSearchParams();
   if (filters?.phase) q.set("phase", filters.phase);
   if (filters?.status) q.set("status", filters.status);
+  if (filters?.sort) q.set("sort", filters.sort);
   const suffix = q.toString() ? `?${q.toString()}` : "";
   return request<Finding[]>(`/engagements/${slug}/findings${suffix}`);
+}
+
+// POST /engagements/{slug}/findings/import/burp — Burp Pro Issue Export XML.
+//
+// Uses FormData directly instead of the JSON `request()` helper because the
+// browser MUST set the multipart Content-Type with its own boundary; fetch
+// handles that automatically when `body` is a FormData and no Content-Type
+// header is set on the request.
+export async function importFindingsFromBurp(
+  slug: string,
+  file: File,
+  includeInfo: boolean = false,
+): Promise<BurpImportResult> {
+  const form = new FormData();
+  form.append("file", file);
+  const q = includeInfo ? "?include_info=true" : "";
+  const response = await fetch(
+    `${API_BASE_URL}/engagements/${slug}/findings/import/burp${q}`,
+    {
+      method: "POST",
+      body: form,
+      headers: { ...(await authHeaders()) },
+    },
+  );
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`${response.status} ${response.statusText}: ${text}`);
+  }
+  return response.json() as Promise<BurpImportResult>;
 }
 
 export function listEntities(

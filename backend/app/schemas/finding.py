@@ -30,6 +30,8 @@ class FindingRead(BaseModel):
     phase: FindingPhase
     status: FindingStatus
     validated_at: datetime | None = None
+    observed_at: datetime | None = None
+    burp_serial_number: str | None = None
     created_at: datetime
 
 

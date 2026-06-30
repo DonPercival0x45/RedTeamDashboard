@@ -121,8 +121,13 @@ export interface Finding {
   phase: FindingPhase;
   status: FindingValidationStatus;
   validated_at: string | null;
+  observed_at: string | null;
+  burp_serial_number: string | null;
   created_at: string;
 }
+
+// Sort order for GET /engagements/{slug}/findings?sort=…
+export type FindingSort = "newest" | "severity" | "observed";
 
 // Payload for POST /engagements/{slug}/findings/import
 export interface FindingImport {
@@ -133,6 +138,8 @@ export interface FindingImport {
   target?: string;
   source_tool?: string;
   details?: Record<string, unknown>;
+  observed_at?: string | null;
+  burp_serial_number?: string | null;
 }
 
 // Response shape for POST /engagements/{slug}/findings/import/nessus
@@ -142,6 +149,17 @@ export interface NessusImportResult {
   skipped_info: number;
   skipped_out_of_scope: number;
   total_items: number;
+}
+
+// Response shape for POST /engagements/{slug}/findings/import/burp
+// (v0.7.0 — Burp Pro Issue Export XML upload).
+export interface BurpImportResult {
+  imported: Finding[];
+  skipped_info: number;
+  skipped_out_of_scope: number;
+  skipped_duplicate: number;
+  total_items: number;
+  export_time: string | null;
 }
 
 // Phase 10 — stored entities (Maltego import target + future sources).

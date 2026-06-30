@@ -18,10 +18,12 @@ import {
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { FindingImporter } from "@/components/finding-importer";
+import { BurpImporter } from "@/components/burp-importer";
 import type {
   Attachment,
   Finding,
   FindingPhase,
+  FindingSort,
   FindingValidationStatus,
   Severity,
   Suggestion,
@@ -76,8 +78,25 @@ const STATUS_FILTERS: (FindingValidationStatus | "all")[] = [
   "validated",
 ];
 
+const SORT_LABEL: Record<FindingSort, string> = {
+  newest: "Newest first",
+  severity: "Severity",
+  observed: "Observed date",
+};
+
 function shortId(id: string): string {
   return id.replace(/-/g, "").slice(0, 6).toUpperCase();
+}
+
+function formatShortDate(value: string | null): string {
+  if (!value) return "—";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleDateString(undefined, {
+    year: "2-digit",
+    month: "short",
+    day: "numeric",
+  });
 }
 
 // ── component ────────────────────────────────────────────────────────────
@@ -93,8 +112,10 @@ export function FindingsView({
 }) {
   const [phase, setPhase] = useState<FindingPhase | "all">("all");
   const [status, setStatus] = useState<FindingValidationStatus | "all">("all");
+  const [sort, setSort] = useState<FindingSort>("newest");
   const [selected, setSelected] = useState<Finding | null>(null);
   const [showImporter, setShowImporter] = useState(false);
+  const [showBurpImporter, setShowBurpImporter] = useState(false);
 
   const counts = {
     critical: findings.filter((f) => f.severity === "critical").length,
@@ -105,10 +126,32 @@ export function FindingsView({
     pending: findings.filter((f) => f.status === "pending_validation").length,
   };
 
+  const compareFindings = (a: Finding, b: Finding): number => {
+    switch (sort) {
+      case "severity": {
+        const sev = SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity];
+        if (sev !== 0) return sev;
+        return b.created_at.localeCompare(a.created_at);
+      }
+      case "observed": {
+        // Nulls last, then newest first.
+        const ao = a.observed_at;
+        const bo = b.observed_at;
+        if (ao && bo) return bo.localeCompare(ao);
+        if (ao && !bo) return -1;
+        if (!ao && bo) return 1;
+        return b.created_at.localeCompare(a.created_at);
+      }
+      default:
+        return b.created_at.localeCompare(a.created_at);
+    }
+  };
+
   const visible = findings
     .filter((f) => phase === "all" || f.phase === phase)
     .filter((f) => status === "all" || f.status === status)
-    .sort((a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity]);
+    .slice()
+    .sort(compareFindings);
 
   const handleUpdated = (f: Finding) => {
     onUpdated(f);
@@ -125,7 +168,7 @@ export function FindingsView({
         <MetricCard label="Pending validation" value={counts.pending} />
       </div>
 
-      {/* Filters + import toggle */}
+      {/* Filters + sort + import toggle */}
       <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
         <FilterRow
           options={PHASE_FILTERS}
@@ -141,15 +184,44 @@ export function FindingsView({
             v === "all" ? "All status" : STATUS_LABEL[v as FindingValidationStatus]
           }
         />
-        <Button
-          size="sm"
-          variant="outline"
-          className="ml-auto"
-          onClick={() => setShowImporter((v) => !v)}
-        >
-          <Upload className="mr-1.5 h-3.5 w-3.5" />
-          {showImporter ? "Close import" : "Import"}
-        </Button>
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <span className="hidden sm:inline">Sort by</span>
+          <select
+            value={sort}
+            onChange={(e) => setSort(e.target.value as FindingSort)}
+            className="rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+          >
+            {(Object.keys(SORT_LABEL) as FindingSort[]).map((opt) => (
+              <option key={opt} value={opt}>
+                {SORT_LABEL[opt]}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="ml-auto flex gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              setShowImporter((v) => !v);
+              if (!showImporter) setShowBurpImporter(false);
+            }}
+          >
+            <Upload className="mr-1.5 h-3.5 w-3.5" />
+            {showImporter ? "Close import" : "Import"}
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              setShowBurpImporter((v) => !v);
+              if (!showBurpImporter) setShowImporter(false);
+            }}
+          >
+            <Upload className="mr-1.5 h-3.5 w-3.5" />
+            {showBurpImporter ? "Close Burp" : "Import Burp XML"}
+          </Button>
+        </div>
       </div>
 
       {/* Inline importer panel */}
@@ -159,6 +231,15 @@ export function FindingsView({
           onImported={(newFindings) => {
             newFindings.forEach((f) => onUpdated(f));
             setShowImporter(false);
+          }}
+        />
+      )}
+      {showBurpImporter && (
+        <BurpImporter
+          slug={slug}
+          onImported={(newFindings) => {
+            newFindings.forEach((f) => onUpdated(f));
+            setShowBurpImporter(false);
           }}
         />
       )}
@@ -176,6 +257,7 @@ export function FindingsView({
                 <th className="px-3 py-2 w-20">ID</th>
                 <th className="px-3 py-2">Finding</th>
                 <th className="px-3 py-2">Detail</th>
+                <th className="px-3 py-2 w-28">Dates</th>
                 <th className="px-3 py-2 w-28">Status</th>
                 <th className="px-3 py-2 w-24">Severity</th>
               </tr>
@@ -206,6 +288,21 @@ export function FindingsView({
                   </td>
                   <td className="px-3 py-2.5 font-mono text-xs text-muted-foreground">
                     {f.target ?? "—"}
+                  </td>
+                  <td className="px-3 py-2.5 text-xs text-muted-foreground">
+                    <div title={`Created ${new Date(f.created_at).toLocaleString()}`}>
+                      <span className="text-muted-foreground/60">+</span>{" "}
+                      {formatShortDate(f.created_at)}
+                    </div>
+                    {f.observed_at && (
+                      <div
+                        title={`Observed ${new Date(f.observed_at).toLocaleString()}`}
+                        className="text-muted-foreground/80"
+                      >
+                        <span className="text-muted-foreground/60">○</span>{" "}
+                        {formatShortDate(f.observed_at)}
+                      </div>
+                    )}
                   </td>
                   <td className="px-3 py-2.5">
                     <span className="text-xs text-muted-foreground">
