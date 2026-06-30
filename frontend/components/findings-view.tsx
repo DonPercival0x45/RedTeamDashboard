@@ -168,7 +168,7 @@ export function FindingsView({
       {/* Key metrics. v0.8.1: colour-coded per severity. The combined
           Med/Low tile splits diagonally so Medium (yellow) sits in the
           top-left and Low (green) in the bottom-right. Pending validation
-          uses an amber fill per the analyst preference. */}
+          uses an orange fill per the analyst preference. */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <SeverityMetricCard
           label="Critical"
@@ -353,13 +353,13 @@ type SeverityTone = "critical" | "high" | "pending";
 const SEVERITY_TONE_CLASS: Record<SeverityTone, string> = {
   critical: "border-rose-500/50 bg-rose-500/10 text-rose-100",
   high: "border-pink-400/50 bg-pink-400/10 text-pink-100",
-  pending: "border-amber-400/50 bg-amber-400/10 text-amber-100",
+  pending: "border-orange-500/50 bg-orange-500/10 text-orange-100",
 };
 
 const SEVERITY_TONE_VALUE_CLASS: Record<SeverityTone, string> = {
   critical: "text-rose-50",
   high: "text-pink-50",
-  pending: "text-amber-50",
+  pending: "text-orange-50",
 };
 
 function SeverityMetricCard({
