@@ -12,7 +12,7 @@ from app.models.approval import Approval, ApprovalStatus, RiskLevel
 from app.models.attachment import Attachment
 from app.models.audit_log import ActorType, AuditLog
 from app.models.authorization import Authorization
-from app.models.engagement import Engagement, EngagementStatus
+from app.models.engagement import Engagement, EngagementStatus, EngagementTimeFrame
 from app.models.entity import Entity
 from app.models.finding import Finding, FindingPhase, FindingStatus, Severity
 from app.models.integration import Integration, IntegrationType
@@ -47,6 +47,7 @@ __all__ = [
     "Authorization",
     "Engagement",
     "EngagementStatus",
+    "EngagementTimeFrame",
     "Entity",
     "Finding",
     "FindingPhase",

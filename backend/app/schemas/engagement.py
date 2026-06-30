@@ -1,13 +1,13 @@
 """Wire-format models for engagements, scope items, and run kickoff."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.models import EngagementStatus, ScopeKind
+from app.models import EngagementStatus, EngagementTimeFrame, ScopeKind
 
 LLMProvider = Literal["anthropic", "openai", "azure", "ollama"]
 
@@ -22,6 +22,26 @@ class EngagementCreate(BaseModel):
     description: str | None = Field(
         default=None, description="Optional free-text engagement details."
     )
+    time_frame: EngagementTimeFrame = Field(
+        default=EngagementTimeFrame.point_in_time,
+        description=(
+            "Scheduling label. `custom` requires both `start_date` and "
+            "`end_date`. Metadata only — does not drive the orchestrator yet."
+        ),
+    )
+    start_date: date | None = None
+    end_date: date | None = None
+
+    @model_validator(mode="after")
+    def _check_custom_dates(self) -> EngagementCreate:
+        if self.time_frame is EngagementTimeFrame.custom:
+            if self.start_date is None or self.end_date is None:
+                raise ValueError(
+                    "time_frame='custom' requires both start_date and end_date"
+                )
+            if self.end_date < self.start_date:
+                raise ValueError("end_date cannot be before start_date")
+        return self
 
 
 class EngagementUpdate(BaseModel):
@@ -43,6 +63,9 @@ class EngagementRead(BaseModel):
     slug: str
     description: str | None = None
     status: EngagementStatus
+    time_frame: EngagementTimeFrame
+    start_date: date | None
+    end_date: date | None
     created_by: UUID | None
     archived_at: datetime | None
     flushed_at: datetime | None

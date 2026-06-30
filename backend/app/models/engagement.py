@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import enum
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
-from sqlalchemy import DateTime, Enum, ForeignKey, String, Text
+from sqlalchemy import Date, DateTime, Enum, ForeignKey, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -15,6 +15,13 @@ class EngagementStatus(enum.StrEnum):
     active = "active"
     archived = "archived"
     flushed = "flushed"
+
+
+class EngagementTimeFrame(enum.StrEnum):
+    repeatable = "repeatable"
+    point_in_time_continuous = "point_in_time_continuous"
+    point_in_time = "point_in_time"
+    custom = "custom"
 
 
 class Engagement(Base, TimestampMixin):
@@ -31,6 +38,14 @@ class Engagement(Base, TimestampMixin):
         default=EngagementStatus.active,
         nullable=False,
     )
+    time_frame: Mapped[EngagementTimeFrame] = mapped_column(
+        Enum(EngagementTimeFrame, name="engagement_time_frame"),
+        default=EngagementTimeFrame.point_in_time,
+        nullable=False,
+        server_default="point_in_time",
+    )
+    start_date: Mapped[date | None] = mapped_column(Date)
+    end_date: Mapped[date | None] = mapped_column(Date)
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), index=True
     )

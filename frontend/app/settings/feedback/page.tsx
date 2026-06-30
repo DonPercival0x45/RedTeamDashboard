@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Download } from "lucide-react";
+import { UploadCloud } from "lucide-react";
 import {
   Card,
   CardContent,
@@ -12,14 +12,15 @@ import {
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { DiscordChannelConnect } from "@/components/discord-channel-connect";
+import { GitHubPushConnect } from "@/components/github-push-connect";
 import { Textarea } from "@/components/ui/textarea";
 import {
   createRoadmapSuggestion,
   decideRoadmapSuggestion,
   deleteRoadmapSuggestion,
-  downloadRoadmapMarkdown,
   getMe,
   listRoadmapSuggestions,
+  pushRoadmapToGitHub,
   reEvaluateRoadmapSuggestion,
 } from "@/lib/api";
 import type {
@@ -54,6 +55,8 @@ export default function SettingsFeedbackPage() {
   const [error, setError] = useState<string | null>(null);
   const [body, setBody] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [pushing, setPushing] = useState(false);
+  const [pushStatus, setPushStatus] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
     setError(null);
@@ -153,6 +156,23 @@ export default function SettingsFeedbackPage() {
     [reload],
   );
 
+  const onPushToGitHub = useCallback(async () => {
+    setPushing(true);
+    setError(null);
+    setPushStatus(null);
+    try {
+      const result = await pushRoadmapToGitHub();
+      const short = result.commit_sha ? result.commit_sha.slice(0, 7) : "ok";
+      setPushStatus(
+        `Pushed to ${result.owner}/${result.repo}@${result.branch}:${result.path} (commit ${short}).`,
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPushing(false);
+    }
+  }, []);
+
   return (
     <div className="mx-auto max-w-4xl space-y-6 px-4 py-6">
       <div>
@@ -229,19 +249,22 @@ export default function SettingsFeedbackPage() {
                 Newest first. Approved items land in the export.
               </CardDescription>
             </div>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                void downloadRoadmapMarkdown().catch((err) =>
-                  setError(err instanceof Error ? err.message : String(err)),
-                );
-              }}
-            >
-              <Download className="mr-1.5 h-3.5 w-3.5" />
-              Export ROADMAP.md
-            </Button>
+            {me?.is_admin && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={onPushToGitHub}
+                disabled={pushing}
+                title="Commit the rendered ROADMAP.md (approved feedback) to GitHub via the configured integration below."
+              >
+                <UploadCloud className="mr-1.5 h-3.5 w-3.5" />
+                {pushing ? "Pushing…" : "Push to GitHub"}
+              </Button>
+            )}
           </div>
+          {pushStatus && (
+            <p className="mt-2 text-xs text-muted-foreground">{pushStatus}</p>
+          )}
           <div className="mt-3 flex flex-wrap gap-1.5">
             {(["all", "pending_review", "approved", "rejected"] as const).map(
               (chip) => (
@@ -285,7 +308,12 @@ export default function SettingsFeedbackPage() {
         </CardContent>
       </Card>
 
-      {me?.is_admin && <DiscordChannelConnect />}
+      {me?.is_admin && (
+        <>
+          <GitHubPushConnect />
+          <DiscordChannelConnect />
+        </>
+      )}
     </div>
   );
 }

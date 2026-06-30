@@ -369,6 +369,9 @@ jobs:
     needs: [version, publish, publish-worker-alias, publish-viewer-static]
     steps:
       - uses: actions/checkout@v4
+        # Full history so the release-notes step can git-log between tags.
+        with:
+          fetch-depth: 0
 
       - name: Download viewer static bundle
         uses: actions/download-artifact@v4
@@ -381,6 +384,58 @@ jobs:
           TAG="${{ needs.version.outputs.tag }}"
           tar -czf "rtd-azure-kit-${TAG}.tar.gz" -C infra azure-kit
 
+      # --- Non-technical "What's Changed" via Anthropic ----------------------
+      # Translates the raw commit log into analyst-facing language. Best-effort
+      # — if ANTHROPIC_API_KEY isn't set or the call fails, the step emits an
+      # empty body and the release still ships with the hand-written body and
+      # the GitHub auto-generated changelog.
+
+      - name: Resolve previous tag
+        id: prevtag
+        run: |
+          TAG="${{ needs.version.outputs.tag }}"
+          PREV="$(git tag --list 'v*' --sort=-creatordate | grep -vx "$TAG" | head -n1 || true)"
+          echo "prev=${PREV}" >> "$GITHUB_OUTPUT"
+          echo "Previous tag: ${PREV:-<none>}"
+
+      - name: Collect commit subjects since previous tag
+        run: |
+          TAG="${{ needs.version.outputs.tag }}"
+          PREV="${{ steps.prevtag.outputs.prev }}"
+          if [ -z "$PREV" ]; then
+            RANGE="$TAG"
+          else
+            RANGE="${PREV}..${TAG}"
+          fi
+          git log "$RANGE" --no-merges --pretty=format:"%s" > /tmp/commits.txt || true
+          echo "--- commits in $RANGE ---"
+          cat /tmp/commits.txt
+          echo "--- ($(wc -l < /tmp/commits.txt) line(s)) ---"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Anthropic SDK
+        run: pip install --quiet 'anthropic>=0.40'
+        continue-on-error: true
+
+      - name: Generate non-technical release notes
+        id: notes
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          RELEASE_TAG: ${{ needs.version.outputs.tag }}
+          PREVIOUS_TAG: ${{ steps.prevtag.outputs.prev }}
+        run: |
+          set -e
+          OUT=$(python .github/scripts/generate_release_notes.py < /tmp/commits.txt || true)
+          {
+            echo "body<<NOTES_EOF"
+            echo "$OUT"
+            echo "NOTES_EOF"
+          } >> "$GITHUB_OUTPUT"
+        continue-on-error: true
+
       - name: Create release + attach kit tarball + viewer bundle
         uses: softprops/action-gh-release@v2
         with:
@@ -391,6 +446,8 @@ jobs:
             rtd-azure-kit-*.tar.gz
             rtd-viewer-static-*.zip
           body: |
+            ${{ steps.notes.outputs.body }}
+
             ## Images
 
             All pushed to GitHub Container Registry (public, no auth required):

@@ -16,7 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.integration import IntegrationType
 
-_MASKED_KEYS = {"bot_token"}
+_MASKED_KEYS = {"bot_token", "pat_token"}
 
 
 def mask_config(config: dict[str, Any]) -> dict[str, Any]:

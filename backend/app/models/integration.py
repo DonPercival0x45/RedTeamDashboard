@@ -1,10 +1,13 @@
-"""External-system integrations (Discord first; Slack/Teams later).
+"""External-system integrations (Discord, GitHub-push; Slack/Teams later).
 
 Single-tenant by design — at most one row per ``type`` (enforced via the
 unique constraint on the ``type`` column in migration 0020). The
 ``config`` JSONB carries whatever fields the integration needs:
 
 - Discord: ``{webhook_url, bot_token, channel_id, last_seen_message_id}``
+- github_push: ``{pat_token, owner, repo, branch, path}`` — used by the
+  "Push to GitHub" button on /settings/feedback to commit the rendered
+  ROADMAP.md to a repo via the GitHub Contents API.
 
 Admin-only surface — managed from ``/settings/feedback``.
 """
@@ -23,6 +26,7 @@ from app.db.base import Base, TimestampMixin, uuid7
 
 class IntegrationType(enum.StrEnum):
     discord = "discord"
+    github_push = "github_push"
 
 
 class Integration(Base, TimestampMixin):

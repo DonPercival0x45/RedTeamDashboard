@@ -17,32 +17,38 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { ScopeImporter } from "@/components/scope-importer";
-import { createEngagement, createScopeItem, startRun } from "@/lib/api";
-import type { LLMProvider, ScopeKind } from "@/lib/types";
+import { createEngagement, createScopeItem } from "@/lib/api";
+import type { EngagementTimeFrame, ScopeKind } from "@/lib/types";
 
-// Nessus-style engagement setup (CHARTER Idea 3): name, details, scope — then
-// "Save & start OSINT" provisions the engagement, writes the scope, and kicks
-// off a passive-recon run so findings start populating immediately.
+// Nessus-style engagement setup (CHARTER Idea 3): name, details, time frame,
+// and scope. v0.6.0 removed the kickoff-on-create button — engagement creation
+// is now a preset. The analyst launches scans from the Scope tab once the
+// engagement exists.
 
 const KINDS: ScopeKind[] = ["domain", "cidr", "ip", "url"];
 
-const DEFAULT_MODELS: Record<LLMProvider, string> = {
-  anthropic: "claude-opus-4-7",
-  openai: "gpt-4o-mini",
-  azure: "",
-  ollama: "llama3.1:8b",
-};
-
-const PROVIDERS: { value: LLMProvider; label: string }[] = [
-  { value: "anthropic", label: "Anthropic (Claude)" },
-  { value: "openai", label: "OpenAI" },
-  { value: "azure", label: "Azure OpenAI" },
-  { value: "ollama", label: "Ollama (local)" },
+const TIME_FRAMES: { value: EngagementTimeFrame; label: string; hint: string }[] = [
+  {
+    value: "point_in_time",
+    label: "Point in time",
+    hint: "Single one-shot pass. No recurring scans planned.",
+  },
+  {
+    value: "point_in_time_continuous",
+    label: "Point in time, continuous",
+    hint: "One window, but stays open for follow-up scans as findings accrue.",
+  },
+  {
+    value: "repeatable",
+    label: "Repeatable",
+    hint: "Ongoing engagement that re-runs on the analyst's cadence.",
+  },
+  {
+    value: "custom",
+    label: "Custom window",
+    hint: "Fixed start and end dates.",
+  },
 ];
-
-const OSINT_PROMPT =
-  "Run passive OSINT reconnaissance across all in-scope targets: enumerate " +
-  "subdomains, resolve DNS, run WHOIS, and probe which hosts are live.";
 
 interface ScopeDraft {
   kind: ScopeKind;
@@ -61,8 +67,9 @@ export default function NewEngagementPage() {
   const [value, setValue] = useState("");
   const [isExclusion, setIsExclusion] = useState(false);
 
-  const [provider, setProvider] = useState<LLMProvider>("anthropic");
-  const [model, setModel] = useState(DEFAULT_MODELS.anthropic);
+  const [timeFrame, setTimeFrame] = useState<EngagementTimeFrame>("point_in_time");
+  const [startDate, setStartDate] = useState("");
+  const [endDate, setEndDate] = useState("");
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -74,10 +81,20 @@ export default function NewEngagementPage() {
     setIsExclusion(false);
   };
 
-  const submit = async (startOsint: boolean) => {
+  const submit = async () => {
     if (!name.trim()) {
       setError("Name is required.");
       return;
+    }
+    if (timeFrame === "custom") {
+      if (!startDate || !endDate) {
+        setError("Custom window requires both start and end dates.");
+        return;
+      }
+      if (endDate < startDate) {
+        setError("End date can't be before start date.");
+        return;
+      }
     }
     setBusy(true);
     setError(null);
@@ -85,6 +102,9 @@ export default function NewEngagementPage() {
       const eng = await createEngagement({
         name: name.trim(),
         description: description.trim() || undefined,
+        time_frame: timeFrame,
+        start_date: timeFrame === "custom" ? startDate : null,
+        end_date: timeFrame === "custom" ? endDate : null,
       });
       for (const item of scope) {
         await createScopeItem(eng.slug, {
@@ -93,19 +113,7 @@ export default function NewEngagementPage() {
           is_exclusion: item.isExclusion,
         });
       }
-      if (startOsint) {
-        if (scope.some((s) => !s.isExclusion)) {
-          await startRun(eng.slug, {
-            prompt: OSINT_PROMPT,
-            model: { provider, name: model.trim() },
-          });
-        } else {
-          // No includes → nothing in scope to scan; skip the run rather than
-          // 400, and let the analyst add scope on the engagement page.
-          setError(null);
-        }
-      }
-      router.push(`/e?slug=${encodeURIComponent(eng.slug)}&view=findings`);
+      router.push(`/e?slug=${encodeURIComponent(eng.slug)}&view=scope`);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setBusy(false);
@@ -134,7 +142,8 @@ export default function NewEngagementPage() {
           New engagement
         </h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Name it, set scope, and start OSINT — findings begin populating on save.
+          Name it, set the time frame, and stage scope. Launch scans from the
+          Scope tab once the engagement is created.
         </p>
       </div>
 
@@ -163,6 +172,60 @@ export default function NewEngagementPage() {
               placeholder="Objectives, constraints, point of contact…"
             />
           </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Time frame</CardTitle>
+          <CardDescription>
+            How the engagement is scheduled. Metadata only — used in the
+            engagement header and report.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="time_frame">Type</Label>
+            <select
+              id="time_frame"
+              value={timeFrame}
+              onChange={(e) => setTimeFrame(e.target.value as EngagementTimeFrame)}
+              className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            >
+              {TIME_FRAMES.map((tf) => (
+                <option key={tf.value} value={tf.value}>
+                  {tf.label}
+                </option>
+              ))}
+            </select>
+            <p className="text-xs text-muted-foreground">
+              {TIME_FRAMES.find((tf) => tf.value === timeFrame)?.hint}
+            </p>
+          </div>
+          {timeFrame === "custom" && (
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-2">
+                <Label htmlFor="start_date">Start date</Label>
+                <Input
+                  id="start_date"
+                  type="date"
+                  value={startDate}
+                  onChange={(e) => setStartDate(e.target.value)}
+                  required
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="end_date">End date</Label>
+                <Input
+                  id="end_date"
+                  type="date"
+                  value={endDate}
+                  onChange={(e) => setEndDate(e.target.value)}
+                  required
+                />
+              </div>
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -234,7 +297,7 @@ export default function NewEngagementPage() {
 
           {scope.length === 0 ? (
             <p className="text-sm text-muted-foreground">
-              No scope yet — add at least one include to scan on start.
+              No scope yet — add includes here or from the Scope tab after save.
             </p>
           ) : (
             <ul className="divide-y divide-border">
@@ -266,55 +329,11 @@ export default function NewEngagementPage() {
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">OSINT engine</CardTitle>
-          <CardDescription>
-            Model used for the kickoff recon run on “Save &amp; start OSINT”.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div className="space-y-2">
-              <Label htmlFor="provider">Provider</Label>
-              <select
-                id="provider"
-                value={provider}
-                onChange={(e) => {
-                  const p = e.target.value as LLMProvider;
-                  setProvider(p);
-                  setModel(DEFAULT_MODELS[p]);
-                }}
-                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-              >
-                {PROVIDERS.map((p) => (
-                  <option key={p.value} value={p.value}>
-                    {p.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="model">Model</Label>
-              <Input
-                id="model"
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
-                placeholder={DEFAULT_MODELS[provider] || "deployment name"}
-              />
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-
       {error && <p className="text-sm text-critical">{error}</p>}
 
-      <div className="flex justify-end gap-2">
-        <Button variant="outline" disabled={busy} onClick={() => submit(false)}>
-          {busy ? "Saving…" : "Save"}
-        </Button>
-        <Button disabled={busy} onClick={() => submit(true)}>
-          {busy ? "Starting…" : "Save & start OSINT"}
+      <div className="flex justify-end">
+        <Button disabled={busy} onClick={submit}>
+          {busy ? "Saving…" : "Save engagement"}
         </Button>
       </div>
     </div>
