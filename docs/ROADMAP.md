@@ -141,3 +141,63 @@ Observations are then tagged back into the finding when you look at them later.
 **Admin note:** Some Tweaks
 
 _Approved 2026-06-30T12:54:31.621534+00:00 — suggestion id `019f159f-88ff-7c11-90f0-467aa6d8e48e`_
+
+## 7. Reformatting the "What's New" surface to hide infra-only changes (Deploy/CLI/Images) and group entries by user-facing categories (Bug Fixes / Features / QoL / Ops) is a low-cost polish that improves the release-notes experience but is pure presentation work with no Charter or roadmap leverage.
+
+**Original suggestion:**
+
+> Want the Whats New Windows to actually remove Deploy, CLI, Images and have them have a format that is broken down into categories of what was fixed. For example, going in no particular order and not limited to these: ["Bug Fixes","Features","QualityOfLife","Operations"] . This should be set up like how Development companies release Updates to show the end user all they really care about.
+
+**Pros:**
+- Aligns with the 'one pane of glass' North Star by making in-portal release notes feel like a real product changelog rather than a raw commit/area dump.
+- Hiding Deploy/CLI/Images categories matches the analyst-facing framing — those areas are operator concerns, not analyst workflow, and don't belong in the analyst's What's New.
+- Category grouping (Bug Fixes / Features / QoL / Ops) is a well-understood pattern and should be a small frontend change plus a tagging convention on changelog entries, not new infrastructure.
+- Pairs well with the recently-approved submitter/approver attribution work on the Suggestion Box (id `019f1536-...`) — both are part of tightening the in-portal feedback/communication surfaces.
+
+**Cons:**
+- Pure presentation polish — doesn't advance any of the four still-unfinished Charter ideas (attack-path UI, entities tab, engagement-setup wizard, feedback loop) or unblock Phase 10.
+- Category taxonomy needs to be pinned before coding (the suggestion explicitly says 'not limited to these'), or entries will be tagged inconsistently and the grouped view will degrade.
+- Requires a decision on where category metadata lives — hand-curated per release-note entry, derived from PR labels, or mapped from the current Deploy/CLI/Images areas — and each option has different maintenance cost.
+- Filtering out Deploy/CLI/Images entirely is a stronger claim than re-grouping; some operations changes (e.g. Entra setup, cost engine) genuinely affect analysts and shouldn't be silently hidden — needs a clearer rule than 'remove these three'.
+- Competes for attention with two already-approved roadmap items (OOS findings state, Burp XML ingest) and the in-flight Phase 10 work, which have higher analyst-workflow leverage.
+
+**Admin note:** Whats New CleanUp
+
+_Approved 2026-07-01T15:29:24.258938+00:00 — suggestion id `019f193a-1835-7260-bed5-4195ee3e518a`_
+
+## 8. (no summary)
+
+**Original suggestion:**
+
+> In status;
+
+1. Typed search (its hard to find specific runs, so give me the ability to custom search for the run)
+2. Each run looks identical, so it should be "Heres what I tried to do, here's a what happened, or here's why I failed" etc.
+3. Gimme date sorting, or just make it so I can select 24h 7d 14d 30d etc
+4. When expanding on agent runs, maybe just a synopsis of what happened. If something succeeds you should be able to see the result in plain language not just JSON output.
+
+**Admin note:** Status Tab Cleanup
+
+_Approved 2026-06-30T20:43:16.834521+00:00 — suggestion id `019f1a44-d1b2-7153-8456-90a33073abbc`_
+
+## 9. This suggestion is already approved and on the roadmap (id `019f1a48-d786-79a1-acbc-8fce8fae5859`, admin-noted "Status Tab Cleanup") — adding unique run IDs with a trackable toast on agent run kickoff.
+
+**Original suggestion:**
+
+> Give each agent run a unique id, and when you do start an agent run from anywhere in the dashboard a toast comes up with that ID so you can track it with a link to the direct run.
+
+**Pros:**
+- Already approved and queued on the roadmap under the 'Status Tab Cleanup' admin grouping, so this is in-flight rather than a fresh ask.
+- Pairs directly with the other approved Status Tab Cleanup item (id `019f1a44-...`) covering typed search, date filtering, and per-run synopses — implementing them together is cheaper than piecemeal.
+- Low-cost change — `agent_executions` already exists from Phase 9/11 cost tracking and almost certainly has a primary key that can be surfaced as the run ID, so this is mostly a serializer + toast + deep-link route.
+- Directly serves the 'one pane of glass' North Star by letting analysts kick off a run anywhere and still jump straight to its detail view without hunting through the Status tab.
+- Improves auditability and pairs well with the existing audit-log posture (`finding.updated`, attachment audit logs) — a citeable run ID is useful for cross-referencing in observations, findings, and later remediation tracking.
+
+**Cons:**
+- Duplicate submission risk — the same idea is already approved on 2026-06-30; re-approving could create two tracking entries for one piece of work.
+- Needs a small decision on ID format (raw UUID vs. short human-readable slug like `run-7f3a`) before coding, or the toast UX will feel clunky for copy/paste and verbal reference.
+- Deep-link target needs to exist — if the Status tab doesn't yet have a per-run detail route, this implicitly depends on the other Status Tab Cleanup item landing first or alongside.
+
+**Admin note:** Status Tab Cleanup
+
+_Approved 2026-06-30T20:48:13.487229+00:00 — suggestion id `019f1a48-d786-79a1-acbc-8fce8fae5859`_
