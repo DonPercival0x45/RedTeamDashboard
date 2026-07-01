@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { AlertTriangle, ChevronDown, ChevronUp } from "lucide-react";
 import { getEngagementCosts } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import type { AgentCost, ModelCost, CostRollup } from "@/lib/types";
+import type { AgentCost, ModelCost, CostRollup, ToolCost } from "@/lib/types";
 
 const AGENT_LABEL: Record<string, string> = {
   strategic: "Strategic",
@@ -254,10 +254,81 @@ export function CostsView({ slug }: { slug: string }) {
         </div>
       </ExpandableSection>
 
+      {/* Tool compute (v0.15.0) — separate from LLM spend so the analyst
+          can see per-tool sandbox time without it distorting model cost. */}
+      <ExpandableSection
+        title="Tool Compute"
+        count={data.tools.by_tool.length}
+      >
+        {data.tools.invocations === 0 ? (
+          <p className="text-xs text-muted-foreground">
+            No tool invocations recorded for this engagement yet.
+          </p>
+        ) : (
+          <>
+            <div className="mb-3 grid grid-cols-3 gap-3">
+              <div className="rounded-md border border-border/60 p-3">
+                <p className="text-xs text-muted-foreground">Invocations</p>
+                <p className="text-lg font-semibold tabular-nums">
+                  {formatNumber(data.tools.invocations)}
+                </p>
+              </div>
+              <div className="rounded-md border border-border/60 p-3">
+                <p className="text-xs text-muted-foreground">Total duration</p>
+                <p className="text-lg font-semibold tabular-nums">
+                  {data.tools.total_duration_seconds.toFixed(1)}s
+                </p>
+              </div>
+              <div className="rounded-md border border-border/60 p-3">
+                <p className="text-xs text-muted-foreground">Cost (USD)</p>
+                <p className="text-lg font-semibold tabular-nums">
+                  {formatCurrency(data.tools.cost_usd)}
+                </p>
+              </div>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full border-collapse text-sm">
+                <thead>
+                  <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted-foreground">
+                    <th className="px-3 py-2">Tool</th>
+                    <th className="px-3 py-2 w-24">Invocations</th>
+                    <th className="px-3 py-2 w-24">Duration (s)</th>
+                    <th className="px-3 py-2 w-24">Cost (USD)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.tools.by_tool.map((t: ToolCost) => (
+                    <tr
+                      key={t.tool_id}
+                      className="border-b border-border/60 last:border-0"
+                    >
+                      <td className="px-3 py-2.5 font-mono text-xs">
+                        {t.tool_name}
+                      </td>
+                      <td className="px-3 py-2.5 tabular-nums text-muted-foreground">
+                        {formatNumber(t.invocations)}
+                      </td>
+                      <td className="px-3 py-2.5 tabular-nums text-muted-foreground">
+                        {t.total_duration_seconds.toFixed(1)}
+                      </td>
+                      <td className="px-3 py-2.5 tabular-nums font-medium">
+                        {formatCurrency(t.cost_usd)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+      </ExpandableSection>
+
       {/* Footnote about local providers */}
       <p className="text-xs text-muted-foreground">
         Local providers (e.g. Ollama) are reported at $0 cost regardless of
         token count. Models without a pricing entry are flagged as unpriced above.
+        Sandbox runners are rated $0/s locally and ≈$2×10⁻⁵/s on ACI (rough
+        estimate; not a billing source of truth).
       </p>
     </div>
   );

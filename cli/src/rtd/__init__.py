@@ -1,3 +1,3 @@
 """rtd-cli — command-line client for the Red Team Dashboard."""
 
-__version__ = "0.14.0"
+__version__ = "0.15.0"

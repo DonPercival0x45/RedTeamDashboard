@@ -26,7 +26,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import select
@@ -51,8 +51,17 @@ from app.models import (
     Task,
     TaskKind,
     TaskStatus,
+    Tool,
+    ToolInvocation,
 )
-from app.schemas.cost import AgentCost, CostBucket, CostRollup, ModelCost
+from app.schemas.cost import (
+    AgentCost,
+    CostBucket,
+    CostRollup,
+    ModelCost,
+    ToolCost,
+    ToolCostSummary,
+)
 from app.schemas.orchestrator import (
     AcceptSuggestionResponse,
     AnalyzeFindingResponse,
@@ -491,6 +500,19 @@ def engagement_costs(
             acc["cost"] += cost
         model_acc["priced"] = priced
 
+    # v0.15.0: fold in per-tool invocation compute cost. tool_invocations
+    # carry a cost_usd stamped by the orchestrator (LocalDocker=$0,
+    # ACI≈$2e-5/s). Aggregate by tool_id and expose as its own block on
+    # the Costs response.
+    tool_rows = list(
+        session.execute(
+            select(ToolInvocation, Tool.name)
+            .join(Tool, Tool.id == ToolInvocation.tool_id)
+            .where(ToolInvocation.engagement_id == eng.id)
+        ).all()
+    )
+    tool_summary = _summarise_tool_invocations(tool_rows)
+
     return CostRollup(
         engagement_id=eng.id,
         engagement_slug=eng.slug,
@@ -513,4 +535,58 @@ def engagement_costs(
             )
         ],
         unpriced_models=sorted(unpriced),
+        tools=tool_summary,
+    )
+
+
+def _summarise_tool_invocations(
+    rows: list[tuple[ToolInvocation, str]],
+) -> ToolCostSummary:
+    """Aggregate per-tool: count of invocations, total wall-clock, sum
+    of cost_usd. Sort by cost descending so the Costs tab shows the
+    heavy spenders first."""
+    total_invocations = 0
+    total_seconds = 0.0
+    total_cost = Decimal(0)
+    per_tool: dict[Any, dict[str, Any]] = {}
+    for row, tool_name in rows:
+        seconds = 0.0
+        if row.completed_at and row.started_at:
+            seconds = (row.completed_at - row.started_at).total_seconds()
+        cost = row.cost_usd if row.cost_usd is not None else Decimal(0)
+        total_invocations += 1
+        total_seconds += seconds
+        total_cost += cost
+        acc = per_tool.setdefault(
+            row.tool_id,
+            {
+                "tool_id": row.tool_id,
+                "tool_name": tool_name,
+                "invocations": 0,
+                "seconds": 0.0,
+                "cost": Decimal(0),
+            },
+        )
+        acc["invocations"] += 1
+        acc["seconds"] += seconds
+        acc["cost"] += cost
+
+    return ToolCostSummary(
+        invocations=total_invocations,
+        total_duration_seconds=round(total_seconds, 3),
+        cost_usd=float(total_cost),
+        by_tool=sorted(
+            [
+                ToolCost(
+                    tool_id=acc["tool_id"],
+                    tool_name=acc["tool_name"],
+                    invocations=acc["invocations"],
+                    total_duration_seconds=round(acc["seconds"], 3),
+                    cost_usd=float(acc["cost"]),
+                )
+                for acc in per_tool.values()
+            ],
+            key=lambda t: t.cost_usd,
+            reverse=True,
+        ),
     )

@@ -56,6 +56,21 @@ STDOUT_CAP_BYTES = 10 * 1024 * 1024  # 10 MB
 STDERR_CAP_BYTES = 10 * 1024 * 1024
 _TRUNC_MARKER = "\n\n[rtd: output truncated at 10 MB]\n"
 
+# Per-runner USD-per-second estimate stamped on each invocation row so
+# the Costs tab can roll up tool spend alongside LLM spend. Rough
+# region-average numbers; refined pricing lookup slips to v0.17.
+#
+# LocalDockerRunner: $0 — free host compute.
+# ACIRunner: ~1 vCPU + 512 MiB + LB overhead ≈ $0.044/hour ≈ $1.22e-5/s
+#   at centralus. Round up to $2e-5 to cover pull time + storage +
+#   the fact that we're paying for the whole allocation window even if
+#   the tool exits early. Good-enough spend signal, NOT a billing
+#   source of truth.
+RUNTIME_RATES_USD_PER_SECOND: dict[str, float] = {
+    "docker": 0.0,
+    "aci": 2e-5,
+}
+
 
 @dataclass
 class SandboxRequest:

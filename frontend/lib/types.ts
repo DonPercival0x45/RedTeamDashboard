@@ -542,6 +542,21 @@ export interface ModelCost extends CostBucket {
   priced: boolean;
 }
 
+export interface ToolCost {
+  tool_id: string;
+  tool_name: string;
+  invocations: number;
+  total_duration_seconds: number;
+  cost_usd: number;
+}
+
+export interface ToolCostSummary {
+  invocations: number;
+  total_duration_seconds: number;
+  cost_usd: number;
+  by_tool: ToolCost[];
+}
+
 export interface CostRollup {
   engagement_id: string;
   engagement_slug: string;
@@ -549,6 +564,7 @@ export interface CostRollup {
   by_agent: AgentCost[];
   by_model: ModelCost[];
   unpriced_models: string[];
+  tools: ToolCostSummary;
 }
 
 // ── /me + roadmap suggestions ────────────────────────────────────────────
