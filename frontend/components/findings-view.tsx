@@ -1,15 +1,17 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Upload, X } from "lucide-react";
+import { Trash2, Upload, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import {
   acceptSuggestion,
   analyzeFinding,
+  bulkDeleteFindings,
   createFindingSummary,
   deleteAttachment,
+  deleteFinding,
   dismissSuggestion,
   listAttachments,
   listFindingSummaries,
@@ -111,10 +113,12 @@ export function FindingsView({
   slug,
   findings,
   onUpdated,
+  onDeleted,
 }: {
   slug: string;
   findings: Finding[];
   onUpdated: (finding: Finding) => void;
+  onDeleted: (findingId: string) => void;
 }) {
   const [phase, setPhase] = useState<FindingPhase | "all">("all");
   const [status, setStatus] = useState<FindingValidationStatus | "all">("all");
@@ -122,6 +126,13 @@ export function FindingsView({
   const [selected, setSelected] = useState<Finding | null>(null);
   const [showImporter, setShowImporter] = useState(false);
   const [showBurpImporter, setShowBurpImporter] = useState(false);
+
+  // v0.10.0: multi-select for bulk delete. Set of finding IDs; two-click
+  // confirm before we actually call bulk-delete.
+  const [checkedIds, setCheckedIds] = useState<Set<string>>(new Set());
+  const [confirmingBulk, setConfirmingBulk] = useState(false);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [bulkError, setBulkError] = useState<string | null>(null);
 
   // v0.8.1: severity-only filter driven by clicking the metric tiles.
   // "all" means no severity filter active. Pending validation has its own
@@ -175,6 +186,73 @@ export function FindingsView({
   const handleUpdated = (f: Finding) => {
     onUpdated(f);
     setSelected(f);
+  };
+
+  const toggleChecked = (id: string) => {
+    setCheckedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+    setConfirmingBulk(false);
+    setBulkError(null);
+  };
+
+  const clearSelection = () => {
+    setCheckedIds(new Set());
+    setConfirmingBulk(false);
+    setBulkError(null);
+  };
+
+  const visibleIds = (arr: Finding[]) => arr.map((f) => f.id);
+  const allVisibleChecked =
+    visible.length > 0 && visible.every((f) => checkedIds.has(f.id));
+  const someVisibleChecked =
+    visible.some((f) => checkedIds.has(f.id)) && !allVisibleChecked;
+
+  const toggleAllVisible = () => {
+    setCheckedIds((prev) => {
+      const next = new Set(prev);
+      if (allVisibleChecked) {
+        visibleIds(visible).forEach((id) => next.delete(id));
+      } else {
+        visibleIds(visible).forEach((id) => next.add(id));
+      }
+      return next;
+    });
+    setConfirmingBulk(false);
+    setBulkError(null);
+  };
+
+  const doBulkDelete = async () => {
+    if (checkedIds.size === 0) return;
+    if (!confirmingBulk) {
+      setConfirmingBulk(true);
+      return;
+    }
+    setBulkDeleting(true);
+    setBulkError(null);
+    const ids = Array.from(checkedIds);
+    try {
+      const res = await bulkDeleteFindings(slug, ids);
+      // Remove every ID we attempted (bulk covers "already deleted" too;
+      // no reason to keep stale rows around in the client).
+      ids.forEach((id) => onDeleted(id));
+      clearSelection();
+      // If the server skipped anything, surface a short note but don't
+      // block. Most of the time this is zero.
+      if (res.skipped_missing || res.skipped_already_deleted) {
+        setBulkError(
+          `Deleted ${res.deleted}. Skipped ${res.skipped_missing} missing, ${res.skipped_already_deleted} already deleted.`,
+        );
+      }
+    } catch (err) {
+      setBulkError(err instanceof Error ? err.message : String(err));
+      setConfirmingBulk(false);
+    } finally {
+      setBulkDeleting(false);
+    }
   };
 
   return (
@@ -301,6 +379,47 @@ export function FindingsView({
         />
       )}
 
+      {/* v0.10.0 bulk-delete action bar. Only rendered when at least one
+          row is checked; sticks between filters and the table. */}
+      {checkedIds.size > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-rose-500/40 bg-rose-500/5 px-3 py-2">
+          <div className="flex items-center gap-3 text-sm">
+            <span>
+              <span className="font-medium">{checkedIds.size}</span>{" "}
+              selected
+            </span>
+            <button
+              type="button"
+              onClick={clearSelection}
+              className="text-xs text-muted-foreground hover:text-foreground"
+            >
+              Clear
+            </button>
+            {bulkError && (
+              <span className="text-xs text-muted-foreground">{bulkError}</span>
+            )}
+          </div>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={bulkDeleting}
+            onClick={doBulkDelete}
+            className={
+              confirmingBulk
+                ? "border-rose-500 bg-rose-500/15 text-rose-100 hover:bg-rose-500/25"
+                : "border-rose-500/50 text-rose-200 hover:bg-rose-500/10"
+            }
+          >
+            <Trash2 className="mr-1.5 h-3.5 w-3.5" />
+            {bulkDeleting
+              ? "Deleting…"
+              : confirmingBulk
+                ? `Confirm delete ${checkedIds.size}`
+                : `Delete ${checkedIds.size} finding${checkedIds.size === 1 ? "" : "s"}`}
+          </Button>
+        </div>
+      )}
+
       {/* Table */}
       {visible.length === 0 ? (
         <p className="text-sm text-muted-foreground">
@@ -311,6 +430,22 @@ export function FindingsView({
           <table className="w-full border-collapse text-sm">
             <thead>
               <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted-foreground">
+                <th className="px-3 py-2 w-8">
+                  <input
+                    type="checkbox"
+                    aria-label={
+                      allVisibleChecked
+                        ? "Deselect all visible findings"
+                        : "Select all visible findings"
+                    }
+                    checked={allVisibleChecked}
+                    ref={(el) => {
+                      if (el) el.indeterminate = someVisibleChecked;
+                    }}
+                    onChange={toggleAllVisible}
+                    className="cursor-pointer accent-rose-500"
+                  />
+                </th>
                 <th className="px-3 py-2 w-20">ID</th>
                 <th className="px-3 py-2">Finding</th>
                 <th className="px-3 py-2">Detail</th>
@@ -324,8 +459,27 @@ export function FindingsView({
                 <tr
                   key={f.id}
                   onClick={() => setSelected(f)}
-                  className="cursor-pointer border-b border-border/60 align-top last:border-0 hover:bg-secondary/40"
+                  className={cn(
+                    "cursor-pointer border-b border-border/60 align-top last:border-0 hover:bg-secondary/40",
+                    checkedIds.has(f.id) && "bg-secondary/30",
+                  )}
                 >
+                  <td
+                    className="px-3 py-2.5"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      toggleChecked(f.id);
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      aria-label={`Select ${f.title}`}
+                      checked={checkedIds.has(f.id)}
+                      onChange={() => toggleChecked(f.id)}
+                      onClick={(e) => e.stopPropagation()}
+                      className="cursor-pointer accent-rose-500"
+                    />
+                  </td>
                   <td className="px-3 py-2.5 font-mono text-xs text-muted-foreground">
                     {shortId(f.id)}
                   </td>
@@ -383,6 +537,10 @@ export function FindingsView({
           finding={selected}
           onClose={() => setSelected(null)}
           onUpdated={handleUpdated}
+          onDeleted={(id) => {
+            onDeleted(id);
+            setSelected(null);
+          }}
         />
       )}
     </div>
@@ -620,13 +778,21 @@ function FindingSlideOver({
   finding,
   onClose,
   onUpdated,
+  onDeleted,
 }: {
   finding: Finding;
   onClose: () => void;
   onUpdated: (f: Finding) => void;
+  onDeleted: (findingId: string) => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // v0.10.0: soft-delete confirmation. Two-step so a stray click can't
+  // wipe a finding; second click within the same open of the slide-over
+  // is the real DELETE.
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   const [analyzing, setAnalyzing] = useState(false);
   const [analyzeError, setAnalyzeError] = useState<string | null>(null);
@@ -722,6 +888,23 @@ function FindingSlideOver({
     },
     [finding.id],
   );
+
+  const doDelete = async () => {
+    if (!confirmingDelete) {
+      setConfirmingDelete(true);
+      return;
+    }
+    setDeleting(true);
+    setError(null);
+    try {
+      await deleteFinding(finding.id);
+      onDeleted(finding.id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setDeleting(false);
+      setConfirmingDelete(false);
+    }
+  };
 
   const decide = async (decision: FindingValidationStatus) => {
     setBusy(true);
@@ -1069,6 +1252,39 @@ function FindingSlideOver({
             >
               False positive
             </Button>
+          </div>
+
+          {/* v0.10.0: soft-delete. Two-step confirm; audit_log records
+              the actor + timestamp so a future recovery view can un-hide. */}
+          <div className="mt-3 flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={deleting}
+              onClick={doDelete}
+              className={
+                confirmingDelete
+                  ? "border-rose-500 bg-rose-500/10 text-rose-100 hover:bg-rose-500/20"
+                  : "border-rose-500/40 text-rose-300 hover:bg-rose-500/10"
+              }
+              title="Soft-delete this finding — hidden from Findings, Report, and JSON export. audit_log preserves who + when."
+            >
+              <Trash2 className="mr-1.5 h-3.5 w-3.5" />
+              {deleting
+                ? "Deleting…"
+                : confirmingDelete
+                  ? "Click again to confirm"
+                  : "Delete finding"}
+            </Button>
+            {confirmingDelete && !deleting && (
+              <button
+                type="button"
+                onClick={() => setConfirmingDelete(false)}
+                className="text-xs text-muted-foreground hover:text-foreground"
+              >
+                Cancel
+              </button>
+            )}
           </div>
         </div>
       </aside>

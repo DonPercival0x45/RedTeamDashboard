@@ -110,3 +110,13 @@ class Finding(Base, TimestampMixin):
     # so re-imports of the same XML dedup by (engagement_id, this column).
     # Null for every non-Burp source.
     burp_serial_number: Mapped[str | None] = mapped_column(String(64))
+
+    # Soft delete (v0.10.0). deleted_at NULL = alive; set = hidden from
+    # Findings list, Report, JSON export, MCP surface, importer dedup.
+    # deleted_by_user_id preserves attribution for a future recovery UI.
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), index=True
+    )
+    deleted_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
+    )

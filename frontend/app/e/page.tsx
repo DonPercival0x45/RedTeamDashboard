@@ -24,6 +24,7 @@ import { EntitiesView } from "@/components/entities-view";
 import { FindingsView } from "@/components/findings-view";
 import { ObservationsView } from "@/components/observations-view";
 import { CostsView } from "@/components/costs-view";
+import { ContributionsView } from "@/components/contributions-view";
 import { StatusView } from "@/components/status-view";
 import { GrantsCard } from "@/components/grants-card";
 import { RunPrompt } from "@/components/run-prompt";
@@ -114,6 +115,7 @@ const VALID_VIEWS = new Set<EngagementView>([
   "costs",
   "scope",
   "status",
+  "contributions",
 ]);
 
 function EngagementDetail({ slug }: { slug: string }) {
@@ -191,6 +193,12 @@ function EngagementDetail({ slug }: { slug: string }) {
       next[idx] = f;
       return next;
     });
+  }, []);
+
+  // v0.10.0: drop a soft-deleted finding from the list so the analyst
+  // sees it disappear without a refetch.
+  const removeFinding = useCallback((findingId: string) => {
+    setFindings((prev) => prev.filter((f) => f.id !== findingId));
   }, []);
 
   useEffect(() => {
@@ -347,7 +355,12 @@ function EngagementDetail({ slug }: { slug: string }) {
 
         <div className="min-w-0 flex-1">
           {view === "findings" && (
-            <FindingsView slug={slug} findings={findings} onUpdated={upsertFinding} />
+            <FindingsView
+              slug={slug}
+              findings={findings}
+              onUpdated={upsertFinding}
+              onDeleted={removeFinding}
+            />
           )}
 
           {view === "entities" && <EntitiesView slug={slug} />}
@@ -361,6 +374,8 @@ function EngagementDetail({ slug }: { slug: string }) {
           {view === "costs" && <CostsView slug={slug} />}
 
           {view === "status" && <StatusView slug={slug} events={events} />}
+
+          {view === "contributions" && <ContributionsView slug={slug} />}
 
           {view === "scope" && (
             <div className="space-y-6">

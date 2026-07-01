@@ -443,7 +443,10 @@ def get_engagement(engagement_slug: str = "") -> dict:
         from sqlalchemy import func
 
         finding_count = session.execute(
-            select(func.count()).where(Finding.engagement_id == eng.id)
+            select(func.count()).where(
+                Finding.engagement_id == eng.id,
+                Finding.deleted_at.is_(None),
+            )
         ).scalar_one()
 
         return {
@@ -642,7 +645,10 @@ def list_findings(
         except ValueError as exc:
             return {"error": str(exc)}
 
-        q = select(Finding).where(Finding.engagement_id == eng.id)
+        q = select(Finding).where(
+            Finding.engagement_id == eng.id,
+            Finding.deleted_at.is_(None),
+        )
         if severity:
             try:
                 q = q.where(Finding.severity == Severity(severity))

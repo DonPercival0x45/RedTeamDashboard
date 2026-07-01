@@ -45,6 +45,9 @@ import type {
   Task,
   TaskStatus,
   UserRole,
+  ContributionHeatmap,
+  ContributionEntries,
+  ContributionSource,
 } from "@/lib/types";
 
 // Auth-only headers (no Content-Type — request() adds that for JSON bodies).
@@ -665,6 +668,30 @@ export function deleteAttachment(attachmentId: string): Promise<void> {
   return request<void>(`/attachments/${attachmentId}`, { method: "DELETE" });
 }
 
+export function deleteFinding(findingId: string): Promise<void> {
+  return request<void>(`/findings/${findingId}`, { method: "DELETE" });
+}
+
+export interface BulkDeleteResult {
+  deleted: number;
+  skipped_missing: number;
+  skipped_already_deleted: number;
+}
+
+export function bulkDeleteFindings(
+  slug: string,
+  findingIds: string[],
+): Promise<BulkDeleteResult> {
+  return request<BulkDeleteResult>(
+    `/engagements/${slug}/findings/bulk-delete`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ finding_ids: findingIds }),
+    },
+  );
+}
+
 // ---------------------------------------------------------------------------
 // /me + roadmap suggestions
 // ---------------------------------------------------------------------------
@@ -828,4 +855,43 @@ export function retryAgentExecution(
   return request<StatusEntity>(`/agent-executions/${executionId}/retry`, {
     method: "POST",
   });
+}
+
+// ---------------------------------------------------------------------------
+// Contributions tab (v0.10.0)
+// ---------------------------------------------------------------------------
+
+export function getContributionsHeatmap(
+  slug: string,
+  filters: { actorId?: string | null; source?: ContributionSource | null } = {},
+): Promise<ContributionHeatmap> {
+  const qs = new URLSearchParams();
+  if (filters.actorId) qs.set("actor_id", filters.actorId);
+  if (filters.source) qs.set("source", filters.source);
+  const q = qs.toString();
+  return request<ContributionHeatmap>(
+    `/engagements/${slug}/contributions/heatmap${q ? `?${q}` : ""}`,
+  );
+}
+
+export function getContributionsEntries(
+  slug: string,
+  filters: {
+    date?: string | null;
+    actorId?: string | null;
+    source?: ContributionSource | null;
+    limit?: number;
+    offset?: number;
+  } = {},
+): Promise<ContributionEntries> {
+  const qs = new URLSearchParams();
+  if (filters.date) qs.set("date", filters.date);
+  if (filters.actorId) qs.set("actor_id", filters.actorId);
+  if (filters.source) qs.set("source", filters.source);
+  if (filters.limit != null) qs.set("limit", String(filters.limit));
+  if (filters.offset != null) qs.set("offset", String(filters.offset));
+  const q = qs.toString();
+  return request<ContributionEntries>(
+    `/engagements/${slug}/contributions/entries${q ? `?${q}` : ""}`,
+  );
 }

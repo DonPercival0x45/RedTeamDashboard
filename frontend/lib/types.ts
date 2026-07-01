@@ -656,3 +656,46 @@ export interface AdminUser {
   created_at: string;
   updated_at: string;
 }
+
+// ── Contributions (v0.10.0) ──────────────────────────────────────────────
+
+export type ContributionSource = "audit" | "agent_exec";
+export type ContributionActorKind = "analyst" | "agent" | "system";
+
+export interface ContributionActor {
+  id: string;
+  kind: ContributionActorKind;
+  label: string;
+}
+
+export interface ContributionDay {
+  date: string; // YYYY-MM-DD (UTC)
+  count: number;
+}
+
+export interface ContributionHeatmap {
+  start_date: string;
+  end_date: string;
+  max_count: number;
+  days: ContributionDay[];
+  actors: ContributionActor[];
+}
+
+export interface ContributionEntry {
+  when: string; // ISO timestamp
+  actor_id: string | null;
+  actor_kind: ContributionActorKind;
+  actor_label: string;
+  source: ContributionSource;
+  action: string;
+  summary: string;
+}
+
+export interface ContributionEntries {
+  start_date: string;
+  end_date: string;
+  total: number;
+  limit: number;
+  offset: number;
+  entries: ContributionEntry[];
+}
