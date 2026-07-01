@@ -8,7 +8,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Plus, Trash2, Upload, Wrench, X } from "lucide-react";
+import { Plus, Trash2, Wrench, X } from "lucide-react";
 import {
   Card,
   CardContent,
@@ -17,37 +17,16 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
+import { ToolUploader } from "@/components/tool-uploader";
 import {
   approveTool,
   deleteTool,
   getMe,
   listTools,
   revokeTool,
-  uploadTool,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import type { Me, ToolRead, ToolUploadResponse } from "@/lib/types";
-
-const STARTER_MANIFEST = `apiVersion: rtd.tools/v1
-kind: Tool
-metadata:
-  name: subdomain-crt
-  description: crt.sh subdomain enumeration via HTTPS
-spec:
-  kind: python
-  lane: analyst
-  entrypoint: main.py
-  args:
-    - name: target
-      type: string
-      required: true
-      scope_kind: domain
-  timeout_seconds: 120
-  risk_level: passive
-  network_egress: [https]
-  task_kind: enum
-`;
+import type { Me, ToolRead } from "@/lib/types";
 
 const STATUS_TONE: Record<ToolRead["status"], string> = {
   draft: "border-amber-500/50 bg-amber-500/10 text-amber-200",
@@ -218,111 +197,6 @@ export default function SettingsToolsPage() {
         <ToolInspector tool={inspecting} onClose={() => setInspecting(null)} />
       )}
     </div>
-  );
-}
-
-function ToolUploader({ onDone }: { onDone: () => void | Promise<void> }) {
-  const [manifest, setManifest] = useState(STARTER_MANIFEST);
-  const [sourceFile, setSourceFile] = useState<File | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState<ToolUploadResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  const submit = async () => {
-    setBusy(true);
-    setError(null);
-    setResult(null);
-    try {
-      const res = await uploadTool(manifest, sourceFile);
-      setResult(res);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="text-base">Register a new tool</CardTitle>
-        <CardDescription>
-          Paste the YAML manifest and attach the source file (Python or
-          shell). Binary tools (v0.14+) will point at an OCI image tag
-          instead of a source file.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <div>
-          <label className="mb-1.5 block text-xs font-medium text-muted-foreground">
-            Manifest (YAML)
-          </label>
-          <Textarea
-            value={manifest}
-            onChange={(e) => setManifest(e.target.value)}
-            rows={16}
-            className="font-mono text-xs"
-          />
-        </div>
-
-        <div>
-          <label className="mb-1.5 block text-xs font-medium text-muted-foreground">
-            Source file (optional for binary kind)
-          </label>
-          <input
-            type="file"
-            accept=".py,.sh,.bash,text/plain,application/x-python,application/x-sh"
-            onChange={(e) => setSourceFile(e.target.files?.[0] ?? null)}
-            className="text-xs"
-          />
-          {sourceFile && (
-            <p className="mt-1 text-[11px] text-muted-foreground">
-              {sourceFile.name} · {sourceFile.size} bytes
-            </p>
-          )}
-        </div>
-
-        {error && <p className="text-xs text-critical">{error}</p>}
-        {result && (
-          <div
-            className={cn(
-              "rounded-md border p-3 text-xs",
-              result.validation_ok
-                ? "border-emerald-500/50 bg-emerald-500/5 text-emerald-100"
-                : "border-amber-500/50 bg-amber-500/5 text-amber-100",
-            )}
-          >
-            <p className="font-medium">
-              {result.validation_ok
-                ? `Registered "${result.tool.name}" — static validation clean.`
-                : `Registered "${result.tool.name}" — static validation flagged issues:`}
-            </p>
-            {!result.validation_ok && (
-              <ul className="mt-1.5 list-disc pl-4">
-                {result.validation_errors.map((e, i) => (
-                  <li key={i}>{e}</li>
-                ))}
-              </ul>
-            )}
-            <p className="mt-2 text-muted-foreground">
-              Status: draft. Approve from the list below.
-            </p>
-          </div>
-        )}
-
-        <div className="flex gap-2">
-          <Button size="sm" disabled={busy} onClick={submit}>
-            <Upload className="mr-1.5 h-3.5 w-3.5" />
-            {busy ? "Uploading…" : "Upload"}
-          </Button>
-          {result && (
-            <Button size="sm" variant="outline" onClick={() => void onDone()}>
-              Done
-            </Button>
-          )}
-        </div>
-      </CardContent>
-    </Card>
   );
 }
 

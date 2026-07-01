@@ -733,3 +733,41 @@ export interface ToolUploadResponse {
   validation_ok: boolean;
   validation_errors: string[];
 }
+
+// Response from POST /tools/infer — the auto-detect upload path.
+export interface ToolInferResponse {
+  name: string | null;
+  description: string | null;
+  entrypoint: string;
+  kind: string;
+  lane: string;
+  fields: Record<string, unknown>;
+  missing: string[];
+  warnings: string[];
+  manifest_yaml: string;
+}
+
+export type ToolInvocationStatus =
+  | "queued"
+  | "running"
+  | "completed"
+  | "failed"
+  | "timeout";
+
+export interface ToolInvocationRead {
+  id: string;
+  tool_id: string;
+  tool_version: number;
+  tool_name: string | null;
+  engagement_id: string;
+  invoker_user_id: string | null;
+  args: Record<string, unknown>;
+  runtime_ref: string | null;
+  status: ToolInvocationStatus;
+  exit_code: number | null;
+  stdout: string | null;
+  stderr: string | null;
+  error: string | null;
+  started_at: string;
+  completed_at: string | null;
+}

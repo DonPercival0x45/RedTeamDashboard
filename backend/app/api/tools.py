@@ -52,7 +52,7 @@ from fastapi import (
 )
 from sqlalchemy import select
 
-from app.api.deps import CurrentAdminUser, CurrentUser, DbSession
+from app.api.deps import CurrentAdminUser, CurrentNonGuestUser, CurrentUser, DbSession
 from app.models import (
     ActorType,
     AuditLog,
@@ -71,6 +71,10 @@ from app.services.tool_manifest import (
     ManifestParseError,
     manifest_to_jsonb,
     parse_manifest,
+)
+from app.services.tool_manifest_infer import (
+    infer_from_python_source,
+    inferred_to_manifest_yaml,
 )
 
 router = APIRouter()
@@ -124,7 +128,7 @@ def _audit(
 )
 async def upload_tool(
     session: DbSession,
-    user: CurrentAdminUser,
+    user: CurrentNonGuestUser,
     manifest: Annotated[str, Form(description="YAML manifest text")],
     source: Annotated[UploadFile | None, File()] = None,
 ) -> ToolUploadResponse:
@@ -132,6 +136,9 @@ async def upload_tool(
 
     Multipart form: ``manifest`` is the required YAML text; ``source``
     is optional (required for Python/shell kinds, not used for binary).
+
+    Non-guest analysts can upload (v0.12+); admin still approves via
+    ``POST /tools/{id}/approve`` before an engagement can invoke.
     """
     try:
         parsed = parse_manifest(manifest)
@@ -254,6 +261,46 @@ async def upload_tool(
         validation_ok=not validation_errors,
         validation_errors=validation_errors,
     )
+
+
+@router.post("/tools/infer")
+async def infer_manifest_from_source(
+    _user: CurrentNonGuestUser,
+    source: Annotated[UploadFile, File()],
+) -> dict[str, Any]:
+    """Read a Python source and return the manifest fields the backend
+    could infer, plus a list of ``missing`` required fields the upload
+    wizard should ask the analyst to fill.
+
+    This is the "auto-detect" upload path — the frontend calls this on
+    file pick, shows a preview, and either lets the analyst confirm and
+    submit (going through the normal POST /tools with the inferred YAML)
+    or falls back to the guided form when required fields are missing.
+    """
+    try:
+        raw = await source.read()
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(
+            status_code=400, detail=f"python source is not UTF-8: {exc}"
+        ) from exc
+    if len(raw) > _MAX_SOURCE_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"source file exceeds {_MAX_SOURCE_BYTES} bytes",
+        )
+    inferred = infer_from_python_source(text, filename=source.filename or "main.py")
+    return {
+        "name": inferred.name,
+        "description": inferred.description,
+        "entrypoint": inferred.entrypoint,
+        "kind": inferred.kind,
+        "lane": inferred.lane,
+        "fields": inferred.fields,
+        "missing": inferred.missing,
+        "warnings": inferred.warnings,
+        "manifest_yaml": inferred_to_manifest_yaml(inferred),
+    }
 
 
 @router.get("/tools", response_model=list[ToolRead])

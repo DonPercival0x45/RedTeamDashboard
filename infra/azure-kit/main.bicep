@@ -253,6 +253,17 @@ module storageRoles 'modules/storage_roles.bicep' = {
   }
 }
 
+// v0.12.0: Tools tab sandbox runner (ACIRunner) needs Contributor on
+// the RG so the backend's managed identity can spawn / delete Azure
+// Container Instances per tool invocation. Scoped tight to rtd-<env>.
+module aciRoles 'modules/aci_roles.bicep' = {
+  name: 'aciRoles'
+  scope: rg
+  params: {
+    principalId: apps.outputs.appPrincipalId
+  }
+}
+
 output resourceGroupName string = rg.name
 output appFqdn string = apps.outputs.appFqdn
 output appName string = apps.outputs.appName

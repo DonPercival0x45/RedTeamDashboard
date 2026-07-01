@@ -50,9 +50,11 @@ import type {
   ContributionSource,
   ToolRead,
   ToolUploadResponse,
+  ToolInferResponse,
   ToolKind,
   ToolLane,
   ToolStatus,
+  ToolInvocationRead,
 } from "@/lib/types";
 
 // Auth-only headers (no Content-Type — request() adds that for JSON bodies).
@@ -944,6 +946,24 @@ export async function uploadTool(
   return (await response.json()) as ToolUploadResponse;
 }
 
+export async function inferToolManifest(
+  source: File,
+): Promise<ToolInferResponse> {
+  const fd = new FormData();
+  fd.set("source", source);
+  const headers = await authHeaders();
+  const response = await fetch(`${API_BASE_URL}/tools/infer`, {
+    method: "POST",
+    headers,
+    body: fd,
+  });
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`${response.status} ${response.statusText}: ${body}`);
+  }
+  return (await response.json()) as ToolInferResponse;
+}
+
 export function approveTool(
   toolId: string,
   opts: { overrideValidation?: boolean; note?: string } = {},
@@ -964,4 +984,34 @@ export function revokeTool(toolId: string): Promise<ToolRead> {
 
 export function deleteTool(toolId: string): Promise<void> {
   return request<void>(`/tools/${toolId}`, { method: "DELETE" });
+}
+
+// Invocations
+export function invokeTool(
+  slug: string,
+  toolId: string,
+  args: Record<string, unknown>,
+): Promise<ToolInvocationRead> {
+  return request<ToolInvocationRead>(
+    `/engagements/${slug}/tool-invocations`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tool_id: toolId, args }),
+    },
+  );
+}
+
+export function listToolInvocations(
+  slug: string,
+): Promise<ToolInvocationRead[]> {
+  return request<ToolInvocationRead[]>(
+    `/engagements/${slug}/tool-invocations`,
+  );
+}
+
+export function getToolInvocation(
+  invocationId: string,
+): Promise<ToolInvocationRead> {
+  return request<ToolInvocationRead>(`/tool-invocations/${invocationId}`);
 }

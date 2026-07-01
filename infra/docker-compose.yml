@@ -52,6 +52,19 @@ services:
       AZURE_OPENAI_API_VERSION: ${AZURE_OPENAI_API_VERSION:-2024-08-01-preview}
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    # v0.12.0: Tools tab sandbox runner (LocalDockerRunner) needs
+    # access to the host's docker socket so it can spawn sibling
+    # containers per tool invocation. Prod (5qprod) uses ACIRunner
+    # instead and this mount does nothing.
+    #
+    # The second bind is the docker-outside-of-docker source-share
+    # dance: the backend writes tool source to /tmp/rtd-tool-sources
+    # inside itself, then `docker run -v <same-path>:/tool` — the
+    # host daemon resolves the path in the host filesystem, so we
+    # need the same directory visible on both sides.
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /tmp/rtd-tool-sources:/tmp/rtd-tool-sources
     ports:
       - "8000:8000"
     depends_on:
