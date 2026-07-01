@@ -38,11 +38,20 @@ from app.models import (
     RoadmapSuggestionStatus,
 )
 from app.schemas.roadmap_suggestion import (
+    BulkRankApplyRequest,
+    BulkRankResponse,
+    CombineClusterRead,
+    CombineDetectResponse,
+    CombineRequest,
+    PriorityUpdate,
+    RankedRowRead,
     RoadmapSuggestionCreate,
     RoadmapSuggestionDecision,
     RoadmapSuggestionRead,
 )
+from app.services import roadmap_planner
 from app.services import roadmap_suggestions as suggestion_svc
+from app.services.ephemeral_provider_key import NoProviderKeyError
 
 logger = structlog.get_logger(__name__)
 
@@ -158,10 +167,41 @@ def list_suggestions(
     status_filter: Annotated[
         RoadmapSuggestionStatus | None, Query(alias="status")
     ] = None,
+    priority_min: Annotated[
+        int | None, Query(ge=1, le=10, description="Lowest priority to include (1=highest).")
+    ] = None,
+    priority_max: Annotated[
+        int | None, Query(ge=1, le=10, description="Highest priority to include (10=lowest).")
+    ] = None,
+    include_unranked: Annotated[
+        bool, Query(description="Also include rows with no priority set.")
+    ] = True,
+    show_combined: Annotated[
+        bool,
+        Query(
+            description=(
+                "Include rows that were merged into another row "
+                "(hidden by default)."
+            ),
+        ),
+    ] = False,
 ) -> list[RoadmapSuggestion]:
     q = select(RoadmapSuggestion).order_by(RoadmapSuggestion.created_at.desc())
     if status_filter is not None:
         q = q.where(RoadmapSuggestion.status == status_filter)
+    if not show_combined:
+        q = q.where(RoadmapSuggestion.combined_into_id.is_(None))
+    if priority_min is not None or priority_max is not None:
+        # v0.16.0: filter by priority range. When include_unranked is
+        # true, an OR clause keeps NULL rows visible too — the chip
+        # UI shows "Unranked" as a fourth bucket alongside 1-3 / 4-6 / 7-10.
+        lo = priority_min or 1
+        hi = priority_max or 10
+        cond = (RoadmapSuggestion.priority >= lo) & (RoadmapSuggestion.priority <= hi)
+        if include_unranked:
+            q = q.where(cond | RoadmapSuggestion.priority.is_(None))
+        else:
+            q = q.where(cond)
     return list(session.execute(q).scalars())
 
 
@@ -272,6 +312,233 @@ def push_roadmap_to_github(
         "branch": cfg["branch"],
         "path": cfg["path"],
     }
+
+
+# ── v0.16.0 prioritization + combine ─────────────────────────────────────
+#
+# Path-ordering: these literal-path routes MUST declare BEFORE
+# ``/{suggestion_id}`` so FastAPI doesn't parse "detect-combines" or
+# "rank" as a UUID and 422 the request.
+
+
+def _open_pool(session: DbSession) -> list[RoadmapSuggestion]:
+    return list(
+        session.execute(
+            select(RoadmapSuggestion)
+            .where(
+                RoadmapSuggestion.status == RoadmapSuggestionStatus.pending_review,
+                RoadmapSuggestion.combined_into_id.is_(None),
+            )
+            .order_by(RoadmapSuggestion.created_at)
+        ).scalars()
+    )
+
+
+@router.post(
+    "/roadmap-suggestions/detect-combines",
+    response_model=CombineDetectResponse,
+)
+def detect_combines(
+    session: DbSession,
+    redis_client: RedisClient,
+    user: CurrentNonGuestUser,
+) -> CombineDetectResponse:
+    """Ask the LLM which pending suggestions describe the same
+    underlying problem. Advisory only — analyst confirms each merge
+    via POST /roadmap-suggestions/{id}/combine."""
+    pool = _open_pool(session)
+    try:
+        result = roadmap_planner.detect_combine_clusters(
+            session, redis_client, pool=pool, acting_user_id=user.id
+        )
+    except NoProviderKeyError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "No provider key configured — set your Anthropic key at "
+                "/settings/keys before running an agent operation."
+            ),
+        ) from exc
+    except roadmap_planner.PoolTooLargeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return CombineDetectResponse(
+        clusters=[
+            CombineClusterRead(**c.to_json()) for c in result.clusters
+        ],
+        pool_size=len(pool),
+        model=result.model,
+        tokens_in=result.tokens_in,
+        tokens_out=result.tokens_out,
+        execution_id=result.execution_id,
+        error=result.error,
+    )
+
+
+@router.post(
+    "/roadmap-suggestions/rank",
+    response_model=BulkRankResponse,
+)
+def rank_suggestions(
+    session: DbSession,
+    redis_client: RedisClient,
+    user: CurrentNonGuestUser,
+) -> BulkRankResponse:
+    """Ask the LLM to assign a 1..10 priority to every open suggestion.
+    Does NOT apply priorities on its own — client shows a confirm
+    dialog and POSTs the returned rankings back to
+    /roadmap-suggestions/rank/apply."""
+    pool = _open_pool(session)
+    try:
+        result = roadmap_planner.bulk_rank_suggestions(
+            session, redis_client, pool=pool, acting_user_id=user.id
+        )
+    except NoProviderKeyError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "No provider key configured — set your Anthropic key at "
+                "/settings/keys before running an agent operation."
+            ),
+        ) from exc
+    except roadmap_planner.PoolTooLargeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return BulkRankResponse(
+        rankings=[
+            RankedRowRead(id=r.id, priority=r.priority, reasoning=r.reasoning)
+            for r in result.rankings
+        ],
+        pool_size=len(pool),
+        applied=False,
+        model=result.model,
+        tokens_in=result.tokens_in,
+        tokens_out=result.tokens_out,
+        execution_id=result.execution_id,
+        error=result.error,
+    )
+
+
+@router.post(
+    "/roadmap-suggestions/rank/apply",
+    response_model=BulkRankResponse,
+)
+def apply_rank(
+    body: BulkRankApplyRequest,
+    session: DbSession,
+    user: CurrentNonGuestUser,
+) -> BulkRankResponse:
+    """Apply a LLM-produced ranking after the admin confirms in the
+    dialog. Overwrites ``priority`` on every row named in the ranking;
+    rows not named keep their existing priority."""
+    ids = [r.id for r in body.rankings]
+    rows = {
+        r.id: r
+        for r in session.execute(
+            select(RoadmapSuggestion).where(RoadmapSuggestion.id.in_(ids))
+        ).scalars()
+    }
+    applied: list[RankedRowRead] = []
+    for r in body.rankings:
+        row = rows.get(r.id)
+        if row is None:
+            continue
+        row.priority = r.priority
+        applied.append(r)
+    _audit(
+        session,
+        user.id,
+        "roadmap.rank_applied",
+        {"applied_count": len(applied), "total_requested": len(body.rankings)},
+    )
+    session.commit()
+    return BulkRankResponse(
+        rankings=applied,
+        pool_size=len(applied),
+        applied=True,
+        model="",
+        tokens_in=0,
+        tokens_out=0,
+    )
+
+
+@router.patch(
+    "/roadmap-suggestions/{suggestion_id}/priority",
+    response_model=RoadmapSuggestionRead,
+)
+def set_priority(
+    suggestion_id: uuid.UUID,
+    body: PriorityUpdate,
+    session: DbSession,
+    user: CurrentNonGuestUser,
+) -> RoadmapSuggestion:
+    """Set (or clear via null) an analyst-picked priority for one row."""
+    row = session.get(RoadmapSuggestion, suggestion_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="suggestion not found")
+    row.priority = body.priority
+    _audit(
+        session,
+        user.id,
+        "roadmap.priority_set",
+        {
+            "suggestion_id": str(row.id),
+            "priority": body.priority,
+        },
+    )
+    session.commit()
+    session.refresh(row)
+    return row
+
+
+@router.post(
+    "/roadmap-suggestions/{suggestion_id}/combine",
+    response_model=RoadmapSuggestionRead,
+)
+def combine_into(
+    suggestion_id: uuid.UUID,
+    body: CombineRequest,
+    session: DbSession,
+    user: CurrentNonGuestUser,
+) -> RoadmapSuggestion:
+    """Analyst confirms a merge. ``suggestion_id`` in the URL is the
+    surviving row; every id in ``body.member_ids`` gets
+    ``combined_into_id = suggestion_id`` (hiding it from the default
+    list). Rows not deleted — audit preserved."""
+    primary = session.get(RoadmapSuggestion, suggestion_id)
+    if primary is None:
+        raise HTTPException(status_code=404, detail="primary suggestion not found")
+    if suggestion_id in body.member_ids:
+        raise HTTPException(
+            status_code=400,
+            detail="primary_id cannot appear in member_ids",
+        )
+    members = list(
+        session.execute(
+            select(RoadmapSuggestion).where(
+                RoadmapSuggestion.id.in_(body.member_ids)
+            )
+        ).scalars()
+    )
+    found_ids = {m.id for m in members}
+    missing = [str(mid) for mid in body.member_ids if mid not in found_ids]
+    if missing:
+        raise HTTPException(
+            status_code=404,
+            detail=f"member suggestions not found: {missing}",
+        )
+    for m in members:
+        m.combined_into_id = suggestion_id
+    _audit(
+        session,
+        user.id,
+        "roadmap.combined",
+        {
+            "primary_id": str(suggestion_id),
+            "member_ids": [str(mid) for mid in body.member_ids],
+        },
+    )
+    session.commit()
+    session.refresh(primary)
+    return primary
 
 
 @router.get(

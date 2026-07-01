@@ -48,5 +48,66 @@ class RoadmapSuggestionRead(BaseModel):
     reviewed_at: datetime | None
     review_note: str | None
     source: str
+    # v0.16.0: analyst-set or LLM-set. 1..10, 1 = highest. NULL = unranked.
+    priority: int | None = None
+    # v0.16.0: when set, this row was merged into another suggestion by
+    # an analyst-confirmed combine. Hidden from list by default.
+    combined_into_id: UUID | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class PriorityUpdate(BaseModel):
+    """PATCH body — analyst sets a per-row priority. NULL clears."""
+
+    priority: int | None = Field(default=None, ge=1, le=10)
+
+
+class CombineRequest(BaseModel):
+    """POST body — analyst confirms a merge. The URL primary id is the
+    survivor; the ``member_ids`` in the body fold into it."""
+
+    member_ids: list[UUID] = Field(..., min_length=1, max_length=50)
+
+
+class CombineClusterRead(BaseModel):
+    """One proposed merge from the LLM combine-detect op."""
+
+    primary_id: UUID
+    member_ids: list[UUID]
+    reasoning: str
+
+
+class CombineDetectResponse(BaseModel):
+    clusters: list[CombineClusterRead]
+    pool_size: int
+    model: str
+    tokens_in: int
+    tokens_out: int
+    execution_id: UUID | None = None
+    error: str | None = None
+
+
+class RankedRowRead(BaseModel):
+    id: UUID
+    priority: int
+    reasoning: str
+
+
+class BulkRankResponse(BaseModel):
+    rankings: list[RankedRowRead]
+    pool_size: int
+    applied: bool
+    model: str
+    tokens_in: int
+    tokens_out: int
+    execution_id: UUID | None = None
+    error: str | None = None
+
+
+class BulkRankApplyRequest(BaseModel):
+    """POST body — admin confirms a rank result and applies it. The
+    rankings echo back what the LLM produced so the client can't
+    accidentally apply a stale set."""
+
+    rankings: list[RankedRowRead] = Field(..., min_length=1, max_length=200)

@@ -36,6 +36,10 @@ import type {
   Observation,
   RoadmapSuggestion,
   RoadmapSuggestionStatus,
+  RoadmapListFilters,
+  CombineDetectResponse,
+  BulkRankResponse,
+  RankedRowRead,
   RunModel,
   RunStartResponse,
   Severity,
@@ -716,10 +720,70 @@ export function flushMyProviderKeys(): Promise<void> {
 }
 
 export function listRoadmapSuggestions(
-  status?: RoadmapSuggestionStatus,
+  filters: RoadmapListFilters = {},
 ): Promise<RoadmapSuggestion[]> {
-  const q = status ? `?status=${status}` : "";
-  return request<RoadmapSuggestion[]>(`/roadmap-suggestions${q}`);
+  const qs = new URLSearchParams();
+  if (filters.status) qs.set("status", filters.status);
+  if (filters.priority_min != null)
+    qs.set("priority_min", String(filters.priority_min));
+  if (filters.priority_max != null)
+    qs.set("priority_max", String(filters.priority_max));
+  if (filters.include_unranked != null)
+    qs.set("include_unranked", String(filters.include_unranked));
+  if (filters.show_combined != null)
+    qs.set("show_combined", String(filters.show_combined));
+  const q = qs.toString();
+  return request<RoadmapSuggestion[]>(
+    `/roadmap-suggestions${q ? `?${q}` : ""}`,
+  );
+}
+
+export function setRoadmapSuggestionPriority(
+  id: string,
+  priority: number | null,
+): Promise<RoadmapSuggestion> {
+  return request<RoadmapSuggestion>(
+    `/roadmap-suggestions/${id}/priority`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({ priority }),
+    },
+  );
+}
+
+export function combineRoadmapSuggestions(
+  primaryId: string,
+  memberIds: string[],
+): Promise<RoadmapSuggestion> {
+  return request<RoadmapSuggestion>(
+    `/roadmap-suggestions/${primaryId}/combine`,
+    {
+      method: "POST",
+      body: JSON.stringify({ member_ids: memberIds }),
+    },
+  );
+}
+
+export function detectRoadmapCombines(): Promise<CombineDetectResponse> {
+  return request<CombineDetectResponse>(
+    "/roadmap-suggestions/detect-combines",
+    { method: "POST" },
+  );
+}
+
+export function rankRoadmapSuggestions(): Promise<BulkRankResponse> {
+  return request<BulkRankResponse>("/roadmap-suggestions/rank", {
+    method: "POST",
+  });
+}
+
+export function applyRoadmapRankings(
+  rankings: RankedRowRead[],
+): Promise<BulkRankResponse> {
+  return request<BulkRankResponse>("/roadmap-suggestions/rank/apply", {
+    method: "POST",
+    body: JSON.stringify({ rankings }),
+  });
 }
 
 export function createRoadmapSuggestion(body: {
