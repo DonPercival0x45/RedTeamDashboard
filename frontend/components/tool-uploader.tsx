@@ -15,7 +15,7 @@
 // thing.
 
 import { useCallback, useMemo, useState } from "react";
-import { FileCode, FileText, Sparkles, Upload } from "lucide-react";
+import { Container, FileCode, FileText, Sparkles, Upload } from "lucide-react";
 import {
   Card,
   CardContent,
@@ -74,7 +74,7 @@ for row in resp.json():
     print(row["name_value"])
 `;
 
-type Mode = "auto" | "form" | "yaml";
+type Mode = "auto" | "form" | "binary" | "yaml";
 
 export function ToolUploader({
   onDone,
@@ -121,6 +121,13 @@ export function ToolUploader({
             hint="fill each field"
           />
           <ModeTab
+            active={mode === "binary"}
+            onClick={() => setMode("binary")}
+            icon={<Container className="h-3.5 w-3.5" />}
+            label="Binary"
+            hint="OCI image tag (admin)"
+          />
+          <ModeTab
             active={mode === "yaml"}
             onClick={() => setMode("yaml")}
             icon={<FileCode className="h-3.5 w-3.5" />}
@@ -134,6 +141,7 @@ export function ToolUploader({
           <AutoDetectPanel onSubmit={submitManifest} />
         )}
         {mode === "form" && <GuidedFormPanel onSubmit={submitManifest} />}
+        {mode === "binary" && <BinaryPanel onSubmit={submitManifest} />}
         {mode === "yaml" && <YamlPanel onSubmit={submitManifest} />}
 
         {error && <p className="text-xs text-critical">{error}</p>}
@@ -771,6 +779,318 @@ function stateToYaml(s: FormState): string {
     ...(deps.length
       ? [`  python_deps: [${deps.map((d) => `"${d}"`).join(", ")}]`]
       : []),
+    ...(args.length ? [`  args:`, ...args] : []),
+    ``,
+  ].join("\n");
+}
+
+// ── Binary lane ────────────────────────────────────────────────────────────
+
+interface BinaryState {
+  name: string;
+  description: string;
+  image_ref: string;
+  timeout_seconds: number;
+  risk_level: "passive" | "active" | "destructive";
+  task_kind: "enum" | "scan" | "exploit";
+  network_egress: EgressToken[];
+  args: FormArg[];
+}
+
+function BinaryPanel({
+  onSubmit,
+}: {
+  onSubmit: (manifest: string, source: File | null) => Promise<void>;
+}) {
+  const [state, setState] = useState<BinaryState>({
+    name: "",
+    description: "",
+    image_ref: "",
+    timeout_seconds: 300,
+    risk_level: "active",
+    task_kind: "scan",
+    network_egress: ["none"],
+    args: [
+      {
+        name: "target",
+        type: "string",
+        required: true,
+        scope_kind: "ip",
+        values: "",
+      },
+    ],
+  });
+  const [busy, setBusy] = useState(false);
+
+  const yaml = useMemo(() => binaryStateToYaml(state), [state]);
+  const canSubmit = state.name.trim() !== "" && state.image_ref.trim() !== "";
+  const isPinned = /@sha256:[a-f0-9]{64}$/.test(state.image_ref.trim());
+
+  const update = <K extends keyof BinaryState>(k: K, v: BinaryState[K]) =>
+    setState((prev) => ({ ...prev, [k]: v }));
+
+  const toggleEgress = (t: EgressToken) => {
+    setState((prev) => ({
+      ...prev,
+      network_egress: prev.network_egress.includes(t)
+        ? prev.network_egress.filter((x) => x !== t)
+        : [...prev.network_egress.filter((x) => x !== "none" && t !== "none"), t],
+    }));
+  };
+
+  const updateArg = (idx: number, patch: Partial<FormArg>) =>
+    setState((prev) => ({
+      ...prev,
+      args: prev.args.map((a, i) => (i === idx ? { ...a, ...patch } : a)),
+    }));
+  const addArg = () =>
+    setState((prev) => ({
+      ...prev,
+      args: [
+        ...prev.args,
+        {
+          name: "",
+          type: "string",
+          required: false,
+          scope_kind: "",
+          values: "",
+        },
+      ],
+    }));
+  const removeArg = (idx: number) =>
+    setState((prev) => ({
+      ...prev,
+      args: prev.args.filter((_, i) => i !== idx),
+    }));
+
+  const submit = async () => {
+    if (!canSubmit) return;
+    setBusy(true);
+    try {
+      await onSubmit(yaml, null);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-md border border-border/60 bg-secondary/20 p-3 text-xs text-muted-foreground">
+        Admin-only. Register a container image the sandbox runner will pull
+        and execute directly — no source review, no LLM audit. Bring your
+        own image (must be pullable by the runner: public registry, or a
+        registry we hold pull credentials for).
+      </div>
+
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+        <FormField label="Name" hint="Lowercase, hyphenated. Unique.">
+          <input
+            className="h-8 w-full rounded-md border border-border bg-background px-2 text-sm"
+            value={state.name}
+            onChange={(e) => update("name", e.target.value)}
+            placeholder="nmap-syn"
+          />
+        </FormField>
+        <FormField label="Description" hint="Shown on the catalog card.">
+          <input
+            className="h-8 w-full rounded-md border border-border bg-background px-2 text-sm"
+            value={state.description}
+            onChange={(e) => update("description", e.target.value)}
+          />
+        </FormField>
+      </div>
+
+      <FormField
+        label="OCI image reference"
+        hint="registry/repo:tag or registry/repo@sha256:… — digests are preferred for reproducibility."
+      >
+        <input
+          className="h-9 w-full rounded-md border border-border bg-background px-2 font-mono text-sm"
+          value={state.image_ref}
+          onChange={(e) => update("image_ref", e.target.value)}
+          placeholder="ghcr.io/rtd/nmap:7.94"
+        />
+        {state.image_ref.trim() && (
+          <p
+            className={cn(
+              "mt-1 text-[11px]",
+              isPinned ? "text-emerald-300" : "text-amber-300",
+            )}
+          >
+            {isPinned
+              ? "✓ pinned to a digest — reproducible."
+              : "⚠ tag-based reference. The image content can change out from "
+                + "under you. Consider pinning with @sha256:…"}
+          </p>
+        )}
+      </FormField>
+
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+        <FormField label="Task kind" hint="Charter gate for agents.">
+          <RadioRow
+            value={state.task_kind}
+            options={["enum", "scan", "exploit"]}
+            onChange={(v) => update("task_kind", v as BinaryState["task_kind"])}
+          />
+        </FormField>
+        <FormField label="Risk">
+          <RadioRow
+            value={state.risk_level}
+            options={["passive", "active", "destructive"]}
+            onChange={(v) => update("risk_level", v as BinaryState["risk_level"])}
+          />
+        </FormField>
+        <FormField label="Timeout (s)">
+          <input
+            type="number"
+            min={1}
+            max={3600}
+            className="h-8 w-full rounded-md border border-border bg-background px-2 text-sm"
+            value={state.timeout_seconds}
+            onChange={(e) =>
+              update("timeout_seconds", Number(e.target.value) || 300)
+            }
+          />
+        </FormField>
+      </div>
+
+      <FormField label="Network egress" hint="Default deny-all.">
+        <div className="flex flex-wrap gap-1.5">
+          {EGRESS_TOKENS.map((t) => (
+            <button
+              key={t}
+              type="button"
+              onClick={() => toggleEgress(t)}
+              className={cn(
+                "rounded-md border px-2 py-0.5 text-xs",
+                state.network_egress.includes(t)
+                  ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-100"
+                  : "border-border/60 text-muted-foreground hover:border-foreground/40",
+              )}
+            >
+              {t}
+            </button>
+          ))}
+        </div>
+      </FormField>
+
+      <div>
+        <div className="mb-1.5 flex items-center justify-between">
+          <span className="text-xs font-medium text-muted-foreground">
+            Arguments (passed to the container as CLI args via the runner)
+          </span>
+          <Button size="sm" variant="outline" onClick={addArg}>
+            + Add arg
+          </Button>
+        </div>
+        <div className="space-y-2">
+          {state.args.map((a, i) => (
+            <div
+              key={i}
+              className="grid grid-cols-1 gap-2 rounded-md border border-border/60 bg-background p-2 md:grid-cols-6"
+            >
+              <input
+                placeholder="name"
+                className="h-7 rounded border border-border bg-background px-1.5 text-xs md:col-span-1"
+                value={a.name}
+                onChange={(e) => updateArg(i, { name: e.target.value })}
+              />
+              <select
+                value={a.type}
+                onChange={(e) =>
+                  updateArg(i, { type: e.target.value as FormArg["type"] })
+                }
+                className="h-7 rounded border border-border bg-background px-1.5 text-xs md:col-span-1"
+              >
+                <option value="string">string</option>
+                <option value="integer">integer</option>
+                <option value="boolean">boolean</option>
+                <option value="enum">enum</option>
+              </select>
+              <input
+                placeholder="scope_kind (opt)"
+                className="h-7 rounded border border-border bg-background px-1.5 text-xs md:col-span-1"
+                value={a.scope_kind}
+                onChange={(e) => updateArg(i, { scope_kind: e.target.value })}
+              />
+              <input
+                placeholder={a.type === "enum" ? "v1,v2,v3" : "—"}
+                disabled={a.type !== "enum"}
+                className="h-7 rounded border border-border bg-background px-1.5 text-xs disabled:opacity-40 md:col-span-1"
+                value={a.values}
+                onChange={(e) => updateArg(i, { values: e.target.value })}
+              />
+              <label className="flex items-center gap-1 text-xs md:col-span-1">
+                <input
+                  type="checkbox"
+                  checked={a.required}
+                  onChange={(e) => updateArg(i, { required: e.target.checked })}
+                  className="accent-emerald-500"
+                />
+                required
+              </label>
+              <button
+                type="button"
+                onClick={() => removeArg(i)}
+                className="text-[11px] text-muted-foreground hover:text-critical md:col-span-1"
+              >
+                remove
+              </button>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <details className="text-xs">
+        <summary className="cursor-pointer text-muted-foreground">
+          Preview manifest
+        </summary>
+        <pre className="mt-1 max-h-64 overflow-auto rounded-md border border-border bg-background p-2 font-mono text-[10px] text-muted-foreground">
+          {yaml}
+        </pre>
+      </details>
+
+      <Button size="sm" disabled={!canSubmit || busy} onClick={submit}>
+        <Upload className="mr-1.5 h-3.5 w-3.5" />
+        {busy ? "Registering…" : "Register binary tool"}
+      </Button>
+    </div>
+  );
+}
+
+function binaryStateToYaml(s: BinaryState): string {
+  const args = s.args
+    .filter((a) => a.name.trim() !== "")
+    .map((a) => {
+      const parts: string[] = [];
+      parts.push(`    - name: ${a.name}`);
+      parts.push(`      type: ${a.type}`);
+      if (a.required) parts.push(`      required: true`);
+      if (a.scope_kind) parts.push(`      scope_kind: ${a.scope_kind}`);
+      if (a.type === "enum" && a.values.trim()) {
+        const values = a.values
+          .split(",")
+          .map((v) => v.trim())
+          .filter((v) => v);
+        parts.push(`      values: [${values.join(", ")}]`);
+      }
+      return parts.join("\n");
+    });
+
+  return [
+    `apiVersion: rtd.tools/v1`,
+    `kind: Tool`,
+    `metadata:`,
+    `  name: ${s.name}`,
+    ...(s.description ? [`  description: ${s.description}`] : []),
+    `spec:`,
+    `  kind: binary`,
+    `  lane: admin`,
+    `  entrypoint: ${s.image_ref}`,
+    `  timeout_seconds: ${s.timeout_seconds}`,
+    `  risk_level: ${s.risk_level}`,
+    `  task_kind: ${s.task_kind}`,
+    `  network_egress: [${s.network_egress.join(", ")}]`,
     ...(args.length ? [`  args:`, ...args] : []),
     ``,
   ].join("\n");
