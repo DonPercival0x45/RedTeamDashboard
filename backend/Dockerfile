@@ -6,7 +6,10 @@
 # month or so). Building from source against `golang:1.25` keeps the embedded
 # stdlib current and clears the recurring CVE wall on the backend image.
 ARG SUBFINDER_VERSION=v2.14.0
-FROM golang:1.25 AS subfinder-builder
+# Pin a specific patch so the embedded Go stdlib is a known-good version;
+# `golang:1.25` alone drifts down to whatever the tag currently points at
+# (was 1.25.3 as of 2026-07-01, which Trivy flags for a dozen stdlib CVEs).
+FROM golang:1.25.11 AS subfinder-builder
 ARG SUBFINDER_VERSION
 ENV CGO_ENABLED=0 \
     GOFLAGS=-trimpath
@@ -18,10 +21,11 @@ RUN go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@${SUBFINDE
 # copying the static CLI out of the official docker image is smaller
 # and keeps the runtime image without dockerd.
 #
-# docker:28-cli embeds Go 1.25.x — needed to clear the crypto/tls,
+# docker:29-cli embeds Go 1.26.4 — needed to clear the crypto/tls,
 # crypto/x509, and net/* stdlib CVEs Trivy fails us on with older
-# CLI images (docker:26-cli ships Go 1.21.11).
-FROM docker:28-cli AS docker-cli
+# CLI images (docker:26-cli ships Go 1.21.11; docker:28-cli ships
+# Go 1.25.3 which still trips a batch of stdlib DoS CVEs).
+FROM docker:29-cli AS docker-cli
 
 # --- runtime stage -----------------------------------------------------------
 FROM python:3.12-slim AS base
