@@ -31,6 +31,15 @@ from app.models.suggestion import (
     SuggestionStatus,
 )
 from app.models.task import OwnerEligibility, Task, TaskKind, TaskStatus
+from app.models.tool import (
+    Tool,
+    ToolInvocation,
+    ToolInvocationStatus,
+    ToolKind,
+    ToolLane,
+    ToolStatus,
+    ToolTaskKind,
+)
 from app.models.user import User, UserRole
 
 __all__ = [
@@ -73,6 +82,13 @@ __all__ = [
     "Task",
     "TaskKind",
     "TaskStatus",
+    "Tool",
+    "ToolInvocation",
+    "ToolInvocationStatus",
+    "ToolKind",
+    "ToolLane",
+    "ToolStatus",
+    "ToolTaskKind",
     "User",
     "UserRole",
     "scope_satisfies",

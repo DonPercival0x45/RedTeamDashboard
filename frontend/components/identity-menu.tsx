@@ -9,6 +9,7 @@ import {
   Key,
   MessageSquare,
   UserCog,
+  Wrench,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { getMe } from "@/lib/api";
@@ -83,6 +84,9 @@ export function IdentityMenu() {
         <>
           <IconLink href="/settings/integrations" label="Integrations (admin)">
             <Globe className="h-4 w-4" />
+          </IconLink>
+          <IconLink href="/settings/tools" label="Tools (admin)">
+            <Wrench className="h-4 w-4" />
           </IconLink>
           <IconLink href="/settings/management" label="Management (admin)">
             <UserCog className="h-4 w-4" />

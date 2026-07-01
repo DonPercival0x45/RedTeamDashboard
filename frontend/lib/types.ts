@@ -699,3 +699,37 @@ export interface ContributionEntries {
   offset: number;
   entries: ContributionEntry[];
 }
+
+// ── Tools tab (v0.11.0) ────────────────────────────────────────────────
+
+export type ToolKind = "python" | "shell" | "binary";
+export type ToolLane = "analyst" | "admin";
+export type ToolStatus = "draft" | "approved" | "revoked";
+export type ToolTaskKind = "enum" | "scan" | "exploit";
+export type ToolRiskLevel = "passive" | "active" | "destructive";
+
+export interface ToolRead {
+  id: string;
+  name: string;
+  description: string | null;
+  kind: ToolKind;
+  lane: ToolLane;
+  risk_level: string;
+  task_kind: ToolTaskKind;
+  status: ToolStatus;
+  manifest: Record<string, unknown>;
+  validation: Record<string, unknown>;
+  has_artifact: boolean;
+  version: number;
+  created_by_user_id: string | null;
+  approved_by_user_id: string | null;
+  approved_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ToolUploadResponse {
+  tool: ToolRead;
+  validation_ok: boolean;
+  validation_errors: string[];
+}
