@@ -340,14 +340,211 @@ function ToolRow({
   );
 }
 
+// v0.13.0: combined gate check across AST + shell heuristic + LLM
+// review. A skipped LLM review (no BYO key at upload time) does not
+// count against the tool — admin can still approve; the missing gate
+// is shown in the inspector so they know to note it in audit.
 function validationClean(tool: ToolRead): boolean {
-  const ast = (tool.validation as Record<string, unknown>)?.ast as
-    | { disallowed_imports?: string[]; banned_calls?: string[] }
-    | undefined;
-  if (!ast) return true;
-  return (
+  const v = (tool.validation ?? {}) as Record<string, unknown>;
+  const ast = (v.ast ?? {}) as {
+    disallowed_imports?: string[];
+    banned_calls?: string[];
+  };
+  const shell = (v.shell ?? {}) as { matches?: unknown[] };
+  const llm = (v.llm_review ?? {}) as {
+    safe?: boolean;
+    matches_stated_intent?: boolean;
+    skipped?: string;
+  };
+  const astOk =
     (ast.disallowed_imports?.length ?? 0) === 0 &&
-    (ast.banned_calls?.length ?? 0) === 0
+    (ast.banned_calls?.length ?? 0) === 0;
+  const shellOk = (shell.matches?.length ?? 0) === 0;
+  const llmOk =
+    !!llm.skipped ||
+    ((llm.safe ?? true) && (llm.matches_stated_intent ?? true));
+  return astOk && shellOk && llmOk;
+}
+
+function ValidationPanels({ tool }: { tool: ToolRead }) {
+  const v = (tool.validation ?? {}) as Record<string, unknown>;
+  const ast = v.ast as
+    | {
+        ok?: boolean;
+        disallowed_imports?: string[];
+        banned_calls?: string[];
+        syntax_error?: string | null;
+      }
+    | undefined;
+  const shell = v.shell as
+    | {
+        ok?: boolean;
+        matches?: {
+          pattern: string;
+          line: number;
+          snippet: string;
+          hint: string;
+        }[];
+      }
+    | undefined;
+  const llm = v.llm_review as
+    | {
+        safe?: boolean;
+        reason?: string;
+        concerns?: string[];
+        matches_stated_intent?: boolean;
+        skipped?: string;
+        error?: string;
+        model?: string;
+        tokens_in?: number;
+        tokens_out?: number;
+      }
+    | undefined;
+
+  return (
+    <section className="mt-5 space-y-3">
+      <h3 className="text-sm font-medium">Validation gates</h3>
+
+      {ast && (
+        <GatePanel
+          title="AST allow-list (Python)"
+          verdict={ast.ok ? "pass" : "fail"}
+        >
+          {ast.syntax_error && (
+            <li>Syntax error: {ast.syntax_error}</li>
+          )}
+          {(ast.disallowed_imports ?? []).map((i) => (
+            <li key={`imp-${i}`}>
+              Disallowed import: <code className="font-mono">{i}</code>
+            </li>
+          ))}
+          {(ast.banned_calls ?? []).map((c) => (
+            <li key={`call-${c}`}>
+              Banned call: <code className="font-mono">{c}</code>
+            </li>
+          ))}
+          {ast.ok && <li>All imports and calls on the allow-list.</li>}
+        </GatePanel>
+      )}
+
+      {shell && (
+        <GatePanel
+          title="Shell heuristic scan"
+          verdict={shell.ok ? "pass" : "fail"}
+        >
+          {(shell.matches ?? []).map((m, i) => (
+            <li key={i}>
+              <div>
+                <code className="font-mono text-rose-300">{m.pattern}</code>{" "}
+                — line {m.line}
+              </div>
+              <div className="mt-0.5 font-mono text-[10px] text-muted-foreground">
+                {m.snippet}
+              </div>
+              <div className="mt-0.5 text-muted-foreground">{m.hint}</div>
+            </li>
+          ))}
+          {shell.ok && (
+            <li>No banned patterns matched (curl|sh, chmod 777, eval, …).</li>
+          )}
+        </GatePanel>
+      )}
+
+      {llm && (
+        <GatePanel
+          title="LLM safety review"
+          verdict={
+            llm.skipped
+              ? "skipped"
+              : llm.error
+                ? "error"
+                : llm.safe && llm.matches_stated_intent
+                  ? "pass"
+                  : "fail"
+          }
+        >
+          {llm.skipped && (
+            <li className="text-amber-200">
+              Skipped: {llm.skipped}. Analyst had no provider key at upload
+              time; admin can still approve but the LLM gate did not run.
+            </li>
+          )}
+          {llm.error && (
+            <li className="text-critical">Error: {llm.error}</li>
+          )}
+          {!llm.skipped && !llm.error && (
+            <>
+              <li>
+                <span className="font-medium">{llm.reason}</span>
+              </li>
+              <li>
+                Intent match:{" "}
+                {llm.matches_stated_intent ? (
+                  <span className="text-emerald-300">yes</span>
+                ) : (
+                  <span className="text-rose-300">no</span>
+                )}
+              </li>
+              {(llm.concerns ?? []).length > 0 && (
+                <li>
+                  <div className="mb-0.5">Concerns:</div>
+                  <ul className="list-disc pl-4">
+                    {(llm.concerns ?? []).map((c, i) => (
+                      <li key={i}>{c}</li>
+                    ))}
+                  </ul>
+                </li>
+              )}
+              <li className="text-muted-foreground/70">
+                {llm.model} · {llm.tokens_in ?? 0}in / {llm.tokens_out ?? 0}out
+              </li>
+            </>
+          )}
+        </GatePanel>
+      )}
+
+      {!ast && !shell && !llm && (
+        <p className="text-xs text-muted-foreground">
+          No gates ran (binary lane or upload predates v0.13).
+        </p>
+      )}
+    </section>
+  );
+}
+
+function GatePanel({
+  title,
+  verdict,
+  children,
+}: {
+  title: string;
+  verdict: "pass" | "fail" | "skipped" | "error";
+  children: React.ReactNode;
+}) {
+  const tone: Record<typeof verdict, string> = {
+    pass: "border-emerald-500/50 bg-emerald-500/5",
+    fail: "border-rose-500/50 bg-rose-500/5",
+    skipped: "border-amber-500/50 bg-amber-500/5",
+    error: "border-rose-500/50 bg-rose-500/5",
+  };
+  const label: Record<typeof verdict, string> = {
+    pass: "PASS",
+    fail: "FAIL",
+    skipped: "SKIPPED",
+    error: "ERROR",
+  };
+  return (
+    <div className={cn("rounded-md border p-3", tone[verdict])}>
+      <div className="mb-1.5 flex items-center justify-between text-xs">
+        <span className="font-medium">{title}</span>
+        <span className="rounded border border-border/60 bg-background px-1.5 py-0.5 text-[10px] uppercase tracking-wide">
+          {label[verdict]}
+        </span>
+      </div>
+      <ul className="space-y-1 text-[11px] text-muted-foreground">
+        {children}
+      </ul>
+    </div>
   );
 }
 
@@ -397,8 +594,10 @@ function ToolInspector({
           </pre>
         </section>
 
+        <ValidationPanels tool={tool} />
+
         <section className="mt-5">
-          <h3 className="text-sm font-medium">Validation</h3>
+          <h3 className="text-sm font-medium">Raw validation</h3>
           <pre className="mt-2 max-h-64 overflow-auto rounded-md border border-border bg-background p-3 font-mono text-[11px] text-muted-foreground">
             {JSON.stringify(tool.validation, null, 2)}
           </pre>

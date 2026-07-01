@@ -52,7 +52,13 @@ from fastapi import (
 )
 from sqlalchemy import select
 
-from app.api.deps import CurrentAdminUser, CurrentNonGuestUser, CurrentUser, DbSession
+from app.api.deps import (
+    CurrentAdminUser,
+    CurrentNonGuestUser,
+    CurrentUser,
+    DbSession,
+    RedisClient,
+)
 from app.models import (
     ActorType,
     AuditLog,
@@ -67,6 +73,7 @@ from app.schemas.tool import (
     ToolUploadResponse,
 )
 from app.services.tool_ast_check import check_python_source
+from app.services.tool_llm_review import review_tool_source
 from app.services.tool_manifest import (
     ManifestParseError,
     manifest_to_jsonb,
@@ -76,6 +83,7 @@ from app.services.tool_manifest_infer import (
     infer_from_python_source,
     inferred_to_manifest_yaml,
 )
+from app.services.tool_shell_check import check_shell_source
 
 router = APIRouter()
 
@@ -128,6 +136,7 @@ def _audit(
 )
 async def upload_tool(
     session: DbSession,
+    redis_client: RedisClient,
     user: CurrentNonGuestUser,
     manifest: Annotated[str, Form(description="YAML manifest text")],
     source: Annotated[UploadFile | None, File()] = None,
@@ -165,15 +174,17 @@ async def upload_tool(
                 detail=f"source file exceeds {_MAX_SOURCE_BYTES} bytes",
             )
 
-    # Layer 1: AST allow-list for Python. Shell heuristic scanner lands
-    # in v0.13.0.
-    if parsed.spec.kind == ToolKind.python and source_bytes is not None:
+    # Layer 1a: AST allow-list for Python.
+    source_text: str | None = None
+    if source_bytes is not None:
         try:
             source_text = source_bytes.decode("utf-8")
         except UnicodeDecodeError as exc:
             raise HTTPException(
-                status_code=400, detail=f"python source is not UTF-8: {exc}"
+                status_code=400, detail=f"source is not UTF-8: {exc}"
             ) from exc
+
+    if parsed.spec.kind == ToolKind.python and source_text is not None:
         ast_result = check_python_source(source_text)
         validation["ast"] = ast_result.to_json()
         if not ast_result.ok:
@@ -185,6 +196,47 @@ async def upload_tool(
                 validation_errors.append(f"AST: disallowed import '{imp}'")
             for call in ast_result.banned_calls:
                 validation_errors.append(f"AST: banned call '{call}'")
+
+    # Layer 1b: shell heuristic scanner (v0.13.0). Same shape as the AST
+    # check so the admin approve UI renders it identically.
+    if parsed.spec.kind == ToolKind.shell and source_text is not None:
+        shell_result = check_shell_source(source_text)
+        validation["shell"] = shell_result.to_json()
+        if not shell_result.ok:
+            for m in shell_result.matches:
+                validation_errors.append(
+                    f"shell: {m.pattern} at line {m.line} — {m.hint}"
+                )
+
+    # Layer 3: LLM safety review (v0.13.0). Runs for the analyst lane
+    # on Python + shell kinds; binary skips (LLM can't audit a compiled
+    # artifact). Uploader's BYO Redis-cached key satisfies the call;
+    # missing key falls through with a "skipped" verdict on the row so
+    # the admin sees the gap explicitly.
+    if (
+        parsed.spec.lane == ToolLane.analyst
+        and parsed.spec.kind in (ToolKind.python, ToolKind.shell)
+        and source_text is not None
+    ):
+        review = review_tool_source(
+            session,
+            redis_client,
+            source=source_text,
+            kind=parsed.spec.kind.value,
+            manifest=manifest_to_jsonb(parsed),
+            tool_name=parsed.metadata.name,
+            acting_user_id=user.id,
+        )
+        validation["llm_review"] = review.to_json()
+        if review.skipped is None and not review.safe:
+            validation_errors.append(
+                f"LLM review: {review.reason}"
+            )
+        if review.skipped is None and not review.matches_stated_intent:
+            validation_errors.append(
+                "LLM review: code does not match stated intent "
+                "(manifest task_kind / risk_level / egress vs. actual behaviour)"
+            )
 
     # Binary lane requires an admin-declared artifact_ref (OCI image tag).
     # v0.14 adds the "register + no upload" flow; v0.11 just stores what
@@ -357,9 +409,21 @@ def approve_tool(
         )
 
     ast_result = row.validation.get("ast", {}) or {}
+    shell_result = row.validation.get("shell", {}) or {}
+    llm_result = row.validation.get("llm_review", {}) or {}
     validation_ok = (
         not ast_result.get("disallowed_imports")
         and not ast_result.get("banned_calls")
+        and not shell_result.get("matches")
+        # LLM verdict counts only when it actually ran; a skipped review
+        # (no BYO key at upload time) doesn't block approval on its own.
+        and (
+            llm_result.get("skipped")
+            or (
+                llm_result.get("safe", True)
+                and llm_result.get("matches_stated_intent", True)
+            )
+        )
     )
     if not validation_ok and not body.override_validation:
         raise HTTPException(
