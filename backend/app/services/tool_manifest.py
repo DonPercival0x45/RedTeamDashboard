@@ -76,6 +76,13 @@ class ToolSpec(BaseModel):
     risk_level: str = "passive"
     network_egress: list[str] = Field(default_factory=lambda: ["none"])
     task_kind: ToolTaskKind = ToolTaskKind.enum
+    # v0.15.1 fix: declare python_deps as a first-class field so
+    # Pydantic doesn't drop it. Before this, manifests with
+    # ``python_deps: [httpx]`` silently lost the field because
+    # ToolSpec had ``extra="ignore"`` (the Pydantic v2 default), and
+    # the sandbox runner never pip-installed → tools blew up at
+    # runtime with ModuleNotFoundError.
+    python_deps: list[str] = Field(default_factory=list)
     # v0.15.0: how the invocation runtime hands the tool to the
     # sandbox. ``fresh_container`` (the default and only currently-
     # implemented value) spawns a new container per invocation.

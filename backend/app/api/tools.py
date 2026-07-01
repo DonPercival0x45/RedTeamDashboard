@@ -72,7 +72,7 @@ from app.schemas.tool import (
     ToolRead,
     ToolUploadResponse,
 )
-from app.services.tool_ast_check import check_python_source
+from app.services.tool_ast_check import check_python_source, infer_python_deps
 from app.services.tool_image_ref import ImageRefError, parse_image_ref
 from app.services.tool_llm_review import review_tool_source
 from app.services.tool_manifest import (
@@ -197,6 +197,22 @@ async def upload_tool(
                 validation_errors.append(f"AST: disallowed import '{imp}'")
             for call in ast_result.banned_calls:
                 validation_errors.append(f"AST: banned call '{call}'")
+        # v0.15.1 fix: auto-populate python_deps from third-party imports
+        # the analyst forgot to declare. Sandbox base is python:3.12-slim
+        # with nothing pre-installed — without this, `import httpx`
+        # succeeds through the AST allow-list but blows up at runtime.
+        # Silent merge: whatever the analyst declared plus whatever the
+        # AST saw. Recorded on the row so admin can see what happened.
+        inferred_deps = infer_python_deps(ast_result.imports_seen)
+        if inferred_deps:
+            declared = list(parsed.spec.python_deps or [])
+            declared_lower = {d.lower() for d in declared}
+            added = [
+                d for d in inferred_deps if d.lower() not in declared_lower
+            ]
+            if added:
+                parsed.spec.python_deps = sorted(set(declared + added))
+                validation["python_deps_auto_added"] = added
 
     # Layer 1b: shell heuristic scanner (v0.13.0). Same shape as the AST
     # check so the admin approve UI renders it identically.

@@ -62,6 +62,38 @@ _ALLOWED_IMPORTS: frozenset[str] = frozenset(
     }
 )
 
+# v0.15.1 fix: map third-party import names to the pip package that
+# provides them. Used by ``infer_python_deps`` to auto-populate the
+# manifest's ``python_deps`` from imports the analyst forgot to
+# declare — the sandbox base image is ``python:3.12-slim`` and won't
+# have ``httpx`` etc. unless we pip-install at container start.
+#
+# Only include third-party imports that are already on the allow-list
+# above — nothing that would have been rejected at the AST layer can
+# sneak into python_deps via this map.
+_IMPORT_TO_PIP: dict[str, str] = {
+    "httpx": "httpx",
+    "requests": "requests",
+    "dns": "dnspython",
+    "dns.resolver": "dnspython",
+    "dns.reversename": "dnspython",
+    "yaml": "PyYAML",
+    "defusedxml": "defusedxml",
+    "defusedxml.ElementTree": "defusedxml",
+}
+
+
+def infer_python_deps(imports_seen: list[str]) -> list[str]:
+    """Return the pip package names that the given imports need at
+    runtime, deduped and sorted. stdlib imports return the empty list.
+    Unknown third-party imports (which the AST check would have already
+    rejected) also return the empty list — belt and suspenders."""
+    pkgs: set[str] = set()
+    for imp in imports_seen:
+        if imp in _IMPORT_TO_PIP:
+            pkgs.add(_IMPORT_TO_PIP[imp])
+    return sorted(pkgs)
+
 _BANNED_ATTRIBUTES: frozenset[str] = frozenset(
     {
         # os module — allow the module for path work but ban shellouts

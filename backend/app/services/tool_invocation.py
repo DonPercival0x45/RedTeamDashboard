@@ -120,6 +120,7 @@ async def invoke_tool(
 
     runner = _pick_runner()
     manifest_spec = (tool.manifest or {}).get("spec", {}) or {}
+    python_deps = _resolve_python_deps(tool, manifest_spec)
     req = SandboxRequest(
         tool_id=str(tool.id),
         tool_name=tool.name,
@@ -127,7 +128,7 @@ async def invoke_tool(
         tool_kind=tool.kind.value,
         entrypoint=manifest_spec.get("entrypoint", "main.py"),
         source_bytes=source_bytes,
-        python_deps=manifest_spec.get("python_deps", []) or [],
+        python_deps=python_deps,
         args=validated_args,
         scope=scope,
         invocation_id=str(row.id),
@@ -171,6 +172,26 @@ async def invoke_tool(
     session.add(_audit(engagement, tool, row, invoker, "tool.invocation_completed"))
     session.commit()
     return row
+
+
+def _resolve_python_deps(tool: Tool, manifest_spec: dict[str, Any]) -> list[str]:
+    """Return the pip package list to install before the tool runs.
+
+    Prefers the manifest's declared ``python_deps``. Falls back to
+    inferring from ``validation.ast.imports_seen`` — this backfills
+    tools uploaded before v0.15.1, when Pydantic silently dropped the
+    ``python_deps`` field because it wasn't declared on ``ToolSpec``.
+    """
+    declared = manifest_spec.get("python_deps") or []
+    if declared:
+        return list(declared)
+
+    # Backfill path for pre-v0.15.1 tool rows.
+    from app.services.tool_ast_check import infer_python_deps
+
+    ast_result = (tool.validation or {}).get("ast") or {}
+    imports_seen = ast_result.get("imports_seen") or []
+    return infer_python_deps(imports_seen)
 
 
 def _validate_args(tool: Tool, args: dict[str, Any]) -> dict[str, Any]:
