@@ -17,7 +17,11 @@ RUN go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@${SUBFINDE
 # docker socket. Debian's docker.io package ships only the daemon;
 # copying the static CLI out of the official docker image is smaller
 # and keeps the runtime image without dockerd.
-FROM docker:26-cli AS docker-cli
+#
+# docker:28-cli embeds Go 1.25.x — needed to clear the crypto/tls,
+# crypto/x509, and net/* stdlib CVEs Trivy fails us on with older
+# CLI images (docker:26-cli ships Go 1.21.11).
+FROM docker:28-cli AS docker-cli
 
 # --- runtime stage -----------------------------------------------------------
 FROM python:3.12-slim AS base
