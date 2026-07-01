@@ -66,6 +66,7 @@ def engagement_report(
             .where(
                 Finding.engagement_id == eng.id,
                 Finding.status == FindingStatus.validated,
+                Finding.deleted_at.is_(None),
             )
             .order_by(Finding.created_at.desc())
         ).scalars()

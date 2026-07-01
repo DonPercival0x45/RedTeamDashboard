@@ -48,7 +48,7 @@ from datetime import UTC, datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import case, select, text
 
 from app.api.deps import (
@@ -147,7 +147,12 @@ def _build_export_payload(session: DbSession, eng: Engagement) -> dict[str, Any]
         session.execute(select(ScopeItem).where(ScopeItem.engagement_id == eng.id)).scalars()
     )
     findings = list(
-        session.execute(select(Finding).where(Finding.engagement_id == eng.id)).scalars()
+        session.execute(
+            select(Finding).where(
+                Finding.engagement_id == eng.id,
+                Finding.deleted_at.is_(None),
+            )
+        ).scalars()
     )
     audit_rows = list(
         session.execute(
@@ -666,7 +671,10 @@ def list_findings(
             detail=f"invalid sort '{sort}'; must be one of {_FINDING_SORTS}",
         )
     eng = _get_engagement_or_404(session, slug)
-    stmt = select(Finding).where(Finding.engagement_id == eng.id)
+    stmt = select(Finding).where(
+        Finding.engagement_id == eng.id,
+        Finding.deleted_at.is_(None),
+    )
     if phase is not None:
         stmt = stmt.where(Finding.phase == phase)
     if status is not None:
@@ -703,7 +711,10 @@ def list_entities(
     findings = list(
         session.execute(
             select(Finding)
-            .where(Finding.engagement_id == eng.id)
+            .where(
+                Finding.engagement_id == eng.id,
+                Finding.deleted_at.is_(None),
+            )
             .order_by(Finding.created_at)
         ).scalars()
     )
@@ -908,6 +919,7 @@ def _create_findings_from_imports(
                 select(Finding.burp_serial_number).where(
                     Finding.engagement_id == eng.id,
                     Finding.burp_serial_number.in_(incoming_serials),
+                    Finding.deleted_at.is_(None),
                 )
             ).all()
             if row[0]
@@ -1187,6 +1199,129 @@ def update_finding(
         session.refresh(finding)
 
     return _finding_to_read(finding)
+
+
+class BulkDeleteRequest(BaseModel):
+    """Body for POST /engagements/{slug}/findings/bulk-delete (v0.10.0)."""
+
+    finding_ids: list[uuid.UUID] = Field(
+        ..., min_length=1, max_length=500,
+        description="IDs to soft-delete. Max 500 per call to keep the "
+                    "audit_log payload from ballooning.",
+    )
+
+
+class BulkDeleteResult(BaseModel):
+    deleted: int
+    skipped_missing: int
+    skipped_already_deleted: int
+
+
+@router.post(
+    "/engagements/{slug}/findings/bulk-delete",
+    response_model=BulkDeleteResult,
+)
+def bulk_delete_findings(
+    slug: str,
+    body: BulkDeleteRequest,
+    session: DbSession,
+    user: CurrentNonGuestUser,
+) -> BulkDeleteResult:
+    """Soft-delete a batch of findings in one transaction.
+
+    Same rules as the singular DELETE — user + admin allowed, guest
+    403, audit_log recorded. One ``findings.bulk_deleted`` row summarises
+    the batch (count + IDs) instead of N single-delete rows so the
+    audit surface stays scannable.
+    """
+    eng = _get_engagement_or_404(session, slug)
+    ids = list({fid for fid in body.finding_ids})  # dedup within request
+    rows = list(
+        session.execute(
+            select(Finding).where(
+                Finding.engagement_id == eng.id,
+                Finding.id.in_(ids),
+            )
+        ).scalars()
+    )
+    found_ids = {r.id for r in rows}
+    skipped_missing = len(ids) - len(found_ids)
+
+    now = datetime.now(tz=UTC)
+    deleted_ids: list[str] = []
+    already_deleted = 0
+    for r in rows:
+        if r.deleted_at is not None:
+            already_deleted += 1
+            continue
+        r.deleted_at = now
+        r.deleted_by_user_id = user.id
+        deleted_ids.append(str(r.id))
+
+    if deleted_ids:
+        session.add(
+            AuditLog(
+                engagement_id=eng.id,
+                actor_type=ActorType.user,
+                actor_id=str(user.id),
+                event_type="findings.bulk_deleted",
+                payload={
+                    "count": len(deleted_ids),
+                    "finding_ids": deleted_ids,
+                },
+            )
+        )
+        session.commit()
+
+    return BulkDeleteResult(
+        deleted=len(deleted_ids),
+        skipped_missing=skipped_missing,
+        skipped_already_deleted=already_deleted,
+    )
+
+
+@router.delete(
+    "/findings/{finding_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+)
+def delete_finding(
+    finding_id: uuid.UUID,
+    session: DbSession,
+    user: CurrentNonGuestUser,
+) -> Response:
+    """Soft-delete a finding (v0.10.0).
+
+    Stamps ``deleted_at`` + ``deleted_by_user_id`` and writes an audit
+    row. Row stays in Postgres so history + attribution survive; every
+    read path (list, report, export, MCP, entity extraction, Burp
+    dedup) filters ``deleted_at IS NULL``. Guest role denied via
+    ``CurrentNonGuestUser``.
+
+    Re-deleting an already-deleted finding is a no-op that still returns
+    204 (idempotent from the client's view).
+    """
+    finding = session.get(Finding, finding_id)
+    if finding is None:
+        raise HTTPException(status_code=404, detail="finding not found")
+    if finding.deleted_at is None:
+        finding.deleted_at = datetime.now(tz=UTC)
+        finding.deleted_by_user_id = user.id
+        session.add(
+            AuditLog(
+                engagement_id=finding.engagement_id,
+                actor_type=ActorType.user,
+                actor_id=str(user.id),
+                event_type="finding.deleted",
+                payload={
+                    "finding_id": str(finding.id),
+                    "title": finding.title,
+                    "severity": finding.severity.value,
+                },
+            )
+        )
+        session.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 # ---------------------------------------------------------------------------
