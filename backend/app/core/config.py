@@ -132,6 +132,22 @@ class Settings(BaseSettings):
     azure_storage_account_name: str = ""
     azure_storage_container_name: str = "engagement-exports"
 
+    # v0.12.0 — Tools tab sandbox runner selection.
+    # ``docker`` = LocalDockerRunner (mounts /var/run/docker.sock, used
+    # in local dev + CI). ``aci`` = ACIRunner (Azure Container Instances
+    # via managed identity, used in prod). Set via env RTD_SANDBOX_RUNNER.
+    sandbox_runner: str = "docker"
+    # Azure Files share used by ACIRunner to hand source into the
+    # spawned container. Populated by Bicep in v0.12+ prod installs.
+    # Format: "<share-name>" on ``azure_storage_account_name``.
+    aci_source_share: str = "tool-sources"
+    # Azure resource group + subscription that the backend's managed
+    # identity spawns ACIs into. In prod the backend has Container
+    # Instance Contributor on this RG. Local dev never touches these.
+    aci_subscription_id: str = ""
+    aci_resource_group: str = ""
+    aci_location: str = "centralus"
+
     # BYO provider keys are now ephemeral — stored in Redis under a per-
     # user hash with a sliding TTL, never persisted at rest. The Fernet
     # master key field below is retained ONLY for one release so prior

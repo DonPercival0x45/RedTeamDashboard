@@ -45,5 +45,27 @@ resource exportsContainer 'Microsoft.Storage/storageAccounts/blobServices/contai
   properties: { publicAccess: 'None' }
 }
 
+// v0.12.0: Azure Files share used by the Tools tab sandbox runner
+// (ACIRunner). At invocation time the backend writes tool source into
+// tools/<invocation-id>/ on this share; each spawned ACI mounts the
+// share subpath at /tool. Managed identity is the auth path — the
+// caller (main.bicep) grants "Storage File Data SMB Share Contributor".
+resource fileService 'Microsoft.Storage/storageAccounts/fileServices@2023-01-01' = {
+  parent: storageAccount
+  name: 'default'
+}
+
+resource toolSourcesShare 'Microsoft.Storage/storageAccounts/fileServices/shares@2023-01-01' = {
+  parent: fileService
+  name: 'tool-sources'
+  properties: {
+    // Small — tool source files are typically <100kB. Keep the quota
+    // low so a runaway upload can't blow the account quota.
+    shareQuota: 5 // GB
+    enabledProtocols: 'SMB'
+  }
+}
+
 output storageAccountName string = storageAccount.name
 output storageAccountId string = storageAccount.id
+output toolSourcesShareName string = toolSourcesShare.name

@@ -136,6 +136,13 @@ var appEnv = [
   { name: 'ACA_MCP_URL', value: acaMcpUrl }
   { name: 'ACA_MCP_APP_ENABLED', value: string(acaMcpAppEnabled) }
   { name: 'WORKER_MCP_API_KEY', secretRef: 'worker-mcp-api-key' }
+  // v0.12.0: Tools tab sandbox runner selection. In prod we always use
+  // Azure Container Instances; local dev uses docker.sock.
+  { name: 'RTD_SANDBOX_RUNNER', value: 'aci' }
+  { name: 'ACI_SUBSCRIPTION_ID', value: subscription().subscriptionId }
+  { name: 'ACI_RESOURCE_GROUP', value: resourceGroup().name }
+  { name: 'ACI_LOCATION', value: location }
+  { name: 'ACI_SOURCE_SHARE', value: 'tool-sources' }
 ]
 
 // ---------------------------------------------------------------------------

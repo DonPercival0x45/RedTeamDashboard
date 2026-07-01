@@ -12,6 +12,13 @@ ENV CGO_ENABLED=0 \
     GOFLAGS=-trimpath
 RUN go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@${SUBFINDER_VERSION}
 
+# --- docker CLI stage --------------------------------------------------------
+# v0.12.0: LocalDockerRunner spawns sibling containers via the mounted
+# docker socket. Debian's docker.io package ships only the daemon;
+# copying the static CLI out of the official docker image is smaller
+# and keeps the runtime image without dockerd.
+FROM docker:26-cli AS docker-cli
+
 # --- runtime stage -----------------------------------------------------------
 FROM python:3.12-slim AS base
 
@@ -34,6 +41,11 @@ RUN apt-get update \
         shared-mime-info \
         fonts-dejavu-core \
  && rm -rf /var/lib/apt/lists/*
+
+# v0.12.0: docker CLI copied in from a dedicated stage above. Only the
+# client binary — the daemon is NOT running inside this container;
+# LocalDockerRunner talks to the host daemon via the mounted socket.
+COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 
 COPY --from=subfinder-builder /go/bin/subfinder /usr/local/bin/subfinder
 RUN /usr/local/bin/subfinder -version

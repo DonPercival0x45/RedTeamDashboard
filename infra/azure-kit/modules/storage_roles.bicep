@@ -21,11 +21,17 @@ param principalId string
 // string. Scoped to ONLY this storage account, never higher.
 var blobContributorRoleId = 'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
 
+// v0.12.0: Storage File Data SMB Share Contributor — grants read/write
+// on Azure Files shares under the account. Used by the Tools tab
+// sandbox runner (ACIRunner) which writes tool source to the
+// tool-sources share and mounts it into each spawned ACI.
+var fileShareContributorRoleId = '0c867c2a-1d8c-454a-a3db-ab2ea1bdc8bb'
+
 resource storageAccount 'Microsoft.Storage/storageAccounts@2023-01-01' existing = {
   name: storageAccountName
 }
 
-resource role 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+resource blobRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   scope: storageAccount
   name: guid(storageAccount.id, principalId, blobContributorRoleId)
   properties: {
@@ -34,6 +40,19 @@ resource role 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
     roleDefinitionId: subscriptionResourceId(
       'Microsoft.Authorization/roleDefinitions',
       blobContributorRoleId
+    )
+  }
+}
+
+resource fileRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  scope: storageAccount
+  name: guid(storageAccount.id, principalId, fileShareContributorRoleId)
+  properties: {
+    principalId: principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId(
+      'Microsoft.Authorization/roleDefinitions',
+      fileShareContributorRoleId
     )
   }
 }

@@ -9,6 +9,7 @@ import {
   MessageSquare,
   Network,
   Target,
+  Wrench,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -21,13 +22,15 @@ export type EngagementView =
   | "costs"
   | "scope"
   | "status"
-  | "contributions";
+  | "contributions"
+  | "tools";
 
 const ITEMS: { view: EngagementView; label: string; Icon: LucideIcon }[] = [
   { view: "findings", label: "Findings", Icon: ListChecks },
   { view: "entities", label: "Entities", Icon: Network },
   { view: "scope", label: "Scope", Icon: Target },
   { view: "status", label: "Status", Icon: Activity },
+  { view: "tools", label: "Tools", Icon: Wrench },
   { view: "contributions", label: "Contributions", Icon: CalendarDays },
   { view: "report", label: "Report", Icon: FileText },
   { view: "observations", label: "Observations", Icon: MessageSquare },

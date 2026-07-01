@@ -26,6 +26,7 @@ import { ObservationsView } from "@/components/observations-view";
 import { CostsView } from "@/components/costs-view";
 import { ContributionsView } from "@/components/contributions-view";
 import { StatusView } from "@/components/status-view";
+import { ToolsView } from "@/components/tools-view";
 import { GrantsCard } from "@/components/grants-card";
 import { RunPrompt } from "@/components/run-prompt";
 import { ScopeEditor } from "@/components/scope-editor";
@@ -116,6 +117,7 @@ const VALID_VIEWS = new Set<EngagementView>([
   "scope",
   "status",
   "contributions",
+  "tools",
 ]);
 
 function EngagementDetail({ slug }: { slug: string }) {
@@ -376,6 +378,8 @@ function EngagementDetail({ slug }: { slug: string }) {
           {view === "status" && <StatusView slug={slug} events={events} />}
 
           {view === "contributions" && <ContributionsView slug={slug} />}
+
+          {view === "tools" && <ToolsView slug={slug} />}
 
           {view === "scope" && (
             <div className="space-y-6">
