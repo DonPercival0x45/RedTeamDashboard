@@ -27,6 +27,7 @@ list stays in sync.
 """
 from __future__ import annotations
 
+import contextlib
 import uuid
 from collections import defaultdict
 from datetime import UTC, date, datetime, time, timedelta
@@ -127,7 +128,12 @@ def contributions_heatmap(
     ] = None,
     end: Annotated[
         date | None,
-        Query(description="Window end (UTC date, inclusive). Defaults to today (or engagement.end_date)."),
+        Query(
+            description=(
+                "Window end (UTC date, inclusive). Defaults to today "
+                "(or engagement.end_date)."
+            ),
+        ),
     ] = None,
 ) -> dict[str, Any]:
     """Per-day contribution counts + actor roster for the filter dropdown."""
@@ -346,10 +352,8 @@ def contributions_entries(
             if actor_id and row.actor_id != actor_id:
                 continue
             if row.actor_type.value == "user" and row.actor_id:
-                try:
+                with contextlib.suppress(ValueError):
                     user_ids_to_lookup.add(uuid.UUID(row.actor_id))
-                except ValueError:
-                    pass
         # Resolve user labels once
         user_lookup: dict[str, User] = {}
         if user_ids_to_lookup:
