@@ -182,12 +182,11 @@ async def upload_tool(
     # Binary lane requires an admin-declared artifact_ref (OCI image tag).
     # v0.14 adds the "register + no upload" flow; v0.11 just stores what
     # the manifest declared as the entrypoint.
-    if parsed.spec.kind == ToolKind.binary:
-        if parsed.spec.lane != ToolLane.admin:
-            raise HTTPException(
-                status_code=400,
-                detail="binary kind requires lane=admin",
-            )
+    if parsed.spec.kind == ToolKind.binary and parsed.spec.lane != ToolLane.admin:
+        raise HTTPException(
+            status_code=400,
+            detail="binary kind requires lane=admin",
+        )
 
     # v0.11.0 artifact storage is a placeholder: the source bytes land in
     # the DB row as a Postgres text blob under artifact_ref='inline:...'.
@@ -310,9 +309,11 @@ def approve_tool(
             detail="tool is revoked; re-upload as a new row to re-approve",
         )
 
-    validation_ok = not row.validation.get("ast", {}).get("disallowed_imports") and not row.validation.get(
-        "ast", {}
-    ).get("banned_calls")
+    ast_result = row.validation.get("ast", {}) or {}
+    validation_ok = (
+        not ast_result.get("disallowed_imports")
+        and not ast_result.get("banned_calls")
+    )
     if not validation_ok and not body.override_validation:
         raise HTTPException(
             status_code=409,
