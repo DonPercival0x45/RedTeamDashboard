@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { UploadCloud } from "lucide-react";
+import { Merge, Sparkles, UploadCloud, X } from "lucide-react";
 import {
   Card,
   CardContent,
@@ -17,19 +17,53 @@ import { Button } from "@/components/ui/button";
 // just shows feedback + the Push to GitHub action.
 import { Textarea } from "@/components/ui/textarea";
 import {
+  applyRoadmapRankings,
+  combineRoadmapSuggestions,
   createRoadmapSuggestion,
   decideRoadmapSuggestion,
   deleteRoadmapSuggestion,
+  detectRoadmapCombines,
   getMe,
   listRoadmapSuggestions,
   pushRoadmapToGitHub,
+  rankRoadmapSuggestions,
   reEvaluateRoadmapSuggestion,
+  setRoadmapSuggestionPriority,
 } from "@/lib/api";
 import type {
+  BulkRankResponse,
+  CombineDetectResponse,
   Me,
+  RankedRowRead,
+  RoadmapListFilters,
   RoadmapSuggestion,
   RoadmapSuggestionStatus,
 } from "@/lib/types";
+
+type PriorityBucket = "all" | "1-3" | "4-6" | "7-10" | "unranked";
+
+const PRIORITY_BUCKETS: PriorityBucket[] = ["all", "1-3", "4-6", "7-10", "unranked"];
+
+function bucketToFilters(b: PriorityBucket): {
+  priority_min?: number;
+  priority_max?: number;
+  include_unranked?: boolean;
+} {
+  // "unranked" fetches everything and filters client-side (backend has
+  // no explicit "priority IS NULL only" mode; range params would need
+  // a value outside 1-10 which we reject at validation).
+  if (b === "all" || b === "unranked") return { include_unranked: true };
+  if (b === "1-3") return { priority_min: 1, priority_max: 3, include_unranked: false };
+  if (b === "4-6") return { priority_min: 4, priority_max: 6, include_unranked: false };
+  return { priority_min: 7, priority_max: 10, include_unranked: false };
+}
+
+function priorityChipClass(p: number | null): string {
+  if (p === null) return "border-slate-500/40 bg-slate-500/10 text-slate-200";
+  if (p <= 3) return "border-rose-500/40 bg-rose-500/10 text-rose-200";
+  if (p <= 6) return "border-amber-500/40 bg-amber-500/10 text-amber-200";
+  return "border-emerald-500/40 bg-emerald-500/10 text-emerald-200";
+}
 
 // Tenant-global feedback surface. Any authenticated analyst drops in a product
 // idea; the planner agent emits pros/cons; an admin approves or rejects.
@@ -54,21 +88,36 @@ export default function SettingsFeedbackPage() {
   const [me, setMe] = useState<Me | null>(null);
   const [rows, setRows] = useState<RoadmapSuggestion[] | null>(null);
   const [filter, setFilter] = useState<FilterChip>("all");
+  // v0.16.0
+  const [priorityBucket, setPriorityBucket] = useState<PriorityBucket>("all");
+  const [showCombined, setShowCombined] = useState(false);
+  const [sortByPriority, setSortByPriority] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [body, setBody] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [pushing, setPushing] = useState(false);
   const [pushStatus, setPushStatus] = useState<string | null>(null);
+  // Agent-op modals
+  const [combineBusy, setCombineBusy] = useState(false);
+  const [combineResult, setCombineResult] =
+    useState<CombineDetectResponse | null>(null);
+  const [rankBusy, setRankBusy] = useState(false);
+  const [rankResult, setRankResult] = useState<BulkRankResponse | null>(null);
+
+  const listFilters: RoadmapListFilters = useMemo(() => {
+    const p = bucketToFilters(priorityBucket);
+    return { ...p, show_combined: showCombined };
+  }, [priorityBucket, showCombined]);
 
   const reload = useCallback(async () => {
     setError(null);
     try {
-      const next = await listRoadmapSuggestions();
+      const next = await listRoadmapSuggestions(listFilters);
       setRows(next);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
-  }, []);
+  }, [listFilters]);
 
   useEffect(() => {
     void reload();
@@ -83,9 +132,96 @@ export default function SettingsFeedbackPage() {
 
   const visible = useMemo(() => {
     if (!rows) return null;
-    if (filter === "all") return rows;
-    return rows.filter((r) => r.status === filter);
-  }, [rows, filter]);
+    let out = filter === "all" ? rows : rows.filter((r) => r.status === filter);
+    if (priorityBucket === "unranked") {
+      out = out.filter((r) => r.priority === null);
+    }
+    if (sortByPriority) {
+      out = [...out].sort((a, b) => {
+        // 1..10 first, then unranked at the end. 1 is highest.
+        if (a.priority === null && b.priority === null) return 0;
+        if (a.priority === null) return 1;
+        if (b.priority === null) return -1;
+        return a.priority - b.priority;
+      });
+    }
+    return out;
+  }, [rows, filter, sortByPriority]);
+
+  const onSetPriority = useCallback(
+    async (id: string, priority: number | null) => {
+      try {
+        await setRoadmapSuggestionPriority(id, priority);
+        await reload();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [reload],
+  );
+
+  const onDetectCombines = useCallback(async () => {
+    setCombineBusy(true);
+    setError(null);
+    try {
+      const res = await detectRoadmapCombines();
+      setCombineResult(res);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCombineBusy(false);
+    }
+  }, []);
+
+  const onConfirmMerge = useCallback(
+    async (primaryId: string, memberIds: string[]) => {
+      try {
+        await combineRoadmapSuggestions(primaryId, memberIds);
+        await reload();
+        // Drop the applied cluster from the modal so the analyst can
+        // still merge remaining clusters without re-running detect.
+        setCombineResult((prev) =>
+          prev
+            ? {
+                ...prev,
+                clusters: prev.clusters.filter(
+                  (c) => c.primary_id !== primaryId,
+                ),
+              }
+            : prev,
+        );
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [reload],
+  );
+
+  const onDetectRank = useCallback(async () => {
+    setRankBusy(true);
+    setError(null);
+    try {
+      const res = await rankRoadmapSuggestions();
+      setRankResult(res);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRankBusy(false);
+    }
+  }, []);
+
+  const onApplyRank = useCallback(
+    async (rankings: RankedRowRead[]) => {
+      try {
+        await applyRoadmapRankings(rankings);
+        setRankResult(null);
+        await reload();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [reload],
+  );
 
   const onSubmit = useCallback(async () => {
     const text = body.trim();
@@ -325,6 +461,69 @@ export default function SettingsFeedbackPage() {
                 : `No ${STATUS_LABEL[filter as RoadmapSuggestionStatus].toLowerCase()} feedback.`}
             </p>
           )}
+          {/* v0.16.0 priority filter chips + agent ops */}
+          {me?.role !== "guest" && (
+            <div className="flex flex-wrap items-center gap-2 border-b border-border/40 pb-3">
+              <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                Priority:
+              </span>
+              {PRIORITY_BUCKETS.map((b) => (
+                <button
+                  key={b}
+                  onClick={() => setPriorityBucket(b)}
+                  className={`rounded-full border px-2.5 py-0.5 text-xs transition ${
+                    priorityBucket === b
+                      ? "border-foreground bg-foreground text-background"
+                      : "border-border text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {b === "all" ? "All" : b === "unranked" ? "Unranked" : b}
+                </button>
+              ))}
+              <button
+                onClick={() => setSortByPriority((v) => !v)}
+                className={`ml-2 rounded-full border px-2.5 py-0.5 text-xs transition ${
+                  sortByPriority
+                    ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-100"
+                    : "border-border text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                Sort by priority
+              </button>
+              <label className="ml-2 flex items-center gap-1 text-xs text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={showCombined}
+                  onChange={(e) => setShowCombined(e.target.checked)}
+                  className="accent-emerald-500"
+                />
+                Show combined
+              </label>
+              <div className="ml-auto flex gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={combineBusy}
+                  onClick={onDetectCombines}
+                  title="Ask the planner to propose merge clusters across the open pool. Nothing merges until you confirm each one."
+                >
+                  <Merge className="mr-1.5 h-3.5 w-3.5" />
+                  {combineBusy ? "Detecting…" : "Combine (agent)"}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={rankBusy}
+                  onClick={onDetectRank}
+                  title="Ask the planner to bulk-rank the open pool. Preview first — nothing changes until you apply."
+                >
+                  <Sparkles className="mr-1.5 h-3.5 w-3.5" />
+                  {rankBusy ? "Ranking…" : "Prioritize (agent)"}
+                </Button>
+              </div>
+            </div>
+          )}
+
           {visible?.map((row) => (
             <SuggestionRow
               key={row.id}
@@ -333,12 +532,242 @@ export default function SettingsFeedbackPage() {
               onDecide={onDecide}
               onDelete={onDelete}
               onReEvaluate={onReEvaluate}
+              onSetPriority={onSetPriority}
             />
           ))}
         </CardContent>
       </Card>
 
+      {combineResult && (
+        <CombineReviewModal
+          result={combineResult}
+          rows={rows}
+          onConfirm={onConfirmMerge}
+          onClose={() => setCombineResult(null)}
+        />
+      )}
+
+      {rankResult && (
+        <RankApplyModal
+          result={rankResult}
+          rows={rows}
+          onApply={onApplyRank}
+          onClose={() => setRankResult(null)}
+        />
+      )}
     </div>
+  );
+}
+
+function CombineReviewModal({
+  result,
+  rows,
+  onConfirm,
+  onClose,
+}: {
+  result: CombineDetectResponse;
+  rows: RoadmapSuggestion[] | null;
+  onConfirm: (primaryId: string, memberIds: string[]) => Promise<void>;
+  onClose: () => void;
+}) {
+  const rowById = useMemo(() => {
+    const map = new Map<string, RoadmapSuggestion>();
+    (rows ?? []).forEach((r) => map.set(r.id, r));
+    return map;
+  }, [rows]);
+
+  return (
+    <>
+      <div className="fixed inset-0 z-40 bg-black/70" onClick={onClose} aria-hidden />
+      <div
+        role="dialog"
+        aria-modal="true"
+        className="fixed left-1/2 top-1/2 z-50 flex max-h-[85vh] w-[min(720px,92vw)] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-lg border border-border bg-popover p-5 shadow-xl"
+      >
+        <div className="flex items-start justify-between gap-3 pb-3">
+          <div>
+            <h3 className="text-sm font-semibold">Proposed merges</h3>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              Planner reviewed {result.pool_size} open suggestions and proposed{" "}
+              {result.clusters.length} cluster
+              {result.clusters.length === 1 ? "" : "s"}. Each merge preserves
+              audit (rows are marked combined, not deleted).
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-muted-foreground hover:text-foreground"
+            aria-label="Close"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto pr-1">
+          {result.error && (
+            <p className="rounded-md border border-critical/40 bg-critical/5 p-3 text-xs text-critical">
+              {result.error}
+            </p>
+          )}
+          {result.clusters.length === 0 && !result.error && (
+            <p className="text-xs text-muted-foreground">
+              No merge candidates found in the open pool.
+            </p>
+          )}
+          <ul className="space-y-3">
+            {result.clusters.map((c) => {
+              const primary = rowById.get(c.primary_id);
+              const members = c.member_ids
+                .map((id) => rowById.get(id))
+                .filter((r): r is RoadmapSuggestion => r !== undefined);
+              return (
+                <li
+                  key={c.primary_id}
+                  className="rounded-md border border-border/60 bg-background p-3"
+                >
+                  <p className="text-xs text-muted-foreground">
+                    {c.reasoning}
+                  </p>
+                  <div className="mt-2 rounded-md border border-emerald-500/40 bg-emerald-500/5 p-2 text-xs">
+                    <p className="mb-1 text-[10px] uppercase tracking-wide text-emerald-300">
+                      Survivor
+                    </p>
+                    <p className="whitespace-pre-wrap text-foreground">
+                      {primary?.body ?? "(row not in current filter)"}
+                    </p>
+                  </div>
+                  {members.map((m) => (
+                    <div
+                      key={m.id}
+                      className="mt-1.5 rounded-md border border-rose-500/40 bg-rose-500/5 p-2 text-xs"
+                    >
+                      <p className="mb-1 text-[10px] uppercase tracking-wide text-rose-300">
+                        Fold into survivor
+                      </p>
+                      <p className="whitespace-pre-wrap text-foreground">
+                        {m.body}
+                      </p>
+                    </div>
+                  ))}
+                  <div className="mt-2 flex justify-end">
+                    <Button
+                      size="sm"
+                      onClick={() => onConfirm(c.primary_id, c.member_ids)}
+                    >
+                      Merge {members.length + 1} into 1
+                    </Button>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+        <p className="mt-2 text-[10px] text-muted-foreground/70">
+          {result.model} · {result.tokens_in}in / {result.tokens_out}out
+        </p>
+      </div>
+    </>
+  );
+}
+
+function RankApplyModal({
+  result,
+  rows,
+  onApply,
+  onClose,
+}: {
+  result: BulkRankResponse;
+  rows: RoadmapSuggestion[] | null;
+  onApply: (rankings: RankedRowRead[]) => Promise<void>;
+  onClose: () => void;
+}) {
+  const rowById = useMemo(() => {
+    const map = new Map<string, RoadmapSuggestion>();
+    (rows ?? []).forEach((r) => map.set(r.id, r));
+    return map;
+  }, [rows]);
+
+  const sorted = useMemo(
+    () => [...result.rankings].sort((a, b) => a.priority - b.priority),
+    [result.rankings],
+  );
+
+  return (
+    <>
+      <div className="fixed inset-0 z-40 bg-black/70" onClick={onClose} aria-hidden />
+      <div
+        role="dialog"
+        aria-modal="true"
+        className="fixed left-1/2 top-1/2 z-50 flex max-h-[85vh] w-[min(720px,92vw)] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-lg border border-border bg-popover p-5 shadow-xl"
+      >
+        <div className="flex items-start justify-between gap-3 pb-3">
+          <div>
+            <h3 className="text-sm font-semibold">Apply agent ranking?</h3>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              Planner reviewed {result.pool_size} open suggestions and produced
+              priorities 1-10 (1 = highest). Applying overwrites the{" "}
+              <strong>priority</strong> field on every row named below. Rows
+              not named keep their current priority.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-muted-foreground hover:text-foreground"
+            aria-label="Close"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto pr-1">
+          {result.error && (
+            <p className="rounded-md border border-critical/40 bg-critical/5 p-3 text-xs text-critical">
+              {result.error}
+            </p>
+          )}
+          <ul className="space-y-1.5">
+            {sorted.map((r) => {
+              const row = rowById.get(r.id);
+              return (
+                <li
+                  key={r.id}
+                  className="flex items-start gap-3 rounded-md border border-border/60 bg-background p-2"
+                >
+                  <span
+                    className={`shrink-0 rounded border px-2 py-0.5 text-[11px] font-mono tabular-nums ${priorityChipClass(
+                      r.priority,
+                    )}`}
+                  >
+                    {r.priority}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="line-clamp-2 text-xs text-foreground">
+                      {row?.body ?? "(row not in current filter)"}
+                    </p>
+                    <p className="mt-0.5 text-[11px] text-muted-foreground">
+                      {r.reasoning}
+                    </p>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+        <div className="mt-3 flex items-center justify-between">
+          <p className="text-[10px] text-muted-foreground/70">
+            {result.model} · {result.tokens_in}in / {result.tokens_out}out
+          </p>
+          <div className="flex gap-2">
+            <Button size="sm" variant="outline" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button size="sm" onClick={() => onApply(result.rankings)}>
+              Apply {result.rankings.length} priorities
+            </Button>
+          </div>
+        </div>
+      </div>
+    </>
   );
 }
 
@@ -348,6 +777,7 @@ function SuggestionRow({
   onDecide,
   onDelete,
   onReEvaluate,
+  onSetPriority,
 }: {
   row: RoadmapSuggestion;
   me: Me | null;
@@ -357,6 +787,7 @@ function SuggestionRow({
   ) => void;
   onDelete: (row: RoadmapSuggestion) => void;
   onReEvaluate: (row: RoadmapSuggestion) => void;
+  onSetPriority: (id: string, priority: number | null) => Promise<void>;
 }) {
   const isAdmin = me?.is_admin ?? false;
   const isGuest = me?.role === "guest";
@@ -383,14 +814,29 @@ function SuggestionRow({
     <div className="rounded-md border border-border bg-card/40 p-3 text-sm">
       <div className="flex items-start justify-between gap-3">
         <p className="whitespace-pre-wrap text-foreground">{row.body}</p>
-        <span
-          className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] uppercase tracking-wide ${
-            STATUS_CLASS[row.status]
-          }`}
-        >
-          {STATUS_LABEL[row.status]}
-        </span>
+        <div className="flex shrink-0 flex-col items-end gap-1">
+          <span
+            className={`rounded-full border px-2 py-0.5 text-[10px] uppercase tracking-wide ${
+              STATUS_CLASS[row.status]
+            }`}
+          >
+            {STATUS_LABEL[row.status]}
+          </span>
+          <span
+            className={`rounded-full border px-2 py-0.5 text-[10px] font-mono tabular-nums ${priorityChipClass(
+              row.priority,
+            )}`}
+            title="Priority (1 = highest, 10 = lowest). Null = unranked."
+          >
+            {row.priority !== null ? `P${row.priority}` : "unranked"}
+          </span>
+        </div>
       </div>
+      {row.combined_into_id && (
+        <p className="mt-1 text-[10px] text-muted-foreground/70">
+          ↳ merged into {row.combined_into_id.slice(0, 8)}
+        </p>
+      )}
 
       {row.agent_summary && (
         <p className="mt-2 text-xs italic text-muted-foreground">
@@ -448,7 +894,27 @@ function SuggestionRow({
             <> · reviewed {new Date(row.reviewed_at).toLocaleString()}</>
           )}
         </p>
-        <div className="flex gap-2">
+        <div className="flex items-center gap-2">
+          {!isGuest && (
+            <select
+              value={row.priority ?? ""}
+              onChange={(e) =>
+                onSetPriority(
+                  row.id,
+                  e.target.value === "" ? null : Number(e.target.value),
+                )
+              }
+              className="h-7 rounded-md border border-border bg-background px-1.5 text-xs"
+              title="Set priority (1 = highest)"
+            >
+              <option value="">unranked</option>
+              {Array.from({ length: 10 }, (_, i) => i + 1).map((n) => (
+                <option key={n} value={n}>
+                  P{n}
+                </option>
+              ))}
+            </select>
+          )}
           {!isGuest && (
             <Button
               size="sm"

@@ -607,8 +607,53 @@ export interface RoadmapSuggestion {
   reviewed_at: string | null;
   review_note: string | null;
   source: string;
+  // v0.16.0
+  priority: number | null;
+  combined_into_id: string | null;
   created_at: string;
   updated_at: string;
+}
+
+// v0.16.0 — feedback prioritization agent ops
+export interface CombineClusterRead {
+  primary_id: string;
+  member_ids: string[];
+  reasoning: string;
+}
+
+export interface CombineDetectResponse {
+  clusters: CombineClusterRead[];
+  pool_size: number;
+  model: string;
+  tokens_in: number;
+  tokens_out: number;
+  execution_id: string | null;
+  error: string | null;
+}
+
+export interface RankedRowRead {
+  id: string;
+  priority: number;
+  reasoning: string;
+}
+
+export interface BulkRankResponse {
+  rankings: RankedRowRead[];
+  pool_size: number;
+  applied: boolean;
+  model: string;
+  tokens_in: number;
+  tokens_out: number;
+  execution_id: string | null;
+  error: string | null;
+}
+
+export interface RoadmapListFilters {
+  status?: RoadmapSuggestionStatus;
+  priority_min?: number;
+  priority_max?: number;
+  include_unranked?: boolean;
+  show_combined?: boolean;
 }
 
 // ── External integrations — v0.9.0 provider catalog ─────────────────────

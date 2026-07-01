@@ -85,3 +85,15 @@ class RoadmapSuggestion(Base, TimestampMixin):
     source: Mapped[str] = mapped_column(
         String(120), nullable=False, default="ui", server_default="ui"
     )
+    # v0.16.0: 1..10, 1 = highest. NULL = unranked. Analyst sets via
+    # per-row dropdown, or the LLM bulk-rank op rewrites all open rows
+    # in one shot. Range enforced by CHECK constraint at the DB layer.
+    priority: Mapped[int | None] = mapped_column(index=True)
+    # v0.16.0: when set, this row was merged into ``combined_into_id``
+    # by an analyst-confirmed combine action. List endpoint hides
+    # combined rows by default; audit trail preserved (no delete).
+    combined_into_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("roadmap_suggestions.id", ondelete="SET NULL"),
+        nullable=True,
+    )
