@@ -76,6 +76,12 @@ class ToolSpec(BaseModel):
     risk_level: str = "passive"
     network_egress: list[str] = Field(default_factory=lambda: ["none"])
     task_kind: ToolTaskKind = ToolTaskKind.enum
+    # v0.15.0: how the invocation runtime hands the tool to the
+    # sandbox. ``fresh_container`` (the default and only currently-
+    # implemented value) spawns a new container per invocation.
+    # ``shared_kali_box`` will invoke inside a long-lived Kali box per
+    # engagement — schema-only in v0.15, wired end-to-end in v0.17.
+    runtime: Literal["fresh_container", "shared_kali_box"] = "fresh_container"
 
     @field_validator("risk_level")
     @classmethod

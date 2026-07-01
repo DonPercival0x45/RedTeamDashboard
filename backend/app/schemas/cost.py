@@ -29,6 +29,25 @@ class ModelCost(CostBucket):
     priced: bool
 
 
+class ToolCost(BaseModel):
+    """One row in the tool-invocation cost roll-up (v0.15.0). Sits
+    beside the LLM cost buckets on the Costs tab so an admin can see
+    per-tool compute spend alongside model spend."""
+
+    tool_id: UUID
+    tool_name: str
+    invocations: int
+    total_duration_seconds: float
+    cost_usd: float
+
+
+class ToolCostSummary(BaseModel):
+    invocations: int
+    total_duration_seconds: float
+    cost_usd: float
+    by_tool: list[ToolCost]
+
+
 class CostRollup(BaseModel):
     engagement_id: UUID
     engagement_slug: str
@@ -36,3 +55,6 @@ class CostRollup(BaseModel):
     by_agent: list[AgentCost]
     by_model: list[ModelCost]
     unpriced_models: list[str]
+    # v0.15.0: sandbox-runner compute cost for tool invocations. Empty
+    # ToolCostSummary when the engagement has no tool_invocations rows.
+    tools: ToolCostSummary

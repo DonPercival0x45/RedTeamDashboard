@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import base64
 from datetime import UTC, datetime
+from decimal import Decimal
 from functools import lru_cache
 from typing import Any
 
@@ -39,7 +40,11 @@ from app.models import (
     User,
 )
 from app.services.sandbox_local import LocalDockerRunner
-from app.services.sandbox_runner import SandboxRequest, SandboxRunner
+from app.services.sandbox_runner import (
+    RUNTIME_RATES_USD_PER_SECOND,
+    SandboxRequest,
+    SandboxRunner,
+)
 
 
 class ToolInvocationError(Exception):
@@ -90,6 +95,18 @@ async def invoke_tool(
     scope = _build_scope(session, engagement)
     source_bytes = _decode_source(tool)
 
+    # v0.15.0: shared_kali_box runtime lands in v0.17. Refuse it
+    # up-front so callers see a clean error instead of the sandbox
+    # runner reaching for a code path that doesn't exist yet.
+    manifest_runtime = (
+        (tool.manifest or {}).get("spec", {}).get("runtime", "fresh_container")
+    )
+    if manifest_runtime == "shared_kali_box":
+        raise ToolInvocationError(
+            "runtime='shared_kali_box' is not yet implemented — coming in "
+            "v0.17. Use runtime='fresh_container' (the default) for now."
+        )
+
     row = ToolInvocation(
         tool_id=tool.id,
         tool_version=tool.version,
@@ -136,6 +153,12 @@ async def invoke_tool(
     row.runtime_ref = result.runtime_ref
     row.error = result.error
     row.completed_at = datetime.now(tz=UTC)
+    # v0.15.0: stamp per-invocation compute cost. Rate is picked by
+    # runner name (docker=$0, aci≈$2e-5/s); duration comes from the
+    # runner's own wall-clock. Rough enough to seed the Costs tab
+    # without pretending to be a billing source of truth.
+    rate = RUNTIME_RATES_USD_PER_SECOND.get(runner.name, 0.0)
+    row.cost_usd = Decimal(str(round(result.duration_seconds * rate, 6)))
     if result.timed_out:
         row.status = ToolInvocationStatus.timeout
     elif result.error is not None or (
