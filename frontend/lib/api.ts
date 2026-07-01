@@ -48,6 +48,11 @@ import type {
   ContributionHeatmap,
   ContributionEntries,
   ContributionSource,
+  ToolRead,
+  ToolUploadResponse,
+  ToolKind,
+  ToolLane,
+  ToolStatus,
 } from "@/lib/types";
 
 // Auth-only headers (no Content-Type — request() adds that for JSON bodies).
@@ -894,4 +899,69 @@ export function getContributionsEntries(
   return request<ContributionEntries>(
     `/engagements/${slug}/contributions/entries${q ? `?${q}` : ""}`,
   );
+}
+
+// ---------------------------------------------------------------------------
+// Tools tab (v0.11.0)
+// ---------------------------------------------------------------------------
+
+export function listTools(
+  filters: {
+    kind?: ToolKind | null;
+    lane?: ToolLane | null;
+    status?: ToolStatus | null;
+  } = {},
+): Promise<ToolRead[]> {
+  const qs = new URLSearchParams();
+  if (filters.kind) qs.set("kind", filters.kind);
+  if (filters.lane) qs.set("lane", filters.lane);
+  if (filters.status) qs.set("status", filters.status);
+  const q = qs.toString();
+  return request<ToolRead[]>(`/tools${q ? `?${q}` : ""}`);
+}
+
+export function getTool(toolId: string): Promise<ToolRead> {
+  return request<ToolRead>(`/tools/${toolId}`);
+}
+
+export async function uploadTool(
+  manifest: string,
+  source: File | null,
+): Promise<ToolUploadResponse> {
+  const fd = new FormData();
+  fd.set("manifest", manifest);
+  if (source) fd.set("source", source);
+  const headers = await authHeaders();
+  const response = await fetch(`${API_BASE_URL}/tools`, {
+    method: "POST",
+    headers,
+    body: fd,
+  });
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`${response.status} ${response.statusText}: ${body}`);
+  }
+  return (await response.json()) as ToolUploadResponse;
+}
+
+export function approveTool(
+  toolId: string,
+  opts: { overrideValidation?: boolean; note?: string } = {},
+): Promise<ToolRead> {
+  return request<ToolRead>(`/tools/${toolId}/approve`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      override_validation: opts.overrideValidation ?? false,
+      note: opts.note ?? null,
+    }),
+  });
+}
+
+export function revokeTool(toolId: string): Promise<ToolRead> {
+  return request<ToolRead>(`/tools/${toolId}/revoke`, { method: "POST" });
+}
+
+export function deleteTool(toolId: string): Promise<void> {
+  return request<void>(`/tools/${toolId}`, { method: "DELETE" });
 }

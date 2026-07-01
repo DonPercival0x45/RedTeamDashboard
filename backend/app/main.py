@@ -40,6 +40,7 @@ from app.api.provider_keys import router as provider_keys_router
 from app.api.reports import router as reports_router
 from app.api.roadmap_suggestions import router as roadmap_suggestions_router
 from app.api.status import router as status_router
+from app.api.tools import router as tools_router
 from app.core.config import settings
 from app.core.logging import configure_logging
 from app.mcp.auth import MCPAuthMiddleware
@@ -84,6 +85,7 @@ app.include_router(integrations_router)
 app.include_router(admin_users_router)
 app.include_router(status_router)
 app.include_router(contributions_router)
+app.include_router(tools_router)
 
 # MCP server — auth-gated SSE endpoint for agent clients (Claude Code, etc.)
 # Agents connect via: claude mcp add rtd --transport sse --url https://<fqdn>/mcp/sse
