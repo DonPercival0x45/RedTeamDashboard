@@ -73,6 +73,7 @@ from app.schemas.tool import (
     ToolUploadResponse,
 )
 from app.services.tool_ast_check import check_python_source
+from app.services.tool_image_ref import ImageRefError, parse_image_ref
 from app.services.tool_llm_review import review_tool_source
 from app.services.tool_manifest import (
     ManifestParseError,
@@ -157,22 +158,22 @@ async def upload_tool(
     validation: dict[str, Any] = {"manifest_ok": True}
     validation_errors: list[str] = []
 
-    # Source required for the non-binary kinds
+    # Source required for the non-binary kinds; forbidden for binary.
     source_bytes: bytes | None = None
-    if parsed.spec.kind in (ToolKind.python, ToolKind.shell):
-        if source is None:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"kind={parsed.spec.kind.value} requires a source file upload"
-                ),
-            )
+    if source is not None:
         source_bytes = await source.read()
         if len(source_bytes) > _MAX_SOURCE_BYTES:
             raise HTTPException(
                 status_code=413,
                 detail=f"source file exceeds {_MAX_SOURCE_BYTES} bytes",
             )
+    if parsed.spec.kind in (ToolKind.python, ToolKind.shell) and source_bytes is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"kind={parsed.spec.kind.value} requires a source file upload"
+            ),
+        )
 
     # Layer 1a: AST allow-list for Python.
     source_text: str | None = None
@@ -238,14 +239,41 @@ async def upload_tool(
                 "(manifest task_kind / risk_level / egress vs. actual behaviour)"
             )
 
-    # Binary lane requires an admin-declared artifact_ref (OCI image tag).
-    # v0.14 adds the "register + no upload" flow; v0.11 just stores what
-    # the manifest declared as the entrypoint.
-    if parsed.spec.kind == ToolKind.binary and parsed.spec.lane != ToolLane.admin:
-        raise HTTPException(
-            status_code=400,
-            detail="binary kind requires lane=admin",
-        )
+    # Binary lane requires an admin-declared artifact_ref (OCI image
+    # tag). v0.14.0 makes this a first-class flow: parse + validate the
+    # OCI reference and refuse a source file (admin is confused if they
+    # attach one).
+    if parsed.spec.kind == ToolKind.binary:
+        if parsed.spec.lane != ToolLane.admin:
+            raise HTTPException(
+                status_code=400,
+                detail="binary kind requires lane=admin",
+            )
+        if source_bytes is not None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "binary kind takes an OCI image tag in spec.entrypoint, "
+                    "not a source file — omit the source upload"
+                ),
+            )
+        try:
+            image_ref = parse_image_ref(parsed.spec.entrypoint)
+        except ImageRefError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"invalid OCI image reference: {exc}",
+            ) from exc
+        validation["image_ref"] = image_ref.to_json()
+        if not image_ref.is_pinned:
+            # Non-blocking warning — allow tag-based refs (most admins
+            # will use them), but surface the reproducibility risk on
+            # the row so the admin sees it at approve time.
+            validation.setdefault("warnings", []).append(
+                "image reference uses a tag, not a digest — the image "
+                "content can change out from under you. Pin with "
+                "@sha256:… when reproducibility matters."
+            )
 
     # v0.11.0 artifact storage is a placeholder: the source bytes land in
     # the DB row as a Postgres text blob under artifact_ref='inline:...'.

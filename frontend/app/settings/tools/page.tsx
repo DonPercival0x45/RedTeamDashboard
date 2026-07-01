@@ -405,6 +405,55 @@ function ValidationPanels({ tool }: { tool: ToolRead }) {
     <section className="mt-5 space-y-3">
       <h3 className="text-sm font-medium">Validation gates</h3>
 
+      {(() => {
+        const imgRef = v.image_ref as
+          | {
+              raw?: string;
+              registry?: string | null;
+              repository?: string;
+              tag?: string | null;
+              digest?: string | null;
+              is_pinned?: boolean;
+            }
+          | undefined;
+        if (!imgRef) return null;
+        return (
+          <GatePanel
+            title="Image reference (binary lane)"
+            verdict={imgRef.is_pinned ? "pass" : "skipped"}
+          >
+            <li>
+              <code className="font-mono">{imgRef.raw}</code>
+            </li>
+            <li>
+              Registry:{" "}
+              <code className="font-mono">
+                {imgRef.registry ?? "index.docker.io (implicit)"}
+              </code>
+            </li>
+            <li>
+              Repository: <code className="font-mono">{imgRef.repository}</code>
+            </li>
+            {imgRef.tag && (
+              <li>
+                Tag: <code className="font-mono">{imgRef.tag}</code>
+              </li>
+            )}
+            {imgRef.digest && (
+              <li>
+                Digest:{" "}
+                <code className="font-mono text-[10px]">{imgRef.digest}</code>
+              </li>
+            )}
+            {!imgRef.is_pinned && (
+              <li className="text-amber-200">
+                Tag reference (not a digest) — image content is mutable.
+              </li>
+            )}
+          </GatePanel>
+        );
+      })()}
+
       {ast && (
         <GatePanel
           title="AST allow-list (Python)"
