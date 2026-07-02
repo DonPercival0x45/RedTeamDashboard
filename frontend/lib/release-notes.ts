@@ -1,9 +1,12 @@
-// What's-New surface — loads the static `releases.json` that install.sh
-// fetches from the GitHub Releases API at deploy time and tracks
-// per-browser "last seen version" in localStorage so the banner only
-// shows when something new has actually landed since the analyst's last
-// visit.
+// What's-New surface — loads categorized releases from the backend
+// (v1.3.1+). The backend fetches from GitHub Releases API + runs the
+// categorization enricher + caches in-memory for ~1h, so the frontend
+// gets fresh data without needing to rebuild the Docker image on every
+// release. Tracks per-browser "last seen version" in localStorage so
+// the banner only shows when something new has actually landed since
+// the analyst's last visit.
 
+import { API_BASE_URL } from "@/lib/config";
 import type { ReleaseNote } from "@/lib/types";
 
 const STORAGE_KEY = "rtd.whats-new.last-seen-version.v1";
@@ -14,7 +17,10 @@ let cachedPromise: Promise<ReleaseNote[]> | null = null;
 export async function loadReleases(): Promise<ReleaseNote[]> {
   if (cached !== null) return cached;
   if (cachedPromise) return cachedPromise;
-  cachedPromise = fetch("/releases.json", { cache: "no-cache" })
+  // v1.3.1: was fetch("/releases.json") — the file was baked into the
+  // frontend Docker image at CI build time (empty in the repo, so the
+  // Container App served []). Now fetched live from the backend.
+  cachedPromise = fetch(`${API_BASE_URL}/releases.json`, { cache: "no-cache" })
     .then(async (res) => {
       if (!res.ok) return [];
       const body = (await res.json()) as ReleaseNote[];

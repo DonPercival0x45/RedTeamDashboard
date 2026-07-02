@@ -37,6 +37,7 @@ from app.api.integrations import router as integrations_router
 from app.api.me import router as me_router
 from app.api.orchestrator import router as orchestrator_router
 from app.api.provider_keys import router as provider_keys_router
+from app.api.releases import router as releases_router
 from app.api.reports import router as reports_router
 from app.api.roadmap_suggestions import router as roadmap_suggestions_router
 from app.api.status import router as status_router
@@ -87,6 +88,7 @@ app.include_router(admin_users_router)
 app.include_router(status_router)
 app.include_router(contributions_router)
 app.include_router(tools_router)
+app.include_router(releases_router)
 app.include_router(tool_invocations_router)
 
 # MCP server — auth-gated SSE endpoint for agent clients (Claude Code, etc.)
