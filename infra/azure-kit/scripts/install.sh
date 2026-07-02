@@ -224,6 +224,20 @@ if [[ "$ENTRA_CLIENT_ID_FROM_FLAG" != "true" ]]; then
     fi
 fi
 
+# v1.0.0: same precedence for the IP allowlist. The Bicep frontend module
+# needs it BEFORE the Container App is created (ipSecurityRestrictions are
+# ingress config). If the flag wasn't passed, read from the SWA blade —
+# same source of truth as the SWA path uses further down.
+if [[ "$ALLOWED_IPS_FROM_FLAG" != "true" ]]; then
+    PRE_STORED_IPS="$(az staticwebapp appsettings list \
+        -n "$SWA_PREDICTED_NAME" -g "$RG_NAME" \
+        --query "properties.RTD_VIEWER_ALLOWED_IPS" -o tsv 2>/dev/null || true)"
+    if [[ -n "$PRE_STORED_IPS" && "$PRE_STORED_IPS" != "None" ]]; then
+        ALLOWED_IPS="$PRE_STORED_IPS"
+        blue "    IP allowlist pre-resolved from SWA Environment Variables"
+    fi
+fi
+
 # ---------------------------------------------------------------------------
 # Bicep deploy
 # ---------------------------------------------------------------------------
@@ -244,6 +258,7 @@ az deployment sub create \
     --parameters llmProvider="$LLM_PROVIDER" \
     --parameters entraTenantId="$ENTRA_TENANT_ID" \
     --parameters entraClientId="$ENTRA_CLIENT_ID" \
+    --parameters frontendAllowedIps="$ALLOWED_IPS" \
     --only-show-errors \
     -o none
 
@@ -261,11 +276,16 @@ APP_NAME="$(echo "$OUTPUTS"   | python3 -c 'import sys,json;print(json.load(sys.
 KV_NAME="$(echo "$OUTPUTS"    | python3 -c 'import sys,json;print(json.load(sys.stdin)["keyVaultName"]["value"])')"
 VIEWER_NAME="$(echo "$OUTPUTS" | python3 -c 'import sys,json;print(json.load(sys.stdin)["viewerName"]["value"])')"
 VIEWER_URL="$(echo "$OUTPUTS"  | python3 -c 'import sys,json;print(json.load(sys.stdin)["viewerUrl"]["value"])')"
+# v1.0.0: the new Container App viewer. Runs alongside the SWA during the
+# parallel week; after decommission this is the only viewer.
+FRONTEND_APP_NAME="$(echo "$OUTPUTS" | python3 -c 'import sys,json;print(json.load(sys.stdin)["frontendAppName"]["value"])')"
+FRONTEND_URL="$(echo "$OUTPUTS"      | python3 -c 'import sys,json;print(json.load(sys.stdin)["frontendUrl"]["value"])')"
 
 echo "    resource group:  $RG_OUT"
 echo "    app FQDN:        https://$APP_FQDN"
 echo "    key vault:       $KV_NAME"
-echo "    viewer URL:      $VIEWER_URL"
+echo "    viewer (SWA):    $VIEWER_URL"
+echo "    viewer (v1.0):   $FRONTEND_URL"
 
 # ---------------------------------------------------------------------------
 # Wait for backend health
@@ -529,11 +549,18 @@ green "    restart triggered."
 echo
 green "Deploy complete."
 echo
-echo "  API URL:        https://$APP_FQDN"
-echo "  Viewer URL:     $VIEWER_URL"
-echo "  Resource group: $RG_OUT"
-echo "  Key Vault:      $KV_NAME"
-echo "  Tenant:         $TENANT_ID"
+echo "  API URL:         https://$APP_FQDN"
+echo "  Viewer (SWA):    $VIEWER_URL"
+echo "  Viewer (v1.0.0): $FRONTEND_URL"
+echo "  Resource group:  $RG_OUT"
+echo "  Key Vault:       $KV_NAME"
+echo "  Tenant:          $TENANT_ID"
+echo
+# v1.0.0 parallel-week note: both viewers accept the same Entra sign-in
+# and talk to the same backend. Once the SWA is decommissioned, drop
+# viewer.bicep + this SWA banner and the Container App becomes the only
+# viewer. See docs/V1_CUTOVER_CHECKLIST.md.
+echo "Parallel week: both viewers are live and equivalent. See docs/V1_CUTOVER_CHECKLIST.md."
 echo
 
 if [[ "$SWA_SKIPPED" != "true" ]]; then

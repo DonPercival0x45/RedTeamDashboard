@@ -32,6 +32,35 @@ work conducted by analysts during authorized engagements, not unauthorized intru
 | Phase 10 | 🔄 In Progress | Hybrid execution (import-first model) |
 | Phase 11 | ✅ Complete | Cost engine (LLM spend tracking, rollup, Costs tab) |
 | Analyst UX | ✅ Complete | Finding importer, JSON export, summary editor, screenshot attachments |
+| v1.0.0 | 🚀 In flight | SWA → Container App viewer + TanStack Query data layer + SSE-to-cache bridge |
+
+## v1.0.0 — Viewer as Container App (July 2026)
+
+**Motivation** — Kendall/Nasir agreed the SWA-hosted static Next.js was
+producing stale UI: every page navigation forced a full re-fetch; status
+columns didn't update without an F5. Two structural fixes:
+
+- **Node runtime.** Frontend runs as its own Azure Container App
+  (`modules/frontend.bicep`) alongside the existing SWA (parallel week).
+  Runtime config injection via `<script>` in the SSR `<head>` — one image
+  serves any env.
+- **TanStack Query data layer.** Every fetch across the frontend is on
+  `useQuery` / `useMutation` with a shared cache. Focus revalidation +
+  per-entity polling + prefetch-on-hover + SSE-to-cache bridge together
+  eliminate the manual-refresh cycle.
+
+Stacked PR series: #52 (foundation), #53 (Status/Costs/Tools), #54
+(engagement shell + sub-views), #55 (settings + modals), #56
+(SSE-to-cache + nav prefetch), #57 (infra + version bumps + docs).
+
+Deferred: full SSR + streaming for heavy pages. Requires forwarding the
+MSAL access token to the server (MSAL is browser-only today); larger
+surgery than the parallel-week cut can absorb. TanStack Query cache +
+nav prefetch delivers ~90% of the perceived-latency win of SSR.
+
+See `docs/SWA_TO_APP_MIGRATION.md` for fresh-env deploy notes and
+`docs/V1_CUTOVER_CHECKLIST.md` for the 5qprod parallel-week → hard-cut
+sequence.
 
 ---
 
