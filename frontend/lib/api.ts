@@ -29,6 +29,8 @@ import type {
   FindingSummaryEntry,
   FindingValidationStatus,
   StatusEntity,
+  StatusKind,
+  StepLogResponse,
   Integration,
   IntegrationCreate,
   IntegrationUpdate,
@@ -942,6 +944,34 @@ export function retryAgentExecution(
   return request<StatusEntity>(`/agent-executions/${executionId}/retry`, {
     method: "POST",
   });
+}
+
+// v1.2.0: fetch the per-entity step log. Lazy — only called when the
+// analyst opens the Expand modal.
+export function getStatusSteps(
+  slug: string,
+  kind: StatusKind,
+  entityId: string,
+): Promise<StepLogResponse> {
+  // Kind maps to a URL segment. Enforced at the type level; runtime
+  // still guards against future StatusKind additions.
+  const segment =
+    kind === "agent" ? "agents" : kind === "task" ? "tasks" : "approvals";
+  return request<StepLogResponse>(
+    `/engagements/${slug}/status/${segment}/${entityId}/steps`,
+  );
+}
+
+// v1.2.0: tenant-global agent runs (planner rank/combine/re-evaluate).
+// Not engagement-scoped — shows up on /settings/agent-runs.
+export function listGlobalAgentRuns(): Promise<EngagementStatusResponse> {
+  return request<EngagementStatusResponse>("/agent-runs");
+}
+
+export function getGlobalAgentRunSteps(
+  executionId: string,
+): Promise<StepLogResponse> {
+  return request<StepLogResponse>(`/agent-runs/${executionId}/steps`);
 }
 
 // ---------------------------------------------------------------------------

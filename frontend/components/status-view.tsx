@@ -15,13 +15,17 @@
 // "Live events" panel below the boxes.
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   Activity,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
+  CircleSlash,
   Clock,
   RefreshCcw,
+  Search,
+  Slash,
   X,
   XCircle,
   type LucideIcon,
@@ -32,6 +36,7 @@ import {
   useEngagementStatus,
   useRetryAgentExecutionMutation,
   useRetryTaskMutation,
+  useStatusSteps,
 } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
 import type {
@@ -40,6 +45,7 @@ import type {
   StatusColor,
   StatusEntity,
   StatusKind,
+  StatusOutcome,
   StatusTransition,
 } from "@/lib/types";
 
@@ -85,6 +91,39 @@ const KIND_FILTERS: (StatusKind | "all")[] = [
   "task",
   "approval",
 ];
+
+// v1.2.0 outcome sub-badges under the four colours. Only render when
+// the entity has reached a terminal state (color in completed/failed).
+const OUTCOME_LABEL: Record<StatusOutcome, string> = {
+  success: "Success",
+  empty: "Empty",
+  partial: "Partial",
+  errored: "Errored",
+};
+
+const OUTCOME_ICON: Record<StatusOutcome, LucideIcon> = {
+  success: CheckCircle2,
+  empty: CircleSlash,
+  partial: Slash,
+  errored: XCircle,
+};
+
+const OUTCOME_CLASS: Record<StatusOutcome, string> = {
+  success: "border-emerald-500/50 bg-emerald-500/10 text-emerald-200",
+  empty: "border-slate-500/50 bg-slate-500/10 text-slate-200",
+  partial: "border-amber-500/50 bg-amber-500/10 text-amber-200",
+  errored: "border-rose-500/50 bg-rose-500/10 text-rose-200",
+};
+
+// v1.2.0 date-range chips over started_at. "all" is the default.
+type DateRange = "all" | "24h" | "7d" | "14d" | "30d";
+const DATE_RANGE_MS: Record<Exclude<DateRange, "all">, number> = {
+  "24h": 24 * 60 * 60 * 1000,
+  "7d": 7 * 24 * 60 * 60 * 1000,
+  "14d": 14 * 24 * 60 * 60 * 1000,
+  "30d": 30 * 24 * 60 * 60 * 1000,
+};
+const DATE_RANGE_FILTERS: DateRange[] = ["all", "24h", "7d", "14d", "30d"];
 
 function fmtDate(value: string | null): string {
   if (!value) return "—";
@@ -151,10 +190,16 @@ export function StatusView({
   const [localError, setLocalError] = useState<string | null>(null);
   const error = localError ?? (queryError instanceof Error ? queryError.message : queryError ? String(queryError) : null);
 
+  const searchParams = useSearchParams();
+  const runParam = searchParams?.get("run") ?? null;
   const [filter, setFilter] = useState<StatusKind | "all">("all");
   const [colorFilter, setColorFilter] = useState<StatusColor | "all">("all");
   const [expanded, setExpanded] = useState<StatusEntity | null>(null);
   const [retryingId, setRetryingId] = useState<string | null>(null);
+  // v1.2.0 — typed search over title / subtitle / synopsis / run_slug,
+  // plus a date-range chip over started_at.
+  const [search, setSearch] = useState("");
+  const [dateRange, setDateRange] = useState<DateRange>("all");
   // v0.8.2: Live events panel (folded in from the standalone Event log).
   // Default collapsed so the box grid stays the focus.
   const [liveEventsOpen, setLiveEventsOpen] = useState(false);
@@ -198,9 +243,55 @@ export function StatusView({
       })
     : [];
 
+  // v1.2.0: deep-link. When the URL carries ``?run=<id>`` (from a
+  // kickoff toast anywhere in the app), auto-open Expand on the
+  // matching entity as soon as the feed loads. Match is:
+  //   - exact entity id (task / agent execution / approval)
+  //   - OR thread_id / run_id prefix (start-run toast uses thread_id;
+  //     the entity id and thread_id differ but both share a UUID
+  //     prefix on the same run — a startsWith match catches either).
+  useEffect(() => {
+    if (!runParam || expanded || all.length === 0) return;
+    const match = all.find(
+      (e) =>
+        e.id === runParam ||
+        e.id.startsWith(runParam) ||
+        runParam.startsWith(e.id) ||
+        // Agents stash thread_id under log.input.thread_id.
+        (() => {
+          const input =
+            (e.log as { input?: { thread_id?: string } })?.input ?? null;
+          return input?.thread_id === runParam;
+        })(),
+    );
+    if (match) setExpanded(match);
+  }, [runParam, expanded, all]);
+
+  // v1.2.0 filter pipeline: kind → color → date range → search.
+  const searchTerm = search.trim().toLowerCase();
+  const dateCutoff =
+    dateRange === "all" ? null : Date.now() - DATE_RANGE_MS[dateRange];
   const visible = all
     .filter((e) => filter === "all" || e.kind === filter)
-    .filter((e) => colorFilter === "all" || e.color === colorFilter);
+    .filter((e) => colorFilter === "all" || e.color === colorFilter)
+    .filter((e) => {
+      if (dateCutoff === null) return true;
+      const ts = e.started_at ? new Date(e.started_at).getTime() : 0;
+      return ts >= dateCutoff;
+    })
+    .filter((e) => {
+      if (!searchTerm) return true;
+      const hay = [
+        e.title,
+        e.subtitle ?? "",
+        e.synopsis ?? "",
+        e.run_slug,
+        e.raw_status,
+      ]
+        .join(" ")
+        .toLowerCase();
+      return hay.includes(searchTerm);
+    });
 
   const counts: Record<StatusColor, number> = {
     active: all.filter((e) => e.color === "active").length,
@@ -255,6 +346,27 @@ export function StatusView({
             </button>
           ))}
         </div>
+        {/* v1.2.0 date-range chips */}
+        <div className="flex flex-wrap items-center gap-1">
+          <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+            Since:
+          </span>
+          {DATE_RANGE_FILTERS.map((opt) => (
+            <button
+              key={opt}
+              type="button"
+              onClick={() => setDateRange(opt)}
+              className={cn(
+                "rounded-full border px-2 py-0.5 text-[11px] transition-colors",
+                dateRange === opt
+                  ? "border-foreground bg-foreground text-background"
+                  : "border-border text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {opt === "all" ? "All time" : opt}
+            </button>
+          ))}
+        </div>
         <Button
           size="sm"
           variant="outline"
@@ -264,6 +376,18 @@ export function StatusView({
           <RefreshCcw className="mr-1.5 h-3.5 w-3.5" />
           Refresh
         </Button>
+      </div>
+
+      {/* v1.2.0 typed search over title / subtitle / synopsis / run_slug */}
+      <div className="relative">
+        <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+        <input
+          type="search"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search runs — title, tool, target, rt-slug…"
+          className="w-full rounded-md border border-border bg-background py-2 pl-8 pr-3 text-sm text-foreground placeholder:text-muted-foreground focus:border-foreground focus:outline-none"
+        />
       </div>
 
       {error && <p className="text-sm text-critical">{error}</p>}
@@ -358,6 +482,7 @@ export function StatusView({
       {/* Detail popup */}
       {expanded && (
         <ExpandedDetail
+          slug={slug}
           entity={expanded}
           onClose={() => setExpanded(null)}
         />
@@ -432,6 +557,7 @@ function StatusBox({
   retrying: boolean;
 }) {
   const Icon = COLOR_ICON[entity.color];
+  const OutcomeIcon = entity.outcome ? OUTCOME_ICON[entity.outcome] : null;
   return (
     <div
       className={cn(
@@ -450,17 +576,38 @@ function StatusBox({
             </p>
           )}
         </div>
-        <span
-          className={cn(
-            "shrink-0 rounded-full border px-2 py-0.5 text-[10px] uppercase tracking-wide",
-            COLOR_BADGE[entity.color],
+        <div className="flex shrink-0 flex-col items-end gap-1">
+          <span
+            className={cn(
+              "rounded-full border px-2 py-0.5 text-[10px] uppercase tracking-wide",
+              COLOR_BADGE[entity.color],
+            )}
+          >
+            <Icon className="-mt-0.5 mr-1 inline-block h-3 w-3" />
+            {COLOR_LABEL[entity.color]}
+          </span>
+          {/* v1.2.0: outcome sub-badge under the colour pill */}
+          {entity.outcome && OutcomeIcon && (
+            <span
+              className={cn(
+                "rounded-full border px-2 py-0.5 text-[10px] uppercase tracking-wide",
+                OUTCOME_CLASS[entity.outcome],
+              )}
+            >
+              <OutcomeIcon className="-mt-0.5 mr-1 inline-block h-3 w-3" />
+              {OUTCOME_LABEL[entity.outcome]}
+            </span>
           )}
-        >
-          <Icon className="-mt-0.5 mr-1 inline-block h-3 w-3" />
-          {COLOR_LABEL[entity.color]}
-        </span>
+        </div>
       </div>
+      {/* v1.2.0: plain-language synopsis */}
+      {entity.synopsis && (
+        <p className="text-xs italic text-muted-foreground">
+          {entity.synopsis}
+        </p>
+      )}
       <div className="flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
+        <span className="font-mono">{entity.run_slug}</span>
         <span>
           {KIND_LABEL[entity.kind]} · {entity.raw_status}
         </span>
@@ -494,12 +641,21 @@ function StatusBox({
 }
 
 function ExpandedDetail({
+  slug,
   entity,
   onClose,
 }: {
+  slug: string;
   entity: StatusEntity;
   onClose: () => void;
 }) {
+  // v1.2.0: fetch the per-entity step log lazily (query only fires
+  // because ExpandedDetail is mounted). If the entity has reached a
+  // terminal colour, disable the 3s polling — nothing new will arrive.
+  const isTerminal = entity.color === "completed" || entity.color === "failed";
+  const stepsQuery = useStatusSteps(slug, entity.kind, entity.id, {
+    liveTerminal: isTerminal,
+  });
   return (
     <>
       <div
@@ -517,6 +673,9 @@ function ExpandedDetail({
           <div>
             <h3 className="text-sm font-semibold text-foreground">
               {entity.title}
+              <span className="ml-2 font-mono text-[11px] text-muted-foreground">
+                {entity.run_slug}
+              </span>
             </h3>
             <p className="mt-0.5 text-xs text-muted-foreground">
               {KIND_LABEL[entity.kind]} · {entity.raw_status}
@@ -525,6 +684,11 @@ function ExpandedDetail({
                 <> · ended {fmtDate(entity.completed_at)}</>
               )}
             </p>
+            {entity.synopsis && (
+              <p className="mt-1 text-xs italic text-muted-foreground">
+                {entity.synopsis}
+              </p>
+            )}
           </div>
           <button
             type="button"
@@ -538,10 +702,131 @@ function ExpandedDetail({
         {/* v0.8.2: timeline at the top so the analyst sees the
             transition trail BEFORE the raw payload dump. */}
         <StatusTimeline history={entity.history} />
-        <pre className="mt-4 flex-1 overflow-auto rounded-md border border-border bg-background p-3 font-mono text-xs text-muted-foreground">
-          {JSON.stringify(entity.log, null, 2)}
-        </pre>
+        {/* v1.2.0: step log lands between the timeline and the JSON
+            payload — the analyst-readable trace of what actually
+            happened, beat by beat. */}
+        <StepLog query={stepsQuery} />
+        <details className="mt-3 flex-1 overflow-hidden rounded-md border border-border bg-background">
+          <summary className="cursor-pointer select-none px-3 py-2 text-[10px] uppercase tracking-wide text-muted-foreground">
+            Raw payload (JSON)
+          </summary>
+          <pre className="max-h-64 overflow-auto p-3 font-mono text-xs text-muted-foreground">
+            {JSON.stringify(entity.log, null, 2)}
+          </pre>
+        </details>
       </div>
     </>
+  );
+}
+
+// v1.2.0: renders the fetched step log. Each row is ``ts · kind ·
+// label`` with ``detail`` toggleable in a monospace block.
+function StepLog({
+  query,
+}: {
+  query: ReturnType<typeof useStatusSteps>;
+}) {
+  const [openIdx, setOpenIdx] = useState<Set<number>>(new Set());
+  const toggle = useCallback((i: number) => {
+    setOpenIdx((prev) => {
+      const next = new Set(prev);
+      if (next.has(i)) next.delete(i);
+      else next.add(i);
+      return next;
+    });
+  }, []);
+  if (query.isLoading) {
+    return (
+      <div className="mt-3 rounded-md border border-border bg-secondary/30 p-3">
+        <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
+          Step log
+        </p>
+        <p className="mt-2 text-xs text-muted-foreground">Loading…</p>
+      </div>
+    );
+  }
+  if (query.error) {
+    return (
+      <div className="mt-3 rounded-md border border-border bg-secondary/30 p-3">
+        <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
+          Step log
+        </p>
+        <p className="mt-2 text-xs text-critical">
+          Failed to load steps:{" "}
+          {query.error instanceof Error
+            ? query.error.message
+            : String(query.error)}
+        </p>
+      </div>
+    );
+  }
+  const data = query.data;
+  const steps = data?.steps ?? [];
+  return (
+    <div className="mt-3 rounded-md border border-border bg-secondary/30 p-3">
+      <div className="flex items-center justify-between">
+        <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
+          Step log ({steps.length}
+          {data?.truncated ? "+ truncated" : ""})
+        </p>
+      </div>
+      {steps.length === 0 ? (
+        <p className="mt-2 text-xs text-muted-foreground">
+          No steps recorded for this entity yet.
+        </p>
+      ) : (
+        <ol className="mt-2 space-y-1">
+          {steps.map((s, i) => {
+            const isOpen = openIdx.has(i);
+            const hasDetail =
+              s.detail && Object.keys(s.detail).length > 0;
+            return (
+              <li
+                key={`${s.kind}-${s.at}-${i}`}
+                className="rounded border-l-2 border-border bg-background/60 px-2 py-1.5"
+              >
+                <button
+                  type="button"
+                  onClick={() => hasDetail && toggle(i)}
+                  className={cn(
+                    "flex w-full items-start gap-2 text-left",
+                    hasDetail && "cursor-pointer",
+                  )}
+                  aria-expanded={isOpen}
+                >
+                  <span className="mt-0.5 shrink-0 font-mono text-[10px] text-muted-foreground">
+                    {new Date(s.at).toLocaleTimeString(undefined, {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                      second: "2-digit",
+                    })}
+                  </span>
+                  <Badge
+                    variant="outline"
+                    className="shrink-0 text-[10px]"
+                  >
+                    {s.kind}
+                  </Badge>
+                  <span className="min-w-0 flex-1 text-xs text-foreground">
+                    {s.label}
+                  </span>
+                  {hasDetail &&
+                    (isOpen ? (
+                      <ChevronDown className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    ) : (
+                      <ChevronRight className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    ))}
+                </button>
+                {isOpen && hasDetail && (
+                  <pre className="mt-1.5 overflow-auto rounded bg-background p-2 font-mono text-[11px] text-muted-foreground">
+                    {JSON.stringify(s.detail, null, 2)}
+                  </pre>
+                )}
+              </li>
+            );
+          })}
+        </ol>
+      )}
+    </div>
   );
 }

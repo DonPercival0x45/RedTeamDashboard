@@ -16,6 +16,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { startRun } from "@/lib/api";
 import { useProviderKeys } from "@/lib/hooks";
 import { CUSTOM_VALUE, getPresetModels } from "@/lib/llm-providers";
+import { runSlugFromId, useRunToast } from "@/components/run-toast-provider";
 import type { LLMProvider } from "@/lib/types";
 
 interface LastDispatched {
@@ -83,6 +84,7 @@ export function RunPrompt({
   // same key, so the two share one round-trip. Best-effort: on 401 / Redis
   // miss, `keys` stays [] and the dropdown falls back to presets.
   const { data: keys = [] } = useProviderKeys();
+  const runToast = useRunToast();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastDispatched, setLastDispatched] = useState<LastDispatched | null>(
@@ -158,6 +160,18 @@ export function RunPrompt({
         provider,
         modelName: effectiveModel,
         at: Date.now(),
+      });
+      // v1.2.0: cross-portal run tracking. Toast is redundant with the
+      // inline success banner right here — but the analyst may click
+      // away before it settles, and the toast + Status card show the
+      // same rt-XXXX handle so the trail is picked up wherever they
+      // land next.
+      runToast.fire({
+        kind: "agent",
+        runSlug: runSlugFromId(result.thread_id),
+        label: "Run dispatched",
+        sublabel: prompt.trim().slice(0, 80),
+        openHref: `/e/${slug}?run=${result.thread_id}`,
       });
       onStarted?.(result.thread_id);
     } catch (err) {

@@ -31,6 +31,7 @@ import {
   setRoadmapSuggestionPriority,
 } from "@/lib/api";
 import { qk, useMe, useRoadmapSuggestions } from "@/lib/hooks";
+import { runSlugFromId, useRunToast } from "@/components/run-toast-provider";
 import type {
   BulkRankResponse,
   CombineDetectResponse,
@@ -91,6 +92,7 @@ export default function SettingsFeedbackPage() {
   // handlers below still use the same call site, keeping the diff small.
   const qc = useQueryClient();
   const { data: me } = useMe();
+  const runToast = useRunToast();
   const [filter, setFilter] = useState<FilterChip>("all");
   const [priorityBucket, setPriorityBucket] = useState<PriorityBucket>("all");
   const [showCombined, setShowCombined] = useState(false);
@@ -165,12 +167,21 @@ export default function SettingsFeedbackPage() {
     try {
       const res = await detectRoadmapCombines();
       setCombineResult(res);
+      if (res.execution_id) {
+        runToast.fire({
+          kind: "planner",
+          runSlug: runSlugFromId(res.execution_id),
+          label: "Combine detection complete",
+          sublabel: `${res.clusters.length} cluster(s) proposed`,
+          openHref: `/settings/agent-runs?run=${res.execution_id}`,
+        });
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setCombineBusy(false);
     }
-  }, []);
+  }, [runToast]);
 
   const onConfirmMerge = useCallback(
     async (primaryId: string, memberIds: string[]) => {
@@ -202,12 +213,21 @@ export default function SettingsFeedbackPage() {
     try {
       const res = await rankRoadmapSuggestions();
       setRankResult(res);
+      if (res.execution_id) {
+        runToast.fire({
+          kind: "planner",
+          runSlug: runSlugFromId(res.execution_id),
+          label: "Prioritization complete",
+          sublabel: `${res.rankings.length} row(s) ranked`,
+          openHref: `/settings/agent-runs?run=${res.execution_id}`,
+        });
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setRankBusy(false);
     }
-  }, []);
+  }, [runToast]);
 
   const onApplyRank = useCallback(
     async (rankings: RankedRowRead[]) => {
@@ -295,13 +315,22 @@ export default function SettingsFeedbackPage() {
   const onReEvaluate = useCallback(
     async (row: RoadmapSuggestion) => {
       try {
-        await reEvaluateRoadmapSuggestion(row.id);
+        const updated = await reEvaluateRoadmapSuggestion(row.id);
         await reload();
+        if (updated.agent_execution_id) {
+          runToast.fire({
+            kind: "planner",
+            runSlug: runSlugFromId(updated.agent_execution_id),
+            label: "AI feedback re-evaluated",
+            sublabel: updated.agent_summary?.slice(0, 80) ?? undefined,
+            openHref: `/settings/agent-runs?run=${updated.agent_execution_id}`,
+          });
+        }
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       }
     },
-    [reload],
+    [reload, runToast],
   );
 
   const onSetCompletion = useCallback(

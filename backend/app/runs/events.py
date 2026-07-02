@@ -5,7 +5,7 @@ Inbound (consumed off ``runs:{eid}:in``):
 - ``run.resume`` { thread_id, approved, edited_args?, reason? }
 
 Outbound (published to ``runs:{eid}:events``):
-- ``run.started``       { thread_id, prompt }
+- ``run.started``       { thread_id, prompt, run_slug? }
 - ``approval.pending``  { thread_id, tool, args, risk, scope, tool_call_id }
 - ``tool.denied``       { thread_id, tool, args, reason, scope }
 - ``tool.auto_approved``{ thread_id, tool, args, risk, authorization_id }

@@ -143,6 +143,9 @@ export interface LoggedEvent {
 
 export type StatusColor = "active" | "pending" | "completed" | "failed";
 export type StatusKind = "agent" | "task" | "approval";
+// v1.2.0: sub-outcome nuance under the four colours. null on
+// still-running / pending rows.
+export type StatusOutcome = "success" | "empty" | "partial" | "errored";
 
 export interface StatusTransition {
   status: StatusColor;
@@ -162,12 +165,29 @@ export interface StatusEntity {
   retryable: boolean;
   log: Record<string, unknown>;
   history: StatusTransition[];
+  // v1.2.0
+  run_slug: string;
+  outcome: StatusOutcome | null;
+  synopsis: string | null;
 }
 
 export interface EngagementStatusResponse {
   agents: StatusEntity[];
   tasks: StatusEntity[];
   approvals: StatusEntity[];
+}
+
+// v1.2.0: one line in the per-entity step log. Newest last.
+export interface StepEntry {
+  at: string;
+  kind: string;
+  label: string;
+  detail: Record<string, unknown> | null;
+}
+
+export interface StepLogResponse {
+  steps: StepEntry[];
+  truncated: boolean;
 }
 
 // One entry in a finding's immutable summary history. Newest first.
