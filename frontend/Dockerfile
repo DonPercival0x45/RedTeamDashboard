@@ -14,17 +14,15 @@ EXPOSE 3000
 CMD ["npm", "run", "dev"]
 
 # Prod build: standalone Next.js bundle for Container Apps.
+# v1.0.0 flipped to fully runtime config — no NEXT_PUBLIC_* ARG at build.
+# One image serves any env; RTD_* env vars are read per-request by
+# app/layout.tsx and injected into the SSR HTML.
 FROM node:22-alpine AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
-# next.config.mjs reads NEXT_OUTPUT to decide whether to emit a
-# standalone bundle (Container App, this Dockerfile) or a static export
-# (Static Web Apps, release.yml's publish-viewer-static job).
 ENV NEXT_OUTPUT=standalone
-ARG NEXT_PUBLIC_API_BASE
-ENV NEXT_PUBLIC_API_BASE=$NEXT_PUBLIC_API_BASE
 RUN npm run build
 
 FROM node:22-alpine AS runner
