@@ -132,6 +132,16 @@ class Settings(BaseSettings):
     azure_storage_account_name: str = ""
     azure_storage_container_name: str = "engagement-exports"
 
+    # v1.3.1: GitHub repo used by the What's New / releases feed. The
+    # ``/releases.json`` endpoint fetches from
+    # ``api.github.com/repos/<github_repo>/releases`` + runs the same
+    # categorization enricher install.sh writes into the static bundle,
+    # caches for ``releases_cache_ttl_seconds``. Overridable per-deploy
+    # via env ``RTD_GITHUB_REPO`` if a fork wants to point at a
+    # different origin.
+    github_repo: str = "DonPercival0x45/RedTeamDashboard"
+    releases_cache_ttl_seconds: int = 3600
+
     # v0.12.0 — Tools tab sandbox runner selection.
     # ``docker`` = LocalDockerRunner (mounts /var/run/docker.sock, used
     # in local dev + CI). ``aci`` = ACIRunner (Azure Container Instances
