@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   Card,
   CardContent,
@@ -12,37 +13,34 @@ import {
 import { ProviderKeyImporter } from "@/components/provider-key-importer";
 import { ProviderKeyList } from "@/components/provider-key-list";
 import { QuickAddKey } from "@/components/quick-add-key";
-import { getMe, listProviderKeys } from "@/lib/api";
-import type { Me, ProviderKey, ProviderKeyImportResult } from "@/lib/types";
+import { qk, useMe, useProviderKeys } from "@/lib/hooks";
+import type { ProviderKeyImportResult } from "@/lib/types";
 
 // Per-user BYO key vault. Analysts upload a JSON list of credentials the
 // system encrypts and stores; only the masked tail comes back over the wire.
 // Phase 7+: keys are scoped to the acting analyst's Entra identity.
 
 export default function SettingsKeysPage() {
-  const [me, setMe] = useState<Me | null>(null);
-  const [keys, setKeys] = useState<ProviderKey[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // v1.0.0: react-query owns both queries. Guest role short-circuits the
+  // keys query via `enabled`, so we don't fire it for a role that can't
+  // list.
+  const qc = useQueryClient();
+  const { data: me } = useMe();
+  const keysQuery = useProviderKeys();
+  const keys = me?.role === "guest" ? null : keysQuery.data ?? null;
+  const error =
+    me?.role === "guest"
+      ? null
+      : keysQuery.error instanceof Error
+        ? keysQuery.error.message
+        : keysQuery.error
+          ? String(keysQuery.error)
+          : null;
   const [lastImport, setLastImport] =
     useState<ProviderKeyImportResult | null>(null);
-
-  const reload = useCallback(async () => {
-    setError(null);
-    try {
-      setKeys(await listProviderKeys());
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  }, []);
-
-  useEffect(() => {
-    void getMe()
-      .then((m) => {
-        setMe(m);
-        if (m.role !== "guest") void reload();
-      })
-      .catch(() => setMe(null));
-  }, [reload]);
+  const reload = async () => {
+    await qc.invalidateQueries({ queryKey: qk.providerKeys() });
+  };
 
   return (
     <div className="mx-auto max-w-3xl space-y-6 px-4 py-6">

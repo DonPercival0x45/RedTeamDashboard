@@ -7,7 +7,8 @@
 // run yet.
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Plus, Trash2, Wrench, X } from "lucide-react";
 import {
   Card,
@@ -19,14 +20,14 @@ import {
 import { Button } from "@/components/ui/button";
 import { ToolUploader } from "@/components/tool-uploader";
 import {
-  approveTool,
-  deleteTool,
-  getMe,
-  listTools,
-  revokeTool,
-} from "@/lib/api";
+  useApproveToolMutation,
+  useDeleteToolMutation,
+  useMe,
+  useRevokeToolMutation,
+  useTools,
+} from "@/lib/hooks";
 import { cn } from "@/lib/utils";
-import type { Me, ToolRead } from "@/lib/types";
+import type { ToolRead } from "@/lib/types";
 
 const STATUS_TONE: Record<ToolRead["status"], string> = {
   draft: "border-amber-500/50 bg-amber-500/10 text-amber-200",
@@ -46,25 +47,23 @@ const LANE_LABEL: Record<ToolRead["lane"], string> = {
 };
 
 export default function SettingsToolsPage() {
-  const [me, setMe] = useState<Me | null>(null);
-  const [tools, setTools] = useState<ToolRead[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // v1.0.0: react-query owns catalog + mutations. Approve/revoke/delete
+  // invalidate all "tools" queries (per-engagement + admin), so the
+  // engagement Tools tab reflects the change without a reload.
+  const qc = useQueryClient();
+  const { data: me } = useMe();
+  const { data: tools, error: queryError } = useTools({});
+  const approveMutation = useApproveToolMutation();
+  const revokeMutation = useRevokeToolMutation();
+  const deleteMutation = useDeleteToolMutation();
   const [uploaderOpen, setUploaderOpen] = useState(false);
   const [inspecting, setInspecting] = useState<ToolRead | null>(null);
-
-  const reload = useCallback(async () => {
-    setError(null);
-    try {
-      setTools(await listTools());
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  }, []);
-
-  useEffect(() => {
-    void getMe().then(setMe).catch(() => setMe(null));
-    void reload();
-  }, [reload]);
+  const error =
+    queryError instanceof Error
+      ? queryError.message
+      : queryError
+        ? String(queryError)
+        : null;
 
   const grouped = useMemo(() => {
     const t = tools ?? [];
@@ -143,7 +142,7 @@ export default function SettingsToolsPage() {
         <ToolUploader
           onDone={async () => {
             setUploaderOpen(false);
-            await reload();
+            await qc.invalidateQueries({ queryKey: ["tools"] });
           }}
         />
       )}
@@ -154,13 +153,14 @@ export default function SettingsToolsPage() {
         tools={grouped.draft}
         onInspect={setInspecting}
         onApprove={async (id, override) => {
-          await approveTool(id, { overrideValidation: override });
-          await reload();
+          await approveMutation.mutateAsync({
+            toolId: id,
+            opts: { overrideValidation: override },
+          });
         }}
         onDelete={async (id) => {
           if (!window.confirm("Delete this draft tool?")) return;
-          await deleteTool(id);
-          await reload();
+          await deleteMutation.mutateAsync(id);
         }}
       />
 
@@ -176,8 +176,7 @@ export default function SettingsToolsPage() {
             )
           )
             return;
-          await revokeTool(id);
-          await reload();
+          await revokeMutation.mutateAsync(id);
         }}
       />
 
@@ -188,8 +187,7 @@ export default function SettingsToolsPage() {
         onInspect={setInspecting}
         onDelete={async (id) => {
           if (!window.confirm("Hard-delete this revoked row?")) return;
-          await deleteTool(id);
-          await reload();
+          await deleteMutation.mutateAsync(id);
         }}
       />
 

@@ -13,7 +13,10 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { createIntegration, updateIntegration } from "@/lib/api";
+import {
+  useCreateIntegrationMutation,
+  useUpdateIntegrationMutation,
+} from "@/lib/hooks";
 import {
   PURPOSE_LABELS,
   type ProviderDef,
@@ -66,8 +69,10 @@ export function IntegrationSetupModal({
   });
   const [logoUrl, setLogoUrl] = useState<string | null>(existing?.logo_url ?? null);
   const [logoError, setLogoError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const createMutation = useCreateIntegrationMutation();
+  const updateMutation = useUpdateIntegrationMutation();
+  const busy = createMutation.isPending || updateMutation.isPending;
 
   const requiredMissing = useMemo(() => {
     return provider.fields
@@ -119,11 +124,8 @@ export function IntegrationSetupModal({
       setError(`Missing required field(s): ${requiredMissing.join(", ")}`);
       return;
     }
-    setBusy(true);
     setError(null);
     try {
-      // Trim every config value; preserve masked values as-is so the
-      // backend's _merge_config keeps the stored secret.
       const submittedConfig: Record<string, string> = {};
       for (const [k, v] of Object.entries(config)) {
         if (v == null) continue;
@@ -137,7 +139,10 @@ export function IntegrationSetupModal({
           config: submittedConfig,
           logo_url: provider.acceptsCustomLogo ? logoUrl : null,
         };
-        await updateIntegration(existing.id, body);
+        await updateMutation.mutateAsync({
+          integrationId: existing.id,
+          body,
+        });
       } else {
         const body: IntegrationCreate = {
           type: provider.type,
@@ -147,16 +152,15 @@ export function IntegrationSetupModal({
           config: submittedConfig,
           logo_url: provider.acceptsCustomLogo ? logoUrl : null,
         };
-        await createIntegration(body);
+        await createMutation.mutateAsync(body);
       }
       onSaved();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
     }
   }, [
     config,
+    createMutation,
     enabled,
     existing,
     isEdit,
@@ -166,6 +170,7 @@ export function IntegrationSetupModal({
     provider,
     purpose,
     requiredMissing,
+    updateMutation,
   ]);
 
   // Lock background scroll while the modal is open.

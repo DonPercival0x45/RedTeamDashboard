@@ -7,10 +7,10 @@ import {
   currentVersion,
   getLastSeenVersion,
   hasUnseenRelease,
-  loadReleases,
   markVersionSeen,
 } from "@/lib/release-notes";
 import { useAuth } from "@/lib/auth";
+import { useReleases } from "@/lib/hooks";
 
 // Top-of-page strip that appears once per browser-session-per-new-version.
 // "Seen" state lives in localStorage keyed to the latest tag in
@@ -19,31 +19,24 @@ import { useAuth } from "@/lib/auth";
 // next deploy.
 export function WhatsNewBanner() {
   const { identity } = useAuth();
-  const [latestTag, setLatestTag] = useState<string | null>(null);
-  const [latestName, setLatestName] = useState<string | null>(null);
-  const [visible, setVisible] = useState(false);
+  // v1.0.0: shared useReleases cache. The settings/whats-new page reads
+  // the same query key, so its render is instant after the banner mounts.
+  const { data: releases } = useReleases();
+  const [dismissed, setDismissed] = useState(false);
 
-  useEffect(() => {
-    // Don't fetch (or render anything) until the analyst is signed in.
-    if (!identity) return;
-    let cancelled = false;
-    void loadReleases().then((releases) => {
-      if (cancelled) return;
-      const tag = currentVersion(releases);
-      if (!tag) return;
-      const lastSeen = getLastSeenVersion();
-      setLatestTag(tag);
-      setLatestName(releases[0]?.name ?? tag);
-      setVisible(hasUnseenRelease(releases, lastSeen));
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [identity]);
+  const latestTag = releases ? currentVersion(releases) : null;
+  const latestName = releases?.[0]?.name ?? latestTag;
+  const visible = Boolean(
+    identity &&
+      !dismissed &&
+      latestTag &&
+      releases &&
+      hasUnseenRelease(releases, getLastSeenVersion()),
+  );
 
   const dismiss = useCallback(() => {
     if (latestTag) markVersionSeen(latestTag);
-    setVisible(false);
+    setDismissed(true);
   }, [latestTag]);
 
   if (!visible || !latestTag) return null;

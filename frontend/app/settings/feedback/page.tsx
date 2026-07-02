@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Merge, Sparkles, UploadCloud, X } from "lucide-react";
 import {
   Card,
@@ -23,13 +24,12 @@ import {
   decideRoadmapSuggestion,
   deleteRoadmapSuggestion,
   detectRoadmapCombines,
-  getMe,
-  listRoadmapSuggestions,
   pushRoadmapToGitHub,
   rankRoadmapSuggestions,
   reEvaluateRoadmapSuggestion,
   setRoadmapSuggestionPriority,
 } from "@/lib/api";
+import { qk, useMe, useRoadmapSuggestions } from "@/lib/hooks";
 import type {
   BulkRankResponse,
   CombineDetectResponse,
@@ -85,19 +85,20 @@ const STATUS_CLASS: Record<RoadmapSuggestionStatus, string> = {
 };
 
 export default function SettingsFeedbackPage() {
-  const [me, setMe] = useState<Me | null>(null);
-  const [rows, setRows] = useState<RoadmapSuggestion[] | null>(null);
+  // v1.0.0: react-query owns the me + rows queries. reload() maps to
+  // invalidateQueries on the current filter combo — the many mutation
+  // handlers below still use the same call site, keeping the diff small.
+  const qc = useQueryClient();
+  const { data: me } = useMe();
   const [filter, setFilter] = useState<FilterChip>("all");
-  // v0.16.0
   const [priorityBucket, setPriorityBucket] = useState<PriorityBucket>("all");
   const [showCombined, setShowCombined] = useState(false);
   const [sortByPriority, setSortByPriority] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [localError, setLocalError] = useState<string | null>(null);
   const [body, setBody] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [pushing, setPushing] = useState(false);
   const [pushStatus, setPushStatus] = useState<string | null>(null);
-  // Agent-op modals
   const [combineBusy, setCombineBusy] = useState(false);
   const [combineResult, setCombineResult] =
     useState<CombineDetectResponse | null>(null);
@@ -109,26 +110,23 @@ export default function SettingsFeedbackPage() {
     return { ...p, show_combined: showCombined };
   }, [priorityBucket, showCombined]);
 
-  const reload = useCallback(async () => {
-    setError(null);
-    try {
-      const next = await listRoadmapSuggestions(listFilters);
-      setRows(next);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  }, [listFilters]);
+  const rowsQuery = useRoadmapSuggestions(listFilters);
+  const rows = rowsQuery.data ?? null;
+  const error =
+    localError ??
+    (rowsQuery.error instanceof Error
+      ? rowsQuery.error.message
+      : rowsQuery.error
+        ? String(rowsQuery.error)
+        : null);
+  const setError = setLocalError;
 
-  useEffect(() => {
-    void reload();
-    void getMe()
-      .then(setMe)
-      .catch(() => {
-        // /me is best-effort — if it fails (older backend, dev with no
-        // X-User-Id), we just default to non-admin and let the server gate.
-        setMe(null);
-      });
-  }, [reload]);
+  const reload = useCallback(async () => {
+    setLocalError(null);
+    await qc.invalidateQueries({
+      queryKey: qk.roadmapSuggestions(listFilters),
+    });
+  }, [qc, listFilters]);
 
   const visible = useMemo(() => {
     if (!rows) return null;
@@ -528,7 +526,7 @@ export default function SettingsFeedbackPage() {
             <SuggestionRow
               key={row.id}
               row={row}
-              me={me}
+              me={me ?? null}
               onDecide={onDecide}
               onDelete={onDelete}
               onReEvaluate={onReEvaluate}

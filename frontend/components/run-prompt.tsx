@@ -13,9 +13,10 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { listProviderKeys, startRun } from "@/lib/api";
+import { startRun } from "@/lib/api";
+import { useProviderKeys } from "@/lib/hooks";
 import { CUSTOM_VALUE, getPresetModels } from "@/lib/llm-providers";
-import type { LLMProvider, ProviderKey } from "@/lib/types";
+import type { LLMProvider } from "@/lib/types";
 
 interface LastDispatched {
   threadId: string;
@@ -78,22 +79,15 @@ export function RunPrompt({
     DEFAULT_MODELS.anthropic,
   );
   const [customModel, setCustomModel] = useState<string>("");
-  const [keys, setKeys] = useState<ProviderKey[]>([]);
+  // v1.0.0: shared useProviderKeys cache. The /settings/keys page hits the
+  // same key, so the two share one round-trip. Best-effort: on 401 / Redis
+  // miss, `keys` stays [] and the dropdown falls back to presets.
+  const { data: keys = [] } = useProviderKeys();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastDispatched, setLastDispatched] = useState<LastDispatched | null>(
     null,
   );
-
-  // Fetch the analyst's stored BYO keys once on mount so the dropdown
-  // can surface their per-key model names at the top of the list. The
-  // call is best-effort — a 401 / Redis miss just leaves us showing
-  // the preset list, which is correct for a first-time user.
-  useEffect(() => {
-    listProviderKeys()
-      .then((rows) => setKeys(rows ?? []))
-      .catch(() => setKeys([]));
-  }, []);
 
   // Auto-dismiss the success banner after 12s so it doesn't sit stale forever.
   // 12s is long enough for the analyst to read + click the Status link.

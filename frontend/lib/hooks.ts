@@ -16,38 +16,67 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import {
+  approveTool,
   archiveEngagement,
+  createIntegration,
   createObservation,
+  deleteIntegration,
   createScopeItem,
+  decideApproval,
   deleteObservation,
+  deleteProviderKey,
   deleteScopeItem,
+  deleteTool,
   flushEngagement,
   getContributionsEntries,
   getContributionsHeatmap,
   getEngagement,
   getEngagementCosts,
   getEngagementStatus,
+  getMe,
+  listAdminUsers,
+  listAuthorizations,
   listEngagements,
   listEntities,
   listFindings,
+  listIntegrations,
   listObservations,
+  listProviderKeys,
+  listRoadmapSuggestions,
   listScope,
   listStoredEntities,
   listToolInvocations,
   listTools,
   retryAgentExecution,
   retryTask,
+  revokeAuthorization,
+  revokeTool,
+  updateIntegration,
+  updateUserRole,
 } from "@/lib/api";
+import { loadReleases } from "@/lib/release-notes";
 import type {
   ContributionSource,
   Finding,
+  Integration,
   Observation,
+  RoadmapListFilters,
   ScopeItem,
   ToolInvocationRead,
   ToolStatus,
+  UserRole,
 } from "@/lib/types";
 
 export const qk = {
+  me: () => ["me"] as const,
+  releases: () => ["releases"] as const,
+  providerKeys: () => ["provider-keys"] as const,
+  adminUsers: () => ["admin-users"] as const,
+  integrations: () => ["integrations"] as const,
+  roadmapSuggestions: (filters: RoadmapListFilters | undefined) =>
+    ["roadmap-suggestions", filters] as const,
+  authorizations: (engagementId: string, active?: boolean) =>
+    ["authorizations", engagementId, { active }] as const,
   engagements: () => ["engagements"] as const,
   engagement: (slug: string) => ["engagement", slug] as const,
   findings: (slug: string) => ["findings", slug] as const,
@@ -262,6 +291,189 @@ export function useContributionsEntries(
       }),
   });
 }
+
+// ── me / whoami ──────────────────────────────────────────────────────
+// Shared across every settings page + IdentityMenu. One cache = one
+// network round-trip per session (staleTime carries it further).
+
+export function useMe() {
+  return useQuery({
+    queryKey: qk.me(),
+    queryFn: getMe,
+    staleTime: 5 * 60_000,
+  });
+}
+
+// ── release notes ────────────────────────────────────────────────────
+
+export function useReleases() {
+  return useQuery({
+    queryKey: qk.releases(),
+    queryFn: () => loadReleases(),
+    staleTime: 60 * 60_000,
+  });
+}
+
+// ── provider keys ────────────────────────────────────────────────────
+
+export function useProviderKeys() {
+  return useQuery({
+    queryKey: qk.providerKeys(),
+    queryFn: () => listProviderKeys(),
+  });
+}
+
+export function useDeleteProviderKeyMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (keyId: string) => deleteProviderKey(keyId),
+    onSuccess: () =>
+      qc.invalidateQueries({ queryKey: qk.providerKeys() }),
+  });
+}
+
+// ── admin users / RBAC ───────────────────────────────────────────────
+
+export function useAdminUsers() {
+  return useQuery({
+    queryKey: qk.adminUsers(),
+    queryFn: () => listAdminUsers(),
+  });
+}
+
+export function useUpdateUserRoleMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (params: { userId: string; role: UserRole }) =>
+      updateUserRole(params.userId, params.role),
+    onSuccess: () =>
+      qc.invalidateQueries({ queryKey: qk.adminUsers() }),
+  });
+}
+
+// ── integrations ─────────────────────────────────────────────────────
+
+export function useIntegrations() {
+  return useQuery({
+    queryKey: qk.integrations(),
+    queryFn: () => listIntegrations(),
+  });
+}
+
+export function useCreateIntegrationMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: Parameters<typeof createIntegration>[0]) =>
+      createIntegration(body),
+    onSuccess: () =>
+      qc.invalidateQueries({ queryKey: qk.integrations() }),
+  });
+}
+
+export function useUpdateIntegrationMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (params: {
+      integrationId: string;
+      body: Parameters<typeof updateIntegration>[1];
+    }) => updateIntegration(params.integrationId, params.body),
+    onSuccess: () =>
+      qc.invalidateQueries({ queryKey: qk.integrations() }),
+  });
+}
+
+export function useDeleteIntegrationMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => deleteIntegration(id),
+    onSuccess: () =>
+      qc.invalidateQueries({ queryKey: qk.integrations() }),
+  });
+}
+
+// ── roadmap suggestions (feedback tab) ───────────────────────────────
+
+export function useRoadmapSuggestions(
+  filters: RoadmapListFilters | undefined,
+) {
+  return useQuery({
+    queryKey: qk.roadmapSuggestions(filters),
+    queryFn: () => listRoadmapSuggestions(filters),
+  });
+}
+
+// ── authorizations / grants ──────────────────────────────────────────
+
+export function useAuthorizations(
+  engagementId: string,
+  active?: boolean,
+) {
+  return useQuery({
+    queryKey: qk.authorizations(engagementId, active),
+    queryFn: () => listAuthorizations(engagementId, active),
+    enabled: Boolean(engagementId),
+  });
+}
+
+export function useRevokeAuthorizationMutation(engagementId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (authorizationId: string) =>
+      revokeAuthorization(authorizationId),
+    onSuccess: () =>
+      // Invalidate all authorization variants for this engagement (active,
+      // inactive, undefined) — the shape of the tuple key doesn't matter
+      // for prefix match.
+      qc.invalidateQueries({
+        queryKey: ["authorizations", engagementId],
+      }),
+  });
+}
+
+// ── approvals ────────────────────────────────────────────────────────
+
+export function useDecideApprovalMutation() {
+  // No query to invalidate — approvals are per-modal, ephemeral.
+  return useMutation({
+    mutationFn: (params: {
+      approvalId: string;
+      body: Parameters<typeof decideApproval>[1];
+    }) => decideApproval(params.approvalId, params.body),
+  });
+}
+
+// ── admin tools catalog (settings) ───────────────────────────────────
+
+export function useApproveToolMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (params: {
+      toolId: string;
+      opts?: Parameters<typeof approveTool>[1];
+    }) => approveTool(params.toolId, params.opts),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["tools"] }),
+  });
+}
+
+export function useRevokeToolMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (toolId: string) => revokeTool(toolId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["tools"] }),
+  });
+}
+
+export function useDeleteToolMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (toolId: string) => deleteTool(toolId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["tools"] }),
+  });
+}
+
+// Re-export Integration type only if callers pass Integration through
+// mutation args — kept to satisfy TS narrowing at edit sites.
+export type { Integration };
 
 export function useEngagementStatus(slug: string) {
   // Was: 2s setInterval in StatusView. Same cadence — the analyst

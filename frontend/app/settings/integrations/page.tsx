@@ -8,7 +8,8 @@
 // affordances. Admin-only.
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Pencil, Plus, Trash2 } from "lucide-react";
 import {
   Card,
@@ -20,10 +21,11 @@ import {
 import { Button } from "@/components/ui/button";
 import { IntegrationSetupModal } from "@/components/integration-setup-modal";
 import {
-  deleteIntegration,
-  getMe,
-  listIntegrations,
-} from "@/lib/api";
+  qk,
+  useDeleteIntegrationMutation,
+  useIntegrations,
+  useMe,
+} from "@/lib/hooks";
 import {
   CUSTOM_PROVIDER,
   PROVIDER_CATALOG,
@@ -32,7 +34,7 @@ import {
   type ProviderDef,
 } from "@/lib/integrations-catalog";
 import { cn } from "@/lib/utils";
-import type { Integration, Me } from "@/lib/types";
+import type { Integration } from "@/lib/types";
 
 type ModalMode =
   | { kind: "new"; provider: ProviderDef }
@@ -40,43 +42,34 @@ type ModalMode =
   | null;
 
 export default function SettingsIntegrationsPage() {
-  const [me, setMe] = useState<Me | null>(null);
-  const [rows, setRows] = useState<Integration[] | null>(null);
+  const qc = useQueryClient();
+  const { data: me } = useMe();
+  const { data: rows, error: queryError } = useIntegrations();
+  const deleteMutation = useDeleteIntegrationMutation();
   const [modal, setModal] = useState<ModalMode>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [localError, setLocalError] = useState<string | null>(null);
+  const error =
+    localError ??
+    (queryError instanceof Error
+      ? queryError.message
+      : queryError
+        ? String(queryError)
+        : null);
 
-  const reload = useCallback(async () => {
-    setError(null);
-    try {
-      const next = await listIntegrations();
-      setRows(next);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  }, []);
-
-  useEffect(() => {
-    void getMe().then(setMe).catch(() => setMe(null));
-    void reload();
-  }, [reload]);
-
-  const onDelete = useCallback(
-    async (row: Integration) => {
-      if (
-        !window.confirm(
-          `Remove the "${row.name}" integration? This cannot be undone.`,
-        )
+  const onDelete = async (row: Integration) => {
+    if (
+      !window.confirm(
+        `Remove the "${row.name}" integration? This cannot be undone.`,
       )
-        return;
-      try {
-        await deleteIntegration(row.id);
-        await reload();
-      } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
-      }
-    },
-    [reload],
-  );
+    )
+      return;
+    setLocalError(null);
+    try {
+      await deleteMutation.mutateAsync(row.id);
+    } catch (err) {
+      setLocalError(err instanceof Error ? err.message : String(err));
+    }
+  };
 
   const configured = useMemo(() => rows ?? [], [rows]);
 
@@ -203,7 +196,7 @@ export default function SettingsIntegrationsPage() {
           onClose={() => setModal(null)}
           onSaved={() => {
             setModal(null);
-            void reload();
+            void qc.invalidateQueries({ queryKey: qk.integrations() });
           }}
         />
       )}

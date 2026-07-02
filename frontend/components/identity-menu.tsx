@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState, type ReactNode } from "react";
+import { type ReactNode } from "react";
 import {
   AlertCircle,
   Globe,
@@ -12,8 +12,8 @@ import {
   Wrench,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { getMe } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
+import { useMe } from "@/lib/hooks";
 
 // Hover tooltip for the icon-only menu entries. Pure CSS via group-hover
 // so it works without JS state; appears below the icon with a small
@@ -52,14 +52,11 @@ function IconLink({
 // without forcing the analyst to learn the icons cold.
 export function IdentityMenu() {
   const { enabled, identity, signOut } = useAuth();
-  const [isAdmin, setIsAdmin] = useState(false);
-
-  useEffect(() => {
-    if (!identity) return;
-    void getMe()
-      .then((m) => setIsAdmin(m.is_admin))
-      .catch(() => setIsAdmin(false));
-  }, [identity]);
+  // v1.0.0: shared useMe cache. Every other settings page hits this too;
+  // once loaded, the /me round-trip happens at most once per stale window
+  // (5 min).
+  const { data: me } = useMe();
+  const isAdmin = Boolean(me?.is_admin);
 
   if (!identity) return null;
   return (

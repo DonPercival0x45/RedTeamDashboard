@@ -5,7 +5,7 @@
 // Backend refuses to demote the acting admin themselves (avoid lockout).
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useState } from "react";
 import {
   Card,
   CardContent,
@@ -13,8 +13,12 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { getMe, listAdminUsers, updateUserRole } from "@/lib/api";
-import type { AdminUser, Me, UserRole } from "@/lib/types";
+import {
+  useAdminUsers,
+  useMe,
+  useUpdateUserRoleMutation,
+} from "@/lib/hooks";
+import type { AdminUser, UserRole } from "@/lib/types";
 
 const ROLE_LABEL: Record<UserRole, string> = {
   admin: "Admin — full access",
@@ -29,49 +33,32 @@ const ROLE_CLASS: Record<UserRole, string> = {
 };
 
 export default function SettingsManagementPage() {
-  const [me, setMe] = useState<Me | null>(null);
-  const [users, setUsers] = useState<AdminUser[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // v1.0.0: react-query owns both queries + the role-change mutation.
+  const { data: me } = useMe();
+  const { data: users, error: queryError } = useAdminUsers();
+  const roleMutation = useUpdateUserRoleMutation();
   const [savingId, setSavingId] = useState<string | null>(null);
+  const [localError, setLocalError] = useState<string | null>(null);
+  const error =
+    localError ??
+    (queryError instanceof Error
+      ? queryError.message
+      : queryError
+        ? String(queryError)
+        : null);
 
-  const reload = useCallback(async () => {
-    setError(null);
+  const onRoleChange = async (user: AdminUser, role: UserRole) => {
+    if (user.role === role) return;
+    setSavingId(user.id);
+    setLocalError(null);
     try {
-      const [meData, list] = await Promise.all([
-        getMe(),
-        listAdminUsers(),
-      ]);
-      setMe(meData);
-      setUsers(list);
+      await roleMutation.mutateAsync({ userId: user.id, role });
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setLocalError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSavingId(null);
     }
-  }, []);
-
-  useEffect(() => {
-    void reload();
-  }, [reload]);
-
-  const onRoleChange = useCallback(
-    async (user: AdminUser, role: UserRole) => {
-      if (user.role === role) return;
-      setSavingId(user.id);
-      setError(null);
-      try {
-        const updated = await updateUserRole(user.id, role);
-        setUsers((prev) =>
-          prev
-            ? prev.map((u) => (u.id === updated.id ? updated : u))
-            : prev,
-        );
-      } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
-      } finally {
-        setSavingId(null);
-      }
-    },
-    [],
-  );
+  };
 
   return (
     <div className="mx-auto max-w-4xl space-y-6 px-4 py-6">
@@ -112,10 +99,10 @@ export default function SettingsManagementPage() {
           </CardHeader>
           <CardContent className="space-y-3">
             {error && <p className="text-sm text-critical">{error}</p>}
-            {users === null && !error && (
+            {users === undefined && !error && (
               <p className="text-sm text-muted-foreground">Loading…</p>
             )}
-            {users !== null && users.length === 0 && (
+            {users !== undefined && users.length === 0 && (
               <p className="text-sm text-muted-foreground">
                 No users yet. They appear here on first sign-in.
               </p>

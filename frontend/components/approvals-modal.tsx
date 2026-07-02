@@ -12,7 +12,7 @@ import {
 } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { decideApproval } from "@/lib/api";
+import { useDecideApprovalMutation } from "@/lib/hooks";
 
 export interface PendingApproval {
   approval_id: string;
@@ -34,8 +34,9 @@ export function ApprovalsModal({
   const [argsJson, setArgsJson] = useState("");
   const [reason, setReason] = useState("");
   const [remember, setRemember] = useState(false);
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const mutation = useDecideApprovalMutation();
+  const busy = mutation.isPending;
 
   useEffect(() => {
     if (pending) {
@@ -49,13 +50,12 @@ export function ApprovalsModal({
   if (!pending) return null;
 
   const decide = async (kind: "approve" | "edit" | "deny") => {
-    setBusy(true);
     setError(null);
     try {
       if (kind === "approve") {
-        await decideApproval(pending.approval_id, {
-          approved: true,
-          remember_for_session: remember,
+        await mutation.mutateAsync({
+          approvalId: pending.approval_id,
+          body: { approved: true, remember_for_session: remember },
         });
       } else if (kind === "edit") {
         let edited: Record<string, unknown>;
@@ -63,25 +63,28 @@ export function ApprovalsModal({
           edited = JSON.parse(argsJson);
         } catch {
           setError("Edited args must be valid JSON");
-          setBusy(false);
           return;
         }
-        await decideApproval(pending.approval_id, {
-          approved: true,
-          edited_args: edited,
-          remember_for_session: remember,
+        await mutation.mutateAsync({
+          approvalId: pending.approval_id,
+          body: {
+            approved: true,
+            edited_args: edited,
+            remember_for_session: remember,
+          },
         });
       } else {
-        await decideApproval(pending.approval_id, {
-          approved: false,
-          reason: reason.trim() || "denied by operator",
+        await mutation.mutateAsync({
+          approvalId: pending.approval_id,
+          body: {
+            approved: false,
+            reason: reason.trim() || "denied by operator",
+          },
         });
       }
       onResolved(pending.approval_id);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
     }
   };
 
