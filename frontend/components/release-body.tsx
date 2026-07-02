@@ -47,7 +47,23 @@ function renderInline(text: string): (JSX.Element | string)[] {
   return parts.length > 0 ? parts : [text];
 }
 
-export function ReleaseBody({ body }: { body: string | null }) {
+// v1.3.0: which ## headings to drop when ``hideInstallSections`` is on.
+// Case-insensitive, matched against the trimmed heading text.
+const INSTALL_HEADINGS = new Set(["images", "cli", "deploy"]);
+
+export function ReleaseBody({
+  body,
+  hideInstallSections = false,
+}: {
+  body: string | null;
+  // v1.3.0: when true, sections whose ## heading is exactly "Images",
+  // "CLI", or "Deploy" (the auto-generated docker/pip/install trio)
+  // are skipped. Everything BETWEEN the skipped heading and the next
+  // ## heading is dropped too. Used by the What's New page to render
+  // "above-fold" clean content, and the same body un-filtered inside
+  // a collapsed "Install details" toggle.
+  hideInstallSections?: boolean;
+}) {
   if (!body || !body.trim()) {
     return (
       <p className="text-sm italic text-muted-foreground">
@@ -60,6 +76,9 @@ export function ReleaseBody({ body }: { body: string | null }) {
   let listBuffer: string[] = [];
   let paraBuffer: string[] = [];
   let blockKey = 0;
+  // v1.3.0: when we hit an install-section ## heading, drop every
+  // subsequent line until the next heading of any level.
+  let skippingSection = false;
 
   const flushList = () => {
     if (listBuffer.length === 0) return;
@@ -89,8 +108,10 @@ export function ReleaseBody({ body }: { body: string | null }) {
   for (const raw of lines) {
     const line = raw.trim();
     if (!line) {
-      flushList();
-      flushPara();
+      if (!skippingSection) {
+        flushList();
+        flushPara();
+      }
       continue;
     }
     const headingMatch = line.match(/^(#{1,3})\s+(.+)$/);
@@ -100,6 +121,17 @@ export function ReleaseBody({ body }: { body: string | null }) {
       flushPara();
       const level = headingMatch[1].length;
       const text = headingMatch[2];
+      // v1.3.0: install-section filter. A ## heading whose text is
+      // one of Images / CLI / Deploy starts a skipped run; any other
+      // heading (## or otherwise) ends it.
+      if (hideInstallSections) {
+        const normalized = text.trim().toLowerCase();
+        if (INSTALL_HEADINGS.has(normalized)) {
+          skippingSection = true;
+          continue;
+        }
+        skippingSection = false;
+      }
       const Tag = (level === 1 ? "h2" : level === 2 ? "h3" : "h4") as
         | "h2"
         | "h3"
@@ -115,6 +147,9 @@ export function ReleaseBody({ body }: { body: string | null }) {
           {renderInline(text)}
         </Tag>,
       );
+    } else if (skippingSection) {
+      // Body of an install section — drop it.
+      continue;
     } else if (bulletMatch) {
       flushPara();
       listBuffer.push(bulletMatch[1]);
