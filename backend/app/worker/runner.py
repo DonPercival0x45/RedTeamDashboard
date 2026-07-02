@@ -304,7 +304,16 @@ class RunRunner:
         }
         config = self._config(thread_id)
 
-        started_payload: dict[str, Any] = {"thread_id": thread_id, "prompt": prompt}
+        # v1.2.0: derive run_slug from thread_id (matches the Status
+        # card's slug so the kickoff toast and the eventual card show
+        # the same rt-XXXX handle). Keep in sync with
+        # ``app/api/status._run_slug`` and ``frontend/lib/runSlug.ts``.
+        run_slug = f"rt-{thread_id.replace('-', '')[:4].lower()}"
+        started_payload: dict[str, Any] = {
+            "thread_id": thread_id,
+            "prompt": prompt,
+            "run_slug": run_slug,
+        }
         if model is not None:
             started_payload["model"] = dict(model)
         self._audit(engagement_id, "run.started", started_payload)

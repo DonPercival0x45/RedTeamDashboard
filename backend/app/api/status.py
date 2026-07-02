@@ -45,7 +45,10 @@ from app.schemas.status import (
     EngagementStatusResponse,
     StatusColor,
     StatusEntity,
+    StatusOutcome,
     StatusTransition,
+    StepEntry,
+    StepLogResponse,
 )
 
 router = APIRouter()
@@ -58,6 +61,147 @@ def _engagement_by_slug(session: Session, slug: str) -> Engagement:
     if eng is None:
         raise HTTPException(status_code=404, detail=f"engagement '{slug}' not found")
     return eng
+
+
+# ── v1.2.0: run_slug + outcome + synopsis derivation ────────────────────
+#
+# All three are derived from existing columns at read time — no schema
+# migration. run_slug is a display-only handle (the URL still uses the
+# full UUID). Outcome + synopsis fold together the terminal-state
+# signals so the analyst sees "success/empty/partial/errored + one
+# line of what happened" without needing to open the JSON payload.
+
+
+def _run_slug(source: str | uuid.UUID) -> str:
+    """rt-<4 hex> — first four hex chars of the identifier.
+
+    64k display slugs. Collisions are visually harmless (the UI shows
+    it, the URL uses the full ID). Keep this in sync with the frontend
+    ``lib/runSlug.ts`` helper so kickoff toasts show the same slug the
+    Status card will show once the row is visible.
+
+    For agent/task entities the caller should pass the run's
+    ``thread_id`` (string) when known — that way the kickoff toast (which
+    fires off the ``run.started`` SSE payload) shows the same rt-XXXX
+    the Status card will show when the reconciler flips it to
+    completed/failed. Falls back to the entity's own UUID otherwise.
+    """
+    if isinstance(source, uuid.UUID):
+        return f"rt-{source.hex[:4]}"
+    # String path — strip dashes, take first 4 hex chars. Handles both
+    # UUID strings and plain hex strings.
+    hex_only = source.replace("-", "")
+    return f"rt-{hex_only[:4].lower()}"
+
+
+def _agent_outcome(row: AgentExecution) -> StatusOutcome | None:
+    if row.status == AgentExecutionStatus.running:
+        return None
+    if row.status == AgentExecutionStatus.failed or row.error:
+        return "errored"
+    # completed. Look at the shape of ``output`` per-agent-kind for the
+    # empty/partial/success split. Errors mid-run that still produced
+    # some structured output land in ``partial``.
+    output = row.output or {}
+    partial_flag = bool(output.get("partial") or output.get("tool_errors"))
+    findings_count = int(output.get("findings_count") or 0)
+    tasks_count = int(output.get("tasks_count") or 0)
+    tools_count = int(output.get("tools_count") or 0)
+    if partial_flag:
+        return "partial"
+    if row.agent == AgentName.strategic and tasks_count == 0:
+        return "empty"
+    if row.agent == AgentName.tactical and findings_count == 0 and tools_count == 0:
+        return "empty"
+    if row.agent == AgentName.triage:
+        # Triage always produces a summary; call it success unless the
+        # output is literally empty.
+        return "success" if output else "empty"
+    return "success"
+
+
+def _task_outcome(row: Task) -> StatusOutcome | None:
+    if row.status in (
+        TaskStatus.pending,
+        TaskStatus.deferred,
+        TaskStatus.dispatched,
+        TaskStatus.running,
+    ):
+        return None
+    if row.status in (TaskStatus.failed, TaskStatus.cancelled):
+        return "errored"
+    # completed — check if the payload's expected output landed.
+    payload = row.payload or {}
+    if payload.get("no_results"):
+        return "empty"
+    if payload.get("partial") or payload.get("tool_errors"):
+        return "partial"
+    return "success"
+
+
+def _approval_outcome(row: Approval) -> StatusOutcome | None:
+    if row.status == ApprovalStatus.pending:
+        return None
+    if row.status == ApprovalStatus.denied:
+        return "errored"
+    return "success"
+
+
+def _agent_synopsis(row: AgentExecution, outcome: StatusOutcome | None) -> str:
+    """One-line "here's what I tried / what happened / why I failed"."""
+    if outcome == "errored":
+        err = (row.error or "unknown error")[:120]
+        return f"Failed: {err}"
+    output = row.output or {}
+    agent = row.agent.value
+    if outcome is None:
+        return f"{agent.capitalize()} agent running…"
+    if outcome == "empty":
+        return f"{agent.capitalize()} agent completed — no output."
+    findings = int(output.get("findings_count") or 0)
+    tasks = int(output.get("tasks_count") or 0)
+    tools = int(output.get("tools_count") or 0)
+    if row.agent == AgentName.strategic:
+        return f"Strategic proposed {tasks} task(s)."
+    if row.agent == AgentName.tactical:
+        parts = []
+        if tools:
+            parts.append(f"{tools} tool call(s)")
+        if findings:
+            parts.append(f"produced {findings} finding(s)")
+        return "Tactical ran " + (", ".join(parts) if parts else "(no signal)") + "."
+    if row.agent == AgentName.triage:
+        return "Triage summarized finding."
+    if row.agent == AgentName.planner:
+        return output.get("summary") or "Planner evaluation complete."
+    if row.agent == AgentName.tool_review:
+        return "Tool review complete."
+    return f"{agent.capitalize()} completed."
+
+
+def _task_synopsis(row: Task, outcome: StatusOutcome | None) -> str:
+    payload = row.payload or {}
+    tool = payload.get("tool") or payload.get("tool_name") or "task"
+    target = payload.get("target")
+    tool_target = f"{tool} → {target}" if tool and target else tool
+    if outcome is None:
+        return f"Running {tool_target}…"
+    if outcome == "errored":
+        return f"Failed: {tool_target}"
+    if outcome == "empty":
+        return f"{tool_target} completed — no results."
+    if outcome == "partial":
+        return f"{tool_target} completed with partial results."
+    return f"{tool_target} completed."
+
+
+def _approval_synopsis(row: Approval, outcome: StatusOutcome | None) -> str:
+    tool = row.tool_name
+    if outcome is None:
+        return f"Awaiting approval for {tool} ({row.risk.value} risk)."
+    if outcome == "errored":
+        return f"Denied {tool}."
+    return f"Approved {tool}."
 
 
 # ── status colour mappers ────────────────────────────────────────────────
@@ -178,6 +322,13 @@ def _approval_history(row: Approval) -> list[StatusTransition]:
 def _agent_to_entity(row: AgentExecution) -> StatusEntity:
     agent_label = row.agent.value.capitalize()
     color = _agent_color(row.status)
+    outcome = _agent_outcome(row)
+    thread_id = (
+        (row.input or {}).get("thread_id")
+        if isinstance(row.input, dict)
+        else None
+    )
+    slug_source: str | uuid.UUID = thread_id if isinstance(thread_id, str) and thread_id else row.id
     return StatusEntity(
         id=row.id,
         kind="agent",
@@ -191,6 +342,9 @@ def _agent_to_entity(row: AgentExecution) -> StatusEntity:
         raw_status=row.status.value,
         started_at=row.started_at,
         completed_at=row.completed_at,
+        run_slug=_run_slug(slug_source),
+        outcome=outcome,
+        synopsis=_agent_synopsis(row, outcome),
         # Triage retry is wired (POST /agent-executions/{id}/retry). Strategic
         # and Tactical retry need richer per-kind dispatch — coming in a
         # follow-up commit. Planner has its own re-evaluate button on
@@ -222,6 +376,10 @@ def _task_to_entity(row: Task) -> StatusEntity:
     tool = payload.get("tool") or payload.get("tool_name")
     target = payload.get("target")
     color = _task_color(row.status)
+    outcome = _task_outcome(row)
+    task_slug_source: str | uuid.UUID = (
+        str(row.run_id) if row.run_id else row.id
+    )
     return StatusEntity(
         id=row.id,
         kind="task",
@@ -232,6 +390,9 @@ def _task_to_entity(row: Task) -> StatusEntity:
         started_at=row.dispatched_at,
         completed_at=row.completed_at,
         retryable=color == "failed",
+        run_slug=_run_slug(task_slug_source),
+        outcome=outcome,
+        synopsis=_task_synopsis(row, outcome),
         log={
             "kind": row.kind.value,
             "owner_eligibility": row.owner_eligibility.value,
@@ -248,6 +409,10 @@ def _task_to_entity(row: Task) -> StatusEntity:
 
 def _approval_to_entity(row: Approval) -> StatusEntity:
     color = _approval_color(row.status)
+    outcome = _approval_outcome(row)
+    approval_slug_source: str | uuid.UUID = (
+        row.thread_id if row.thread_id else row.id
+    )
     return StatusEntity(
         id=row.id,
         kind="approval",
@@ -258,6 +423,9 @@ def _approval_to_entity(row: Approval) -> StatusEntity:
         started_at=row.created_at,
         completed_at=row.decided_at,
         retryable=False,
+        run_slug=_run_slug(approval_slug_source),
+        outcome=outcome,
+        synopsis=_approval_synopsis(row, outcome),
         log={
             "thread_id": row.thread_id,
             "node": row.node,
@@ -576,6 +744,359 @@ def get_engagement_status(
         agents=[_agent_to_entity(a) for a in agents],
         tasks=[_task_to_entity(t) for t in tasks],
         approvals=[_approval_to_entity(a) for a in approvals],
+    )
+
+
+# ── v1.2.0: tenant-global runs (no engagement scope) ────────────────────
+#
+# Planner rank / combine / re-evaluate produce AgentExecution rows with
+# ``engagement_id == NULL``. Same for admin roadmap ops. The new
+# ``/settings/agent-runs`` page needs a way to list those — mirrors the
+# engagement Status feed but without engagement scope.
+
+
+@router.get(
+    "/agent-runs",
+    response_model=EngagementStatusResponse,
+)
+def list_global_agent_runs(
+    session: DbSession,
+    _user: CurrentUser,
+) -> EngagementStatusResponse:
+    """Tenant-global AgentExecution rows. No tasks / approvals — those
+    are always engagement-scoped."""
+    agents = list(
+        session.execute(
+            select(AgentExecution)
+            .where(AgentExecution.engagement_id.is_(None))
+            .order_by(AgentExecution.started_at.desc())
+            .limit(200)
+        ).scalars()
+    )
+    return EngagementStatusResponse(
+        agents=[_agent_to_entity(a) for a in agents],
+        tasks=[],
+        approvals=[],
+    )
+
+
+# v1.2.0: step-log endpoint for tenant-global agents. Reuses
+# ``_steps_for_entity`` with ``eng`` set to a stub so the audit query
+# runs across all engagements — planner-ish rows won't have an
+# engagement_id on their audit rows anyway.
+
+
+@router.get(
+    "/agent-runs/{execution_id}/steps",
+    response_model=StepLogResponse,
+)
+def get_global_agent_execution_steps(
+    execution_id: uuid.UUID,
+    session: DbSession,
+    _user: CurrentUser,
+) -> StepLogResponse:
+    """Step log for a tenant-global (no engagement scope) execution."""
+    from app.models import AuditLog
+
+    row = session.get(AgentExecution, execution_id)
+    if row is None or row.engagement_id is not None:
+        raise HTTPException(
+            status_code=404,
+            detail="tenant-global agent execution not found",
+        )
+    entity_id_str = str(execution_id)
+    audit_rows = list(
+        session.execute(
+            select(AuditLog)
+            .where(AuditLog.engagement_id.is_(None))
+            .order_by(AuditLog.created_at.desc())
+            .limit(1000)
+        ).scalars()
+    )
+    steps = [
+        _audit_step_entry(r)
+        for r in audit_rows
+        if (r.payload or {}).get("execution_id") == entity_id_str
+        or (r.payload or {}).get("id") == entity_id_str
+    ]
+    steps.sort(key=lambda s: s.at)
+    truncated = len(steps) > _MAX_STEPS_PER_ENTITY
+    if truncated:
+        steps = steps[-_MAX_STEPS_PER_ENTITY:]
+    return StepLogResponse(steps=steps, truncated=truncated)
+
+
+# ── v1.2.0: step-log endpoint ───────────────────────────────────────────
+#
+# Analyst clicks "Expand" on a Status card; the modal fetches this to
+# render a step-by-step trace of what the entity did. Merges two
+# sources:
+#
+#   1. ``audit_log`` rows for this engagement whose payload references
+#      the entity (execution_id / task_id / approval_id / thread_id).
+#      This is the durable trace — good for reconstructing runs long
+#      after they finish.
+#   2. The Redis outbound stream ``runs:{eng_id}:events`` filtered to
+#      the entity's thread_id. This adds live SSE-only events (tool
+#      calls, findings, approvals) that don't leave an audit row.
+#
+# Results are deduped by (kind, at) and ordered newest last so the
+# frontend can render top-down.
+
+
+_MAX_STEPS_PER_ENTITY = 200
+
+
+def _relevant_audit_rows(
+    session: Session,
+    eng_id: uuid.UUID,
+    *,
+    thread_id: str | None,
+    entity_kind: str,
+    entity_id: uuid.UUID,
+) -> list[Any]:
+    """Read audit rows scoped to this engagement whose payload references
+    the entity. We over-fetch (payload JSONB matches are cheap in
+    Postgres via ``->>``) and filter in Python for shape robustness."""
+    from app.models import AuditLog
+
+    rows = list(
+        session.execute(
+            select(AuditLog)
+            .where(AuditLog.engagement_id == eng_id)
+            .order_by(AuditLog.created_at.desc())
+            .limit(1000)
+        ).scalars()
+    )
+    entity_id_str = str(entity_id)
+    kept: list[Any] = []
+    for r in rows:
+        p = r.payload or {}
+        # Match by any of the fields that could reference this entity.
+        # Match against a broad set of key names so we don't miss step
+        # events emitted by different code paths.
+        hit = (
+            p.get("execution_id") == entity_id_str
+            or p.get("task_id") == entity_id_str
+            or p.get("approval_id") == entity_id_str
+            or p.get("id") == entity_id_str
+            or (thread_id and p.get("thread_id") == thread_id)
+        )
+        if hit:
+            kept.append(r)
+    return kept
+
+
+def _stream_step_events(
+    redis_client: Any,
+    eng_id: uuid.UUID,
+    *,
+    thread_id: str,
+) -> list[StepEntry]:
+    """Read the outbound stream tail and pick out step events for the
+    given thread_id. Bounded to the last 500 events (~ enough for any
+    single-run trace)."""
+    try:
+        raw = redis_client.xrange(outbound_stream(eng_id), count=500)
+    except Exception:  # noqa: BLE001 — Redis hiccup must not break step read
+        return []
+    steps: list[StepEntry] = []
+    for msg_id, fields in raw or []:
+        try:
+            payload = decode_envelope(fields)
+        except (ValueError, KeyError):
+            continue
+        if payload.get("thread_id") != thread_id:
+            continue
+        etype = payload.get("type") or ""
+        # Redis stream ids look like ``1234567890123-0``; parse epoch ms.
+        try:
+            epoch_ms = int(str(msg_id).split("-", 1)[0])
+        except (ValueError, TypeError):
+            continue
+        at = datetime.fromtimestamp(epoch_ms / 1000, tz=UTC)
+        label = _summarize_stream_event(payload)
+        steps.append(
+            StepEntry(
+                at=at,
+                kind=etype,
+                label=label,
+                detail={
+                    k: v
+                    for k, v in payload.items()
+                    if k not in ("type", "thread_id")
+                },
+            )
+        )
+    return steps
+
+
+def _summarize_stream_event(payload: dict[str, Any]) -> str:
+    """Plain-language one-liner for a single stream event."""
+    t = payload.get("type") or ""
+    if t == "run.started":
+        return f"Run started: {(payload.get('prompt') or '')[:120]}"
+    if t == "approval.pending":
+        return f"Approval pending: {payload.get('tool')} ({payload.get('risk')})"
+    if t == "tool.denied":
+        return f"Tool denied: {payload.get('tool')} — {payload.get('reason')}"
+    if t == "tool.auto_approved":
+        return f"Auto-approved: {payload.get('tool')}"
+    if t == "finding.created":
+        title = payload.get("title") or payload.get("tool") or "finding"
+        return f"Finding: {title}"
+    if t == "run.completed":
+        return "Run completed."
+    if t == "run.errored":
+        return f"Run errored: {(payload.get('error') or '')[:120]}"
+    return t or "event"
+
+
+def _audit_step_entry(row: Any) -> StepEntry:
+    p = row.payload or {}
+    kind = row.event_type or "audit"
+    # Prefer a "friendly" label field if the emitter set one; otherwise
+    # synthesize from the event_type + a short payload preview.
+    label = str(p.get("label") or p.get("message") or "")
+    if not label:
+        # Trim payload to essentials for a readable one-liner.
+        parts = []
+        for k in ("tool", "target", "outcome", "status", "decision"):
+            v = p.get(k)
+            if v is not None:
+                parts.append(f"{k}={v}")
+        label = f"{kind}" + (f" — {' · '.join(parts)}" if parts else "")
+    return StepEntry(
+        at=row.created_at,
+        kind=kind,
+        label=label,
+        detail={k: v for k, v in p.items() if k != "label"},
+    )
+
+
+def _steps_for_entity(
+    session: Session,
+    redis_client: Any,
+    eng: Engagement,
+    *,
+    kind: str,
+    entity_id: uuid.UUID,
+    thread_id: str | None,
+) -> StepLogResponse:
+    audit_steps = [
+        _audit_step_entry(r)
+        for r in _relevant_audit_rows(
+            session,
+            eng.id,
+            thread_id=thread_id,
+            entity_kind=kind,
+            entity_id=entity_id,
+        )
+    ]
+    stream_steps: list[StepEntry] = []
+    if thread_id:
+        stream_steps = _stream_step_events(
+            redis_client, eng.id, thread_id=thread_id
+        )
+    # Merge + dedupe by (kind, iso timestamp) — audit rows land within
+    # ~1s of the stream event they mirror, so dedupe on second precision.
+    seen: set[tuple[str, str]] = set()
+    merged: list[StepEntry] = []
+    for s in [*audit_steps, *stream_steps]:
+        key = (s.kind, s.at.replace(microsecond=0).isoformat())
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(s)
+    merged.sort(key=lambda s: s.at)
+    truncated = len(merged) > _MAX_STEPS_PER_ENTITY
+    if truncated:
+        merged = merged[-_MAX_STEPS_PER_ENTITY:]
+    return StepLogResponse(steps=merged, truncated=truncated)
+
+
+@router.get(
+    "/engagements/{slug}/status/agents/{execution_id}/steps",
+    response_model=StepLogResponse,
+)
+def get_agent_execution_steps(
+    slug: str,
+    execution_id: uuid.UUID,
+    session: DbSession,
+    redis_client: RedisClient,
+    _user: CurrentUser,
+) -> StepLogResponse:
+    """Step log for one AgentExecution row on this engagement."""
+    eng = _engagement_by_slug(session, slug)
+    row = session.get(AgentExecution, execution_id)
+    if row is None or row.engagement_id != eng.id:
+        raise HTTPException(status_code=404, detail="agent execution not found")
+    thread_id = None
+    if isinstance(row.input, dict):
+        raw_tid = row.input.get("thread_id")
+        if isinstance(raw_tid, str) and raw_tid:
+            thread_id = raw_tid
+    return _steps_for_entity(
+        session,
+        redis_client,
+        eng,
+        kind="agent",
+        entity_id=execution_id,
+        thread_id=thread_id,
+    )
+
+
+@router.get(
+    "/engagements/{slug}/status/tasks/{task_id}/steps",
+    response_model=StepLogResponse,
+)
+def get_task_steps(
+    slug: str,
+    task_id: uuid.UUID,
+    session: DbSession,
+    redis_client: RedisClient,
+    _user: CurrentUser,
+) -> StepLogResponse:
+    """Step log for one Task on this engagement. Streams events by
+    ``run_id`` (which is the same value as ``thread_id`` for tasks)."""
+    eng = _engagement_by_slug(session, slug)
+    row = session.get(Task, task_id)
+    if row is None or row.engagement_id != eng.id:
+        raise HTTPException(status_code=404, detail="task not found")
+    thread_id = str(row.run_id) if row.run_id else None
+    return _steps_for_entity(
+        session,
+        redis_client,
+        eng,
+        kind="task",
+        entity_id=task_id,
+        thread_id=thread_id,
+    )
+
+
+@router.get(
+    "/engagements/{slug}/status/approvals/{approval_id}/steps",
+    response_model=StepLogResponse,
+)
+def get_approval_steps(
+    slug: str,
+    approval_id: uuid.UUID,
+    session: DbSession,
+    redis_client: RedisClient,
+    _user: CurrentUser,
+) -> StepLogResponse:
+    """Step log for one Approval on this engagement."""
+    eng = _engagement_by_slug(session, slug)
+    row = session.get(Approval, approval_id)
+    if row is None or row.engagement_id != eng.id:
+        raise HTTPException(status_code=404, detail="approval not found")
+    return _steps_for_entity(
+        session,
+        redis_client,
+        eng,
+        kind="approval",
+        entity_id=approval_id,
+        thread_id=row.thread_id or None,
     )
 
 

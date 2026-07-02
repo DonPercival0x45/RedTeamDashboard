@@ -4,6 +4,7 @@ import { AuthGate } from "@/components/auth-gate";
 import { IdentityMenu } from "@/components/identity-menu";
 import { WhatsNewBanner } from "@/components/whats-new-banner";
 import { QueryProvider } from "@/components/query-provider";
+import { RunToastProvider } from "@/components/run-toast-provider";
 import { AuthProvider } from "@/lib/auth";
 import { readServerConfig, RUNTIME_CONFIG_WINDOW_KEY } from "@/lib/config";
 import "./globals.css";
@@ -42,22 +43,24 @@ export default function RootLayout({
       <body className="min-h-screen bg-background font-sans text-foreground antialiased">
         <QueryProvider>
           <AuthProvider>
-            <header className="sticky top-0 z-40 border-b border-border bg-background/80 backdrop-blur">
-              <div className="container flex h-14 items-center justify-between">
-                <Link href="/" className="group flex items-center gap-2.5">
-                  {/* The lone accent in the chrome — a single ember mark. */}
-                  <span className="h-3.5 w-1 rounded-full bg-critical" />
-                  <span className="text-sm font-semibold tracking-tight">
-                    Project XR@Y
-                  </span>
-                </Link>
-                <IdentityMenu />
-              </div>
-            </header>
-            <WhatsNewBanner />
-            <AuthGate>
-              <main className="container py-8">{children}</main>
-            </AuthGate>
+            <RunToastProvider>
+              <header className="sticky top-0 z-40 border-b border-border bg-background/80 backdrop-blur">
+                <div className="container flex h-14 items-center justify-between">
+                  <Link href="/" className="group flex items-center gap-2.5">
+                    {/* The lone accent in the chrome — a single ember mark. */}
+                    <span className="h-3.5 w-1 rounded-full bg-critical" />
+                    <span className="text-sm font-semibold tracking-tight">
+                      Project XR@Y
+                    </span>
+                  </Link>
+                  <IdentityMenu />
+                </div>
+              </header>
+              <WhatsNewBanner />
+              <AuthGate>
+                <main className="container py-8">{children}</main>
+              </AuthGate>
+            </RunToastProvider>
           </AuthProvider>
         </QueryProvider>
       </body>

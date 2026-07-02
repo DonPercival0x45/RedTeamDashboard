@@ -33,7 +33,10 @@ import {
   getEngagement,
   getEngagementCosts,
   getEngagementStatus,
+  getGlobalAgentRunSteps,
+  getStatusSteps,
   getMe,
+  listGlobalAgentRuns,
   listAdminUsers,
   listAuthorizations,
   listEngagements,
@@ -62,6 +65,7 @@ import type {
   Observation,
   RoadmapListFilters,
   ScopeItem,
+  StatusKind,
   ToolInvocationRead,
   ToolStatus,
   UserRole,
@@ -98,6 +102,11 @@ export const qk = {
   ) => ["contributions-entries", slug, filters] as const,
   engagementStatus: (slug: string) =>
     ["engagement-status", slug] as const,
+  statusSteps: (slug: string, kind: string, entityId: string) =>
+    ["status-steps", slug, kind, entityId] as const,
+  globalAgentRuns: () => ["global-agent-runs"] as const,
+  globalAgentRunSteps: (executionId: string) =>
+    ["global-agent-run-steps", executionId] as const,
   engagementCosts: (slug: string) =>
     ["engagement-costs", slug] as const,
   tools: (opts: { status?: ToolStatus }) => ["tools", opts] as const,
@@ -560,6 +569,53 @@ export function useEngagementStatus(slug: string) {
     queryKey: qk.engagementStatus(slug),
     queryFn: () => getEngagementStatus(slug),
     refetchInterval: 2_000,
+  });
+}
+
+// v1.2.0: lazy step-log fetch. ``enabled`` gates the request so the
+// query only fires when the Expand modal actually opens. Poll every
+// 3s while the entity is non-terminal so live tool calls / findings
+// stream in — the caller passes ``liveTerminal`` to switch that off
+// once the entity has reached a final colour.
+export function useStatusSteps(
+  slug: string,
+  kind: StatusKind | null,
+  entityId: string | null,
+  opts: { liveTerminal?: boolean } = {},
+) {
+  const enabled = kind !== null && entityId !== null;
+  return useQuery({
+    queryKey: enabled
+      ? qk.statusSteps(slug, kind as string, entityId as string)
+      : ["status-steps-disabled"],
+    queryFn: () =>
+      getStatusSteps(slug, kind as StatusKind, entityId as string),
+    enabled,
+    refetchInterval: opts.liveTerminal ? false : 3_000,
+  });
+}
+
+// v1.2.0: tenant-global runs — planner rank/combine/re-evaluate.
+export function useGlobalAgentRuns() {
+  return useQuery({
+    queryKey: qk.globalAgentRuns(),
+    queryFn: () => listGlobalAgentRuns(),
+    refetchInterval: 4_000,
+  });
+}
+
+export function useGlobalAgentRunSteps(
+  executionId: string | null,
+  opts: { liveTerminal?: boolean } = {},
+) {
+  const enabled = executionId !== null;
+  return useQuery({
+    queryKey: enabled
+      ? qk.globalAgentRunSteps(executionId as string)
+      : ["global-agent-run-steps-disabled"],
+    queryFn: () => getGlobalAgentRunSteps(executionId as string),
+    enabled,
+    refetchInterval: opts.liveTerminal ? false : 3_000,
   });
 }
 
