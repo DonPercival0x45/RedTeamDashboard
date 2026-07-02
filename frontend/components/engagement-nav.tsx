@@ -40,12 +40,18 @@ const ITEMS: { view: EngagementView; label: string; Icon: LucideIcon }[] = [
 // Left rail for the engagement workspace. Selecting an item swaps the whole
 // content pane (page-level), per the CHARTER's left-nav direction. The active
 // item carries the single ember accent.
+//
+// v1.0.0(4b): onHover is called on pointerenter / focus for each nav item.
+// The parent warms the react-query cache for that view so the click paints
+// from cache with no loading spinner.
 export function EngagementNav({
   active,
   onSelect,
+  onHover,
 }: {
   active: EngagementView;
   onSelect: (view: EngagementView) => void;
+  onHover?: (view: EngagementView) => void;
 }) {
   return (
     <nav className="w-44 shrink-0">
@@ -57,6 +63,12 @@ export function EngagementNav({
               <button
                 type="button"
                 onClick={() => onSelect(view)}
+                onPointerEnter={
+                  onHover && !selected ? () => onHover(view) : undefined
+                }
+                onFocus={
+                  onHover && !selected ? () => onHover(view) : undefined
+                }
                 aria-current={selected ? "page" : undefined}
                 className={cn(
                   "flex w-full items-center gap-2.5 rounded-md border-l-2 px-3 py-2 text-sm transition-colors",

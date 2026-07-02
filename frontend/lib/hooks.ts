@@ -475,6 +475,82 @@ export function useDeleteToolMutation() {
 // mutation args — kept to satisfy TS narrowing at edit sites.
 export type { Integration };
 
+// ── prefetch helpers ─────────────────────────────────────────────────
+// v1.0.0(4b): warm the query cache on nav hover. By the time the analyst
+// clicks the target route the fetch is already in flight (or done), so the
+// route swap paints from cache with no loading spinner.
+//
+// Not every view gets a prefetch entry — Contributions is skipped because
+// its query key depends on filter chips (date + actorId + source) that the
+// analyst hasn't picked yet at hover time. Report is skipped because it
+// has no fetch. Scope's shape is fine.
+
+import type { QueryClient } from "@tanstack/react-query";
+import type { EngagementView } from "@/components/engagement-nav";
+
+export function prefetchEngagementView(
+  qc: QueryClient,
+  slug: string,
+  view: EngagementView,
+): void {
+  switch (view) {
+    case "findings":
+      void qc.prefetchQuery({
+        queryKey: qk.findings(slug),
+        queryFn: () => listFindings(slug),
+      });
+      return;
+    case "entities":
+      void qc.prefetchQuery({
+        queryKey: qk.entities(slug),
+        queryFn: () => listEntities(slug),
+      });
+      void qc.prefetchQuery({
+        queryKey: qk.storedEntities(slug),
+        queryFn: () => listStoredEntities(slug),
+      });
+      return;
+    case "observations":
+      void qc.prefetchQuery({
+        queryKey: qk.observations(slug),
+        queryFn: () => listObservations(slug),
+      });
+      return;
+    case "scope":
+      void qc.prefetchQuery({
+        queryKey: qk.scope(slug),
+        queryFn: () => listScope(slug),
+      });
+      return;
+    case "status":
+      void qc.prefetchQuery({
+        queryKey: qk.engagementStatus(slug),
+        queryFn: () => getEngagementStatus(slug),
+      });
+      return;
+    case "tools":
+      void qc.prefetchQuery({
+        queryKey: qk.toolInvocations(slug),
+        queryFn: () => listToolInvocations(slug),
+      });
+      void qc.prefetchQuery({
+        queryKey: qk.tools({ status: "approved" }),
+        queryFn: () => listTools({ status: "approved" }),
+      });
+      return;
+    case "costs":
+      void qc.prefetchQuery({
+        queryKey: qk.engagementCosts(slug),
+        queryFn: () => getEngagementCosts(slug),
+      });
+      return;
+    case "contributions":
+    case "report":
+      // Skip: contributions key depends on filter state; report has no fetch.
+      return;
+  }
+}
+
 export function useEngagementStatus(slug: string) {
   // Was: 2s setInterval in StatusView. Same cadence — the analyst
   // explicitly wanted this fast when an agent is running (v0.8.1

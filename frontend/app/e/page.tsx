@@ -34,6 +34,7 @@ import { ScopeEditor } from "@/components/scope-editor";
 import { downloadEngagementExport } from "@/lib/api";
 import { subscribeToEvents } from "@/lib/events";
 import {
+  prefetchEngagementView,
   qk,
   removeFindingFromCache,
   upsertFindingInCache,
@@ -235,6 +236,23 @@ function EngagementDetail({ slug }: { slug: string }) {
             };
             return [created, ...list];
           });
+        } else if (
+          event.type === "run.completed" ||
+          event.type === "run.errored"
+        ) {
+          // v1.0.0(4b): fold terminal run events into the react-query cache
+          // so the analyst sees the state flip without waiting for the next
+          // 2s status poll. Status view auto-re-renders; costs (which also
+          // move on run end) get a fresh fetch on next mount.
+          void qc.invalidateQueries({
+            queryKey: qk.engagementStatus(slug),
+          });
+          void qc.invalidateQueries({
+            queryKey: qk.engagementCosts(slug),
+          });
+          void qc.invalidateQueries({
+            queryKey: qk.toolInvocations(slug),
+          });
         } else if (event.type === "approval.pending" && canWrite) {
           setPending({
             approval_id: event.approval_id,
@@ -345,7 +363,11 @@ function EngagementDetail({ slug }: { slug: string }) {
 
       {/* Left nav + content pane. */}
       <div className="flex gap-8">
-        <EngagementNav active={view} onSelect={setView} />
+        <EngagementNav
+          active={view}
+          onSelect={setView}
+          onHover={(v) => prefetchEngagementView(qc, slug, v)}
+        />
 
         <div className="min-w-0 flex-1">
           {view === "findings" && (
