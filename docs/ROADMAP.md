@@ -142,7 +142,28 @@ Observations are then tagged back into the finding when you look at them later.
 
 _Approved 2026-06-30T12:54:31.621534+00:00 — suggestion id `019f159f-88ff-7c11-90f0-467aa6d8e48e`_
 
-## 7. Reformatting the "What's New" surface to hide infra-only changes (Deploy/CLI/Images) and group entries by user-facing categories (Bug Fixes / Features / QoL / Ops) is a low-cost polish that improves the release-notes experience but is pure presentation work with no Charter or roadmap leverage.
+## 7. Admin-driven user/guest lifecycle management is a reasonable platform-hygiene ask, but it sits outside the Charter's North Star (analyst workflow / findings loop) and partially duplicates capabilities Entra already provides in a single-tenant deployment.
+
+**Original suggestion:**
+
+> Admins should have the ability to delete Users and guests accounts. as well as add from the management console
+
+**Pros:**
+- Closes a real operational gap — there is no admin surface in HANDOFF for user/guest CRUD today, only Entra SSO at the identity layer and BYO provider keys at the user-settings layer.
+- Pairs naturally with the already-approved submitter/approver attribution work (id `019f1536-...`) — both require a clearer notion of who 'a user' is inside the portal and an admin view over them.
+- Low risk against the 'agents scan, analysts exploit' invariant — this is a platform/governance feature with no agent execution surface, so it doesn't conflict with any Charter Decided items.
+- An admin console for invites/removals supports audit posture consistent with existing audit-logged actions (finding.updated, attachment uploads, etc.).
+
+**Cons:**
+- Outside the Charter's North Star and the four still-unfinished Charter ideas (attack-path UI, entities tab, engagement-setup wizard, feedback loop) — this is platform admin, not analyst workflow.
+- Partially duplicates Entra ID, which is the single-tenant identity source per Phase 7 — adding/removing users is typically done in Entra, and an in-portal 'add user' flow needs a clear decision on whether it invites via Entra B2B, creates local-only rows, or both.
+- Under-specified: 'delete' could mean soft-delete, hard-delete, or revoke-access — and findings, suggestions, attachments, and audit logs all carry `created_by` references that need a deletion/anonymization policy decided up front.
+- No 'management console' exists yet in the codebase per HANDOFF (only a Settings page for provider keys), so this implies net-new admin surface area, role model, and route guards — more infrastructure than the one-line ask suggests.
+- Adds scope on top of six already-approved roadmap items and four open Charter ideas, with lower analyst-facing leverage than any of them.
+
+_Approved 2026-07-02T17:00:45.372153+00:00 — suggestion id `019f191d-a0a7-7043-9755-eb2d0458f0bc`_
+
+## 8. Reformatting the "What's New" surface to hide infra-only changes (Deploy/CLI/Images) and group entries by user-facing categories (Bug Fixes / Features / QoL / Ops) is a low-cost polish that improves the release-notes experience but is pure presentation work with no Charter or roadmap leverage.
 
 **Original suggestion:**
 
@@ -165,7 +186,7 @@ _Approved 2026-06-30T12:54:31.621534+00:00 — suggestion id `019f159f-88ff-7c11
 
 _Approved 2026-07-01T15:29:24.258938+00:00 — suggestion id `019f193a-1835-7260-bed5-4195ee3e518a`_
 
-## 8. (no summary)
+## 9. (no summary)
 
 **Original suggestion:**
 
@@ -180,7 +201,7 @@ _Approved 2026-07-01T15:29:24.258938+00:00 — suggestion id `019f193a-1835-7260
 
 _Approved 2026-06-30T20:43:16.834521+00:00 — suggestion id `019f1a44-d1b2-7153-8456-90a33073abbc`_
 
-## 9. This suggestion is already approved and on the roadmap (id `019f1a48-d786-79a1-acbc-8fce8fae5859`, admin-noted "Status Tab Cleanup") — adding unique run IDs with a trackable toast on agent run kickoff.
+## 10. This suggestion is already approved and on the roadmap (id `019f1a48-d786-79a1-acbc-8fce8fae5859`, admin-noted "Status Tab Cleanup") — adding unique run IDs with a trackable toast on agent run kickoff.
 
 **Original suggestion:**
 
@@ -201,3 +222,94 @@ _Approved 2026-06-30T20:43:16.834521+00:00 — suggestion id `019f1a44-d1b2-7153
 **Admin note:** Status Tab Cleanup
 
 _Approved 2026-06-30T20:48:13.487229+00:00 — suggestion id `019f1a48-d786-79a1-acbc-8fce8fae5859`_
+
+## 11. Visually distinguishing failed/empty agent runs from successful ones is a small, high-value observability fix that fits squarely inside the already-approved Status Tab Cleanup bundle rather than standing alone.
+
+**Original suggestion:**
+
+> New feedback
+
+If an agent run happens, and it errors out, provides no results, or was generally unsuccessful, theres no way to differentiate from successful runs with actual information. Differentiate between successful runs by an agent and failed runs.
+
+**Pros:**
+- Directly reinforces the approved Status Tab Cleanup item (id `019f1a44-...`) which already calls for 'what I tried to do, what happened, or why I failed' — surfacing success/failure state is the atomic version of that ask.
+- Pairs cleanly with the approved unique-run-ID + toast work (id `019f1a48-...`) and the step-log item (id `019f23c3-...`); together they form a coherent run-detail story instead of three disjoint tweaks.
+- Very low cost — `agent_executions` from Phase 9/11 already exists and almost certainly carries enough state (exit status, error, token/finding counts) to derive a success/failure/empty badge without new infrastructure.
+- Serves the 'analyst in control' principle and the feedback-loop North Star by making it obvious at a glance which runs need analyst follow-up versus which produced usable output.
+- No conflict with the 'agents scan, analysts exploit' invariant — this is pure observability over existing agent output.
+
+**Cons:**
+- Overlaps enough with the three already-approved Status Tab Cleanup items that tracking it as a separate roadmap entry risks duplicate work; better bundled under that admin grouping.
+- Under-specified on the taxonomy — at minimum needs decisions on Success / Failure / Empty-but-OK / Partial, otherwise the badge will be inconsistent across agents (Strategic vs. Tactical vs. importer runs).
+- 'No results' is ambiguous: a scan that legitimately finds nothing is not a failure, and conflating the two will train analysts to ignore the badge — the rule for empty-vs-failed needs pinning before coding.
+- Lower leverage than the four still-unfinished Charter ideas (attack-path UI, entities tab, engagement-setup wizard, feedback loop) and Phase 10 hybrid ingest, so it should ride along with Status Tab Cleanup rather than pull attention away.
+
+**Admin note:** Status Tab Cleanup
+
+_Approved 2026-07-02T17:01:24.354225+00:00 — suggestion id `019f1ea2-3abd-7e01-a498-c7a19b630087`_
+
+## 12. (no summary)
+
+**Original suggestion:**
+
+> Add the ability to add findings manually as well.
+
+**Admin note:** Approved, but wil need it to be more specific to understand how to build
+
+_Approved 2026-07-02T16:59:39.266386+00:00 — suggestion id `019f1ea8-0340-7e90-9315-9548451fd2bf`_
+
+## 13. (no summary)
+
+**Original suggestion:**
+
+> Modes to cater to analyst skill levels.
+
+Simple: Agent handholding, plug and play, very little customization (Baby's first engagement)
+Normal: Some handholding, some customizations, just the every day experience. 
+Advanced: Customizations for every aspect of the experience.
+
+_Approved 2026-07-02T16:58:55.862818+00:00 — suggestion id `019f1eaa-139e-7ba2-af03-5422cf1aae48`_
+
+## 14. (no summary)
+
+**Original suggestion:**
+
+> In relation to AI keys, 
+
+1. A test button. allow us to test the key and endpoint to see if they're alive
+2. Instead of asking me which model I want to use, just tap the endpoint provided to see all the models. usually they have them at /models/ for some providers so it fills in dynamically. It would future proof for model changes/endpoint changes etc
+3. Maybe build a chatbot that uses your keys, kinda designed like a small terminal input to help navigate the site + manage the engagement live.
+
+_Approved 2026-07-02T16:58:53.646161+00:00 — suggestion id `019f1eae-eeef-7712-9f1e-77e6c73203f6`_
+
+## 15. (no summary)
+
+**Original suggestion:**
+
+> Graphspy integration pls
+
+_Approved 2026-07-02T16:58:33.698557+00:00 — suggestion id `019f1f26-d5ee-73d3-95a0-d98ecbc5fe57`_
+
+## 16. A per-run step-by-step execution log in the expanded Status view is a natural extension of the already-approved Status Tab Cleanup work and directly serves observability needs, though it overlaps enough with those items that it should be scoped as part of that bundle rather than a standalone effort.
+
+**Original suggestion:**
+
+> The status page textbox area that opens when expanded shoudl be more of a logger of every step taken by the agent or task, like what all was done from beginning to end. This can help us see if it failed and where it failed and what it ran if it completed succesfully.
+
+**Pros:**
+- Directly complements the approved Status Tab Cleanup roadmap item (id `019f1a44-...`), which already calls for 'what I tried to do, what happened, why I failed' per-run synopses — this suggestion is the deeper 'full step trace' companion to that plain-language summary.
+- Pairs naturally with the approved unique-run-ID + toast deep-link item (id `019f1a48-...`) — a stable run ID plus a full step log gives analysts a real debuggable run-detail view.
+- Backend plumbing largely exists: `agent_executions` from Phase 9/11 already tracks LLM calls and cost attribution, and the Tactical dispatcher publishes `run.start` envelopes to the engagement stream, so step events are already flowing — this is mostly persistence + a timeline UI, not new infrastructure.
+- Reinforces the 'analyst in control' guiding principle by making agent behavior fully inspectable, which is important given the 'agents scan, analysts exploit' invariant — analysts can verify agents stayed within enum/scan bounds.
+- Improves the feedback loop North Star: a visible step log makes it obvious when a run produced a finding, stalled, or errored, so the analyst's next action is clearer without tool-hopping to backend logs.
+
+**Cons:**
+- Overlaps meaningfully with the already-approved Status Tab Cleanup item's 'synopsis of what happened' bullet — without explicit coordination this risks being tracked as a duplicate or building two parallel run-detail surfaces.
+- Under-specified on granularity: is 'every step' each tool call, each LLM turn, each state transition, or all three? — that decision drives storage volume and UI density and should be pinned before coding.
+- Log volume and retention need a call — verbose per-step traces on long-running runs can bloat Postgres quickly, especially alongside the 10 MB attachment blobs already in the DB.
+- Needs a plain-language vs. raw-payload decision consistent with the approved Status Cleanup ask ('plain language not just JSON') — a raw event dump alone won't satisfy that requirement and a purely narrative view loses debugging value.
+- Lower leverage than the four still-unfinished Charter ideas (attack-path UI completion, entities tab, engagement-setup wizard, feedback loop) and Phase 10 hybrid ingest — worth bundling into Status Tab Cleanup rather than expanding scope further.
+
+**Admin note:** Status Tab Cleanup
+
+_Approved 2026-07-02T16:58:28.169862+00:00 — suggestion id `019f23c3-877f-78c3-8cbf-aaef6a613cfd`_
