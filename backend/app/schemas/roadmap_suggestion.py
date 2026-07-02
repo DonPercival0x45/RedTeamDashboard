@@ -53,8 +53,23 @@ class RoadmapSuggestionRead(BaseModel):
     # v0.16.0: when set, this row was merged into another suggestion by
     # an analyst-confirmed combine. Hidden from list by default.
     combined_into_id: UUID | None = None
+    # v1.1.0: "Mark completed" markers — orthogonal to ``status``. When
+    # ``implemented_at`` is set, the renderer emits this row in the
+    # Shipped section of ROADMAP.md instead of the Open section.
+    implemented_at: datetime | None = None
+    implemented_by_user_id: UUID | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class CompletionUpdate(BaseModel):
+    """PATCH body — admin marks an approved row shipped or reopens it.
+
+    ``completed=true`` stamps ``implemented_at`` (server-side ``now()``)
+    and ``implemented_by_user_id``. ``completed=false`` clears both.
+    """
+
+    completed: bool
 
 
 class PriorityUpdate(BaseModel):

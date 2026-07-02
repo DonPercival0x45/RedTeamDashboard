@@ -818,6 +818,22 @@ export function reEvaluateRoadmapSuggestion(
   );
 }
 
+// v1.1.0: admin marks an approved row shipped or reopens it.
+// Orthogonal to status — the row stays "approved" (audit-preserved);
+// only implemented_at / implemented_by_user_id flip.
+export function setRoadmapSuggestionCompletion(
+  id: string,
+  completed: boolean,
+): Promise<RoadmapSuggestion> {
+  return request<RoadmapSuggestion>(
+    `/roadmap-suggestions/${id}/completion`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({ completed }),
+    },
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Integrations (admin-only) — v0.9.0 multi-row by id
 // ---------------------------------------------------------------------------

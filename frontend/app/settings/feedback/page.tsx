@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useCallback, useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Merge, Sparkles, UploadCloud, X } from "lucide-react";
+import { CheckCircle2, Merge, RotateCcw, Sparkles, UploadCloud, X } from "lucide-react";
 import {
   Card,
   CardContent,
@@ -27,6 +27,7 @@ import {
   pushRoadmapToGitHub,
   rankRoadmapSuggestions,
   reEvaluateRoadmapSuggestion,
+  setRoadmapSuggestionCompletion,
   setRoadmapSuggestionPriority,
 } from "@/lib/api";
 import { qk, useMe, useRoadmapSuggestions } from "@/lib/hooks";
@@ -303,6 +304,26 @@ export default function SettingsFeedbackPage() {
     [reload],
   );
 
+  const onSetCompletion = useCallback(
+    async (row: RoadmapSuggestion, completed: boolean) => {
+      if (
+        completed &&
+        !window.confirm(
+          "Mark this feedback as shipped? It'll move to the Shipped section of ROADMAP.md.",
+        )
+      ) {
+        return;
+      }
+      try {
+        await setRoadmapSuggestionCompletion(row.id, completed);
+        await reload();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [reload],
+  );
+
   const onDelete = useCallback(
     async (row: RoadmapSuggestion) => {
       if (
@@ -531,6 +552,7 @@ export default function SettingsFeedbackPage() {
               onDelete={onDelete}
               onReEvaluate={onReEvaluate}
               onSetPriority={onSetPriority}
+              onSetCompletion={onSetCompletion}
             />
           ))}
         </CardContent>
@@ -776,6 +798,7 @@ function SuggestionRow({
   onDelete,
   onReEvaluate,
   onSetPriority,
+  onSetCompletion,
 }: {
   row: RoadmapSuggestion;
   me: Me | null;
@@ -786,6 +809,10 @@ function SuggestionRow({
   onDelete: (row: RoadmapSuggestion) => void;
   onReEvaluate: (row: RoadmapSuggestion) => void;
   onSetPriority: (id: string, priority: number | null) => Promise<void>;
+  onSetCompletion: (
+    row: RoadmapSuggestion,
+    completed: boolean,
+  ) => Promise<void>;
 }) {
   const isAdmin = me?.is_admin ?? false;
   const isGuest = me?.role === "guest";
@@ -808,6 +835,7 @@ function SuggestionRow({
     row.agent_pros.length === 0 &&
     row.agent_cons.length === 0;
 
+  const isShipped = row.implemented_at !== null;
   return (
     <div className="rounded-md border border-border bg-card/40 p-3 text-sm">
       <div className="flex items-start justify-between gap-3">
@@ -820,6 +848,15 @@ function SuggestionRow({
           >
             {STATUS_LABEL[row.status]}
           </span>
+          {isShipped && (
+            <span
+              className="rounded-full border border-violet-500/40 bg-violet-500/10 px-2 py-0.5 text-[10px] uppercase tracking-wide text-violet-200"
+              title={`Marked shipped ${new Date(row.implemented_at as string).toLocaleString()}`}
+            >
+              <CheckCircle2 className="-mt-0.5 mr-1 inline-block h-3 w-3" />
+              Shipped
+            </span>
+          )}
           <span
             className={`rounded-full border px-2 py-0.5 text-[10px] font-mono tabular-nums ${priorityChipClass(
               row.priority,
@@ -942,6 +979,30 @@ function SuggestionRow({
                 Reject
               </Button>
             </>
+          )}
+          {isAdmin && row.status === "approved" && !isShipped && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => onSetCompletion(row, true)}
+              title="Mark this feedback as shipped. It moves to the Shipped section of ROADMAP.md."
+              className="border-violet-500/40 text-violet-100 hover:bg-violet-500/10"
+            >
+              <CheckCircle2 className="mr-1.5 h-3.5 w-3.5" />
+              Mark completed
+            </Button>
+          )}
+          {isAdmin && isShipped && (
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => onSetCompletion(row, false)}
+              title="Reopen — clears the shipped timestamp and moves this row back to the Open section."
+              className="text-muted-foreground hover:text-foreground"
+            >
+              <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
+              Reopen
+            </Button>
           )}
           {canDelete && (
             <Button
