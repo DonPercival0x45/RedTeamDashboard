@@ -6,7 +6,8 @@
 // table below. Detail slide-over shows stdout/stderr from a picked
 // history row.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Play, Wrench, X } from "lucide-react";
 import {
   Card,
@@ -16,11 +17,8 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import {
-  invokeTool,
-  listToolInvocations,
-  listTools,
-} from "@/lib/api";
+import { invokeTool } from "@/lib/api";
+import { qk, useToolInvocations, useTools } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
 import type {
   ToolInvocationRead,
@@ -45,34 +43,23 @@ const STATUS_TONE: Record<ToolInvocationStatus, string> = {
 };
 
 export function ToolsView({ slug }: { slug: string }) {
-  const [tools, setTools] = useState<ToolRead[] | null>(null);
-  const [invocations, setInvocations] = useState<ToolInvocationRead[] | null>(
-    null,
-  );
+  // v1.0.0: react-query owns both fetches. Tool catalog is static-ish
+  // (no polling). Invocations auto-poll @ 3s while any row is
+  // queued/running, then stop — see useToolInvocations().
+  const qc = useQueryClient();
+  const { data: tools, error: toolsError } = useTools({ status: "approved" });
+  const { data: invocations, error: invocationsError } =
+    useToolInvocations(slug);
+
   const [selected, setSelected] = useState<ToolRead | null>(null);
   const [inspecting, setInspecting] = useState<ToolInvocationRead | null>(null);
-  const [error, setError] = useState<string | null>(null);
 
-  const reloadTools = useCallback(async () => {
-    try {
-      setTools(await listTools({ status: "approved" }));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  }, []);
-
-  const reloadHistory = useCallback(async () => {
-    try {
-      setInvocations(await listToolInvocations(slug));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  }, [slug]);
-
-  useEffect(() => {
-    void reloadTools();
-    void reloadHistory();
-  }, [reloadTools, reloadHistory]);
+  const error = toolsError ?? invocationsError;
+  const errorMsg = error
+    ? error instanceof Error
+      ? error.message
+      : String(error)
+    : null;
 
   const approved = useMemo(() => tools ?? [], [tools]);
 
@@ -92,8 +79,8 @@ export function ToolsView({ slug }: { slug: string }) {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          {error && <p className="mb-2 text-xs text-critical">{error}</p>}
-          {approved.length === 0 && tools !== null && (
+          {errorMsg && <p className="mb-2 text-xs text-critical">{errorMsg}</p>}
+          {approved.length === 0 && tools !== undefined && (
             <p className="text-xs text-muted-foreground">
               No approved tools yet. An admin registers tools in
               <a
@@ -140,7 +127,13 @@ export function ToolsView({ slug }: { slug: string }) {
         <ToolInvokeForm
           tool={selected}
           onDone={async (row) => {
-            setInvocations((prev) => (prev ? [row, ...prev] : [row]));
+            // Prepend to the cached list so the new row is visible immediately;
+            // the auto-poll (3s while status=queued/running) then keeps it
+            // fresh until it reaches a terminal state.
+            qc.setQueryData<ToolInvocationRead[] | undefined>(
+              qk.toolInvocations(slug),
+              (prev) => (prev ? [row, ...prev] : [row]),
+            );
             if (row.status === "completed" || row.status === "failed") {
               setInspecting(row);
             }

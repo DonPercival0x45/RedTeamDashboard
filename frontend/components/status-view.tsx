@@ -29,13 +29,12 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
-  getEngagementStatus,
-  retryAgentExecution,
-  retryTask,
-} from "@/lib/api";
+  useEngagementStatus,
+  useRetryAgentExecutionMutation,
+  useRetryTaskMutation,
+} from "@/lib/hooks";
 import { cn } from "@/lib/utils";
 import type {
-  EngagementStatusResponse,
   LoggedEvent,
   RunEvent,
   StatusColor,
@@ -137,8 +136,21 @@ export function StatusView({
   slug: string;
   events?: LoggedEvent[];
 }) {
-  const [data, setData] = useState<EngagementStatusResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // v1.0.0: react-query owns the fetch + 2s polling + focus revalidation.
+  // The old useEffect + setInterval + manual reload is gone; the useQuery
+  // hook in lib/hooks.ts sets refetchInterval: 2_000 and inherits
+  // refetchOnWindowFocus from the root QueryClient.
+  const {
+    data,
+    error: queryError,
+    refetch,
+  } = useEngagementStatus(slug);
+  const retryTaskMutation = useRetryTaskMutation(slug);
+  const retryAgentMutation = useRetryAgentExecutionMutation(slug);
+
+  const [localError, setLocalError] = useState<string | null>(null);
+  const error = localError ?? (queryError instanceof Error ? queryError.message : queryError ? String(queryError) : null);
+
   const [filter, setFilter] = useState<StatusKind | "all">("all");
   const [colorFilter, setColorFilter] = useState<StatusColor | "all">("all");
   const [expanded, setExpanded] = useState<StatusEntity | null>(null);
@@ -157,50 +169,25 @@ export function StatusView({
     if (el) el.scrollTop = el.scrollHeight;
   }, [events.length, liveEventsOpen]);
 
-  const reload = useCallback(async () => {
-    setError(null);
-    try {
-      const next = await getEngagementStatus(slug);
-      setData(next);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  }, [slug]);
-
-  useEffect(() => {
-    void reload();
-    // v0.8.1: dropped from 8s to 2s — the user complained that the
-    // Status tab didn't show active agents during a worker run. The
-    // root cause (services committing only at the end of the LLM
-    // call, hiding `running` rows from other sessions) is fixed in
-    // app/services/triage.py + app/agents/strategic.py; this polling
-    // cadence lets the analyst see the change immediately rather than
-    // up to 8s later.
-    const t = setInterval(() => {
-      void reload();
-    }, 2000);
-    return () => clearInterval(t);
-  }, [reload]);
-
   const onRetry = useCallback(
     async (entity: StatusEntity) => {
       setRetryingId(entity.id);
+      setLocalError(null);
       try {
         if (entity.kind === "task") {
-          await retryTask(entity.id);
+          await retryTaskMutation.mutateAsync(entity.id);
         } else if (entity.kind === "agent") {
-          await retryAgentExecution(entity.id);
+          await retryAgentMutation.mutateAsync(entity.id);
         } else {
           return;
         }
-        await reload();
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
+        setLocalError(err instanceof Error ? err.message : String(err));
       } finally {
         setRetryingId(null);
       }
     },
-    [reload],
+    [retryTaskMutation, retryAgentMutation],
   );
 
   const all: StatusEntity[] = data
@@ -271,7 +258,7 @@ export function StatusView({
         <Button
           size="sm"
           variant="outline"
-          onClick={() => void reload()}
+          onClick={() => void refetch()}
           className="ml-auto"
         >
           <RefreshCcw className="mr-1.5 h-3.5 w-3.5" />
@@ -282,7 +269,7 @@ export function StatusView({
       {error && <p className="text-sm text-critical">{error}</p>}
 
       {/* Box grid */}
-      {data === null && !error ? (
+      {data == null && !error ? (
         <p className="text-sm text-muted-foreground">Loading…</p>
       ) : visible.length === 0 ? (
         <p className="text-sm text-muted-foreground">

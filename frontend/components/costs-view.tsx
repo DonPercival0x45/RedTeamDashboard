@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { AlertTriangle, ChevronDown, ChevronUp } from "lucide-react";
-import { getEngagementCosts } from "@/lib/api";
+import { useEngagementCosts } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
 import type { AgentCost, ModelCost, CostRollup, ToolCost } from "@/lib/types";
 
@@ -110,20 +110,17 @@ function ExpandableSection({ title, count, children }: ExpandableSectionProps) {
 }
 
 export function CostsView({ slug }: { slug: string }) {
-  const [data, setData] = useState<CostRollup | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  // v1.0.0: react-query owns the fetch + 15s poll + focus revalidation.
+  const { data, isLoading, error } = useEngagementCosts(slug);
 
-  useEffect(() => {
-    setLoading(true);
-    getEngagementCosts(slug)
-      .then(setData)
-      .catch((err) => setError(err instanceof Error ? err.message : String(err)))
-      .finally(() => setLoading(false));
-  }, [slug]);
-
-  if (error) return <p className="text-sm text-critical">{error}</p>;
-  if (loading) return <p className="text-sm text-muted-foreground">Loading costs…</p>;
+  if (error) {
+    return (
+      <p className="text-sm text-critical">
+        {error instanceof Error ? error.message : String(error)}
+      </p>
+    );
+  }
+  if (isLoading) return <p className="text-sm text-muted-foreground">Loading costs…</p>;
   if (!data) return null;
 
   const hasUnpriced = data.unpriced_models.length > 0;
