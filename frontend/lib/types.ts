@@ -610,6 +610,11 @@ export interface RoadmapSuggestion {
   // v0.16.0
   priority: number | null;
   combined_into_id: string | null;
+  // v1.1.0: "Mark completed" markers — orthogonal to `status`. When
+  // `implemented_at` is set, the ROADMAP.md renderer moves this row from
+  // the Open section to the Shipped section.
+  implemented_at: string | null;
+  implemented_by_user_id: string | null;
   created_at: string;
   updated_at: string;
 }

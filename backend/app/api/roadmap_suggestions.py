@@ -43,6 +43,7 @@ from app.schemas.roadmap_suggestion import (
     CombineClusterRead,
     CombineDetectResponse,
     CombineRequest,
+    CompletionUpdate,
     PriorityUpdate,
     RankedRowRead,
     RoadmapSuggestionCreate,
@@ -482,6 +483,54 @@ def set_priority(
         {
             "suggestion_id": str(row.id),
             "priority": body.priority,
+        },
+    )
+    session.commit()
+    session.refresh(row)
+    return row
+
+
+@router.patch(
+    "/roadmap-suggestions/{suggestion_id}/completion",
+    response_model=RoadmapSuggestionRead,
+)
+def set_completion(
+    suggestion_id: uuid.UUID,
+    body: CompletionUpdate,
+    session: DbSession,
+    admin: CurrentAdminUser,
+) -> RoadmapSuggestion:
+    """v1.1.0: admin marks an approved row shipped or reopens it.
+
+    Orthogonal to ``status``. ``completed=true`` requires the row to be
+    ``approved`` — you can't ship a pending or rejected row. Reopen
+    (``completed=false``) clears both ``implemented_at`` and
+    ``implemented_by_user_id``.
+    """
+    row = session.get(RoadmapSuggestion, suggestion_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="suggestion not found")
+    if body.completed and row.status != RoadmapSuggestionStatus.approved:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "only approved suggestions can be marked completed — "
+                "approve it first, then mark it shipped."
+            ),
+        )
+    if body.completed:
+        row.implemented_at = datetime.now(tz=UTC)
+        row.implemented_by_user_id = admin.id
+    else:
+        row.implemented_at = None
+        row.implemented_by_user_id = None
+    _audit(
+        session,
+        admin.id,
+        "roadmap_suggestion.completion_set",
+        {
+            "id": str(row.id),
+            "completed": body.completed,
         },
     )
     session.commit()

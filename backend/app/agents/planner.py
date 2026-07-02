@@ -292,14 +292,36 @@ def render_approved_roadmap(suggestions: list[RoadmapSuggestion]) -> str:
     """Render the approved suggestions as the markdown that an admin would
     download (and that the agent reads back on subsequent evaluations).
 
-    Ordered oldest → newest so the file reads as a chronological backlog.
+    v1.1.0: split into two sections.
+
+    - **Open (Approved · Not Shipped)** — rows where ``implemented_at is
+      None``, sorted by ``priority ASC NULLS LAST`` then ``created_at``.
+      Priority appears in the heading as ``[P<n>]`` (or ``[unranked]``)
+      so Claude Code (and human readers) can see the queue order without
+      hitting the dashboard.
+    - **Shipped** — rows where ``implemented_at`` is set, newest first.
+      Compact one-line entries — the full pros/cons stay with the Open
+      section they came from until they ship.
     """
     approved = [
         s for s in suggestions if s.status == RoadmapSuggestionStatus.approved
     ]
     if not approved:
         return ""
-    approved.sort(key=lambda s: s.created_at)
+
+    open_rows = [s for s in approved if s.implemented_at is None]
+    shipped_rows = [s for s in approved if s.implemented_at is not None]
+
+    # Priority 1 first; unranked at the end. created_at as the stable
+    # tiebreaker so the file diff is stable across pushes.
+    open_rows.sort(
+        key=lambda s: (
+            s.priority if s.priority is not None else 999,
+            s.created_at,
+        )
+    )
+    shipped_rows.sort(key=lambda s: s.implemented_at, reverse=True)
+
     lines: list[str] = [
         "# Red Team Dashboard — Approved Roadmap",
         "",
@@ -310,29 +332,66 @@ def render_approved_roadmap(suggestions: list[RoadmapSuggestion]) -> str:
         ),
         "",
     ]
-    for idx, s in enumerate(approved, start=1):
-        lines.append(f"## {idx}. {s.agent_summary or '(no summary)'}")
+
+    if open_rows:
+        lines.append("## Open (Approved · Not Shipped)")
         lines.append("")
-        lines.append("**Original suggestion:**")
-        lines.append("")
-        lines.append(f"> {s.body.strip()}")
-        lines.append("")
-        if s.agent_pros:
-            lines.append("**Pros:**")
-            for p in s.agent_pros:
-                lines.append(f"- {p}")
-            lines.append("")
-        if s.agent_cons:
-            lines.append("**Cons:**")
-            for c in s.agent_cons:
-                lines.append(f"- {c}")
-            lines.append("")
-        if s.review_note:
-            lines.append(f"**Admin note:** {s.review_note}")
-            lines.append("")
-        reviewed = (
-            s.reviewed_at.isoformat() if s.reviewed_at else "(no timestamp)"
+        lines.append(
+            "Ordered by priority (P1 = highest, then P2… then unranked). "
+            "Unranked rows haven't been triaged yet — treat them as lower "
+            "priority than any numbered row unless an admin note says "
+            "otherwise."
         )
-        lines.append(f"_Approved {reviewed} — suggestion id `{s.id}`_")
         lines.append("")
+        for idx, s in enumerate(open_rows, start=1):
+            tag = f"P{s.priority}" if s.priority is not None else "unranked"
+            summary = s.agent_summary or "(no summary)"
+            lines.append(f"### {idx}. [{tag}] {summary}")
+            lines.append("")
+            lines.append("**Original suggestion:**")
+            lines.append("")
+            lines.append(f"> {s.body.strip()}")
+            lines.append("")
+            if s.agent_pros:
+                lines.append("**Pros:**")
+                for p in s.agent_pros:
+                    lines.append(f"- {p}")
+                lines.append("")
+            if s.agent_cons:
+                lines.append("**Cons:**")
+                for c in s.agent_cons:
+                    lines.append(f"- {c}")
+                lines.append("")
+            if s.review_note:
+                lines.append(f"**Admin note:** {s.review_note}")
+                lines.append("")
+            reviewed = (
+                s.reviewed_at.isoformat() if s.reviewed_at else "(no timestamp)"
+            )
+            lines.append(
+                f"_Approved {reviewed} — suggestion id `{s.id}`_"
+            )
+            lines.append("")
+
+    if shipped_rows:
+        lines.append("## Shipped")
+        lines.append("")
+        lines.append(
+            "Approved items that have landed. Kept here (not deleted) so "
+            "the roadmap doubles as a running changelog."
+        )
+        lines.append("")
+        for s in shipped_rows:
+            shipped_day = (
+                s.implemented_at.date().isoformat()
+                if s.implemented_at
+                else "(no date)"
+            )
+            summary = s.agent_summary or s.body.strip().splitlines()[0]
+            lines.append(
+                f"- **{shipped_day}** — {summary} "
+                f"(suggestion id `{s.id}`)"
+            )
+        lines.append("")
+
     return "\n".join(lines)

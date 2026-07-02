@@ -97,3 +97,15 @@ class RoadmapSuggestion(Base, TimestampMixin):
         ForeignKey("roadmap_suggestions.id", ondelete="SET NULL"),
         nullable=True,
     )
+    # v1.1.0: orthogonal to ``status`` — an admin stamps these when the
+    # work ships. The row stays ``approved`` (audit trail of the approval
+    # decision is preserved); the renderer moves it from the Open section
+    # to the Shipped section of ROADMAP.md.
+    implemented_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    implemented_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
