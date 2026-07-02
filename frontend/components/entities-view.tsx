@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Search, Upload, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -8,9 +9,8 @@ import { Input } from "@/components/ui/input";
 import {
   importEntitiesDarkweb,
   importEntitiesMaltego,
-  listEntities,
-  listStoredEntities,
 } from "@/lib/api";
+import { qk, useEntities, useStoredEntities } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
 import type {
   DarkwebImportResult,
@@ -55,28 +55,20 @@ function typeLabel(t: string): string {
 // an "Imported" section above the derived list for entities that landed
 // from external sources (Maltego today, future Dehashed etc.).
 export function EntitiesView({ slug }: { slug: string }) {
-  const [entities, setEntities] = useState<Entity[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // v1.0.0: react-query owns the derived-entities fetch. Focus revalidation
+  // catches new findings that landed while the tab was hidden.
+  const { data: entities, error } = useEntities(slug);
   const [search, setSearch] = useState("");
   const [type, setType] = useState<string>("all");
   const [selected, setSelected] = useState<Entity | null>(null);
 
-  const load = useCallback(async () => {
-    try {
-      setError(null);
-      setEntities(await listEntities(slug));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  }, [slug]);
-
-  useEffect(() => {
-    setEntities(null);
-    load();
-  }, [load]);
-
-  if (error) return <p className="text-sm text-critical">{error}</p>;
-  if (entities === null)
+  if (error)
+    return (
+      <p className="text-sm text-critical">
+        {error instanceof Error ? error.message : String(error)}
+      </p>
+    );
+  if (entities === undefined)
     return (
       <div className="space-y-5">
         <ImportedEntitiesSection slug={slug} />
@@ -196,25 +188,21 @@ type LastImport =
   | { kind: "darkweb"; result: DarkwebImportResult };
 
 function ImportedEntitiesSection({ slug }: { slug: string }) {
-  const [items, setItems] = useState<StoredEntity[] | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  // v1.0.0: react-query owns the stored-entities fetch. Import mutations
+  // patch the cache directly via qc.setQueryData.
+  const qc = useQueryClient();
+  const { data: items, error: queryError } = useStoredEntities(slug);
+  const loadError =
+    queryError instanceof Error
+      ? queryError.message
+      : queryError
+        ? String(queryError)
+        : null;
+
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [lastImport, setLastImport] = useState<LastImport | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
-
-  const load = useCallback(async () => {
-    try {
-      setLoadError(null);
-      setItems(await listStoredEntities(slug));
-    } catch (err) {
-      setLoadError(err instanceof Error ? err.message : String(err));
-    }
-  }, [slug]);
-
-  useEffect(() => {
-    load();
-  }, [load]);
 
   const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -229,11 +217,17 @@ function ImportedEntitiesSection({ slug }: { slug: string }) {
       if (name.endsWith(".mtgx")) {
         const result = await importEntitiesMaltego(slug, file);
         setLastImport({ kind: "maltego", result });
-        setItems(result.entities);
+        qc.setQueryData<StoredEntity[]>(
+          qk.storedEntities(slug),
+          result.entities,
+        );
       } else if (name.endsWith(".json") || name.endsWith(".csv")) {
         const result = await importEntitiesDarkweb(slug, file, "dehashed");
         setLastImport({ kind: "darkweb", result });
-        setItems(result.entities);
+        qc.setQueryData<StoredEntity[]>(
+          qk.storedEntities(slug),
+          result.entities,
+        );
       } else {
         setUploadError(
           "Unrecognized file type — upload .mtgx (Maltego), .json or .csv (Dehashed).",
@@ -352,7 +346,7 @@ function ImportedEntitiesSection({ slug }: { slug: string }) {
       )}
       {loadError && <p className="text-xs text-critical">{loadError}</p>}
 
-      {items === null ? (
+      {items === undefined ? (
         <p className="text-sm text-muted-foreground">
           Loading imported entities…
         </p>

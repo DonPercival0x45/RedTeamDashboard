@@ -1,11 +1,15 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { createObservation, deleteObservation, listObservations } from "@/lib/api";
+import {
+  useCreateObservationMutation,
+  useDeleteObservationMutation,
+  useObservations,
+} from "@/lib/hooks";
 import { cn } from "@/lib/utils";
-import type { FindingPhase, Observation } from "@/lib/types";
+import type { FindingPhase } from "@/lib/types";
 
 const PHASES: (FindingPhase | "")[] = [
   "",
@@ -25,47 +29,40 @@ const PHASE_LABEL: Record<FindingPhase, string> = {
 };
 
 export function ObservationsView({ slug }: { slug: string }) {
-  const [observations, setObservations] = useState<Observation[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  // v1.0.0: react-query owns the fetch. Mutations invalidate/patch the cache;
+  // localError catches submit/delete failures separately from the fetch error.
+  const { data: observations = [], isLoading, error: queryError } = useObservations(slug);
+  const createMutation = useCreateObservationMutation(slug);
+  const deleteMutation = useDeleteObservationMutation(slug);
 
   const [content, setContent] = useState("");
   const [phase, setPhase] = useState<FindingPhase | "">("");
-  const [submitting, setSubmitting] = useState(false);
-
-  useEffect(() => {
-    setLoading(true);
-    listObservations(slug)
-      .then(setObservations)
-      .catch((err) => setError(err instanceof Error ? err.message : String(err)))
-      .finally(() => setLoading(false));
-  }, [slug]);
+  const [localError, setLocalError] = useState<string | null>(null);
+  const error = localError ?? (queryError instanceof Error ? queryError.message : queryError ? String(queryError) : null);
+  const submitting = createMutation.isPending;
+  const loading = isLoading;
 
   const handleAdd = async () => {
     if (!content.trim()) return;
-    setSubmitting(true);
-    setError(null);
+    setLocalError(null);
     try {
-      const obs = await createObservation(slug, {
+      await createMutation.mutateAsync({
         content: content.trim(),
         phase: phase || null,
       });
-      setObservations((prev) => [...prev, obs]);
       setContent("");
       setPhase("");
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSubmitting(false);
+      setLocalError(err instanceof Error ? err.message : String(err));
     }
   };
 
   const handleDelete = async (id: string) => {
+    setLocalError(null);
     try {
-      await deleteObservation(id);
-      setObservations((prev) => prev.filter((o) => o.id !== id));
+      await deleteMutation.mutateAsync(id);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setLocalError(err instanceof Error ? err.message : String(err));
     }
   };
 

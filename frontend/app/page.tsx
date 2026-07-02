@@ -1,11 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
 import { Plus } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { listEngagements } from "@/lib/api";
+import { useEngagements } from "@/lib/hooks";
 import type { Engagement } from "@/lib/types";
 
 function statusVariant(status: Engagement["status"]) {
@@ -15,22 +14,15 @@ function statusVariant(status: Engagement["status"]) {
 }
 
 export default function EngagementListPage() {
-  const [engagements, setEngagements] = useState<Engagement[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  const reload = useCallback(async () => {
-    try {
-      setError(null);
-      setEngagements(await listEngagements());
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  }, []);
-
-  useEffect(() => {
-    setEngagements(null);
-    reload();
-  }, [reload]);
+  // v1.0.0: react-query owns the fetch. Focus revalidation catches
+  // freshly-created engagements from another tab / analyst.
+  const { data, error: queryError } = useEngagements();
+  const engagements = data ?? null;
+  const error = queryError
+    ? queryError instanceof Error
+      ? queryError.message
+      : String(queryError)
+    : null;
 
   return (
     <div className="space-y-8">

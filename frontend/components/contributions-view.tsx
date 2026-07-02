@@ -6,7 +6,7 @@
 // — and stays anchored at the top of the pane. Clicking a cell filters
 // the table below to that day; default (nothing clicked) shows today.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   Card,
   CardContent,
@@ -14,12 +14,11 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import {
-  getContributionsEntries,
-  getContributionsHeatmap,
-} from "@/lib/api";
+  useContributionsEntries,
+  useContributionsHeatmap,
+} from "@/lib/hooks";
 import type {
   ContributionActor,
-  ContributionEntries,
   ContributionEntry,
   ContributionHeatmap,
   ContributionSource,
@@ -124,13 +123,6 @@ function buildGrid(heatmap: ContributionHeatmap): WeekColumn[] {
 // ── component ──────────────────────────────────────────────────────────────
 
 export function ContributionsView({ slug }: { slug: string }) {
-  const [heatmap, setHeatmap] = useState<ContributionHeatmap | null>(null);
-  const [heatmapError, setHeatmapError] = useState<string | null>(null);
-
-  const [entries, setEntries] = useState<ContributionEntries | null>(null);
-  const [entriesError, setEntriesError] = useState<string | null>(null);
-  const [entriesLoading, setEntriesLoading] = useState(false);
-
   const [selectedDate, setSelectedDate] = useState<string>(todayUtcIso());
   const [actorId, setActorId] = useState<string>("");
   const [source, setSource] = useState<ContributionSource | "">("");
@@ -139,45 +131,32 @@ export function ContributionsView({ slug }: { slug: string }) {
     count: number;
   } | null>(null);
 
-  // Load heatmap when engagement or filters change
-  useEffect(() => {
-    getContributionsHeatmap(slug, {
-      actorId: actorId || null,
-      source: source || null,
-    })
-      .then((res) => {
-        setHeatmap(res);
-        setHeatmapError(null);
-      })
-      .catch((err) => {
-        setHeatmap(null);
-        setHeatmapError(err instanceof Error ? err.message : String(err));
-      });
-  }, [slug, actorId, source]);
+  // v1.0.0: react-query owns both fetches, keyed by (slug, filters). Changing
+  // a filter chip just changes the query key, so cached results for prior
+  // filter combinations stay warm — click-back is instant.
+  const heatmapQuery = useContributionsHeatmap(slug, {
+    actorId: actorId || null,
+    source: source || null,
+  });
+  const heatmap = heatmapQuery.data ?? null;
+  const heatmapError = heatmapQuery.error
+    ? heatmapQuery.error instanceof Error
+      ? heatmapQuery.error.message
+      : String(heatmapQuery.error)
+    : null;
 
-  // Load entries when the selected day (or filters) change
-  const reloadEntries = useCallback(() => {
-    setEntriesLoading(true);
-    getContributionsEntries(slug, {
-      date: selectedDate,
-      actorId: actorId || null,
-      source: source || null,
-      limit: 200,
-    })
-      .then((res) => {
-        setEntries(res);
-        setEntriesError(null);
-      })
-      .catch((err) => {
-        setEntries(null);
-        setEntriesError(err instanceof Error ? err.message : String(err));
-      })
-      .finally(() => setEntriesLoading(false));
-  }, [slug, selectedDate, actorId, source]);
-
-  useEffect(() => {
-    reloadEntries();
-  }, [reloadEntries]);
+  const entriesQuery = useContributionsEntries(slug, {
+    date: selectedDate,
+    actorId: actorId || null,
+    source: source || null,
+  });
+  const entries = entriesQuery.data ?? null;
+  const entriesError = entriesQuery.error
+    ? entriesQuery.error instanceof Error
+      ? entriesQuery.error.message
+      : String(entriesQuery.error)
+    : null;
+  const entriesLoading = entriesQuery.isLoading;
 
   const weeks = useMemo(
     () => (heatmap ? buildGrid(heatmap) : []),
