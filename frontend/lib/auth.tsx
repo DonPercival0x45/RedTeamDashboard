@@ -10,6 +10,7 @@
 // here are small and msal-react's react peer range lags React 19.
 
 import { createContext, useContext, useEffect, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { flushMyProviderKeys } from "@/lib/api";
 import { DEV_USER, ENTRA, ENTRA_ENABLED } from "@/lib/config";
 import { activeAccount, ensureMsalReady, msalInstance } from "@/lib/msal";
@@ -40,6 +41,7 @@ export function useAuth(): AuthValue {
 function MsalAuthProvider({ children }: { children: React.ReactNode }) {
   // msalInstance is non-null here (ENTRA_ENABLED gates the export selection).
   const instance = msalInstance!;
+  const qc = useQueryClient();
   const [ready, setReady] = useState(false);
   const [identity, setIdentity] = useState<Identity | null>(null);
 
@@ -62,11 +64,16 @@ function MsalAuthProvider({ children }: { children: React.ReactNode }) {
           : null,
       );
       setReady(true);
+      // v1.0.0 fix: any TanStack Query hook that fired during hydration
+      // (before this effect finished) got a null token and errored. Reset
+      // them all now that we have a real account — they'll refetch with
+      // proper Bearer headers and the errored state clears.
+      if (account) qc.resetQueries();
     })();
     return () => {
       cancelled = true;
     };
-  }, [instance]);
+  }, [instance, qc]);
 
   const value: AuthValue = {
     ready,

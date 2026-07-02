@@ -73,7 +73,12 @@ export async function getAccessToken(): Promise<string | null> {
   await ensureMsalReady();
   const account = activeAccount();
   if (!account) {
-    await msalInstance.loginRedirect({ scopes: SCOPES });
+    // v1.0.0 fix: don't auto-redirect from here. AuthGate renders the
+    // sign-in button and calls signIn() explicitly. Auto-redirecting
+    // races against AuthProvider's handleRedirectPromise() when the
+    // user comes back from Entra — if a TanStack Query hook fires
+    // before the promise has set the active account, we bounce the
+    // user through the login screen a second (and third) time.
     return null;
   }
   try {
