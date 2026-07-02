@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -9,7 +9,10 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { listAuthorizations, revokeAuthorization } from "@/lib/api";
+import {
+  useAuthorizations,
+  useRevokeAuthorizationMutation,
+} from "@/lib/hooks";
 import type { Authorization } from "@/lib/types";
 
 interface GrantsCardProps {
@@ -25,27 +28,30 @@ export function GrantsCard({
   refreshKey,
   canRevoke,
 }: GrantsCardProps) {
-  const [grants, setGrants] = useState<Authorization[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  // v1.0.0: react-query owns the grants list. `refreshKey` (parent bumps
+  // it after a "remember" approval) still forces a refetch via the effect
+  // below.
+  const { data, isLoading, error: queryError, refetch } = useAuthorizations(
+    engagementId,
+    true,
+  );
+  const grants = data ?? [];
+  const revokeMutation = useRevokeAuthorizationMutation(engagementId);
   const [busyId, setBusyId] = useState<string | null>(null);
-
-  const reload = useCallback(async () => {
-    setLoading(true);
-    try {
-      const rows = await listAuthorizations(engagementId, true);
-      setGrants(rows);
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setLoading(false);
-    }
-  }, [engagementId]);
+  const [localError, setLocalError] = useState<string | null>(null);
+  const error =
+    localError ??
+    (queryError instanceof Error
+      ? queryError.message
+      : queryError
+        ? String(queryError)
+        : null);
+  const loading = isLoading;
 
   useEffect(() => {
-    reload();
-  }, [reload, refreshKey]);
+    void refetch();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshKey]);
 
   const onRevoke = async (grant: Authorization) => {
     if (
@@ -56,11 +62,11 @@ export function GrantsCard({
       return;
     }
     setBusyId(grant.id);
+    setLocalError(null);
     try {
-      await revokeAuthorization(grant.id);
-      await reload();
+      await revokeMutation.mutateAsync(grant.id);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setLocalError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusyId(null);
     }

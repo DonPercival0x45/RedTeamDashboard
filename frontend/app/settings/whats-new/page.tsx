@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { ExternalLink } from "lucide-react";
 import {
   Card,
@@ -11,30 +11,22 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { ReleaseBody } from "@/components/release-body";
-import {
-  loadReleases,
-  markVersionSeen,
-} from "@/lib/release-notes";
-import type { ReleaseNote } from "@/lib/types";
+import { markVersionSeen } from "@/lib/release-notes";
+import { useReleases } from "@/lib/hooks";
 
 // Full history of releases as fetched by install.sh at deploy time and
 // stamped into /releases.json. Visiting this page marks the latest
 // version as seen so the banner doesn't keep reminding the analyst.
 
 export default function SettingsWhatsNewPage() {
-  const [releases, setReleases] = useState<ReleaseNote[] | null>(null);
+  // v1.0.0: shared useReleases cache. WhatsNewBanner reads the same key,
+  // so this page's render is instant if the banner mounted first.
+  const { data } = useReleases();
+  const releases = data ?? null;
 
   useEffect(() => {
-    let cancelled = false;
-    void loadReleases().then((rows) => {
-      if (cancelled) return;
-      setReleases(rows);
-      if (rows.length > 0) markVersionSeen(rows[0].tag_name);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+    if (releases && releases.length > 0) markVersionSeen(releases[0].tag_name);
+  }, [releases]);
 
   return (
     <div className="mx-auto max-w-3xl space-y-6 px-4 py-6">
