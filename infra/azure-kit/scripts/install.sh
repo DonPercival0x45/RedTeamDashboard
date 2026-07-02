@@ -388,6 +388,100 @@ else
         "https://api.github.com/repos/${IMAGE_REPO_OWNER}/RedTeamDashboard/releases?per_page=20" \
         -o "$TMP_DIR/public/releases.json"; then
         echo "    fetched releases.json ($(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$TMP_DIR/public/releases.json") entries)"
+
+        # v1.3.0 What's New Cleanup — for each release, resolve the previous
+        # tag and pull the commit list between them via /compare, then bucket
+        # commit titles by convention (v.../v(...) → feature, fix(...) → fix,
+        # qol|perf|refactor|docs → qol, feedback: → dropped, rest → ops).
+        # Enriched schema per release adds a ``categories`` object; frontend
+        # renders those blocks above the fold. Legacy releases.json (no
+        # categories) still renders via the raw-body fallback path — this
+        # step is best-effort.
+        python3 - "$TMP_DIR/public/releases.json" "${IMAGE_REPO_OWNER}" <<'PY' || red "    (couldn't enrich releases.json with categories — falls back to raw-body render)"
+import json
+import re
+import sys
+import urllib.request
+
+path = sys.argv[1]
+owner = sys.argv[2]
+
+with open(path) as fh:
+    releases = json.load(fh)
+
+if not releases:
+    sys.exit(0)
+
+
+def gh_compare(prev_tag: str, this_tag: str):
+    url = (
+        f"https://api.github.com/repos/{owner}/RedTeamDashboard/"
+        f"compare/{prev_tag}...{this_tag}"
+    )
+    req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json"})
+    with urllib.request.urlopen(req, timeout=15) as resp:  # noqa: S310 — public GH API
+        return json.load(resp)
+
+
+PR_RE = re.compile(r"\(#(\d+)\)\s*$")
+FEATURE_RE = re.compile(r"^v\d+\.\d+\.\d+(\([^)]*\))?:")
+FIX_RE = re.compile(r"^fix(\([^)]*\))?:")
+QOL_RE = re.compile(r"^(qol|perf|refactor|docs)(\([^)]*\))?:")
+HIDDEN_RE = re.compile(r"^feedback:")
+
+
+def bucket(title: str) -> str | None:
+    if HIDDEN_RE.match(title):
+        return None
+    if FEATURE_RE.match(title):
+        return "features"
+    if FIX_RE.match(title):
+        return "fixes"
+    if QOL_RE.match(title):
+        return "qol"
+    return "ops"
+
+
+# Releases API returns newest-first. Pair each release with the one right
+# after it to get the "previous tag" for compare.
+for i, rel in enumerate(releases):
+    if "categories" in rel:
+        continue  # idempotent — don't re-enrich
+    this_tag = rel.get("tag_name")
+    if not this_tag:
+        continue
+    prev_tag = releases[i + 1]["tag_name"] if i + 1 < len(releases) else None
+    categories = {"features": [], "fixes": [], "qol": [], "ops": []}
+    if prev_tag:
+        try:
+            data = gh_compare(prev_tag, this_tag)
+        except Exception as exc:  # noqa: BLE001 — best-effort enrichment
+            print(f"    skip categorize {this_tag} vs {prev_tag}: {exc}", file=sys.stderr)
+            rel["categories"] = categories
+            continue
+        for c in data.get("commits") or []:
+            raw_title = (c.get("commit") or {}).get("message") or ""
+            title = raw_title.splitlines()[0].strip()
+            if not title:
+                continue
+            b = bucket(title)
+            if b is None:
+                continue
+            pr_match = PR_RE.search(title)
+            pr = int(pr_match.group(1)) if pr_match else None
+            clean = PR_RE.sub("", title).strip()
+            categories[b].append(
+                {"title": clean, "sha": (c.get("sha") or "")[:7], "pr": pr}
+            )
+    rel["categories"] = categories
+
+with open(path, "w") as fh:
+    json.dump(releases, fh)
+
+print(
+    f"    enriched releases.json — categorized {sum(1 for r in releases if r.get('categories'))} release(s)"
+)
+PY
     else
         red "    couldn't fetch GitHub releases — viewer ships with empty release list"
         echo "[]" > "$TMP_DIR/public/releases.json"

@@ -612,6 +612,26 @@ export interface ReleaseNote {
   published_at: string;
   body: string | null;
   html_url: string;
+  // v1.3.0: bucketed commit titles between the previous tag and this
+  // one, stamped by install.sh at deploy time. Missing on releases
+  // stamped by an older install.sh — the What's New page falls back
+  // to raw-body render in that case. Empty buckets are still emitted
+  // so the frontend can rely on the shape being present when the
+  // field exists.
+  categories?: ReleaseCategories;
+}
+
+export interface ReleaseCategoryEntry {
+  title: string;
+  sha: string;
+  pr: number | null;
+}
+
+export interface ReleaseCategories {
+  features: ReleaseCategoryEntry[];
+  fixes: ReleaseCategoryEntry[];
+  qol: ReleaseCategoryEntry[];
+  ops: ReleaseCategoryEntry[];
 }
 
 export interface RoadmapSuggestion {
