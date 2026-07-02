@@ -61,6 +61,9 @@ param extraCorsAllowOrigins string = 'http://localhost:3001,http://127.0.0.1:300
 param entraTenantId string = ''
 param entraClientId string = ''
 
+@description('v1.0.0: Comma-separated IPv4 CIDRs the frontend Container App will accept. Empty → no restriction. install.sh resolves + persists this the same way it does for the SWA (RTD_VIEWER_ALLOWED_IPS).')
+param frontendAllowedIps string = ''
+
 var namePrefix = 'rtd-${env}'
 var tags = {
   app: 'red-team-dashboard'
@@ -191,6 +194,7 @@ module viewer 'modules/viewer.bicep' = {
 
 var backendImage = 'ghcr.io/${imageRepoOwner}/rtd-backend:${imageTag}'
 var workerImage = 'ghcr.io/${imageRepoOwner}/rtd-worker:${imageTag}'
+var frontendImage = 'ghcr.io/${imageRepoOwner}/rtd-viewer:${imageTag}'
 
 // Stage 2 — secondary MCP App with scale-to-zero. Lives in the same env
 // so internal DNS just works; ingress is external so the worker can
@@ -212,6 +216,36 @@ module mcpApp 'modules/mcp_app.bicep' = {
   }
 }
 
+// v1.0.0: Compose the frontend FQDN from convention so `apps` (backend
+// CORS) and `frontend` (backend URL) don't reference each other's outputs
+// — that would produce a Bicep dependency cycle. Every Container App in
+// a given env shares one `caenv.defaultDomain` suffix, so this
+// composition is stable.
+var frontendFqdn = '${namePrefix}-frontend.${caenv.outputs.defaultDomain}'
+var backendFqdn = '${namePrefix}-app.${caenv.outputs.defaultDomain}'
+
+// v1.0.0: frontend Container App (Node runtime). Runs alongside the SWA
+// during the parallel week; after decommission this becomes the only
+// viewer. Uses the composed backend FQDN as its RTD_API_BASE_URL.
+module frontend 'modules/frontend.bicep' = {
+  name: 'frontend'
+  scope: rg
+  params: {
+    namePrefix: namePrefix
+    location: location
+    tags: tags
+    environmentId: caenv.outputs.id
+    frontendImage: frontendImage
+    apiBaseUrl: 'https://${backendFqdn}'
+    entraTenantId: entraTenantId
+    entraClientId: entraClientId
+    // Backend expects `api://<clientId>/access_as_user` — build here so
+    // install.sh doesn't have to.
+    entraApiScope: empty(entraClientId) ? '' : 'api://${entraClientId}/access_as_user'
+    allowedIps: frontendAllowedIps
+  }
+}
+
 module apps 'modules/containerapps.bicep' = {
   name: 'containerapps'
   scope: rg
@@ -226,7 +260,11 @@ module apps 'modules/containerapps.bicep' = {
     workerImage: workerImage
     llmProvider: llmProvider
     anthropicModel: anthropicModel
-    corsAllowOrigins: '${extraCorsAllowOrigins},${viewer.outputs.url}'
+    // v1.0.0: two viewer origins during the parallel week — the SWA
+    // (viewer.outputs.url) and the new frontend Container App
+    // (frontendFqdn, composed above). Both need CORS access to the
+    // backend.
+    corsAllowOrigins: '${extraCorsAllowOrigins},${viewer.outputs.url},https://${frontendFqdn}'
     entraTenantId: entraTenantId
     entraClientId: entraClientId
     appInsightsConnectionString: ai.outputs.connectionString
@@ -271,6 +309,9 @@ output keyVaultName string = kv.outputs.name
 output postgresFqdn string = postgres.outputs.fqdn
 output viewerName string = viewer.outputs.name
 output viewerUrl string = viewer.outputs.url
+// v1.0.0: frontend Container App outputs.
+output frontendAppName string = frontend.outputs.appName
+output frontendUrl string = frontend.outputs.url
 output appInsightsName string = ai.outputs.name
 output storageAccountName string = storage.outputs.storageAccountName
 output mcpAppName string = mcpApp.outputs.appName
