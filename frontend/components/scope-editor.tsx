@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -13,14 +14,15 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { importScope } from "@/lib/api";
 import {
-  createScopeItem,
-  deleteScopeItem,
-  importScope,
-  listScope,
-} from "@/lib/api";
+  qk,
+  useCreateScopeItemMutation,
+  useDeleteScopeItemMutation,
+  useScope,
+} from "@/lib/hooks";
 import { ScopeImporter } from "@/components/scope-importer";
-import type { ScopeItem, ScopeKind } from "@/lib/types";
+import type { ScopeKind } from "@/lib/types";
 
 const KINDS: ScopeKind[] = ["domain", "cidr", "ip", "url"];
 
@@ -31,35 +33,33 @@ export function ScopeEditor({
   slug: string;
   canWrite: boolean;
 }) {
-  const [items, setItems] = useState<ScopeItem[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // v1.0.0: react-query owns the fetch. Add/delete mutations invalidate
+  // the scope cache; importer calls qc.invalidateQueries directly.
+  const qc = useQueryClient();
+  const { data: items, error: queryError } = useScope(slug);
+  const createMutation = useCreateScopeItemMutation(slug);
+  const deleteMutation = useDeleteScopeItemMutation(slug);
 
   const [kind, setKind] = useState<ScopeKind>("domain");
   const [value, setValue] = useState("");
   const [isExclusion, setIsExclusion] = useState(false);
   const [note, setNote] = useState("");
-  const [adding, setAdding] = useState(false);
-
-  const reload = useCallback(async () => {
-    try {
-      setError(null);
-      setItems(await listScope(slug));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  }, [slug]);
-
-  useEffect(() => {
-    setItems(null);
-    reload();
-  }, [reload]);
+  const [localError, setLocalError] = useState<string | null>(null);
+  const error =
+    localError ??
+    (queryError instanceof Error
+      ? queryError.message
+      : queryError
+        ? String(queryError)
+        : null);
+  const adding = createMutation.isPending;
 
   const onAdd = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!value.trim()) return;
-    setAdding(true);
+    setLocalError(null);
     try {
-      await createScopeItem(slug, {
+      await createMutation.mutateAsync({
         kind,
         value: value.trim(),
         is_exclusion: isExclusion,
@@ -68,20 +68,17 @@ export function ScopeEditor({
       setValue("");
       setNote("");
       setIsExclusion(false);
-      await reload();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setAdding(false);
+      setLocalError(err instanceof Error ? err.message : String(err));
     }
   };
 
   const onDelete = async (id: string) => {
+    setLocalError(null);
     try {
-      await deleteScopeItem(slug, id);
-      await reload();
+      await deleteMutation.mutateAsync(id);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setLocalError(err instanceof Error ? err.message : String(err));
     }
   };
 
@@ -99,7 +96,7 @@ export function ScopeEditor({
           <ScopeImporter
             onCommit={async (text) => {
               const result = await importScope(slug, text);
-              await reload();
+              await qc.invalidateQueries({ queryKey: qk.scope(slug) });
               if (result.errors.length || result.duplicates.length) {
                 const bits = [
                   `${result.created.length} added`,
@@ -110,9 +107,9 @@ export function ScopeEditor({
                     ? `${result.errors.length} unparseable`
                     : null,
                 ].filter(Boolean);
-                setError(bits.join(" · "));
+                setLocalError(bits.join(" · "));
               } else {
-                setError(null);
+                setLocalError(null);
               }
             }}
           />

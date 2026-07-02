@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -30,14 +31,17 @@ import { ToolsView } from "@/components/tools-view";
 import { GrantsCard } from "@/components/grants-card";
 import { RunPrompt } from "@/components/run-prompt";
 import { ScopeEditor } from "@/components/scope-editor";
-import {
-  archiveEngagement,
-  downloadEngagementExport,
-  flushEngagement,
-  getEngagement,
-  listFindings,
-} from "@/lib/api";
+import { downloadEngagementExport } from "@/lib/api";
 import { subscribeToEvents } from "@/lib/events";
+import {
+  qk,
+  removeFindingFromCache,
+  upsertFindingInCache,
+  useArchiveEngagementMutation,
+  useEngagement,
+  useFindings,
+  useFlushEngagementMutation,
+} from "@/lib/hooks";
 import type { Engagement, Finding } from "@/lib/types";
 
 // Slug + active view ride in the query string (?slug=&view=) so the page can be
@@ -140,11 +144,22 @@ function EngagementDetail({ slug }: { slug: string }) {
     [params, router],
   );
 
-  const [engagement, setEngagement] = useState<Engagement | null>(null);
+  // v1.0.0: engagement + findings live in the React Query cache. Navigating
+  // away and back is instant (cache-served) and window-focus revalidates
+  // both. SSE events merge into the findings cache directly via
+  // qc.setQueryData, so the "smooth status transition" pain from user
+  // feedback goes away.
+  const qc = useQueryClient();
+  const engagementQuery = useEngagement(slug);
+  const findingsQuery = useFindings(slug);
+  const engagement = engagementQuery.data ?? null;
+  const findings = findingsQuery.data ?? [];
+  const archiveMutation = useArchiveEngagementMutation(slug);
+  const flushMutation = useFlushEngagementMutation(slug);
+
   const [events, setEvents] = useState<LoggedEvent[]>([]);
-  const [findings, setFindings] = useState<Finding[]>([]);
   const [pending, setPending] = useState<PendingApproval | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [localError, setLocalError] = useState<string | null>(null);
   const [streamState, setStreamState] = useState<
     "connecting" | "open" | "closed"
   >("connecting");
@@ -152,56 +167,30 @@ function EngagementDetail({ slug }: { slug: string }) {
 
   const seenSseIds = useRef<Set<string>>(new Set());
 
-  const reload = useCallback(async () => {
-    try {
-      setEngagement(await getEngagement(slug));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  }, [slug]);
+  const engagementErr = engagementQuery.error;
+  const error =
+    localError ??
+    (engagementErr instanceof Error
+      ? engagementErr.message
+      : engagementErr
+        ? String(engagementErr)
+        : null);
 
+  // Reset the ephemeral pieces when the slug changes. Query cache handles
+  // the engagement + findings resets automatically (different query keys).
   useEffect(() => {
-    setEngagement(null);
-    setFindings([]);
     setEvents([]);
     seenSseIds.current.clear();
-    reload();
-  }, [reload]);
-
-  useEffect(() => {
-    let cancelled = false;
-    listFindings(slug)
-      .then((rows) => {
-        if (cancelled) return;
-        setFindings((prev) => {
-          const seen = new Set(prev.map((f) => f.id));
-          return [...prev, ...rows.filter((f) => !seen.has(f.id))];
-        });
-      })
-      .catch(() => {
-        // Non-fatal: the live stream still works.
-      });
-    return () => {
-      cancelled = true;
-    };
   }, [slug]);
 
-  // Merge a validated/updated finding back into the list.
-  const upsertFinding = useCallback((f: Finding) => {
-    setFindings((prev) => {
-      const idx = prev.findIndex((x) => x.id === f.id);
-      if (idx === -1) return [f, ...prev];
-      const next = [...prev];
-      next[idx] = f;
-      return next;
-    });
-  }, []);
-
-  // v0.10.0: drop a soft-deleted finding from the list so the analyst
-  // sees it disappear without a refetch.
-  const removeFinding = useCallback((findingId: string) => {
-    setFindings((prev) => prev.filter((f) => f.id !== findingId));
-  }, []);
+  const upsertFinding = useCallback(
+    (f: Finding) => upsertFindingInCache(qc, slug, f),
+    [qc, slug],
+  );
+  const removeFinding = useCallback(
+    (findingId: string) => removeFindingFromCache(qc, slug, findingId),
+    [qc, slug],
+  );
 
   useEffect(() => {
     const controller = new AbortController();
@@ -222,8 +211,12 @@ function EngagementDetail({ slug }: { slug: string }) {
 
         if (event.type === "finding.created") {
           const rowId = event.finding_id || id;
-          setFindings((prev) => {
-            if (prev.some((f) => f.id === rowId)) return prev;
+          // v1.0.0: merge into the findings cache directly, so any
+          // route-mounted <FindingsView> re-renders and the row persists
+          // across navigation.
+          qc.setQueryData<Finding[]>(qk.findings(slug), (prev) => {
+            const list = prev ?? [];
+            if (list.some((f) => f.id === rowId)) return list;
             const created: Finding = {
               id: rowId,
               thread_id: event.thread_id,
@@ -240,7 +233,7 @@ function EngagementDetail({ slug }: { slug: string }) {
               burp_serial_number: null,
               created_at: new Date().toISOString(),
             };
-            return [created, ...prev];
+            return [created, ...list];
           });
         } else if (event.type === "approval.pending" && canWrite) {
           setPending({
@@ -256,22 +249,21 @@ function EngagementDetail({ slug }: { slug: string }) {
       },
     }).catch((err) => {
       setStreamState("closed");
-      setError(err instanceof Error ? err.message : String(err));
+      setLocalError(err instanceof Error ? err.message : String(err));
     });
 
     return () => {
       controller.abort();
     };
-  }, [slug, canWrite]);
+  }, [slug, canWrite, qc]);
 
   const onArchive = async () => {
     if (!engagement) return;
     if (!window.confirm(`Archive ${engagement.slug}? Stops new runs.`)) return;
     try {
-      await archiveEngagement(slug);
-      await reload();
+      await archiveMutation.mutateAsync();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setLocalError(err instanceof Error ? err.message : String(err));
     }
   };
 
@@ -292,10 +284,10 @@ function EngagementDetail({ slug }: { slug: string }) {
       return;
     }
     try {
-      await flushEngagement(slug);
+      await flushMutation.mutateAsync();
       router.push("/");
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setLocalError(err instanceof Error ? err.message : String(err));
     }
   };
 
