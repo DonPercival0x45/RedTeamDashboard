@@ -193,6 +193,17 @@ export interface RegroupApplyResult {
   final_severity: Severity;
 }
 
+// v1.4.3: response of POST /findings/repair-groups. Non-destructive
+// maintenance pass over an engagement's grouped rows.
+export interface RepairGroupsResult {
+  parents_scanned: number;
+  parents_items_repaired: number;
+  parents_rekeyed: number;
+  parents_merged: number;
+  ungrouped_absorbed: number;
+  total_items_after: number;
+}
+
 // Sort order for GET /engagements/{slug}/findings?sort=…
 export type FindingSort = "newest" | "severity" | "observed";
 

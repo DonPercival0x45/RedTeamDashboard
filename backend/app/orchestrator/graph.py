@@ -72,8 +72,57 @@ def _default_checkpointer() -> MemorySaver:
 
 
 def _agent_node(state: OsintState, llm: Any) -> dict[str, Any]:
+    """Invoke the LLM and emit an ``llm.responded`` trace event so the
+    analyst can see what the model returned (v1.4.3).
+
+    Previously this was a bare ``llm.invoke`` — when the model returned an
+    empty response with no tool_calls (e.g. because the SDK failed a
+    pre-flight check and produced an empty AIMessage without raising),
+    the graph would complete cleanly with zero visible activity. That
+    made the "0 tokens, no findings, no error" prod bug undiagnosable.
+    Now every invocation produces a trace event with tokens + content
+    preview + tool_calls list, and any exception bubbles up (still caught
+    by :class:`RunRunner.handle` as ``run.errored``) instead of vanishing.
+    """
+    import time as _t
+
+    start = _t.monotonic()
     response = llm.invoke(state["messages"])
-    return {"messages": [response]}
+    elapsed_ms = int((_t.monotonic() - start) * 1000)
+
+    tokens_in = 0
+    tokens_out = 0
+    usage = getattr(response, "usage_metadata", None) or {}
+    if isinstance(usage, Mapping):
+        tokens_in = int(usage.get("input_tokens") or 0)
+        tokens_out = int(usage.get("output_tokens") or 0)
+
+    tool_calls = []
+    for call in getattr(response, "tool_calls", None) or []:
+        tool_calls.append(
+            {"name": call.get("name"), "args": dict(call.get("args") or {})}
+        )
+
+    content = getattr(response, "content", "")
+    if isinstance(content, list):
+        content_preview = " ".join(
+            str(c.get("text", "")) if isinstance(c, Mapping) else str(c)
+            for c in content
+        )
+    else:
+        content_preview = str(content or "")
+    content_preview = content_preview.strip()[:500]
+
+    trace: dict[str, Any] = {
+        "tokens_in": tokens_in,
+        "tokens_out": tokens_out,
+        "elapsed_ms": elapsed_ms,
+        "tool_call_count": len(tool_calls),
+        "tool_calls": tool_calls,
+        "content_preview": content_preview,
+    }
+
+    return {"messages": [response], "llm_events": [trace]}
 
 
 def _tool_payload(result: ToolResult) -> str:
@@ -117,6 +166,7 @@ def _tool_dispatch_node(
     out_denials: list[dict[str, Any]] = []
     out_pending: list[dict[str, Any]] = []
     out_auto_approvals: list[dict[str, Any]] = []
+    out_tool_events: list[dict[str, Any]] = []
 
     for call in last.tool_calls:
         name = call["name"]
@@ -285,17 +335,46 @@ def _tool_dispatch_node(
                 ],
             }
 
+        import time as _t
+
+        _start = _t.monotonic()
         result = _execute_tool(
             name,
             effective_args,
             mcp_executor=mcp_executor,
             implementations=implementations,
         )
+        _elapsed_ms = int((_t.monotonic() - _start) * 1000)
         out_messages.append(
             ToolMessage(content=_tool_payload(result), tool_call_id=call_id)
         )
+        expanded: list[dict[str, Any]] = []
         if result.ok:
-            out_findings.extend(_expand_findings(name, effective_args, result))
+            expanded = _expand_findings(name, effective_args, result)
+            out_findings.extend(expanded)
+        # v1.4.3: trace event so the analyst sees exactly what the
+        # agent called and what came back. Data preview is bounded so
+        # heavy responses (big JSON blobs) don't blow up the SSE frame.
+        data_preview: Any = None
+        if result.ok:
+            try:
+                import json as _json
+
+                raw = _json.dumps(result.data, default=str)
+                data_preview = raw[:400] + ("…" if len(raw) > 400 else "")
+            except Exception:  # noqa: BLE001
+                data_preview = "(unserializable)"
+        out_tool_events.append(
+            {
+                "tool": name,
+                "args": dict(effective_args),
+                "ok": bool(result.ok),
+                "elapsed_ms": _elapsed_ms,
+                "findings_emitted": len(expanded),
+                "error": result.error if not result.ok else None,
+                "data_preview": data_preview,
+            }
+        )
 
     update: dict[str, Any] = {"messages": out_messages}
     if out_findings:
@@ -306,6 +385,8 @@ def _tool_dispatch_node(
         update["pending"] = out_pending
     if out_auto_approvals:
         update["auto_approvals"] = out_auto_approvals
+    if out_tool_events:
+        update["tool_events"] = out_tool_events
     return update
 
 

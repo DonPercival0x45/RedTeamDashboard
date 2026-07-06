@@ -110,6 +110,7 @@ from app.schemas.finding import (
     RegroupApplyResult,
     RegroupPreview,
     RegroupProposal,
+    RepairGroupsResult,
 )
 from app.schemas.observation import ObservationCreate, ObservationRead
 from app.services.entities import extract_entities
@@ -1663,7 +1664,6 @@ def regroup_findings_apply(
         if not members:
             continue
 
-        tool = members[0].source_tool or "unknown"
         # Winning exclusion across the group (outside_roe > out_of_scope
         # > null). Also read the existing parent's exclusion in case it
         # already has one.
@@ -1680,11 +1680,17 @@ def regroup_findings_apply(
             args = details.pop("args", {})
             if not isinstance(args, dict):
                 args = {}
+            # v1.4.3: use EACH member's own source_tool so extract_items
+            # projects the right shape. Different tools (subfinder,
+            # crt_sh, dns_lookup) can now share one group_key under the
+            # unified subdomains:{apex} vocab — the first member's tool
+            # isn't necessarily the tool of the row we're merging.
+            member_tool = f.source_tool or "unknown"
             parent, _added = upsert_grouped_finding(
                 session,
                 engagement_id=eng.id,
                 group_key=key,
-                tool=tool,
+                tool=member_tool,
                 thread_id=None,
                 args=args,
                 data=details,
@@ -1750,6 +1756,274 @@ def regroup_findings_apply(
         )
     session.commit()
     return results
+
+
+# ---------------------------------------------------------------------------
+# Repair groups (v1.4.3) — items backfill + legacy-key migration
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/engagements/{slug}/findings/repair-groups",
+    response_model=RepairGroupsResult,
+)
+def repair_groups(
+    slug: str,
+    session: DbSession,
+    user: CurrentAdminUser,
+) -> RepairGroupsResult:
+    """One-time maintenance pass over an engagement's grouped rows.
+
+    Does three things (in order):
+
+    1. **Rekey legacy parents**. Groups created before v1.4.3 used per-tool
+       keys (``subfinder:{apex}``, ``crt_sh:{apex}``, ``dns:{domain}``).
+       This step re-runs :func:`compute_group_key` against each parent's
+       source rows to figure out what its key would be TODAY. If it
+       differs and no other parent has that key, we just update in place
+       (title + group_key). If another parent already owns the new key,
+       we fold this one INTO it (items merged, source rows re-pointed,
+       old parent soft-deleted).
+
+    2. **Rebuild items[]**. For every parent, walk its soft-deleted
+       source rows (``details.regrouped_into = <parent_id>``), run the
+       current :func:`extract_items` over each source's data, dedup, and
+       overwrite the parent's ``details['items']`` with the fresh set.
+       Also recomputes severity as the max across sources + parent.
+
+    3. **Fold matching ungrouped rows**. Any row where ``group_key IS
+       NULL`` and :func:`compute_group_key` yields a key that already
+       exists on an active parent gets absorbed into that parent
+       (source soft-deleted, items appended).
+
+    Admin-scoped. Non-destructive from an audit standpoint — every
+    source row still lives in the DB, soft-deleted, with a pointer
+    back to its parent.
+    """
+    from app.services.finding_grouping import (
+        compute_group_key,
+        extract_items,
+        group_title,
+        item_dedup_key,
+        upsert_grouped_finding,
+    )
+
+    eng = _get_engagement_or_404(session, slug)
+    _reject_flushed(eng)
+
+    parents = list(
+        session.execute(
+            select(Finding).where(
+                Finding.engagement_id == eng.id,
+                Finding.deleted_at.is_(None),
+                Finding.group_key.is_not(None),
+            )
+        ).scalars()
+    )
+    now = datetime.now(tz=UTC)
+
+    parents_by_key: dict[str, Finding] = {}
+    parents_scanned = len(parents)
+    parents_rekeyed = 0
+    parents_merged = 0
+    parents_items_repaired = 0
+
+    # Preload every soft-deleted row once so we don't re-query per parent.
+    all_deleted = list(
+        session.execute(
+            select(Finding).where(
+                Finding.engagement_id == eng.id,
+                Finding.deleted_at.is_not(None),
+            )
+        ).scalars()
+    )
+    sources_by_parent: dict[str, list[Finding]] = {}
+    for row in all_deleted:
+        pid = (row.details or {}).get("regrouped_into")
+        if pid:
+            sources_by_parent.setdefault(str(pid), []).append(row)
+
+    def _regenerate_items(
+        parent: Finding, sources: list[Finding]
+    ) -> tuple[list[dict[str, Any]], Severity]:
+        """Return (fresh items list, max severity) built by re-extracting
+        every source row through the current vocab."""
+        items: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        top_sev = parent.severity
+        for src in sources:
+            details = dict(src.details or {})
+            details.pop("thread_id", None)
+            details.pop("args", None)
+            details.pop("regrouped_into", None)
+            src_tool = src.source_tool or "unknown"
+            src_items = extract_items(src_tool, details)
+            for it in src_items:
+                key = item_dedup_key(src_tool, it)
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                it_stamped = dict(it)
+                it_stamped.setdefault("first_seen_at", now.isoformat())
+                items.append(it_stamped)
+            if _SEVERITY_ORDER[src.severity] > _SEVERITY_ORDER[top_sev]:
+                top_sev = src.severity
+        return items, top_sev
+
+    # Step 1 + 2 combined: iterate parents, rekey where needed, rebuild items.
+    for parent in parents:
+        sources = sources_by_parent.get(str(parent.id), [])
+        # Figure out what the new key SHOULD be. Use the first source's
+        # (tool, args, data) as the sample — all sources in a group share
+        # the same key by construction.
+        new_key: str | None = parent.group_key
+        if sources:
+            first = sources[0]
+            details = dict(first.details or {})
+            details.pop("thread_id", None)
+            args = details.pop("args", {})
+            if not isinstance(args, dict):
+                args = {}
+            new_key = compute_group_key(first.source_tool, args, details) or parent.group_key
+
+        # Rekey path.
+        if new_key and new_key != parent.group_key:
+            existing = parents_by_key.get(new_key) or session.execute(
+                select(Finding).where(
+                    Finding.engagement_id == eng.id,
+                    Finding.deleted_at.is_(None),
+                    Finding.group_key == new_key,
+                    Finding.id != parent.id,
+                )
+            ).scalar_one_or_none()
+            if existing is not None:
+                # Fold THIS parent INTO existing: re-point sources,
+                # merge items, soft-delete this parent.
+                for src in sources:
+                    src_details = dict(src.details or {})
+                    src_details["regrouped_into"] = str(existing.id)
+                    src.details = src_details
+                sources_by_parent.setdefault(str(existing.id), []).extend(sources)
+                sources_by_parent.pop(str(parent.id), None)
+
+                parent.deleted_at = now
+                parent.deleted_by_user_id = user.id
+                parents_merged += 1
+                continue
+            # No collision — just rekey in place.
+            parent.group_key = new_key
+            new_title = group_title(
+                parent.source_tool, new_key, parent.details or {}
+            )
+            if new_title:
+                parent.title = new_title
+            parents_rekeyed += 1
+
+        parents_by_key[parent.group_key or ""] = parent
+
+    session.flush()
+
+    # Now walk parents_by_key (the surviving parents) and rebuild items[].
+    total_items_after = 0
+    for _key, parent in parents_by_key.items():
+        sources = sources_by_parent.get(str(parent.id), [])
+        if not sources:
+            # Keep the existing items[] — nothing to rebuild from.
+            existing_items = (parent.details or {}).get("items")
+            total_items_after += len(existing_items) if isinstance(existing_items, list) else 0
+            continue
+
+        fresh_items, top_sev = _regenerate_items(parent, sources)
+        details = dict(parent.details or {})
+        details["items"] = fresh_items
+        details["last_seen_at"] = now.isoformat()
+        details.setdefault("first_seen_at", now.isoformat())
+        details["grouped"] = True
+        parent.details = details
+        parent.severity = top_sev
+        parents_items_repaired += 1
+        total_items_after += len(fresh_items)
+
+    session.flush()
+
+    # Step 3: fold ungrouped rows that would match one of our parent keys.
+    ungrouped = list(
+        session.execute(
+            select(Finding).where(
+                Finding.engagement_id == eng.id,
+                Finding.deleted_at.is_(None),
+                Finding.group_key.is_(None),
+            )
+        ).scalars()
+    )
+    ungrouped_absorbed = 0
+    for row in ungrouped:
+        details = dict(row.details or {})
+        details.pop("thread_id", None)
+        args = details.pop("args", {})
+        if not isinstance(args, dict):
+            args = {}
+        row_key = compute_group_key(row.source_tool, args, details)
+        if not row_key or row_key not in parents_by_key:
+            continue
+        parent = parents_by_key[row_key]
+        upsert_grouped_finding(
+            session,
+            engagement_id=eng.id,
+            group_key=row_key,
+            tool=row.source_tool or "unknown",
+            thread_id=None,
+            args=args,
+            data=details,
+            incoming_severity=row.severity,
+            default_title=row.title,
+            phase=row.phase,
+            status=row.status,
+            validated_by=row.validated_by,
+        )
+        # Soft-delete the source with a pointer at the parent.
+        src_details = dict(row.details or {})
+        src_details["regrouped_into"] = str(parent.id)
+        row.details = src_details
+        row.deleted_at = now
+        row.deleted_by_user_id = user.id
+        ungrouped_absorbed += 1
+
+    if ungrouped_absorbed:
+        # Recount items since upserts appended new entries.
+        session.flush()
+        total_items_after = 0
+        for _key, parent in parents_by_key.items():
+            session.refresh(parent)
+            items = (parent.details or {}).get("items")
+            total_items_after += len(items) if isinstance(items, list) else 0
+
+    session.add(
+        AuditLog(
+            engagement_id=eng.id,
+            actor_type=ActorType.user,
+            actor_id=str(user.id),
+            event_type="findings.groups_repaired",
+            payload={
+                "parents_scanned": parents_scanned,
+                "parents_items_repaired": parents_items_repaired,
+                "parents_rekeyed": parents_rekeyed,
+                "parents_merged": parents_merged,
+                "ungrouped_absorbed": ungrouped_absorbed,
+                "total_items_after": total_items_after,
+            },
+        )
+    )
+    session.commit()
+
+    return RepairGroupsResult(
+        parents_scanned=parents_scanned,
+        parents_items_repaired=parents_items_repaired,
+        parents_rekeyed=parents_rekeyed,
+        parents_merged=parents_merged,
+        ungrouped_absorbed=ungrouped_absorbed,
+        total_items_after=total_items_after,
+    )
 
 
 # ---------------------------------------------------------------------------

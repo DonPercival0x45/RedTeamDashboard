@@ -198,6 +198,25 @@ class RegroupApplyResult(BaseModel):
     final_severity: Severity
 
 
+class RepairGroupsResult(BaseModel):
+    """Response for POST /engagements/{slug}/findings/repair-groups (v1.4.3).
+
+    Non-destructive maintenance pass over an existing engagement's grouped
+    rows: rebuilds ``details['items']`` from each parent's soft-deleted
+    source rows using the current :func:`extract_items` vocab; migrates
+    legacy per-tool group keys (subfinder / crt_sh / dns) into the
+    unified ``subdomains:{apex}`` shape; folds ungrouped rows that would
+    now share a key into their parent.
+    """
+
+    parents_scanned: int
+    parents_items_repaired: int
+    parents_rekeyed: int
+    parents_merged: int
+    ungrouped_absorbed: int
+    total_items_after: int
+
+
 class FindingValidate(BaseModel):
     # 'validated' promotes to report-eligible; the others remove it from the
     # report while keeping an audit trail.
