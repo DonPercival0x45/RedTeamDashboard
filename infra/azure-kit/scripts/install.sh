@@ -658,13 +658,24 @@ if [[ -n "$OPENAI_KEY" ]]; then
     green "    openai-api-key stored in Key Vault."
 fi
 
-# Restart so the app picks up the newly stored secrets
-bold "[7/7] Restarting app to pick up Key Vault secrets…"
-REV="$(az containerapp revision list -n "$APP_NAME" -g "$RG_OUT" \
-    --query '[?properties.active].name | [0]' -o tsv)"
-az containerapp revision restart -n "$APP_NAME" -g "$RG_OUT" \
-    --revision "$REV" --only-show-errors -o none
-green "    restart triggered."
+# v1.4.7: force a NEW revision so the containers re-read Key Vault secrets.
+#
+# Why not `revision restart`: Azure Container Apps bakes secret values into
+# each replica's env vars AT REVISION CREATION TIME. A restart re-launches
+# the container process but reuses the same baked env — a KV secret update
+# in the previous step goes ignored until a new revision is minted. That's
+# exactly what bit the worker-mcp-api-key seed for the whole 1.4.x line
+# before this fix — the KV secret said rtd_..., but the running container's
+# WORKER_MCP_API_KEY env var was still the stale placeholder.
+#
+# `--revision-suffix` forces a fresh revision even when the config hasn't
+# structurally changed. Suffix pattern is lowercase alnum + hyphens; a
+# UTC timestamp guarantees uniqueness across re-runs.
+bold "[7/7] Forcing a new revision so containers pull fresh Key Vault secrets…"
+_REV_SUFFIX="postseed-$(date -u +%Y%m%d%H%M%S)"
+az containerapp update -n "$APP_NAME" -g "$RG_OUT" \
+    --revision-suffix "$_REV_SUFFIX" --only-show-errors -o none
+green "    new revision '$_REV_SUFFIX' minted; old revision drains automatically."
 
 # ---------------------------------------------------------------------------
 # Summary
