@@ -470,6 +470,17 @@ export interface ProviderKeyImportResult {
   duplicates: ProviderKeyImportErrorRow[];
 }
 
+export interface ProviderKeyProbeResult {
+  ok: boolean;
+  reachable: boolean;
+  supported: boolean;
+  status_code: number | null;
+  latency_ms: number | null;
+  models: string[];
+  checked_url: string | null;
+  error: string | null;
+}
+
 export type SuggestionKind = "task" | "ephemeral" | "note";
 export type SuggestionStatus = "open" | "accepted" | "dismissed";
 export type AgentName = "strategic" | "tactical";

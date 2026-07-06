@@ -93,6 +93,32 @@ class ProviderKeyRead(BaseModel):
     updated_at: datetime
 
 
+class ProviderKeyProbe(BaseModel):
+    """POST body for the unsaved-key test — the /settings/keys form calls
+    this before creating a row, so the analyst can verify a key + endpoint
+    and pull the live model list without saving first."""
+
+    provider: str = Field(min_length=1, max_length=60)
+    api_key: str | None = Field(default=None, max_length=4096)
+    endpoint: str | None = Field(default=None, max_length=2000)
+    is_local: bool = False
+
+
+class ProviderKeyProbeResult(BaseModel):
+    """What a liveness/model-discovery probe returns. Never carries the
+    key. ``ok`` = reachable AND authorized; ``models`` is the discovered
+    catalog the UI can offer as a dropdown."""
+
+    ok: bool
+    reachable: bool
+    supported: bool = True
+    status_code: int | None = None
+    latency_ms: int | None = None
+    models: list[str] = Field(default_factory=list)
+    checked_url: str | None = None
+    error: str | None = None
+
+
 class ProviderKeyImportErrorRow(BaseModel):
     index: int
     name: str | None
