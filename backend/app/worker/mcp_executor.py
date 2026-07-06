@@ -92,17 +92,55 @@ def make_mcp_executor(
             raw = asyncio.run(_ainvoke(name, args))
         except KeyError as exc:
             return ToolResult(ok=False, error=str(exc))
-        except Exception as exc:  # noqa: BLE001 — surface MCP/transport errors as tool errors
+        except BaseException as exc:  # noqa: BLE001 — surface MCP/transport errors as tool errors
+            # v1.4.4: Python's BaseExceptionGroup (raised by asyncio.TaskGroup
+            # on any child failure) stringifies to just "unhandled errors in
+            # a TaskGroup (1 sub-exception)" — the real cause is inside. Walk
+            # into it so the analyst sees WHAT actually broke (SSL failure,
+            # 401 from MCP auth, DNS, etc.) instead of the wrapper.
+            detail = _unwrap_exception_detail(exc)
             logger.exception(
                 "worker.mcp_executor_failed",
                 tool=name,
-                error=str(exc),
+                error=detail,
+                error_type=type(exc).__name__,
             )
-            return ToolResult(ok=False, error=f"mcp transport error: {exc}")
+            return ToolResult(
+                ok=False,
+                error=f"mcp transport error ({type(exc).__name__}): {detail}",
+            )
 
         return _coerce_tool_response(raw)
 
     return _run
+
+
+def _unwrap_exception_detail(exc: BaseException, depth: int = 0) -> str:
+    """Return the deepest useful message from a possibly-nested exception,
+    with a leading ``ClassName: `` on inner layers so the analyst can see
+    what actually broke (SSL, connection refused, HTTP 401, etc.).
+
+    Handles Python 3.11+ ``BaseExceptionGroup`` (asyncio.TaskGroup raises
+    these on any child failure — their default ``str()`` is uselessly
+    generic) plus the older ``__cause__`` / ``__context__`` chains.
+    """
+    if depth > 5:
+        return str(exc) or type(exc).__name__
+
+    inner = getattr(exc, "exceptions", None)
+    if inner:
+        parts = [
+            f"{type(sub).__name__}: {_unwrap_exception_detail(sub, depth + 1)}"
+            for sub in inner
+        ]
+        return " | ".join(parts)
+
+    msg = str(exc) or type(exc).__name__
+    cause = exc.__cause__ or exc.__context__
+    if cause is not None and cause is not exc:
+        inner_msg = _unwrap_exception_detail(cause, depth + 1)
+        return f"{msg} <- caused by {type(cause).__name__}: {inner_msg}"
+    return msg
 
 
 def _coerce_tool_response(raw: Any) -> ToolResult:
