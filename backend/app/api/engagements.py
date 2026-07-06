@@ -106,6 +106,10 @@ from app.schemas.finding import (
     FindingUpdate,
     FindingValidate,
     MergeRequest,
+    RegroupApplyRequest,
+    RegroupApplyResult,
+    RegroupPreview,
+    RegroupProposal,
 )
 from app.schemas.observation import ObservationCreate, ObservationRead
 from app.services.entities import extract_entities
@@ -1456,6 +1460,296 @@ def correlate_findings(
         ],
         total_considered=len(findings),
     )
+
+
+# ---------------------------------------------------------------------------
+# Regroup ungrouped findings (v1.4.1)
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/engagements/{slug}/findings/regroup/preview",
+    response_model=RegroupPreview,
+)
+def regroup_findings_preview(
+    slug: str,
+    session: DbSession,
+    _user: CurrentNonGuestUser,
+) -> RegroupPreview:
+    """Dry-run: scan every ungrouped row, compute what its group_key
+    WOULD be under the v1.4.0 vocab, and surface groups of size >= 2.
+
+    Deterministic. No LLM. Sibling of the LLM-driven correlate endpoint.
+    Nothing changes in the DB until the analyst POSTs to
+    ``/regroup/apply`` with the keys they approved.
+    """
+    from app.services.finding_grouping import (
+        compute_group_key,
+        extract_items,
+        group_title,
+    )
+
+    eng = _get_engagement_or_404(session, slug)
+    _reject_flushed(eng)
+
+    ungrouped = list(
+        session.execute(
+            select(Finding).where(
+                Finding.engagement_id == eng.id,
+                Finding.deleted_at.is_(None),
+                Finding.group_key.is_(None),
+            )
+        ).scalars()
+    )
+
+    # Bucket by proposed group_key.
+    buckets: dict[str, list[Finding]] = {}
+    ungroupable = 0
+    for f in ungrouped:
+        # Reconstruct the (args, data) split from details — the worker
+        # persists `details = {thread_id, args, ...data}` so we unpack the
+        # same way _finding_to_read does.
+        details = dict(f.details or {})
+        details.pop("thread_id", None)
+        args = details.pop("args", {})
+        if not isinstance(args, dict):
+            args = {}
+        data = details
+        key = compute_group_key(f.source_tool, args, data)
+        if not key:
+            ungroupable += 1
+            continue
+        buckets.setdefault(key, []).append(f)
+
+    # Look up any existing parents whose group_key matches — we'd absorb
+    # into them rather than mint a fresh row.
+    existing_parents: dict[str, Finding] = {}
+    if buckets:
+        rows = session.execute(
+            select(Finding).where(
+                Finding.engagement_id == eng.id,
+                Finding.deleted_at.is_(None),
+                Finding.group_key.in_(list(buckets.keys())),
+            )
+        ).scalars()
+        for row in rows:
+            if row.group_key:
+                existing_parents[row.group_key] = row
+
+    proposals: list[RegroupProposal] = []
+    for key, members in buckets.items():
+        # A group of 1 is meaningless — unless it would absorb into an
+        # existing parent, in which case the size >= 1 rule still gives
+        # value (fold this stray into the pre-existing grouped row).
+        if len(members) < 2 and key not in existing_parents:
+            continue
+
+        tool = members[0].source_tool or "unknown"
+        first_details = dict(members[0].details or {})
+        first_details.pop("thread_id", None)
+        first_details.pop("args", None)
+        title = group_title(tool, key, first_details) or f"{tool}: {key}"
+
+        # Projected item_count = sum of each member's extractable items,
+        # plus any items already sitting on the existing parent.
+        projected_items = 0
+        for f in members:
+            details = dict(f.details or {})
+            details.pop("thread_id", None)
+            details.pop("args", None)
+            projected_items += max(1, len(extract_items(tool, details)))
+        parent = existing_parents.get(key)
+        if parent:
+            existing_items = (parent.details or {}).get("items")
+            if isinstance(existing_items, list):
+                projected_items += len(existing_items)
+
+        # Projected severity: max across members and the existing parent.
+        projected_severity = members[0].severity
+        for f in members:
+            if _SEVERITY_ORDER[f.severity] > _SEVERITY_ORDER[projected_severity]:
+                projected_severity = f.severity
+        if parent and _SEVERITY_ORDER[parent.severity] > _SEVERITY_ORDER[projected_severity]:
+            projected_severity = parent.severity
+
+        proposals.append(
+            RegroupProposal(
+                group_key=key,
+                tool=tool,
+                proposed_title=title,
+                member_ids=[f.id for f in members],
+                projected_severity=projected_severity,
+                projected_item_count=projected_items,
+                absorbs_into_existing_parent_id=parent.id if parent else None,
+            )
+        )
+
+    # Sort largest-first so the analyst sees big wins at the top.
+    proposals.sort(key=lambda p: -p.projected_item_count)
+
+    return RegroupPreview(
+        proposals=proposals,
+        scanned_row_count=len(ungrouped),
+        ungroupable_count=ungroupable,
+    )
+
+
+_EXCLUSION_PRIORITY: dict[Any, int] = {
+    None: 0,
+    "out_of_scope": 1,
+    "outside_roe": 2,
+}
+
+
+@router.post(
+    "/engagements/{slug}/findings/regroup/apply",
+    response_model=list[RegroupApplyResult],
+)
+def regroup_findings_apply(
+    slug: str,
+    body: RegroupApplyRequest,
+    session: DbSession,
+    user: CurrentNonGuestUser,
+) -> list[RegroupApplyResult]:
+    """Fold ungrouped rows into grouped rows, one approved group_key
+    at a time.
+
+    Same-tool only. Source rows are soft-deleted with
+    ``details['regrouped_into']`` pointing at the parent. Exclusion
+    marks propagate to the parent (outside_roe > out_of_scope > null).
+    One ``findings.regrouped`` audit_log row per apply summarises the
+    batch.
+    """
+    from app.services.finding_grouping import (
+        compute_group_key,
+        upsert_grouped_finding,
+    )
+
+    eng = _get_engagement_or_404(session, slug)
+    _reject_flushed(eng)
+
+    approved_keys = {k for k in body.group_keys if k}
+    if not approved_keys:
+        raise HTTPException(status_code=400, detail="no group_keys supplied")
+
+    # Load candidate rows — same query the preview endpoint uses.
+    ungrouped = list(
+        session.execute(
+            select(Finding).where(
+                Finding.engagement_id == eng.id,
+                Finding.deleted_at.is_(None),
+                Finding.group_key.is_(None),
+            )
+        ).scalars()
+    )
+
+    # Bucket into per-key groups matching the analyst's approvals.
+    buckets: dict[str, list[Finding]] = {}
+    for f in ungrouped:
+        details = dict(f.details or {})
+        details.pop("thread_id", None)
+        args = details.pop("args", {})
+        if not isinstance(args, dict):
+            args = {}
+        key = compute_group_key(f.source_tool, args, details)
+        if key and key in approved_keys:
+            buckets.setdefault(key, []).append(f)
+
+    results: list[RegroupApplyResult] = []
+    now = datetime.now(tz=UTC)
+    total_absorbed = 0
+
+    for key, members in buckets.items():
+        if not members:
+            continue
+
+        tool = members[0].source_tool or "unknown"
+        # Winning exclusion across the group (outside_roe > out_of_scope
+        # > null). Also read the existing parent's exclusion in case it
+        # already has one.
+        winning_exclusion: Any = None
+        for f in members:
+            cur = f.exclusion.value if f.exclusion else None
+            if _EXCLUSION_PRIORITY[cur] > _EXCLUSION_PRIORITY[winning_exclusion]:
+                winning_exclusion = cur
+
+        parent: Finding | None = None
+        for f in members:
+            details = dict(f.details or {})
+            details.pop("thread_id", None)
+            args = details.pop("args", {})
+            if not isinstance(args, dict):
+                args = {}
+            parent, _added = upsert_grouped_finding(
+                session,
+                engagement_id=eng.id,
+                group_key=key,
+                tool=tool,
+                thread_id=None,
+                args=args,
+                data=details,
+                incoming_severity=f.severity,
+                default_title=f.title,
+                phase=f.phase,
+                status=f.status,
+                validated_by=f.validated_by,
+            )
+
+        if parent is None:
+            continue
+
+        # Winning exclusion beats whatever the parent already had if the
+        # new winner is more restrictive.
+        parent_ex = parent.exclusion.value if parent.exclusion else None
+        if _EXCLUSION_PRIORITY[winning_exclusion] > _EXCLUSION_PRIORITY[parent_ex]:
+            from app.models import FindingExclusion
+
+            parent.exclusion = (
+                FindingExclusion(winning_exclusion) if winning_exclusion else None
+            )
+
+        # Soft-delete every source row with a pointer back to the parent.
+        for f in members:
+            if f.id == parent.id:
+                # Shouldn't happen — sources have group_key IS NULL and
+                # parent has group_key set — but guard anyway.
+                continue
+            source_details = dict(f.details or {})
+            source_details["regrouped_into"] = str(parent.id)
+            f.details = source_details
+            f.deleted_at = now
+            f.deleted_by_user_id = user.id
+            total_absorbed += 1
+
+        session.flush()
+        session.refresh(parent)
+
+        final_items = (parent.details or {}).get("items")
+        results.append(
+            RegroupApplyResult(
+                group_key=key,
+                parent_id=parent.id,
+                absorbed_member_count=len(members),
+                final_item_count=len(final_items) if isinstance(final_items, list) else 0,
+                final_severity=parent.severity,
+            )
+        )
+
+    if results:
+        session.add(
+            AuditLog(
+                engagement_id=eng.id,
+                actor_type=ActorType.user,
+                actor_id=str(user.id),
+                event_type="findings.regrouped",
+                payload={
+                    "groups_applied": [r.group_key for r in results],
+                    "total_absorbed": total_absorbed,
+                },
+            )
+        )
+    session.commit()
+    return results
 
 
 # ---------------------------------------------------------------------------

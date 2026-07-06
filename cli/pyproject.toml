@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "rtd-cli"
-version = "1.4.0"
+version = "1.4.1"
 description = "Command-line client for the Red Team Dashboard"
 readme = "README.md"
 requires-python = ">=3.11"
