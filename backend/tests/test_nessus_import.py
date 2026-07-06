@@ -277,7 +277,12 @@ def test_endpoint_imports_uploaded_file(
     db: Session,
 ) -> None:
     """POST a .nessus XML file. Findings persist with status=pending_validation;
-    response surfaces the skipped counts; Info rows skipped by default."""
+    response surfaces the skipped counts; Info rows skipped by default.
+
+    Distinct plugin_ids per item so this test exercises the "N distinct
+    plugins → N rows" path. Same-plugin_id grouping (v1.4.0) has its own
+    coverage in ``test_endpoint_groups_same_plugin_id_across_hosts``.
+    """
     eng = _create(client, "Nessus import target")
     cleanup_slugs.append(eng["slug"])
 
@@ -285,9 +290,14 @@ def test_endpoint_imports_uploaded_file(
         _host(
             "box.example.test",
             "10.0.0.5",
-            _item(severity=0, plugin_name="info-row"),
-            _item(severity=3, plugin_name="high-row"),
-            _item(severity=4, plugin_name="crit-row", cve="CVE-2024-1234"),
+            _item(severity=0, plugin_id="10001", plugin_name="info-row"),
+            _item(severity=3, plugin_id="10002", plugin_name="high-row"),
+            _item(
+                severity=4,
+                plugin_id="10003",
+                plugin_name="crit-row",
+                cve="CVE-2024-1234",
+            ),
         )
     )
 
@@ -310,6 +320,95 @@ def test_endpoint_imports_uploaded_file(
     for f in body["imported"]:
         assert f["status"] == FindingStatus.pending_validation.value
         assert f["phase"] == FindingPhase.vuln_scan.value
+
+
+def test_endpoint_groups_same_plugin_id_across_hosts(
+    client: TestClient,
+    cleanup_slugs: list[str],
+    db: Session,
+) -> None:
+    """v1.4.0: three hosts affected by the SAME plugin_id fold into ONE
+    finding row (Nessus-style grouping). Each host becomes an entry
+    inside ``details['items']`` on that row, and the row's severity is
+    the maximum severity seen across the group.
+
+    Also verifies that re-importing the same XML is idempotent — the
+    dedup key matches, so items[] stays the same size.
+    """
+    eng = _create(client, "Nessus grouping target")
+    cleanup_slugs.append(eng["slug"])
+
+    # Three hosts, same plugin_id + plugin_name — this is exactly the
+    # "one plugin, many affected assets" shape Nessus emits for e.g.
+    # a CVE that scans identified across the fleet.
+    xml = _make_xml(
+        _host(
+            "web-01.example.test",
+            "10.0.0.1",
+            _item(
+                severity=3,
+                plugin_id="200000",
+                plugin_name="Log4j RCE (CVE-2021-44228)",
+            ),
+        ),
+        _host(
+            "web-02.example.test",
+            "10.0.0.2",
+            _item(
+                severity=4,
+                plugin_id="200000",
+                plugin_name="Log4j RCE (CVE-2021-44228)",
+            ),
+        ),
+        _host(
+            "api-01.example.test",
+            "10.0.0.3",
+            _item(
+                severity=3,
+                plugin_id="200000",
+                plugin_name="Log4j RCE (CVE-2021-44228)",
+            ),
+        ),
+    )
+
+    response = client.post(
+        f"/engagements/{eng['slug']}/findings/import/nessus",
+        files={"file": ("scan.nessus", xml, "application/xml")},
+        headers=_headers(),
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+
+    assert body["total_items"] == 3
+    # Three ReportItems, same plugin_id → one grouped row.
+    assert len(body["imported"]) == 1
+
+    row = body["imported"][0]
+    assert row["group_key"] == "nessus:200000"
+    assert row["item_count"] == 3
+    # Highest severity across the group wins.
+    assert row["severity"] == Severity.critical.value
+
+    items = row["data"]["items"]
+    assert len(items) == 3
+    targets = sorted(it["target"] for it in items)
+    assert targets == [
+        "api-01.example.test:443",
+        "web-01.example.test:443",
+        "web-02.example.test:443",
+    ]
+
+    # Re-import the same XML — dedup key ({target}:{port}) matches every
+    # item, so items[] stays 3, severity stays critical, no new row.
+    response2 = client.post(
+        f"/engagements/{eng['slug']}/findings/import/nessus",
+        files={"file": ("scan.nessus", xml, "application/xml")},
+        headers=_headers(),
+    )
+    assert response2.status_code == 201, response2.text
+    body2 = response2.json()
+    assert len(body2["imported"]) == 1
+    assert body2["imported"][0]["item_count"] == 3
 
 
 def test_endpoint_rejects_invalid_xml(
