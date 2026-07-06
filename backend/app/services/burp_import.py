@@ -63,6 +63,11 @@ class ParsedItem:
     details: dict[str, Any] = field(default_factory=dict)
     observed_at: datetime | None = None
     burp_serial_number: str | None = None
+    # v1.4.0: Burp issues of the same type fold under one finding row —
+    # every affected URL/path becomes an item[]. Stamped as
+    # ``burp:{issue-type-or-name}``. Prefer the numeric ``type`` (stable
+    # across Burp releases) with the human-readable ``name`` as fallback.
+    group_key: str | None = None
 
 
 @dataclass
@@ -234,6 +239,12 @@ def parse_burp_xml(
         # Strip None values so the slide-over doesn't render empty rows.
         details = {k: v for k, v in details.items() if v is not None}
 
+        # v1.4.0: fold every affected URL under the same issue TYPE
+        # (Burp assigns numeric type IDs that are stable across scans).
+        # Falls back to issue name when type is absent.
+        issue_type = _child_text(issue, "type")
+        group_key_slug = issue_type or name
+        group_key = f"burp:{group_key_slug}" if group_key_slug else None
         items.append(
             ParsedItem(
                 title=name,
@@ -245,6 +256,7 @@ def parse_burp_xml(
                 details=details,
                 observed_at=export_time,
                 burp_serial_number=_child_text(issue, "serialNumber"),
+                group_key=group_key,
             )
         )
 

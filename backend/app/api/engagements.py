@@ -265,6 +265,11 @@ def _finding_to_read(f: Finding) -> dict[str, Any]:
     details = dict(f.details or {})
     thread_id = details.pop("thread_id", None)
     args = details.pop("args", {})
+    # v1.4.0 (part 2): items[] is the grouped shape's per-hit list.
+    # Surface the count on the wire so the Findings table can render
+    # "(N)" without unpacking data on every row.
+    items_val = details.get("items")
+    item_count = len(items_val) if isinstance(items_val, list) else 0
     return {
         "id": f.id,
         "thread_id": str(thread_id) if thread_id is not None else None,
@@ -278,6 +283,8 @@ def _finding_to_read(f: Finding) -> dict[str, Any]:
         "phase": f.phase,
         "status": f.status,
         "exclusion": f.exclusion,
+        "group_key": f.group_key,
+        "item_count": item_count,
         "validated_at": f.validated_at,
         "observed_at": f.observed_at,
         "burp_serial_number": f.burp_serial_number,
@@ -879,6 +886,11 @@ class FindingImport(BaseModel):
     details: dict[str, Any] = {}
     observed_at: datetime | None = None
     burp_serial_number: str | None = None
+    # v1.4.0: optional grouping. Callers that want Nessus-style rows
+    # (multiple hits under one parent) stamp their own key, e.g.
+    # "csv:cve-2024-1234" or "sca:log4j". Null = per-hit row, the old
+    # behavior. See docs/FINDINGS_GROUPING.md.
+    group_key: str | None = None
 
 
 class NessusImportResult(BaseModel):
@@ -919,7 +931,8 @@ def _create_findings_from_imports(
     user: Any,
     *,
     source: str,
-) -> tuple[list[Finding], int]:
+) -> tuple[list[Finding], int]:  # noqa: PLR0912, C901 — dispatch mixing grouped + per-hit + Burp dedup
+
     """Persist a list of import-shaped items as Findings + write the audit row.
 
     ``items`` is duck-typed: each must expose ``title``, ``severity``,
@@ -967,7 +980,10 @@ def _create_findings_from_imports(
             if row[0]
         }
 
+    from app.services.finding_grouping import upsert_grouped_import_item
+
     created: list[Finding] = []
+    seen_created_ids: set[uuid.UUID] = set()
     skipped_duplicate = 0
     now = datetime.now(tz=UTC)
     for item in items:
@@ -976,6 +992,35 @@ def _create_findings_from_imports(
             skipped_duplicate += 1
             continue
         status = default_status_for_phase(item.phase)
+
+        # v1.4.0: Nessus-style grouping — if the parser stamped a
+        # group_key on the ParsedItem, fold this row into the shared
+        # parent for its plugin_id / issue-type instead of creating a
+        # separate Finding.
+        group_key = getattr(item, "group_key", None)
+        if group_key:
+            row, _added = upsert_grouped_import_item(
+                session,
+                engagement_id=eng.id,
+                group_key=group_key,
+                source_tool=item.source_tool or "import",
+                item_title=item.title,
+                item_severity=item.severity,
+                item_target=item.target,
+                item_details=item.details,
+                phase=item.phase,
+                status=status,
+                validated_by=user.id
+                if status == FindingStatus.validated
+                else None,
+            )
+            if row.id not in seen_created_ids:
+                created.append(row)
+                seen_created_ids.add(row.id)
+            if serial:
+                existing_serials.add(serial)
+            continue
+
         f = Finding(
             engagement_id=eng.id,
             title=item.title,

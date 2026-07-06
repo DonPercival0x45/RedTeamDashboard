@@ -150,3 +150,11 @@ class Finding(Base, TimestampMixin):
         nullable=True,
         index=True,
     )
+
+    # Nessus-style ingest grouping (v1.4.0). Nullable string — old rows
+    # and manual entries default to null (no grouping). A non-null value
+    # is unique per engagement: repeated tool runs against the same
+    # target (e.g. subfinder against example.com) fold into the same row
+    # with the per-hit records stored inside ``details['items']``.
+    # Partial unique index is defined in migration 0036.
+    group_key: Mapped[str | None] = mapped_column(String(200), nullable=True)
