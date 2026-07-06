@@ -41,6 +41,7 @@ class AgentName(enum.StrEnum):
     planner = "planner"
     triage = "triage"
     tool_review = "tool_review"
+    correlate = "correlate"
 
 
 class Suggestion(Base, TimestampMixin):

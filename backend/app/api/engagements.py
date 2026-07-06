@@ -49,7 +49,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
 from pydantic import BaseModel, Field
-from sqlalchemy import case, select, text
+from sqlalchemy import case, func, select, text
 
 from app.api.deps import (
     CurrentAdminUser,
@@ -67,6 +67,7 @@ from app.models import (
     Engagement,
     EngagementStatus,
     Finding,
+    FindingExclusion,
     FindingPhase,
     FindingStatus,
     FindingSummary,
@@ -96,12 +97,16 @@ from app.schemas.engagement import (
 )
 from app.schemas.finding import (
     AttachmentRead,
+    CorrelateGroup,
+    CorrelateResponse,
     EntityRead,
+    FindingCreate,
     FindingRead,
     FindingSummaryCreate,
     FindingSummaryRead,
     FindingUpdate,
     FindingValidate,
+    MergeRequest,
 )
 from app.schemas.observation import ObservationCreate, ObservationRead
 from app.services.entities import extract_entities
@@ -141,19 +146,40 @@ def _get_engagement_or_404(session: DbSession, slug: str) -> Engagement:
     return eng
 
 
-def _build_export_payload(session: DbSession, eng: Engagement) -> dict[str, Any]:
-    """Assemble a complete engagement snapshot suitable for blob archiving."""
+def _build_export_payload(
+    session: DbSession,
+    eng: Engagement,
+    *,
+    omit_excluded: bool = False,
+) -> dict[str, Any]:
+    """Assemble a complete engagement snapshot suitable for blob archiving.
+
+    ``omit_excluded=True`` drops findings marked ``out_of_scope`` or
+    ``outside_roe`` from the ``findings`` list (v1.4.0). The count of
+    dropped rows is surfaced on the payload as ``excluded_count`` so the
+    caller can see the toggle actually did something.
+    """
     scope_items = list(
         session.execute(select(ScopeItem).where(ScopeItem.engagement_id == eng.id)).scalars()
     )
-    findings = list(
-        session.execute(
-            select(Finding).where(
-                Finding.engagement_id == eng.id,
-                Finding.deleted_at.is_(None),
-            )
-        ).scalars()
+    findings_stmt = select(Finding).where(
+        Finding.engagement_id == eng.id,
+        Finding.deleted_at.is_(None),
     )
+    if omit_excluded:
+        findings_stmt = findings_stmt.where(Finding.exclusion.is_(None))
+    findings = list(session.execute(findings_stmt).scalars())
+    excluded_count = 0
+    if omit_excluded:
+        excluded_count = int(
+            session.execute(
+                select(func.count(Finding.id)).where(
+                    Finding.engagement_id == eng.id,
+                    Finding.deleted_at.is_(None),
+                    Finding.exclusion.is_not(None),
+                )
+            ).scalar_one()
+        )
     audit_rows = list(
         session.execute(
             select(AuditLog)
@@ -196,6 +222,7 @@ def _build_export_payload(session: DbSession, eng: Engagement) -> dict[str, Any]
                 "title": f.title,
                 "severity": f.severity,
                 "status": f.status,
+                "exclusion": f.exclusion.value if f.exclusion else None,
                 "target": f.target,
                 "source_tool": f.source_tool,
                 "phase": f.phase,
@@ -205,6 +232,8 @@ def _build_export_payload(session: DbSession, eng: Engagement) -> dict[str, Any]
             }
             for f in findings
         ],
+        "omit_excluded": omit_excluded,
+        "excluded_count": excluded_count,
         "observations": [
             {
                 "content": o.content,
@@ -249,6 +278,7 @@ def _finding_to_read(f: Finding) -> dict[str, Any]:
         "summary": f.summary,
         "phase": f.phase,
         "status": f.status,
+        "exclusion": f.exclusion,
         "validated_at": f.validated_at,
         "observed_at": f.observed_at,
         "burp_serial_number": f.burp_serial_number,
@@ -343,7 +373,20 @@ def update_engagement(
 
 
 @router.post("/engagements/{slug}/export", dependencies=[Depends(RequireScope(APIKeyScope.admin))])
-def export_engagement(slug: str, session: DbSession) -> dict[str, Any]:
+def export_engagement(
+    slug: str,
+    session: DbSession,
+    omit_excluded: Annotated[
+        bool,
+        Query(
+            description=(
+                "Drop findings marked out_of_scope / outside_roe from the "
+                "exported payload. Default false — the full engagement "
+                "record still archives everything."
+            ),
+        ),
+    ] = False,
+) -> dict[str, Any]:
     """Export all engagement data (findings, scope, audit summary) to blob storage.
 
     Returns the blob URL if storage is configured, or the full payload inline
@@ -351,7 +394,7 @@ def export_engagement(slug: str, session: DbSession) -> dict[str, Any]:
     Requires admin scope.
     """
     eng = _get_engagement_or_404(session, slug)
-    payload = _build_export_payload(session, eng)
+    payload = _build_export_payload(session, eng, omit_excluded=omit_excluded)
     blob_url = upload_engagement_export(slug, payload)
     if blob_url:
         return {"slug": slug, "blob_url": blob_url}
@@ -1184,6 +1227,10 @@ def update_finding(
     if "phase" in body.model_fields_set and body.phase is not None:
         finding.phase = body.phase
         changed["phase"] = body.phase.value
+    if "exclusion" in body.model_fields_set:
+        # Passing null clears the exclusion; passing a value sets it.
+        finding.exclusion = body.exclusion
+        changed["exclusion"] = body.exclusion.value if body.exclusion else None
 
     if changed:
         session.add(
@@ -1199,6 +1246,297 @@ def update_finding(
         session.refresh(finding)
 
     return _finding_to_read(finding)
+
+
+# ---------------------------------------------------------------------------
+# Manual finding create (v1.4.0)
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/engagements/{slug}/findings",
+    response_model=FindingRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_finding(
+    slug: str,
+    body: FindingCreate,
+    session: DbSession,
+    user: CurrentNonGuestUser,
+) -> dict[str, Any]:
+    """Create a single analyst-drafted finding (v1.4.0).
+
+    Distinct from :func:`import_findings` (bulk-CSV/JSON) and the worker
+    path (which writes findings from live tool output). The Findings tab's
+    "Add finding" modal posts here for a hand-typed row — title required,
+    everything else optional with sensible defaults.
+
+    Status follows the same phase-based rule as importers — ``osint``
+    phase auto-validates, everything else lands ``pending_validation``.
+    ``source_tool`` is stamped ``manual`` so the row can be visually
+    distinguished from tool output and importer rows.
+    """
+    from app.models.finding import default_status_for_phase
+
+    eng = _get_engagement_or_404(session, slug)
+    _reject_flushed(eng)
+
+    now = datetime.now(tz=UTC)
+    finding_status = default_status_for_phase(body.phase)
+    finding = Finding(
+        engagement_id=eng.id,
+        title=body.title,
+        severity=body.severity,
+        phase=body.phase,
+        summary=body.summary,
+        target=body.target,
+        source_tool="manual",
+        details={},
+        status=finding_status,
+        validated_at=now if finding_status == FindingStatus.validated else None,
+        validated_by=user.id if finding_status == FindingStatus.validated else None,
+        observed_at=body.observed_at,
+    )
+    session.add(finding)
+    session.flush()
+
+    session.add(
+        AuditLog(
+            engagement_id=eng.id,
+            actor_type=ActorType.user,
+            actor_id=str(user.id),
+            event_type="finding.created_manual",
+            payload={
+                "finding_id": str(finding.id),
+                "title": finding.title,
+                "severity": finding.severity.value,
+                "phase": finding.phase.value,
+            },
+        )
+    )
+    session.commit()
+    session.refresh(finding)
+    return _finding_to_read(finding)
+
+
+# ---------------------------------------------------------------------------
+# Correlate findings (v1.4.0)
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/engagements/{slug}/findings/correlate",
+    response_model=CorrelateResponse,
+)
+def correlate_findings(
+    slug: str,
+    session: DbSession,
+    redis_client: RedisClient,
+    user: CurrentNonGuestUser,
+) -> CorrelateResponse:
+    """Ask the CorrelateAgent to propose clusters of related findings.
+
+    Pure observer — nothing merges. The response is a list of proposed
+    groups the analyst reviews in the Correlate modal; each group they
+    approve triggers a separate ``POST /findings/{parent_id}/merge`` call.
+    Uses the calling user's BYO provider key (Redis, sliding TTL); a
+    ``NoProviderKeyError`` surfaces as 400 with a pointer to /settings/keys.
+    """
+    from app.agents.correlate import CorrelateAgent
+    from app.services.ephemeral_provider_key import NoProviderKeyError
+
+    eng = _get_engagement_or_404(session, slug)
+    _reject_flushed(eng)
+
+    # Only open (validated + pending_validation) non-excluded findings are
+    # candidates. Rejected / false-positive / already-excluded rows are
+    # skipped — the analyst already made a call on them and merging them
+    # would erase that history.
+    findings = list(
+        session.execute(
+            select(Finding)
+            .where(
+                Finding.engagement_id == eng.id,
+                Finding.deleted_at.is_(None),
+                Finding.exclusion.is_(None),
+                Finding.status.in_(
+                    [FindingStatus.validated, FindingStatus.pending_validation]
+                ),
+            )
+            .order_by(Finding.created_at.desc())
+        ).scalars()
+    )
+
+    if len(findings) < 2:
+        # Nothing to correlate. Return empty response with the count so
+        # the frontend can show a helpful "only 1 open finding" empty
+        # state instead of a generic "no groups".
+        return CorrelateResponse(groups=[], total_considered=len(findings))
+
+    agent = CorrelateAgent(redis_client=redis_client)
+    try:
+        execution, groups = agent.propose(
+            session,
+            engagement=eng,
+            findings=findings,
+            acting_user_id=user.id,
+        )
+    except NoProviderKeyError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "no provider key cached — upload one at /settings/keys "
+                "before running Correlate."
+            ),
+        ) from exc
+
+    session.add(execution)
+    session.add(
+        AuditLog(
+            engagement_id=eng.id,
+            actor_type=ActorType.user,
+            actor_id=str(user.id),
+            event_type="findings.correlate_proposed",
+            payload={
+                "groups_count": len(groups),
+                "considered": len(findings),
+            },
+        )
+    )
+    session.commit()
+
+    return CorrelateResponse(
+        groups=[
+            CorrelateGroup(rationale=g.rationale, finding_ids=g.finding_ids)
+            for g in groups
+        ],
+        total_considered=len(findings),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Merge findings (v1.4.0)
+# ---------------------------------------------------------------------------
+
+
+_SEVERITY_ORDER = {
+    Severity.info: 0,
+    Severity.low: 1,
+    Severity.medium: 2,
+    Severity.high: 3,
+    Severity.critical: 4,
+}
+
+
+@router.post(
+    "/findings/{parent_id}/merge",
+    response_model=FindingRead,
+)
+def merge_findings(
+    parent_id: uuid.UUID,
+    body: MergeRequest,
+    session: DbSession,
+    user: CurrentNonGuestUser,
+) -> dict[str, Any]:
+    """Fold ``child_ids`` into ``parent_id``.
+
+    Parent absorbs the children: the highest severity across the group
+    wins, child summaries are appended to the parent's summary (each
+    prefixed with "Merged from <short-id>"), and every child is
+    soft-deleted with ``deleted_at`` stamped. Children must belong to the
+    same engagement as the parent — 400 if any don't.
+
+    A ``findings.merged`` audit_log row captures parent + child IDs so
+    the merge can be traced (and eventually undone via a recovery view).
+    Returns the updated parent finding.
+    """
+    parent = session.get(Finding, parent_id)
+    if parent is None or parent.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="parent finding not found")
+
+    child_ids = list({cid for cid in body.child_ids if cid != parent_id})
+    if not child_ids:
+        raise HTTPException(
+            status_code=400,
+            detail="child_ids must contain at least one distinct id",
+        )
+
+    children = list(
+        session.execute(
+            select(Finding).where(
+                Finding.id.in_(child_ids),
+                Finding.deleted_at.is_(None),
+            )
+        ).scalars()
+    )
+    if len(children) != len(child_ids):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "one or more child findings not found or already deleted "
+                f"(requested {len(child_ids)}, found {len(children)})"
+            ),
+        )
+    for child in children:
+        if child.engagement_id != parent.engagement_id:
+            raise HTTPException(
+                status_code=400,
+                detail="all children must belong to the same engagement as the parent",
+            )
+
+    # Severity: highest across the group wins.
+    top_sev = parent.severity
+    for c in children:
+        if _SEVERITY_ORDER[c.severity] > _SEVERITY_ORDER[top_sev]:
+            top_sev = c.severity
+    parent.severity = top_sev
+
+    # Summary: append each child's summary under a "Merged from" header
+    # so the merged parent still carries the child's narrative. Skip
+    # children with no summary — no need to add an empty section.
+    appended_parts: list[str] = []
+    for c in children:
+        if c.summary and c.summary.strip():
+            short = str(c.id).replace("-", "")[:6].upper()
+            appended_parts.append(f"\n\n---\n*Merged from {short}:*\n{c.summary}")
+    if appended_parts:
+        parent.summary = (parent.summary or "") + "".join(appended_parts)
+        # Also drop a FindingSummary history row so the merge is visible
+        # in the summary-history list, not just as a bumped summary field.
+        _record_finding_summary(
+            session,
+            parent,
+            (parent.summary or "").strip(),
+            user.id,
+        )
+
+    now = datetime.now(tz=UTC)
+    for c in children:
+        c.deleted_at = now
+        c.deleted_by_user_id = user.id
+        # Stash merge attribution in details so the row survives with
+        # enough context that a future recovery view can un-hide it and
+        # know what happened.
+        details = dict(c.details or {})
+        details["merged_into"] = str(parent.id)
+        c.details = details
+
+    session.add(
+        AuditLog(
+            engagement_id=parent.engagement_id,
+            actor_type=ActorType.user,
+            actor_id=str(user.id),
+            event_type="findings.merged",
+            payload={
+                "parent_id": str(parent.id),
+                "child_ids": [str(c.id) for c in children],
+                "final_severity": top_sev.value,
+            },
+        )
+    )
+    session.commit()
+    session.refresh(parent)
+    return _finding_to_read(parent)
 
 
 class BulkDeleteRequest(BaseModel):
@@ -1419,11 +1757,22 @@ def get_engagement_export(
     slug: str,
     session: DbSession,
     _user: CurrentUser,
+    omit_excluded: Annotated[
+        bool,
+        Query(
+            description=(
+                "Drop findings marked out_of_scope / outside_roe from the "
+                "returned payload. Default false — the analyst usually "
+                "wants the whole record. The Report tab toggle sets this "
+                "to true when the operator wants a client-ready export."
+            ),
+        ),
+    ] = False,
 ) -> dict[str, Any]:
     """Full engagement snapshot as structured JSON — findings, scope, observations,
     and audit summary. Suitable for archiving or importing into another instance."""
     eng = _get_engagement_or_404(session, slug)
-    return _build_export_payload(session, eng)
+    return _build_export_payload(session, eng, omit_excluded=omit_excluded)
 
 
 # ---------------------------------------------------------------------------

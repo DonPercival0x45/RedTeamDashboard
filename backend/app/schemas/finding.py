@@ -14,7 +14,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-from app.models import FindingPhase, FindingStatus, Severity
+from app.models import FindingExclusion, FindingPhase, FindingStatus, Severity
 
 
 class FindingRead(BaseModel):
@@ -29,6 +29,10 @@ class FindingRead(BaseModel):
     summary: str | None = None
     phase: FindingPhase
     status: FindingStatus
+    # v1.4.0: analyst-set reportability marker. Null = default (included
+    # in report). See :class:`FindingExclusion` for the meaning of each
+    # value.
+    exclusion: FindingExclusion | None = None
     validated_at: datetime | None = None
     observed_at: datetime | None = None
     burp_serial_number: str | None = None
@@ -36,12 +40,85 @@ class FindingRead(BaseModel):
 
 
 class FindingUpdate(BaseModel):
-    """Editable fields on a persisted finding. Only set fields are applied."""
+    """Editable fields on a persisted finding. Only set fields are applied.
+
+    ``exclusion`` distinguishes not-set from set-to-null via
+    ``model_fields_set`` — pass ``null`` explicitly to clear an
+    existing exclusion.
+    """
 
     title: str | None = None
     summary: str | None = None
     severity: Severity | None = None
     phase: FindingPhase | None = None
+    exclusion: FindingExclusion | None = None
+
+
+class FindingCreate(BaseModel):
+    """Body for POST /engagements/{slug}/findings — manual analyst-drafted
+    finding, distinct from the bulk /findings/import path (which takes a
+    list). Only ``title`` is required; everything else has a sensible
+    default the analyst can override in the modal.
+    """
+
+    title: str = Field(..., min_length=1, max_length=300)
+    summary: str | None = None
+    severity: Severity = Severity.info
+    phase: FindingPhase = FindingPhase.general
+    target: str | None = None
+    observed_at: datetime | None = None
+
+
+class CorrelateGroup(BaseModel):
+    """One proposed cluster of related findings.
+
+    The agent groups by root cause / entity / attack path — anything the
+    analyst would themselves have merged if they'd noticed. The
+    ``rationale`` is shown to the analyst before they approve so they
+    know why the group exists.
+    """
+
+    rationale: str = Field(
+        ...,
+        description="One-line reason these findings should be treated as one.",
+    )
+    finding_ids: list[UUID] = Field(
+        ...,
+        min_length=2,
+        description=(
+            "IDs of the findings in this group. The first ID is the "
+            "proposed parent (survives the merge); the rest are children "
+            "(soft-deleted). Minimum 2 — a group of 1 is meaningless."
+        ),
+    )
+
+
+class CorrelateResponse(BaseModel):
+    """Response for POST /engagements/{slug}/findings/correlate."""
+
+    groups: list[CorrelateGroup] = Field(default_factory=list)
+    total_considered: int = Field(
+        ...,
+        description=(
+            "Number of open findings the agent looked at. Helps the "
+            "analyst calibrate 'no groups found' — 0 considered vs. 47 "
+            "considered are very different empty states."
+        ),
+    )
+
+
+class MergeRequest(BaseModel):
+    """Body for POST /findings/{parent_id}/merge."""
+
+    child_ids: list[UUID] = Field(
+        ...,
+        min_length=1,
+        max_length=50,
+        description=(
+            "IDs of findings to fold into the parent. Cap at 50 to keep "
+            "the audit_log payload from ballooning."
+        ),
+    )
 
 
 class FindingValidate(BaseModel):

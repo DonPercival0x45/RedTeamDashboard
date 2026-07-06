@@ -67,12 +67,17 @@ function formatTimeFrame(eng: Engagement): string {
 function ReportView({ slug }: { slug: string }) {
   const [exportBusy, setExportBusy] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
+  // v1.4.0: analyst toggles whether findings marked out_of_scope /
+  // outside_roe show up in the exported PDF + JSON. Kept local — this
+  // isn't a per-user preference, it's a per-download choice the analyst
+  // makes each time they cut a deliverable.
+  const [omitExcluded, setOmitExcluded] = useState(false);
 
   const onExportJSON = async () => {
     setExportBusy(true);
     setExportError(null);
     try {
-      await downloadEngagementExport(slug);
+      await downloadEngagementExport(slug, { omitExcluded });
     } catch (err) {
       setExportError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -98,10 +103,27 @@ function ReportView({ slug }: { slug: string }) {
               <p className="text-xs text-destructive">{exportError}</p>
             )}
           </div>
-          <DownloadReport slug={slug} />
+          <DownloadReport slug={slug} omitExcluded={omitExcluded} />
         </div>
       </CardHeader>
-      <CardContent>
+      <CardContent className="space-y-3">
+        <label className="flex cursor-pointer items-start gap-2 rounded-md border border-border bg-background/40 p-3 text-sm">
+          <input
+            type="checkbox"
+            checked={omitExcluded}
+            onChange={(e) => setOmitExcluded(e.target.checked)}
+            className="mt-0.5 cursor-pointer accent-critical"
+          />
+          <div>
+            <span className="font-medium">Omit excluded findings</span>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              Drop findings marked <em>Out of scope</em> or <em>Outside ROE</em>{" "}
+              from the PDF and JSON export. Use this when cutting a
+              client-ready deliverable; leave it off for the internal
+              full-record archive.
+            </p>
+          </div>
+        </label>
         <p className="text-xs text-muted-foreground/70">
           <span className="text-critical">●</span> PDF includes the engagement&apos;s{" "}
           <strong>validated</strong> findings across every phase — including any

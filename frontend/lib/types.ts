@@ -105,6 +105,15 @@ export type FindingValidationStatus =
   | "false_positive"
   | "needs_review";
 
+// v1.4.0: analyst-set reportability marker, orthogonal to
+// FindingValidationStatus. `null` = default (included in report).
+// `out_of_scope` = real but not in the client-declared scope;
+// `outside_roe` = real but off-limits per the engagement's rules of
+// engagement / legal terms. Both keep the row visible in the Findings
+// tab (dimmed + badge); the report exporter drops them when the Report
+// tab's "Omit excluded" toggle is on.
+export type FindingExclusion = "out_of_scope" | "outside_roe";
+
 // Persisted finding as returned by GET /engagements/{slug}/findings. Mirrors
 // the SSE `finding.created` event's tool/args/data so the table can render
 // hydrated and live findings the same way.
@@ -120,10 +129,34 @@ export interface Finding {
   summary?: string | null;
   phase: FindingPhase;
   status: FindingValidationStatus;
+  exclusion?: FindingExclusion | null;
   validated_at: string | null;
   observed_at: string | null;
   burp_serial_number: string | null;
   created_at: string;
+}
+
+// v1.4.0: body for POST /engagements/{slug}/findings — the manual
+// "Add finding" modal. Only `title` is required.
+export interface FindingCreate {
+  title: string;
+  summary?: string | null;
+  severity?: Severity;
+  phase?: FindingPhase;
+  target?: string | null;
+  observed_at?: string | null;
+}
+
+// v1.4.0: one cluster proposed by the CorrelateAgent. `finding_ids` first
+// entry is the proposed parent (survives the merge); rest are children.
+export interface CorrelateGroup {
+  rationale: string;
+  finding_ids: string[];
+}
+
+export interface CorrelateResponse {
+  groups: CorrelateGroup[];
+  total_considered: number;
 }
 
 // Sort order for GET /engagements/{slug}/findings?sort=…

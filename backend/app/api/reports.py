@@ -12,7 +12,9 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from typing import Annotated
+
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from sqlalchemy import select
@@ -45,6 +47,16 @@ def engagement_report(
     slug: str,
     session: DbSession,
     user: CurrentUser,  # noqa: ARG001 — gates the endpoint
+    omit_excluded: Annotated[
+        bool,
+        Query(
+            description=(
+                "Drop findings marked out_of_scope / outside_roe from the "
+                "PDF. Default false; the Report tab toggle sets this to "
+                "true when the analyst wants a client-ready deliverable."
+            ),
+        ),
+    ] = False,
 ) -> Response:
     eng = session.execute(
         select(Engagement).where(Engagement.slug == slug)
@@ -60,16 +72,17 @@ def engagement_report(
         ).scalars()
     )
     # Only validated findings are report-eligible (Phase 8 validation gate).
+    # v1.4.0: analyst-set exclusion also drops the row when the caller
+    # asks for a client-clean report.
+    findings_stmt = select(Finding).where(
+        Finding.engagement_id == eng.id,
+        Finding.status == FindingStatus.validated,
+        Finding.deleted_at.is_(None),
+    )
+    if omit_excluded:
+        findings_stmt = findings_stmt.where(Finding.exclusion.is_(None))
     findings = list(
-        session.execute(
-            select(Finding)
-            .where(
-                Finding.engagement_id == eng.id,
-                Finding.status == FindingStatus.validated,
-                Finding.deleted_at.is_(None),
-            )
-            .order_by(Finding.created_at.desc())
-        ).scalars()
+        session.execute(findings_stmt.order_by(Finding.created_at.desc())).scalars()
     )
     approvals = list(
         session.execute(

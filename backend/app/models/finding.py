@@ -30,6 +30,24 @@ class FindingPhase(enum.StrEnum):
     general = "general"
 
 
+class FindingExclusion(enum.StrEnum):
+    """Analyst-set "reportability" marker (v1.4.0).
+
+    Orthogonal to :class:`FindingStatus` — a finding can be ``validated``
+    (real, worth reporting) but marked ``out_of_scope`` (real but not in
+    the client-declared scope) or ``outside_roe`` (real but off-limits
+    per the engagement's rules of engagement / legal terms).
+
+    Both values keep the row visible in the Findings tab so the analyst
+    still sees what they surfaced; the report exporter honors the
+    ``omit_excluded`` query flag to drop them from the client
+    deliverable. ``None`` = no exclusion, the default.
+    """
+
+    out_of_scope = "out_of_scope"
+    outside_roe = "outside_roe"
+
+
 class FindingStatus(enum.StrEnum):
     """Validation state. ``osint``-phase findings (passive recon — crt_sh,
     subfinder, whois, dns_lookup, etc.) auto-validate at creation because
@@ -119,4 +137,16 @@ class Finding(Base, TimestampMixin):
     )
     deleted_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
+    )
+
+    # Analyst-set reportability marker (v1.4.0). Nullable — most findings
+    # have no exclusion. ``out_of_scope`` = real but not in the client-
+    # declared scope; ``outside_roe`` = real but off-limits per the
+    # engagement's rules of engagement / legal terms. Orthogonal to
+    # ``status`` — an excluded finding can still be validated. Report
+    # exporter drops these when the caller passes omit_excluded=true.
+    exclusion: Mapped[FindingExclusion | None] = mapped_column(
+        Enum(FindingExclusion, name="finding_exclusion"),
+        nullable=True,
+        index=True,
     )

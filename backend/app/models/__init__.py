@@ -14,7 +14,13 @@ from app.models.audit_log import ActorType, AuditLog
 from app.models.authorization import Authorization
 from app.models.engagement import Engagement, EngagementStatus, EngagementTimeFrame
 from app.models.entity import Entity
-from app.models.finding import Finding, FindingPhase, FindingStatus, Severity
+from app.models.finding import (
+    Finding,
+    FindingExclusion,
+    FindingPhase,
+    FindingStatus,
+    Severity,
+)
 from app.models.finding_summary import FindingSummary
 from app.models.integration import Integration, IntegrationPurpose, IntegrationType
 from app.models.mcp_lease import MCPLease, MCPLeaseStatus
@@ -60,6 +66,7 @@ __all__ = [
     "EngagementTimeFrame",
     "Entity",
     "Finding",
+    "FindingExclusion",
     "FindingPhase",
     "FindingStatus",
     "FindingSummary",
