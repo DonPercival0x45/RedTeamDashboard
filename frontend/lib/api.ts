@@ -277,6 +277,43 @@ export function validateFinding(
   });
 }
 
+// v1.4.0: manual "Add finding" — analyst types the finding into the
+// Findings-tab modal. Distinct from importFindings (bulk) and the worker
+// path (SSE-driven from live tool output).
+export function createFinding(
+  slug: string,
+  body: import("@/lib/types").FindingCreate,
+): Promise<Finding> {
+  return request<Finding>(`/engagements/${slug}/findings`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+// v1.4.0: kick the CorrelateAgent. Returns proposed groups; nothing
+// merges until the analyst approves in the Correlate modal and each
+// approval routes through mergeFindings().
+export function correlateFindings(
+  slug: string,
+): Promise<import("@/lib/types").CorrelateResponse> {
+  return request<import("@/lib/types").CorrelateResponse>(
+    `/engagements/${slug}/findings/correlate`,
+    { method: "POST" },
+  );
+}
+
+// v1.4.0: fold `childIds` into the parent finding. Highest severity
+// wins, child summaries append to the parent, children soft-deleted.
+export function mergeFindings(
+  parentId: string,
+  childIds: string[],
+): Promise<Finding> {
+  return request<Finding>(`/findings/${parentId}/merge`, {
+    method: "POST",
+    body: JSON.stringify({ child_ids: childIds }),
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Observations
 // ---------------------------------------------------------------------------
@@ -464,8 +501,12 @@ export function getEngagementCosts(slug: string): Promise<CostRollup> {
 // Reports (PDF export)
 // ---------------------------------------------------------------------------
 
-export async function downloadEngagementReport(slug: string): Promise<void> {
-  const response = await fetch(`${API_BASE_URL}/engagements/${slug}/report`, {
+export async function downloadEngagementReport(
+  slug: string,
+  opts: { omitExcluded?: boolean } = {},
+): Promise<void> {
+  const q = opts.omitExcluded ? "?omit_excluded=true" : "";
+  const response = await fetch(`${API_BASE_URL}/engagements/${slug}/report${q}`, {
     headers: await authHeaders(),
   });
   if (!response.ok) {
@@ -615,6 +656,9 @@ export function updateFinding(
     summary?: string | null;
     severity?: Severity;
     phase?: FindingPhase;
+    // v1.4.0: pass null explicitly to clear the exclusion; omit the key
+    // to leave it unchanged. `undefined` is skipped by JSON.stringify.
+    exclusion?: import("@/lib/types").FindingExclusion | null;
   },
 ): Promise<Finding> {
   return request<Finding>(`/findings/${findingId}`, {
@@ -627,8 +671,14 @@ export function updateFinding(
 // Engagement JSON export
 // ---------------------------------------------------------------------------
 
-export async function downloadEngagementExport(slug: string): Promise<void> {
-  const data = await request<Record<string, unknown>>(`/engagements/${slug}/export`);
+export async function downloadEngagementExport(
+  slug: string,
+  opts: { omitExcluded?: boolean } = {},
+): Promise<void> {
+  const q = opts.omitExcluded ? "?omit_excluded=true" : "";
+  const data = await request<Record<string, unknown>>(
+    `/engagements/${slug}/export${q}`,
+  );
   const json = JSON.stringify(data, null, 2);
   const blob = new Blob([json], { type: "application/json" });
   const url = URL.createObjectURL(blob);

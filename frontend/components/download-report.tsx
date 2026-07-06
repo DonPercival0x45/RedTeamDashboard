@@ -5,7 +5,13 @@ import { Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { downloadEngagementReport } from "@/lib/api";
 
-export function DownloadReport({ slug }: { slug: string }) {
+export function DownloadReport({
+  slug,
+  omitExcluded = false,
+}: {
+  slug: string;
+  omitExcluded?: boolean;
+}) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -13,7 +19,7 @@ export function DownloadReport({ slug }: { slug: string }) {
     setBusy(true);
     setError(null);
     try {
-      await downloadEngagementReport(slug);
+      await downloadEngagementReport(slug, { omitExcluded });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {

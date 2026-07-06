@@ -1,14 +1,18 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Trash2, Upload, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Ban, Layers, Plus, Search, Sparkles, Trash2, Upload, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
   acceptSuggestion,
   analyzeFinding,
   bulkDeleteFindings,
+  correlateFindings,
+  createFinding,
   createFindingSummary,
   deleteAttachment,
   deleteFinding,
@@ -16,7 +20,9 @@ import {
   listAttachments,
   listFindingSummaries,
   loadAttachmentBlob,
+  mergeFindings,
   triageFinding,
+  updateFinding,
   uploadAttachment,
   validateFinding,
 } from "@/lib/api";
@@ -25,7 +31,9 @@ import { FindingImporter } from "@/components/finding-importer";
 import { BurpImporter } from "@/components/burp-importer";
 import type {
   Attachment,
+  CorrelateGroup,
   Finding,
+  FindingExclusion,
   FindingPhase,
   FindingSort,
   FindingSummaryEntry,
@@ -71,6 +79,28 @@ const PHASE_LABEL: Record<FindingPhase, string> = {
   phishing: "Phishing",
   general: "General",
 };
+
+// v1.4.0: analyst-set reportability marker. Distinct from FindingStatus
+// so an excluded row still shows in the tab (dimmed + badge) while the
+// report exporter drops it when the Report-tab toggle is on.
+const EXCLUSION_LABEL: Record<FindingExclusion, string> = {
+  out_of_scope: "Out of scope",
+  outside_roe: "Outside ROE",
+};
+
+const EXCLUSION_BADGE_CLASS: Record<FindingExclusion, string> = {
+  out_of_scope: "border-amber-500/60 bg-amber-500/15 text-amber-100",
+  outside_roe: "border-orange-500/60 bg-orange-500/15 text-orange-100",
+};
+
+const SEVERITY_OPTIONS: Severity[] = ["info", "low", "medium", "high", "critical"];
+const PHASE_OPTIONS: FindingPhase[] = [
+  "osint",
+  "vuln_scan",
+  "exploit",
+  "phishing",
+  "general",
+];
 
 const PHASE_FILTERS: (FindingPhase | "all")[] = [
   "all",
@@ -126,6 +156,15 @@ export function FindingsView({
   const [selected, setSelected] = useState<Finding | null>(null);
   const [showImporter, setShowImporter] = useState(false);
   const [showBurpImporter, setShowBurpImporter] = useState(false);
+  // v1.4.0: manual "Add finding" modal + agent-driven Correlate modal.
+  // Both are center-screen dialogs mounted below the table.
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [showCorrelateModal, setShowCorrelateModal] = useState(false);
+  // v1.4.0: client-side substring search on title / summary / target /
+  // short-id. Kept in the tab itself (not the URL) so hitting Findings
+  // from the nav lands on a clean view; the filter panel below the
+  // metrics has the input.
+  const [search, setSearch] = useState("");
 
   // v0.10.0: multi-select for bulk delete. Set of finding IDs; two-click
   // confirm before we actually call bulk-delete.
@@ -176,10 +215,23 @@ export function FindingsView({
     }
   };
 
+  const trimmedSearch = search.trim().toLowerCase();
+  const matchesSearch = (f: Finding): boolean => {
+    if (!trimmedSearch) return true;
+    const short = shortId(f.id).toLowerCase();
+    return (
+      f.title.toLowerCase().includes(trimmedSearch) ||
+      (f.summary?.toLowerCase().includes(trimmedSearch) ?? false) ||
+      (f.target?.toLowerCase().includes(trimmedSearch) ?? false) ||
+      short.includes(trimmedSearch)
+    );
+  };
+
   const visible = findings
     .filter((f) => phase === "all" || f.phase === phase)
     .filter((f) => status === "all" || f.status === status)
     .filter((f) => severityFilter === "all" || f.severity === severityFilter)
+    .filter(matchesSearch)
     .slice()
     .sort(compareFindings);
 
@@ -333,7 +385,20 @@ export function FindingsView({
             ))}
           </select>
         </div>
-        <div className="ml-auto flex gap-2">
+        <div className="ml-auto flex flex-wrap gap-2">
+          <Button size="sm" onClick={() => setShowAddModal(true)}>
+            <Plus className="mr-1.5 h-3.5 w-3.5" />
+            Add finding
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => setShowCorrelateModal(true)}
+            title="Ask the CorrelateAgent to suggest which open findings describe the same underlying issue"
+          >
+            <Sparkles className="mr-1.5 h-3.5 w-3.5" />
+            Correlate
+          </Button>
           <Button
             size="sm"
             variant="outline"
@@ -357,6 +422,19 @@ export function FindingsView({
             {showBurpImporter ? "Close Burp" : "Import Burp XML"}
           </Button>
         </div>
+      </div>
+
+      {/* v1.4.0: search bar. Substring match against title, summary,
+          target, and the row's short-id (as shown in the ID column). */}
+      <div className="relative max-w-md">
+        <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+        <Input
+          type="search"
+          placeholder="Search findings — title, summary, target, ID"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="pl-8"
+        />
       </div>
 
       {/* Inline importer panel */}
@@ -462,6 +540,9 @@ export function FindingsView({
                   className={cn(
                     "cursor-pointer border-b border-border/60 align-top last:border-0 hover:bg-secondary/40",
                     checkedIds.has(f.id) && "bg-secondary/30",
+                    // v1.4.0: dim excluded rows so the analyst sees at a
+                    // glance which rows the report exporter will drop.
+                    f.exclusion && "opacity-60",
                   )}
                 >
                   <td
@@ -484,17 +565,36 @@ export function FindingsView({
                     {shortId(f.id)}
                   </td>
                   <td className="px-3 py-2.5">
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <span className="font-medium">{f.title}</span>
                       {f.tool === "import" && (
                         <span className="rounded border border-border px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
                           imported
                         </span>
                       )}
+                      {f.tool === "manual" && (
+                        <span className="rounded border border-border px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
+                          manual
+                        </span>
+                      )}
+                      {f.exclusion && (
+                        <Badge
+                          variant="outline"
+                          className={cn(
+                            "text-[10px] uppercase tracking-wide",
+                            EXCLUSION_BADGE_CLASS[f.exclusion],
+                          )}
+                        >
+                          <Ban className="mr-1 h-3 w-3" />
+                          {EXCLUSION_LABEL[f.exclusion]}
+                        </Badge>
+                      )}
                     </div>
                     <div className="text-xs text-muted-foreground">
                       {PHASE_LABEL[f.phase]}
-                      {f.tool && f.tool !== "import" ? ` · ${f.tool}` : ""}
+                      {f.tool && f.tool !== "import" && f.tool !== "manual"
+                        ? ` · ${f.tool}`
+                        : ""}
                     </div>
                   </td>
                   <td className="px-3 py-2.5 font-mono text-xs text-muted-foreground">
@@ -540,6 +640,35 @@ export function FindingsView({
           onDeleted={(id) => {
             onDeleted(id);
             setSelected(null);
+          }}
+        />
+      )}
+
+      {showAddModal && (
+        <AddFindingModal
+          slug={slug}
+          onClose={() => setShowAddModal(false)}
+          onCreated={(f) => {
+            // Newest first — prepend into the cache via onUpdated. The
+            // parent maps this to setQueryData that already prepends
+            // (see upsertFindingInCache) so the row shows up at the top.
+            onUpdated(f);
+            setShowAddModal(false);
+          }}
+        />
+      )}
+
+      {showCorrelateModal && (
+        <CorrelateModal
+          slug={slug}
+          findings={findings}
+          onClose={() => setShowCorrelateModal(false)}
+          onMerged={(parent, absorbed) => {
+            // The parent row's summary + severity have changed; refresh
+            // it in the cache. Every child is now soft-deleted server-
+            // side, so drop them from the local view.
+            onUpdated(parent);
+            absorbed.forEach((cid) => onDeleted(cid));
           }}
         />
       )}
@@ -918,6 +1047,20 @@ function FindingSlideOver({
     }
   };
 
+  // v1.4.0: analyst-set reportability marker. Passing `null` clears the
+  // exclusion — the row goes back into the client-facing export.
+  const setExclusion = async (next: FindingExclusion | null) => {
+    setBusy(true);
+    setError(null);
+    try {
+      onUpdated(await updateFinding(finding.id, { exclusion: next }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   // Agents may run scan/enum paths only — never exploitation (CHARTER decided).
   const agentAllowed = finding.phase !== "exploit";
 
@@ -1254,6 +1397,50 @@ function FindingSlideOver({
             </Button>
           </div>
 
+          {/* v1.4.0: reportability marker. Orthogonal to validation —
+              a validated finding can still be excluded from the client
+              deliverable if it's out of scope or off-limits per ROE. */}
+          <div className="mt-3">
+            <p className="text-xs uppercase tracking-wide text-muted-foreground">
+              Reportability
+              {finding.exclusion && (
+                <span className="ml-2 rounded border border-border/70 bg-secondary/50 px-1.5 py-0.5 text-[10px] tracking-normal text-foreground">
+                  {EXCLUSION_LABEL[finding.exclusion]}
+                </span>
+              )}
+            </p>
+            <div className="mt-1.5 flex flex-wrap gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={busy || finding.exclusion === "out_of_scope"}
+                onClick={() => setExclusion("out_of_scope")}
+                title="Real finding, but not in the client-declared scope. Report exporter drops it when 'Omit excluded' is on."
+              >
+                Out of scope
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={busy || finding.exclusion === "outside_roe"}
+                onClick={() => setExclusion("outside_roe")}
+                title="Real finding, but off-limits per the engagement's rules of engagement / legal terms."
+              >
+                Outside ROE
+              </Button>
+              {finding.exclusion && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={busy}
+                  onClick={() => setExclusion(null)}
+                >
+                  Clear
+                </Button>
+              )}
+            </div>
+          </div>
+
           {/* v0.10.0: soft-delete. Two-step confirm; audit_log records
               the actor + timestamp so a future recovery view can un-hide. */}
           <div className="mt-3 flex items-center gap-2">
@@ -1332,6 +1519,484 @@ function FindingSlideOver({
           </div>
         </>
       )}
+    </>
+  );
+}
+
+// ── v1.4.0: Add Finding modal ──────────────────────────────────────────────
+
+function AddFindingModal({
+  slug,
+  onClose,
+  onCreated,
+}: {
+  slug: string;
+  onClose: () => void;
+  onCreated: (finding: Finding) => void;
+}) {
+  const [title, setTitle] = useState("");
+  const [summary, setSummary] = useState("");
+  const [target, setTarget] = useState("");
+  const [severity, setSeverity] = useState<Severity>("info");
+  const [phase, setPhase] = useState<FindingPhase>("general");
+  // <input type="date"> value format is YYYY-MM-DD. We turn empty into
+  // null before shipping; a set value becomes an ISO string at UTC noon
+  // so the calendar day round-trips regardless of the analyst's TZ.
+  const [observedAt, setObservedAt] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const canSubmit = title.trim().length > 0 && !busy;
+
+  const submit = async () => {
+    if (!canSubmit) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const observedIso = observedAt
+        ? new Date(`${observedAt}T12:00:00Z`).toISOString()
+        : null;
+      const finding = await createFinding(slug, {
+        title: title.trim(),
+        summary: summary.trim() || null,
+        severity,
+        phase,
+        target: target.trim() || null,
+        observed_at: observedIso,
+      });
+      onCreated(finding);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <div
+        className="fixed inset-0 z-[60] bg-black/70"
+        onClick={onClose}
+        aria-hidden
+      />
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Add finding"
+        className="fixed left-1/2 top-1/2 z-[70] flex max-h-[90vh] w-[min(560px,94vw)] -translate-x-1/2 -translate-y-1/2 flex-col rounded-lg border border-border bg-popover shadow-xl"
+      >
+        <div className="flex items-start justify-between gap-4 border-b border-border px-5 py-4">
+          <div>
+            <h3 className="text-sm font-semibold text-foreground">Add finding</h3>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              Hand-type a finding the tooling didn&apos;t surface. New row
+              lands at the top of the Findings tab.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-muted-foreground hover:text-foreground"
+            aria-label="Close"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <div className="grid gap-4 overflow-y-auto px-5 py-4">
+          <div>
+            <Label htmlFor="add-finding-title">Title *</Label>
+            <Input
+              id="add-finding-title"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="e.g. Reflected XSS in /search endpoint"
+              className="mt-1.5"
+              autoFocus
+            />
+          </div>
+
+          <div>
+            <Label htmlFor="add-finding-summary">Details</Label>
+            <Textarea
+              id="add-finding-summary"
+              value={summary}
+              onChange={(e) => setSummary(e.target.value)}
+              rows={4}
+              placeholder="What did you observe? Impact, evidence, reproduction steps."
+              className="mt-1.5 text-sm"
+            />
+          </div>
+
+          <div>
+            <Label htmlFor="add-finding-target">Target</Label>
+            <Input
+              id="add-finding-target"
+              value={target}
+              onChange={(e) => setTarget(e.target.value)}
+              placeholder="host / URL / entity affected"
+              className="mt-1.5 font-mono text-xs"
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <Label htmlFor="add-finding-severity">Severity</Label>
+              <select
+                id="add-finding-severity"
+                value={severity}
+                onChange={(e) => setSeverity(e.target.value as Severity)}
+                className="mt-1.5 h-9 w-full rounded-md border border-border bg-background px-2 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+              >
+                {SEVERITY_OPTIONS.map((s) => (
+                  <option key={s} value={s}>
+                    {s}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <Label htmlFor="add-finding-phase">Phase</Label>
+              <select
+                id="add-finding-phase"
+                value={phase}
+                onChange={(e) => setPhase(e.target.value as FindingPhase)}
+                className="mt-1.5 h-9 w-full rounded-md border border-border bg-background px-2 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+              >
+                {PHASE_OPTIONS.map((p) => (
+                  <option key={p} value={p}>
+                    {PHASE_LABEL[p]}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <Label htmlFor="add-finding-observed">Observed on</Label>
+            <Input
+              id="add-finding-observed"
+              type="date"
+              value={observedAt}
+              onChange={(e) => setObservedAt(e.target.value)}
+              className="mt-1.5"
+            />
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              When the issue was seen in the wild. Leave empty to fall back
+              to today.
+            </p>
+          </div>
+
+          {error && (
+            <p className="text-xs text-critical" role="alert">
+              {error}
+            </p>
+          )}
+        </div>
+
+        <div className="flex justify-end gap-2 border-t border-border px-5 py-3">
+          <Button variant="outline" size="sm" onClick={onClose} disabled={busy}>
+            Cancel
+          </Button>
+          <Button size="sm" onClick={submit} disabled={!canSubmit}>
+            {busy ? "Creating…" : "Create finding"}
+          </Button>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ── v1.4.0: Correlate modal ────────────────────────────────────────────────
+
+// Local shape — the modal keeps a mutable copy of the response groups so
+// it can drop the ones the analyst has approved / dismissed without a
+// round-trip.
+type ModalGroup = CorrelateGroup & {
+  status: "open" | "merging" | "merged" | "dismissed";
+  parentId: string;
+  error?: string;
+};
+
+function CorrelateModal({
+  slug,
+  findings,
+  onClose,
+  onMerged,
+}: {
+  slug: string;
+  findings: Finding[];
+  onClose: () => void;
+  onMerged: (parent: Finding, absorbed: string[]) => void;
+}) {
+  const [phase, setPhase] = useState<"loading" | "ready" | "error">("loading");
+  const [errorText, setErrorText] = useState<string | null>(null);
+  const [totalConsidered, setTotalConsidered] = useState(0);
+  const [groups, setGroups] = useState<ModalGroup[]>([]);
+
+  const byId = useMemo(() => {
+    const map = new Map<string, Finding>();
+    for (const f of findings) map.set(f.id, f);
+    return map;
+  }, [findings]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setPhase("loading");
+      setErrorText(null);
+      try {
+        const res = await correlateFindings(slug);
+        if (cancelled) return;
+        setTotalConsidered(res.total_considered);
+        setGroups(
+          res.groups.map((g) => ({
+            ...g,
+            status: "open",
+            parentId: g.finding_ids[0] ?? "",
+          })),
+        );
+        setPhase("ready");
+      } catch (err) {
+        if (cancelled) return;
+        setErrorText(err instanceof Error ? err.message : String(err));
+        setPhase("error");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [slug]);
+
+  const approve = async (idx: number) => {
+    const g = groups[idx];
+    if (!g || g.status !== "open") return;
+    const parent = byId.get(g.parentId);
+    if (!parent) {
+      setGroups((prev) => {
+        const next = prev.slice();
+        next[idx] = { ...g, error: "parent finding no longer exists" };
+        return next;
+      });
+      return;
+    }
+    const childIds = g.finding_ids.filter((id) => id !== g.parentId);
+    setGroups((prev) => {
+      const next = prev.slice();
+      next[idx] = { ...g, status: "merging", error: undefined };
+      return next;
+    });
+    try {
+      const merged = await mergeFindings(g.parentId, childIds);
+      onMerged(merged, childIds);
+      setGroups((prev) => {
+        const next = prev.slice();
+        next[idx] = { ...g, status: "merged" };
+        return next;
+      });
+    } catch (err) {
+      setGroups((prev) => {
+        const next = prev.slice();
+        next[idx] = {
+          ...g,
+          status: "open",
+          error: err instanceof Error ? err.message : String(err),
+        };
+        return next;
+      });
+    }
+  };
+
+  const dismiss = (idx: number) => {
+    setGroups((prev) => {
+      const next = prev.slice();
+      const g = next[idx];
+      if (g) next[idx] = { ...g, status: "dismissed" };
+      return next;
+    });
+  };
+
+  const setParent = (idx: number, parentId: string) => {
+    setGroups((prev) => {
+      const next = prev.slice();
+      const g = next[idx];
+      if (g && g.status === "open") next[idx] = { ...g, parentId };
+      return next;
+    });
+  };
+
+  const openGroups = groups.filter((g) => g.status !== "dismissed");
+  const remainingOpen = openGroups.filter((g) => g.status === "open").length;
+
+  return (
+    <>
+      <div
+        className="fixed inset-0 z-[60] bg-black/70"
+        onClick={onClose}
+        aria-hidden
+      />
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Correlate findings"
+        className="fixed left-1/2 top-1/2 z-[70] flex max-h-[90vh] w-[min(760px,94vw)] -translate-x-1/2 -translate-y-1/2 flex-col rounded-lg border border-border bg-popover shadow-xl"
+      >
+        <div className="flex items-start justify-between gap-4 border-b border-border px-5 py-4">
+          <div>
+            <h3 className="text-sm font-semibold text-foreground">
+              <Sparkles className="mr-1.5 inline h-4 w-4 -translate-y-0.5" />
+              Correlate findings
+            </h3>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              The agent groups findings that likely describe the same root
+              cause. Approve to merge — the first row in each group becomes
+              the parent; the others fold in.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-muted-foreground hover:text-foreground"
+            aria-label="Close"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <div className="overflow-y-auto px-5 py-4">
+          {phase === "loading" && (
+            <p className="text-sm text-muted-foreground">
+              Thinking — asking the agent to look for related findings…
+            </p>
+          )}
+
+          {phase === "error" && (
+            <div className="rounded-md border border-critical/40 bg-critical/10 p-3 text-sm text-critical">
+              {errorText}
+            </div>
+          )}
+
+          {phase === "ready" && groups.length === 0 && (
+            <p className="text-sm text-muted-foreground">
+              {totalConsidered === 0
+                ? "No open findings to correlate — every row is already resolved or excluded."
+                : totalConsidered === 1
+                  ? "Only one open finding — nothing to group against."
+                  : `The agent considered ${totalConsidered} open findings and didn't find any that clearly group together. That's a normal result when everything is genuinely distinct.`}
+            </p>
+          )}
+
+          {phase === "ready" && groups.length > 0 && (
+            <>
+              <p className="mb-3 text-xs text-muted-foreground">
+                Considered {totalConsidered} open findings ·{" "}
+                {remainingOpen} group{remainingOpen === 1 ? "" : "s"} awaiting
+                a decision
+              </p>
+              <ul className="space-y-3">
+                {groups.map((g, idx) => {
+                  if (g.status === "dismissed") return null;
+                  const members = g.finding_ids
+                    .map((id) => byId.get(id))
+                    .filter((f): f is Finding => Boolean(f));
+                  return (
+                    <li
+                      key={idx}
+                      className={cn(
+                        "rounded-md border border-border bg-background p-3",
+                        g.status === "merged" && "opacity-60",
+                      )}
+                    >
+                      <p className="text-sm text-foreground">{g.rationale}</p>
+                      <ul className="mt-2 space-y-1.5">
+                        {members.map((f) => (
+                          <li
+                            key={f.id}
+                            className="flex items-start gap-2 text-xs"
+                          >
+                            <input
+                              type="radio"
+                              name={`parent-${idx}`}
+                              value={f.id}
+                              checked={g.parentId === f.id}
+                              disabled={g.status !== "open"}
+                              onChange={() => setParent(idx, f.id)}
+                              className="mt-0.5 cursor-pointer accent-critical"
+                              aria-label={`Choose ${shortId(f.id)} as parent`}
+                            />
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-2">
+                                <span className="font-mono text-[10px] text-muted-foreground">
+                                  {shortId(f.id)}
+                                </span>
+                                <Badge
+                                  variant="outline"
+                                  className={cn(
+                                    "text-[10px]",
+                                    SEVERITY_CLASS[f.severity],
+                                  )}
+                                >
+                                  {f.severity}
+                                </Badge>
+                                <span className="truncate text-foreground">
+                                  {f.title}
+                                </span>
+                              </div>
+                              {f.target && (
+                                <p className="mt-0.5 font-mono text-[11px] text-muted-foreground">
+                                  {f.target}
+                                </p>
+                              )}
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+
+                      {g.error && (
+                        <p className="mt-2 text-xs text-critical">{g.error}</p>
+                      )}
+
+                      <div className="mt-3 flex justify-end gap-2">
+                        {g.status === "merged" ? (
+                          <span className="text-xs text-muted-foreground">
+                            <Layers className="mr-1 inline h-3.5 w-3.5" />
+                            Merged into {shortId(g.parentId)}
+                          </span>
+                        ) : (
+                          <>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={g.status === "merging"}
+                              onClick={() => dismiss(idx)}
+                            >
+                              Reject
+                            </Button>
+                            <Button
+                              size="sm"
+                              disabled={g.status === "merging"}
+                              onClick={() => approve(idx)}
+                            >
+                              {g.status === "merging"
+                                ? "Merging…"
+                                : `Approve · merge ${g.finding_ids.length - 1} into parent`}
+                            </Button>
+                          </>
+                        )}
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            </>
+          )}
+        </div>
+
+        <div className="flex justify-end gap-2 border-t border-border px-5 py-3">
+          <Button variant="outline" size="sm" onClick={onClose}>
+            Close
+          </Button>
+        </div>
+      </div>
     </>
   );
 }
