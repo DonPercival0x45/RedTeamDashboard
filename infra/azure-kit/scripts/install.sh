@@ -597,23 +597,46 @@ az role assignment create \
 echo "    waiting for KV role to propagate…"
 sleep 30
 
-# Mint the bootstrap admin key. The token prints to stdout — copy it.
+# Mint the bootstrap admin key. Token prints to stdout — we ALSO capture
+# it via grep so we can auto-seed both admin-api-key and worker-mcp-api-key
+# into Key Vault without an interactive paste. Bicep unconditionally resets
+# both secrets to placeholders every deploy (see keyvault.bicep), so this
+# step MUST re-seed them or the worker's MCP client hits 401 on every tool
+# call (surfaced as "mcp transport error" in the Tactical agent step log).
 echo
-blue "    Minting bootstrap admin API key — COPY the rtd_… token that appears below:"
+blue "    Minting bootstrap admin API key — token prints below AND is auto-seeded to KV:"
 echo
-container_exec 'python -m app.scripts.mint_api_key --name bootstrap --scope admin'
+_MINT_OUTPUT="$(container_exec 'python -m app.scripts.mint_api_key --name bootstrap --scope admin' 2>&1)"
+printf '%s\n' "$_MINT_OUTPUT"
+_MINTED_TOKEN="$(printf '%s' "$_MINT_OUTPUT" | grep -oE 'rtd_[A-Za-z0-9_-]+' | tail -1)"
 echo
 
-if [[ "$NON_INTERACTIVE" != "true" ]]; then
+if [[ -n "$_MINTED_TOKEN" ]]; then
+    az keyvault secret set --vault-name "$KV_NAME" --name admin-api-key \
+        --value "$_MINTED_TOKEN" --only-show-errors -o none
+    green "    admin-api-key auto-seeded to Key Vault."
+    az keyvault secret set --vault-name "$KV_NAME" --name worker-mcp-api-key \
+        --value "$_MINTED_TOKEN" --only-show-errors -o none
+    green "    worker-mcp-api-key auto-seeded to Key Vault (fixes silent tool-call 401)."
+elif [[ "$NON_INTERACTIVE" != "true" ]]; then
+    red "    couldn't auto-capture the minted token — falling back to interactive paste."
     read -rsp "    Paste the rtd_… token to store it in Key Vault (hidden): " ADMIN_KEY
     echo
     if [[ -n "$ADMIN_KEY" ]]; then
         az keyvault secret set --vault-name "$KV_NAME" --name admin-api-key \
             --value "$ADMIN_KEY" --only-show-errors -o none
-        green "    admin-api-key stored in Key Vault."
+        az keyvault secret set --vault-name "$KV_NAME" --name worker-mcp-api-key \
+            --value "$ADMIN_KEY" --only-show-errors -o none
+        green "    admin-api-key + worker-mcp-api-key stored in Key Vault."
     else
-        red "    no token provided — store it manually: az keyvault secret set --vault-name $KV_NAME --name admin-api-key --value '<token>'"
+        red "    no token provided — seed both manually:"
+        red "      az keyvault secret set --vault-name $KV_NAME --name admin-api-key --value '<token>'"
+        red "      az keyvault secret set --vault-name $KV_NAME --name worker-mcp-api-key --value '<token>'"
     fi
+else
+    red "    FAILED to auto-capture the minted token in non-interactive mode."
+    red "    Tool calls will 401 until you seed worker-mcp-api-key manually:"
+    red "      az keyvault secret set --vault-name $KV_NAME --name worker-mcp-api-key --value '<rtd_… token>'"
 fi
 
 # Store LLM keys
