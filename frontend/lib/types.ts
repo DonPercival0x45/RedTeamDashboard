@@ -166,6 +166,33 @@ export interface CorrelateResponse {
   total_considered: number;
 }
 
+// v1.4.1: deterministic auto-grouping. Preview surfaces every set of
+// ungrouped rows that share a proposed group_key; apply commits the
+// analyst's approvals.
+export interface RegroupProposal {
+  group_key: string;
+  tool: string;
+  proposed_title: string;
+  member_ids: string[];
+  projected_severity: Severity;
+  projected_item_count: number;
+  absorbs_into_existing_parent_id: string | null;
+}
+
+export interface RegroupPreview {
+  proposals: RegroupProposal[];
+  scanned_row_count: number;
+  ungroupable_count: number;
+}
+
+export interface RegroupApplyResult {
+  group_key: string;
+  parent_id: string;
+  absorbed_member_count: number;
+  final_item_count: number;
+  final_severity: Severity;
+}
+
 // Sort order for GET /engagements/{slug}/findings?sort=…
 export type FindingSort = "newest" | "severity" | "observed";
 

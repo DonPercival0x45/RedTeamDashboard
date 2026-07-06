@@ -314,6 +314,31 @@ export function mergeFindings(
   });
 }
 
+// v1.4.1: deterministic auto-grouping. Preview scans every ungrouped
+// row, runs the v1.4.0 vocab, and returns proposed clusters. Nothing
+// changes in the DB until apply is called with the approved keys.
+export function regroupFindingsPreview(
+  slug: string,
+): Promise<import("@/lib/types").RegroupPreview> {
+  return request<import("@/lib/types").RegroupPreview>(
+    `/engagements/${slug}/findings/regroup/preview`,
+    { method: "POST" },
+  );
+}
+
+export function regroupFindingsApply(
+  slug: string,
+  groupKeys: string[],
+): Promise<import("@/lib/types").RegroupApplyResult[]> {
+  return request<import("@/lib/types").RegroupApplyResult[]>(
+    `/engagements/${slug}/findings/regroup/apply`,
+    {
+      method: "POST",
+      body: JSON.stringify({ group_keys: groupKeys }),
+    },
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Observations
 // ---------------------------------------------------------------------------

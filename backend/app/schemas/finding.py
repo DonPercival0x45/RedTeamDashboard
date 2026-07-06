@@ -130,6 +130,74 @@ class MergeRequest(BaseModel):
     )
 
 
+class RegroupProposal(BaseModel):
+    """One proposed group in a POST /findings/regroup/preview response.
+
+    Every finding_id in ``member_ids`` currently has ``group_key IS NULL``
+    and would fold into a row with ``group_key = <group_key>``. If
+    ``absorbs_into_existing_parent_id`` is set, that parent already
+    exists (from a prior grouped ingest) and the members would be
+    appended to its ``details['items']``; else a new parent row is
+    minted when the analyst applies the group.
+    """
+
+    group_key: str
+    tool: str
+    proposed_title: str
+    member_ids: list[UUID] = Field(..., min_length=2)
+    projected_severity: Severity
+    projected_item_count: int = Field(
+        ...,
+        description=(
+            "How many entries will land in ``details['items']`` after the "
+            "apply. Usually == len(member_ids); higher when a member row "
+            "already carried a multi-item data blob (e.g. subfinder's "
+            "subdomains list)."
+        ),
+    )
+    absorbs_into_existing_parent_id: UUID | None = None
+
+
+class RegroupPreview(BaseModel):
+    """Dry-run response for POST /engagements/{slug}/findings/regroup/preview.
+
+    ``proposals`` only contains groups of size >= 2 — a "group" of one
+    row is meaningless. ``ungroupable_count`` surfaces the number of
+    rows the tool vocab couldn't key (unknown source_tool, or manual
+    entries without a caller-supplied key), so the analyst can see why
+    nothing happened when the response is empty.
+    """
+
+    proposals: list[RegroupProposal] = Field(default_factory=list)
+    scanned_row_count: int
+    ungroupable_count: int
+
+
+class RegroupApplyRequest(BaseModel):
+    """Body for POST /engagements/{slug}/findings/regroup/apply."""
+
+    group_keys: list[str] = Field(
+        ...,
+        min_length=1,
+        max_length=200,
+        description=(
+            "Group keys the analyst approved in the preview modal. Only "
+            "these get merged; keys omitted here are left as-is even if "
+            "the preview surfaced them."
+        ),
+    )
+
+
+class RegroupApplyResult(BaseModel):
+    """What the apply endpoint returns per approved group."""
+
+    group_key: str
+    parent_id: UUID
+    absorbed_member_count: int
+    final_item_count: int
+    final_severity: Severity
+
+
 class FindingValidate(BaseModel):
     # 'validated' promotes to report-eligible; the others remove it from the
     # report while keeping an audit trail.

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Ban, Layers, Plus, Search, Sparkles, Trash2, Upload, X } from "lucide-react";
+import { Ban, Layers, Plus, Search, Sparkles, Trash2, Upload, Wand2, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -21,6 +21,8 @@ import {
   listFindingSummaries,
   loadAttachmentBlob,
   mergeFindings,
+  regroupFindingsApply,
+  regroupFindingsPreview,
   triageFinding,
   updateFinding,
   uploadAttachment,
@@ -38,6 +40,7 @@ import type {
   FindingSort,
   FindingSummaryEntry,
   FindingValidationStatus,
+  RegroupProposal,
   Severity,
   Suggestion,
 } from "@/lib/types";
@@ -160,6 +163,10 @@ export function FindingsView({
   // Both are center-screen dialogs mounted below the table.
   const [showAddModal, setShowAddModal] = useState(false);
   const [showCorrelateModal, setShowCorrelateModal] = useState(false);
+  // v1.4.1: deterministic auto-grouping modal. Kicked from the "Group
+  // findings" button; runs compute_group_key() over every ungrouped
+  // row and folds anything sharing a key.
+  const [showRegroupModal, setShowRegroupModal] = useState(false);
   // v1.4.0: client-side substring search on title / summary / target /
   // short-id. Kept in the tab itself (not the URL) so hitting Findings
   // from the nav lands on a clean view; the filter panel below the
@@ -389,6 +396,15 @@ export function FindingsView({
           <Button size="sm" onClick={() => setShowAddModal(true)}>
             <Plus className="mr-1.5 h-3.5 w-3.5" />
             Add finding
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => setShowRegroupModal(true)}
+            title="Deterministic auto-grouping: fold ungrouped rows into one row per (tool × category) using the v1.4.0 vocab. No LLM cost."
+          >
+            <Wand2 className="mr-1.5 h-3.5 w-3.5" />
+            Group findings
           </Button>
           <Button
             size="sm"
@@ -685,6 +701,22 @@ export function FindingsView({
             // side, so drop them from the local view.
             onUpdated(parent);
             absorbed.forEach((cid) => onDeleted(cid));
+          }}
+        />
+      )}
+
+      {showRegroupModal && (
+        <RegroupModal
+          slug={slug}
+          findings={findings}
+          onClose={() => setShowRegroupModal(false)}
+          onApplied={(absorbedIds) => {
+            // Sources are soft-deleted server-side; drop them locally.
+            // The parent rows are new (or bumped) — a cache invalidate
+            // via a re-list would be cleanest, but for now every drop
+            // of a source also removes it from the visible set. The
+            // page-level query will refetch the parent on next focus.
+            absorbedIds.forEach((id) => onDeleted(id));
           }}
         />
       )}
@@ -1628,6 +1660,298 @@ function GroupedItemsPanel({ finding }: { finding: Finding }) {
         </table>
       </div>
     </div>
+  );
+}
+
+// ── v1.4.1: Regroup modal ──────────────────────────────────────────────────
+
+// Renders the preview response from POST /findings/regroup/preview and
+// lets the analyst toggle per-group Apply. Same visual pattern as the
+// Correlate modal — but deterministic and instant (no LLM call).
+
+type RegroupRow = RegroupProposal & {
+  status: "open" | "applying" | "applied" | "skipped";
+  error?: string;
+};
+
+function RegroupModal({
+  slug,
+  findings,
+  onClose,
+  onApplied,
+}: {
+  slug: string;
+  findings: Finding[];
+  onClose: () => void;
+  onApplied: (absorbedFindingIds: string[]) => void;
+}) {
+  const [phase, setPhase] = useState<"loading" | "ready" | "error">("loading");
+  const [errorText, setErrorText] = useState<string | null>(null);
+  const [scannedCount, setScannedCount] = useState(0);
+  const [ungroupableCount, setUngroupableCount] = useState(0);
+  const [rows, setRows] = useState<RegroupRow[]>([]);
+  const [applying, setApplying] = useState(false);
+
+  const byId = useMemo(() => {
+    const map = new Map<string, Finding>();
+    for (const f of findings) map.set(f.id, f);
+    return map;
+  }, [findings]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setPhase("loading");
+      setErrorText(null);
+      try {
+        const res = await regroupFindingsPreview(slug);
+        if (cancelled) return;
+        setScannedCount(res.scanned_row_count);
+        setUngroupableCount(res.ungroupable_count);
+        setRows(res.proposals.map((p) => ({ ...p, status: "open" })));
+        setPhase("ready");
+      } catch (err) {
+        if (cancelled) return;
+        setErrorText(err instanceof Error ? err.message : String(err));
+        setPhase("error");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [slug]);
+
+  const toggleSkip = (idx: number) => {
+    setRows((prev) => {
+      const next = prev.slice();
+      const g = next[idx];
+      if (!g || g.status === "applying" || g.status === "applied") return prev;
+      next[idx] = { ...g, status: g.status === "skipped" ? "open" : "skipped" };
+      return next;
+    });
+  };
+
+  const apply = async () => {
+    const approved = rows.filter((r) => r.status === "open");
+    if (approved.length === 0) return;
+    setApplying(true);
+    // Flip each approved row's status to applying for feedback.
+    setRows((prev) =>
+      prev.map((r) => (r.status === "open" ? { ...r, status: "applying" } : r)),
+    );
+    try {
+      const results = await regroupFindingsApply(
+        slug,
+        approved.map((r) => r.group_key),
+      );
+      const appliedKeys = new Set(results.map((r) => r.group_key));
+      const absorbedIds: string[] = [];
+      for (const r of approved) {
+        if (appliedKeys.has(r.group_key)) {
+          for (const mid of r.member_ids) absorbedIds.push(mid);
+        }
+      }
+      onApplied(absorbedIds);
+      setRows((prev) =>
+        prev.map((r) =>
+          appliedKeys.has(r.group_key) && r.status === "applying"
+            ? { ...r, status: "applied" }
+            : r,
+        ),
+      );
+    } catch (err) {
+      setErrorText(err instanceof Error ? err.message : String(err));
+      // Roll applying back to open so the analyst can retry.
+      setRows((prev) =>
+        prev.map((r) => (r.status === "applying" ? { ...r, status: "open" } : r)),
+      );
+    } finally {
+      setApplying(false);
+    }
+  };
+
+  const openCount = rows.filter((r) => r.status === "open").length;
+
+  return (
+    <>
+      <div
+        className="fixed inset-0 z-[60] bg-black/70"
+        onClick={onClose}
+        aria-hidden
+      />
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Group findings"
+        className="fixed left-1/2 top-1/2 z-[70] flex max-h-[90vh] w-[min(760px,94vw)] -translate-x-1/2 -translate-y-1/2 flex-col rounded-lg border border-border bg-popover shadow-xl"
+      >
+        <div className="flex items-start justify-between gap-4 border-b border-border px-5 py-4">
+          <div>
+            <h3 className="text-sm font-semibold text-foreground">
+              <Wand2 className="mr-1.5 inline h-4 w-4 -translate-y-0.5" />
+              Group findings
+            </h3>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              Deterministic auto-group: every ungrouped row runs through
+              the v1.4.0 tool vocab. Rows that would share a key fold
+              into one. Nothing happens until you Apply.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-muted-foreground hover:text-foreground"
+            aria-label="Close"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <div className="overflow-y-auto px-5 py-4">
+          {phase === "loading" && (
+            <p className="text-sm text-muted-foreground">Analyzing…</p>
+          )}
+
+          {phase === "error" && (
+            <div className="rounded-md border border-critical/40 bg-critical/10 p-3 text-sm text-critical">
+              {errorText}
+            </div>
+          )}
+
+          {phase === "ready" && rows.length === 0 && (
+            <p className="text-sm text-muted-foreground">
+              {scannedCount === 0
+                ? "No ungrouped rows to work with — every finding is already grouped."
+                : ungroupableCount === scannedCount
+                  ? `Scanned ${scannedCount} ungrouped rows; the tool vocab couldn't key any of them (custom tools or manual entries).`
+                  : `Scanned ${scannedCount} ungrouped rows and found no clusters — every row's category is unique.`}
+            </p>
+          )}
+
+          {phase === "ready" && rows.length > 0 && (
+            <>
+              <p className="mb-3 text-xs text-muted-foreground">
+                Scanned {scannedCount} ungrouped rows · {ungroupableCount}{" "}
+                without a matchable tool · {rows.length} group
+                {rows.length === 1 ? "" : "s"} proposed
+              </p>
+              <ul className="space-y-2">
+                {rows.map((g, idx) => {
+                  const members = g.member_ids
+                    .map((id) => byId.get(id))
+                    .filter((f): f is Finding => Boolean(f));
+                  const isDone = g.status === "applied";
+                  const isSkipped = g.status === "skipped";
+                  const isBusy = g.status === "applying";
+                  return (
+                    <li
+                      key={g.group_key}
+                      className={cn(
+                        "rounded-md border border-border bg-background p-3",
+                        isSkipped && "opacity-40",
+                        isDone && "border-emerald-500/40 bg-emerald-500/5",
+                      )}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="flex flex-wrap items-center gap-2 text-sm text-foreground">
+                            <span className="font-medium">
+                              {g.proposed_title}
+                            </span>
+                            <Badge
+                              variant="outline"
+                              className={cn(
+                                "text-[10px]",
+                                SEVERITY_CLASS[g.projected_severity],
+                              )}
+                            >
+                              {g.projected_severity}
+                            </Badge>
+                            <span
+                              className="rounded border border-sky-500/40 bg-sky-500/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-sky-200"
+                              title={`Group key: ${g.group_key}`}
+                            >
+                              × {g.projected_item_count} items
+                            </span>
+                            {g.absorbs_into_existing_parent_id && (
+                              <span className="rounded border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-amber-100">
+                                absorbs existing
+                              </span>
+                            )}
+                          </p>
+                          <p className="mt-1 font-mono text-[10px] text-muted-foreground">
+                            {g.group_key}
+                          </p>
+                          <p className="mt-1.5 text-xs text-muted-foreground">
+                            {members.length} row
+                            {members.length === 1 ? "" : "s"} to absorb:{" "}
+                            {members
+                              .slice(0, 4)
+                              .map((f) => shortId(f.id))
+                              .join(", ")}
+                            {members.length > 4 && ` +${members.length - 4} more`}
+                          </p>
+                        </div>
+                        <div className="flex shrink-0 flex-col items-end gap-1">
+                          {isDone ? (
+                            <span className="text-xs text-emerald-300">
+                              <Layers className="mr-1 inline h-3.5 w-3.5" />
+                              merged
+                            </span>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => toggleSkip(idx)}
+                              disabled={isBusy || applying}
+                              className={cn(
+                                "text-xs underline-offset-2 hover:underline",
+                                isSkipped
+                                  ? "text-muted-foreground"
+                                  : "text-critical",
+                              )}
+                            >
+                              {isSkipped ? "un-skip" : "skip"}
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      {g.error && (
+                        <p className="mt-2 text-xs text-critical">{g.error}</p>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            </>
+          )}
+        </div>
+
+        <div className="flex items-center justify-between gap-2 border-t border-border px-5 py-3">
+          <p className="text-xs text-muted-foreground">
+            {rows.length > 0 && (
+              <>
+                {openCount} group{openCount === 1 ? "" : "s"} pending ·{" "}
+                {rows.filter((r) => r.status === "applied").length} applied
+              </>
+            )}
+          </p>
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" onClick={onClose}>
+              Close
+            </Button>
+            <Button
+              size="sm"
+              disabled={applying || openCount === 0}
+              onClick={apply}
+            >
+              {applying
+                ? "Applying…"
+                : `Apply ${openCount} group${openCount === 1 ? "" : "s"}`}
+            </Button>
+          </div>
+        </div>
+      </div>
+    </>
   );
 }
 
