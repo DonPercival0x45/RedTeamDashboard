@@ -9,6 +9,8 @@ Outbound (published to ``runs:{eid}:events``):
 - ``approval.pending``  { thread_id, tool, args, risk, scope, tool_call_id }
 - ``tool.denied``       { thread_id, tool, args, reason, scope }
 - ``tool.auto_approved``{ thread_id, tool, args, risk, authorization_id }
+- ``tool.executed``     { thread_id, tool, args, ok, elapsed_ms, findings_emitted, error, data_preview }
+- ``llm.responded``     { thread_id, tokens_in, tokens_out, elapsed_ms, tool_call_count, tool_calls, content_preview }
 - ``finding.created``   { thread_id, tool, args, data, target, severity, title, finding_id }
 - ``run.completed``     { thread_id }
 - ``run.errored``       { thread_id, error }
@@ -29,6 +31,12 @@ EVENT_TYPES = frozenset(
         "approval.pending",
         "tool.denied",
         "tool.auto_approved",
+        # v1.4.3: observability trace events. tool.executed carries the
+        # exact command the agent ran; llm.responded carries token
+        # usage + tool_calls + a response preview so a silent
+        # 0-finding run tells the analyst why.
+        "tool.executed",
+        "llm.responded",
         "finding.created",
         "run.completed",
         "run.errored",
