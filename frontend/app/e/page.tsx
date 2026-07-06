@@ -451,17 +451,23 @@ function EngagementDetail({ slug }: { slug: string }) {
 }
 
 function EngagementGate() {
+  const router = useRouter();
   const params = useSearchParams();
   const slug = params.get("slug");
+
+  // v1.4.2: /e without a ?slug= param has no engagement to render — it
+  // used to render a "Missing ?slug=" dead-end. That fell out of MSAL's
+  // navigateToLoginRequestUrl behavior: an analyst who bookmarked /e (or
+  // came from a stale link) would land here after Entra sign-in and get
+  // stuck. Redirect to the engagement list instead so the sign-in flow
+  // always ends on something useful.
+  useEffect(() => {
+    if (!slug) router.replace("/");
+  }, [slug, router]);
+
   if (!slug) {
     return (
-      <p className="text-sm text-muted-foreground">
-        Missing <code>?slug=</code> parameter. Go back to{" "}
-        <Link href="/" className="underline">
-          engagements
-        </Link>
-        .
-      </p>
+      <p className="text-sm text-muted-foreground">Loading engagements…</p>
     );
   }
   return <EngagementDetail slug={slug} />;

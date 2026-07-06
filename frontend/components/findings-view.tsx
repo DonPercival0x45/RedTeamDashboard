@@ -1,6 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { qk } from "@/lib/hooks";
 import { Ban, Layers, Plus, Search, Sparkles, Trash2, Upload, Wand2, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -1685,6 +1687,13 @@ function RegroupModal({
   onClose: () => void;
   onApplied: (absorbedFindingIds: string[]) => void;
 }) {
+  // v1.4.2: analysts saw an inconsistent view after clicking Apply —
+  // the source rows disappeared (removed from cache locally) but the
+  // NEW grouped parent rows only showed up on a manual refresh, because
+  // setQueryData paths only knew how to drop rows, not add fresh ones.
+  // Invalidating the findings query after apply forces react-query to
+  // refetch and the parents land live.
+  const qc = useQueryClient();
   const [phase, setPhase] = useState<"loading" | "ready" | "error">("loading");
   const [errorText, setErrorText] = useState<string | null>(null);
   const [scannedCount, setScannedCount] = useState(0);
@@ -1752,6 +1761,10 @@ function RegroupModal({
         }
       }
       onApplied(absorbedIds);
+      // v1.4.2: refetch so the new / bumped parent rows appear without a
+      // page refresh. Fires AFTER onApplied so the local drops are the
+      // instant feedback while the refetch fills in the parents.
+      void qc.invalidateQueries({ queryKey: qk.findings(slug) });
       setRows((prev) =>
         prev.map((r) =>
           appliedKeys.has(r.group_key) && r.status === "applying"
