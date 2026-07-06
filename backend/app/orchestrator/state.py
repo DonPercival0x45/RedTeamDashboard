@@ -28,3 +28,10 @@ class OsintState(TypedDict, total=False):
     # instead of interrupting — recorded so the worker can audit-log them.
     auto_approvals: Annotated[list[dict[str, Any]], operator.add]
     errors: Annotated[list[str], operator.add]
+    # v1.4.3: trace channels for observability. ``llm_events`` gets one
+    # entry per _agent_node call (tokens + tool_calls made + content
+    # preview). ``tool_events`` gets one entry per tool dispatch (tool
+    # + args + ok + result summary). RunRunner surfaces both on the
+    # outbound SSE stream so the step log shows them.
+    llm_events: Annotated[list[dict[str, Any]], operator.add]
+    tool_events: Annotated[list[dict[str, Any]], operator.add]

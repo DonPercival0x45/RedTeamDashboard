@@ -20,6 +20,7 @@ endpoints.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -949,7 +950,43 @@ def _summarize_stream_event(payload: dict[str, Any]) -> str:
         return "Run completed."
     if t == "run.errored":
         return f"Run errored: {(payload.get('error') or '')[:120]}"
+    if t == "llm.responded":
+        # v1.4.3: LLM invocation trace. If tool_call_count > 0, note it.
+        # Else surface a preview of what the model said — critical for
+        # diagnosing "run completed with 0 findings" cases where the
+        # agent responded with text instead of calling a tool.
+        tcc = payload.get("tool_call_count") or 0
+        tokens = f"in={payload.get('tokens_in')} out={payload.get('tokens_out')}"
+        if tcc:
+            call_names = ", ".join(
+                c.get("name", "?") for c in (payload.get("tool_calls") or [])
+            )
+            return f"LLM → {tcc} tool call(s): {call_names} [{tokens}]"
+        preview = (payload.get("content_preview") or "").replace("\n", " ")[:120]
+        return f"LLM → no tool calls [{tokens}] — {preview!r}"
+    if t == "tool.executed":
+        ok = "ok" if payload.get("ok") else "failed"
+        return (
+            f"Tool ran: {payload.get('tool')}("
+            f"{_short_args(payload.get('args'))}) — {ok}"
+            f" · {payload.get('findings_emitted') or 0} finding(s)"
+            f" · {payload.get('elapsed_ms') or 0}ms"
+            + (f" · error: {(payload.get('error') or '')[:80]}" if not payload.get("ok") else "")
+        )
     return t or "event"
+
+
+def _short_args(args: Any) -> str:
+    """One-line render of tool args for the step log summary."""
+    if not isinstance(args, Mapping):
+        return ""
+    parts: list[str] = []
+    for k, v in args.items():
+        sv = str(v)
+        if len(sv) > 60:
+            sv = sv[:57] + "…"
+        parts.append(f"{k}={sv}")
+    return ", ".join(parts)
 
 
 def _audit_step_entry(row: Any) -> StepEntry:

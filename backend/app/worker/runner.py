@@ -511,6 +511,60 @@ class RunRunner:
                         "authorization_id": auto.get("authorization_id"),
                     },
                 )
+            # v1.4.3: LLM trace — surface tokens + tool_calls emitted +
+            # response preview so the analyst sees exactly what the model
+            # returned. Populated by :func:`_agent_node`. When an
+            # analyst's run finishes with zero findings, the trace field
+            # (``tool_call_count``, ``content_preview``) tells them why —
+            # e.g. "LLM returned no tool calls, said 'I need in-scope
+            # targets to work with'".
+            for llm_evt in update.get("llm_events") or []:
+                self._emit(
+                    engagement_id,
+                    {
+                        "type": "llm.responded",
+                        "thread_id": thread_id,
+                        "tokens_in": llm_evt.get("tokens_in"),
+                        "tokens_out": llm_evt.get("tokens_out"),
+                        "elapsed_ms": llm_evt.get("elapsed_ms"),
+                        "tool_call_count": llm_evt.get("tool_call_count"),
+                        "tool_calls": llm_evt.get("tool_calls"),
+                        "content_preview": llm_evt.get("content_preview"),
+                    },
+                )
+            # v1.4.3: per-tool trace — every dispatched tool call, its
+            # args, whether it succeeded, elapsed time, findings emitted,
+            # and a preview of the returned data. The step log surfaces
+            # each so the analyst can see the exact command the agent
+            # ran (user request 2026-07-06).
+            for tool_evt in update.get("tool_events") or []:
+                self._audit(
+                    engagement_id,
+                    "tool.executed",
+                    {
+                        "thread_id": thread_id,
+                        "tool": tool_evt.get("tool"),
+                        "args": tool_evt.get("args"),
+                        "ok": tool_evt.get("ok"),
+                        "elapsed_ms": tool_evt.get("elapsed_ms"),
+                        "findings_emitted": tool_evt.get("findings_emitted"),
+                        "error": tool_evt.get("error"),
+                    },
+                )
+                self._emit(
+                    engagement_id,
+                    {
+                        "type": "tool.executed",
+                        "thread_id": thread_id,
+                        "tool": tool_evt.get("tool"),
+                        "args": tool_evt.get("args"),
+                        "ok": tool_evt.get("ok"),
+                        "elapsed_ms": tool_evt.get("elapsed_ms"),
+                        "findings_emitted": tool_evt.get("findings_emitted"),
+                        "error": tool_evt.get("error"),
+                        "data_preview": tool_evt.get("data_preview"),
+                    },
+                )
 
     # ------------------------------------------------------------------
     # Plumbing

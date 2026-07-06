@@ -123,19 +123,29 @@ def compute_group_key(
         domain = str(data.get("domain") or args.get("domain") or "").strip().lower()
         if not domain:
             return None
-        return f"subfinder:{_apex_of(domain)}"
+        return f"subdomains:{_apex_of(domain)}"
 
     if tool == "crt_sh":
         domain = str(data.get("domain") or args.get("domain") or "").strip().lower()
         if not domain:
             return None
-        return f"crt_sh:{_apex_of(domain)}"
+        return f"subdomains:{_apex_of(domain)}"
 
     if tool == "dns_lookup":
+        # v1.4.3: subdomain-shaped queries (3+ labels, e.g.
+        # piedmont.5qpartners.com) fold under the SAME apex key as
+        # subfinder/crt_sh hits, so all subdomain-discovery output
+        # for an apex lives in one row. Queries targeting the apex
+        # itself (2 labels) stay in a separate dns_records row —
+        # A/AAAA/CNAME records for the apex are a different concept
+        # from "subdomains under this apex."
         domain = str(data.get("domain") or args.get("domain") or "").strip().lower()
         if not domain:
             return None
-        return f"dns:{domain}"
+        labels = [p for p in domain.rstrip(".").split(".") if p]
+        if len(labels) >= 3:
+            return f"subdomains:{_apex_of(domain)}"
+        return f"dns_records:{_apex_of(domain)}"
 
     if tool == "whois_lookup":
         domain = str(data.get("domain") or args.get("domain") or "").strip().lower()
@@ -219,19 +229,40 @@ def extract_items(
 
     if tool in ("subfinder", "crt_sh"):
         return [
-            {"subdomain": s}
+            {"subdomain": s, "source_tool": tool}
             for s in data.get("subdomains") or []
             if isinstance(s, str) and s.strip()
         ]
 
     if tool == "dns_lookup":
-        # dns_lookup returns A / AAAA / CNAME records; each record is
-        # its own item, keyed by (type, value).
+        # v1.4.3: when the queried domain is a subdomain (3+ labels),
+        # the item IS that subdomain — the row folds into the shared
+        # subdomains:{apex} group with subfinder/crt_sh hits. When the
+        # query is the apex itself, extract the individual DNS records
+        # (A/AAAA/CNAME) as items — same as the old behavior.
+        queried = str(data.get("domain") or "").strip().lower()
+        labels = [p for p in queried.rstrip(".").split(".") if p]
+        if queried and len(labels) >= 3:
+            return [
+                {
+                    "subdomain": queried,
+                    "source_tool": "dns_lookup",
+                    "a": [v for v in (data.get("a") or []) if isinstance(v, str)],
+                    "aaaa": [v for v in (data.get("aaaa") or []) if isinstance(v, str)],
+                    "cname": [v for v in (data.get("cname") or []) if isinstance(v, str)],
+                }
+            ]
         items: list[dict[str, Any]] = []
         for kind in ("a", "aaaa", "cname"):
             for value in data.get(kind) or []:
                 if isinstance(value, str) and value.strip():
-                    items.append({"type": kind.upper(), "value": value})
+                    items.append(
+                        {
+                            "type": kind.upper(),
+                            "value": value,
+                            "source_tool": "dns_lookup",
+                        }
+                    )
         return items
 
     if tool == "reverse_dns":
@@ -275,7 +306,16 @@ def extract_items(
 
 def item_dedup_key(tool: str | None, item: Mapping[str, Any]) -> str:
     """Natural identity of an item inside its group. Used to skip re-adds
-    on a second run of the same tool against the same target."""
+    on a second run of the same tool against the same target.
+
+    v1.4.3: items with a ``subdomain`` field (subfinder / crt_sh /
+    dns_lookup-subdomain-query) dedup on the subdomain string regardless
+    of which tool emitted them — subfinder finding api.example.com and
+    a dns_lookup against api.example.com produce the SAME hit inside
+    the shared subdomains:{apex} group.
+    """
+    if isinstance(item.get("subdomain"), str) and item["subdomain"].strip():
+        return item["subdomain"].strip().lower()
     if tool in ("subfinder", "crt_sh"):
         return str(item.get("subdomain") or "").lower()
     if tool == "dns_lookup":
@@ -303,10 +343,20 @@ def item_dedup_key(tool: str | None, item: Mapping[str, Any]) -> str:
 
 def group_title(tool: str | None, group_key: str, data: Mapping[str, Any] | None) -> str:
     """Human title for a grouped row. Kept constant so the row can be
-    tracked across re-runs. Item count is rendered by the frontend."""
+    tracked across re-runs. Item count is rendered by the frontend.
+
+    v1.4.3: the group_key is the source of truth for the title — a
+    subdomains:{apex} row shows the unified subdomain title regardless
+    of which tool created the first hit.
+    """
     data = data or {}
+    if group_key.startswith("subdomains:"):
+        apex = group_key.split(":", 1)[-1]
+        return f"Subdomains discovered — {apex}"
+    if group_key.startswith("dns_records:"):
+        apex = group_key.split(":", 1)[-1]
+        return f"DNS records — {apex}"
     if tool == "subfinder":
-        # group_key is "subfinder:<apex>"
         apex = group_key.split(":", 1)[-1]
         return f"Subdomains discovered — {apex}"
     if tool == "crt_sh":

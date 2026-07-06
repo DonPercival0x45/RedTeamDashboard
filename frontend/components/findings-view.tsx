@@ -2,8 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { qk } from "@/lib/hooks";
-import { Ban, Layers, Plus, Search, Sparkles, Trash2, Upload, Wand2, X } from "lucide-react";
+import { qk, useMe } from "@/lib/hooks";
+import { Ban, Layers, Plus, Search, Sparkles, Trash2, Upload, Wand2, Wrench, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -25,6 +25,7 @@ import {
   mergeFindings,
   regroupFindingsApply,
   regroupFindingsPreview,
+  repairFindingGroups,
   triageFinding,
   updateFinding,
   uploadAttachment,
@@ -169,6 +170,30 @@ export function FindingsView({
   // findings" button; runs compute_group_key() over every ungrouped
   // row and folds anything sharing a key.
   const [showRegroupModal, setShowRegroupModal] = useState(false);
+  // v1.4.3: admin-only "Repair groups" — one-shot pass that rebuilds
+  // items[] from soft-deleted sources and migrates legacy per-tool
+  // group keys into the unified subdomains:{apex} shape.
+  const qc = useQueryClient();
+  const { data: me } = useMe();
+  const [repairing, setRepairing] = useState(false);
+  const [repairMessage, setRepairMessage] = useState<string | null>(null);
+  const [repairError, setRepairError] = useState<string | null>(null);
+  const doRepair = async () => {
+    setRepairing(true);
+    setRepairError(null);
+    setRepairMessage(null);
+    try {
+      const r = await repairFindingGroups(slug);
+      setRepairMessage(
+        `Scanned ${r.parents_scanned} · repaired ${r.parents_items_repaired} · rekeyed ${r.parents_rekeyed} · merged ${r.parents_merged} · absorbed ${r.ungrouped_absorbed} · ${r.total_items_after} items total`,
+      );
+      void qc.invalidateQueries({ queryKey: qk.findings(slug) });
+    } catch (err) {
+      setRepairError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRepairing(false);
+    }
+  };
   // v1.4.0: client-side substring search on title / summary / target /
   // short-id. Kept in the tab itself (not the URL) so hitting Findings
   // from the nav lands on a clean view; the filter panel below the
@@ -408,6 +433,18 @@ export function FindingsView({
             <Wand2 className="mr-1.5 h-3.5 w-3.5" />
             Group findings
           </Button>
+          {me?.is_admin && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={doRepair}
+              disabled={repairing}
+              title="Admin-only. Migrates legacy subfinder / crt_sh / dns_lookup groups into the unified subdomains:{apex} shape and rebuilds items[] from soft-deleted source rows. Safe to run more than once — no-op when nothing needs repair."
+            >
+              <Wrench className="mr-1.5 h-3.5 w-3.5" />
+              {repairing ? "Repairing…" : "Repair groups"}
+            </Button>
+          )}
           <Button
             size="sm"
             variant="outline"
@@ -454,6 +491,20 @@ export function FindingsView({
           className="pl-8"
         />
       </div>
+
+      {/* v1.4.3: transient feedback strip for the Repair groups button. */}
+      {(repairMessage || repairError) && (
+        <div
+          className={cn(
+            "rounded-md border px-3 py-2 text-xs",
+            repairError
+              ? "border-critical/50 bg-critical/10 text-critical"
+              : "border-emerald-500/40 bg-emerald-500/10 text-emerald-100",
+          )}
+        >
+          {repairError || repairMessage}
+        </div>
+      )}
 
       {/* Inline importer panel */}
       {showImporter && (

@@ -339,6 +339,19 @@ export function regroupFindingsApply(
   );
 }
 
+// v1.4.3: admin-only maintenance pass — rebuilds items[] from soft-deleted
+// source rows, migrates legacy per-tool group keys (subfinder/crt_sh/dns)
+// into the unified subdomains:{apex} shape, folds ungrouped rows that would
+// match an existing parent's new key.
+export function repairFindingGroups(
+  slug: string,
+): Promise<import("@/lib/types").RepairGroupsResult> {
+  return request<import("@/lib/types").RepairGroupsResult>(
+    `/engagements/${slug}/findings/repair-groups`,
+    { method: "POST" },
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Observations
 // ---------------------------------------------------------------------------
