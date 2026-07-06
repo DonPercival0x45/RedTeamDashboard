@@ -67,7 +67,6 @@ from app.models import (
     Engagement,
     EngagementStatus,
     Finding,
-    FindingExclusion,
     FindingPhase,
     FindingStatus,
     FindingSummary,
