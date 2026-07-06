@@ -954,8 +954,29 @@ function SuggestionRow({
       <div className="mt-3 flex items-center justify-between gap-2">
         <p className="text-[10px] text-muted-foreground">
           submitted {new Date(row.created_at).toLocaleString()}
+          {(row.author_display_name || row.author_email) && (
+            <> by {row.author_display_name || row.author_email}</>
+          )}
           {row.reviewed_at && (
-            <> · reviewed {new Date(row.reviewed_at).toLocaleString()}</>
+            <>
+              {" "}· reviewed {new Date(row.reviewed_at).toLocaleString()}
+              {(row.reviewed_by_display_name || row.reviewed_by_email) && (
+                <> by {row.reviewed_by_display_name || row.reviewed_by_email}</>
+              )}
+            </>
+          )}
+          {row.implemented_at && (
+            <>
+              {" "}· shipped {new Date(row.implemented_at).toLocaleString()}
+              {(row.implemented_by_display_name ||
+                row.implemented_by_email) && (
+                <>
+                  {" "}by{" "}
+                  {row.implemented_by_display_name ||
+                    row.implemented_by_email}
+                </>
+              )}
+            </>
           )}
         </p>
         <div className="flex items-center gap-2">
