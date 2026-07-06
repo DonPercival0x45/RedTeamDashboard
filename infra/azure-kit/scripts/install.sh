@@ -603,10 +603,17 @@ sleep 30
 # both secrets to placeholders every deploy (see keyvault.bicep), so this
 # step MUST re-seed them or the worker's MCP client hits 401 on every tool
 # call (surfaced as "mcp transport error" in the Tactical agent step log).
+#
+# v1.4.6: mint name is timestamp-suffixed so the ``already exists`` guard
+# in mint_api_key doesn't kill re-installs. Prior versions used a fixed
+# ``bootstrap`` name that made the mint fail on the second install of an
+# env, silently skipping the auto-seed and leaving worker-mcp-api-key at
+# the placeholder — the very bug this whole flow is fixing.
+_MINT_NAME="bootstrap-$(date -u +%Y%m%d-%H%M%S)"
 echo
-blue "    Minting bootstrap admin API key — token prints below AND is auto-seeded to KV:"
+blue "    Minting bootstrap admin API key (name=$_MINT_NAME) — token prints below AND is auto-seeded to KV:"
 echo
-_MINT_OUTPUT="$(container_exec 'python -m app.scripts.mint_api_key --name bootstrap --scope admin' 2>&1)"
+_MINT_OUTPUT="$(container_exec "python -m app.scripts.mint_api_key --name $_MINT_NAME --scope admin" 2>&1)"
 printf '%s\n' "$_MINT_OUTPUT"
 _MINTED_TOKEN="$(printf '%s' "$_MINT_OUTPUT" | grep -oE 'rtd_[A-Za-z0-9_-]+' | tail -1)"
 echo
