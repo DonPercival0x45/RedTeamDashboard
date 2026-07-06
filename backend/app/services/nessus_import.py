@@ -51,6 +51,10 @@ class ParsedItem:
     target: str
     source_tool: str
     details: dict[str, Any] = field(default_factory=dict)
+    # v1.4.0: Nessus rows fold under one finding per plugin — multiple
+    # affected hosts become items[] inside a single row. Stamped by the
+    # parser as ``nessus:{plugin_id}``. Nulls fall back to per-hit rows.
+    group_key: str | None = None
 
 
 @dataclass
@@ -202,6 +206,12 @@ def parse_nessus_xml(
                     },
                 }
 
+                plugin_id = report_item.attrib.get("pluginID") or ""
+                # v1.4.0: fold every affected host for the same plugin
+                # into ONE finding row. Nulls fall back to per-row
+                # inserts when Nessus emits a plugin without a pluginID
+                # (rare — some custom .audit files).
+                group_key = f"nessus:{plugin_id}" if plugin_id else None
                 items.append(
                     ParsedItem(
                         title=plugin_name,
@@ -211,6 +221,7 @@ def parse_nessus_xml(
                         target=target,
                         source_tool="nessus_import",
                         details=details,
+                        group_key=group_key,
                     )
                 )
 

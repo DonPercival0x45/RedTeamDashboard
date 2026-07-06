@@ -130,6 +130,13 @@ export interface Finding {
   phase: FindingPhase;
   status: FindingValidationStatus;
   exclusion?: FindingExclusion | null;
+  // v1.4.0 (part 2): Nessus-style ingest grouping. `group_key` is the
+  // stable identity that lets re-runs of the same tool against the
+  // same target fold into one row. `item_count` is 0 for legacy
+  // per-hit rows, N for grouped rows where `data.items` holds N
+  // per-hit records.
+  group_key?: string | null;
+  item_count?: number;
   validated_at: string | null;
   observed_at: string | null;
   burp_serial_number: string | null;

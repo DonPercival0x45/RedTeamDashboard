@@ -566,7 +566,14 @@ export function FindingsView({
                   </td>
                   <td className="px-3 py-2.5">
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-medium">{f.title}</span>
+                      <span className="font-medium">
+                        {f.title}
+                        {typeof f.item_count === "number" && f.item_count > 1 && (
+                          <span className="ml-1.5 text-xs font-normal text-muted-foreground">
+                            ({f.item_count})
+                          </span>
+                        )}
+                      </span>
                       {f.tool === "import" && (
                         <span className="rounded border border-border px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
                           imported
@@ -575,6 +582,15 @@ export function FindingsView({
                       {f.tool === "manual" && (
                         <span className="rounded border border-border px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
                           manual
+                        </span>
+                      )}
+                      {f.group_key && (
+                        <span
+                          className="rounded border border-sky-500/40 bg-sky-500/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-sky-200"
+                          title={`Grouped: ${f.group_key}`}
+                        >
+                          <Layers className="mr-1 inline h-3 w-3" />
+                          grouped
                         </span>
                       )}
                       {f.exclusion && (
@@ -1152,6 +1168,8 @@ function FindingSlideOver({
           </p>
         )}
 
+        <GroupedItemsPanel finding={finding} />
+
         <pre className="mt-4 max-h-64 overflow-auto rounded-md border border-border bg-background p-3 font-mono text-xs text-muted-foreground">
           {JSON.stringify(finding.data, null, 2)}
         </pre>
@@ -1520,6 +1538,96 @@ function FindingSlideOver({
         </>
       )}
     </>
+  );
+}
+
+// ── v1.4.0 (part 2): Grouped items panel ───────────────────────────────────
+
+// Rendered inside the slide-over when a finding has data.items[] — one
+// row per hit (subdomain, open port, affected URL, etc.). Falls back to
+// null when the finding is un-grouped so the old JSON dump is the only
+// detail view for legacy rows.
+function GroupedItemsPanel({ finding }: { finding: Finding }) {
+  const items = Array.isArray((finding.data as { items?: unknown }).items)
+    ? ((finding.data as { items: unknown[] }).items as Record<string, unknown>[])
+    : null;
+  if (!items || items.length === 0) return null;
+
+  // Column keys = union of every item's keys, minus internal-only ones.
+  // Preserves order-of-first-appearance for stable column ordering.
+  const columns: string[] = [];
+  const seen = new Set<string>();
+  for (const it of items) {
+    if (!it || typeof it !== "object") continue;
+    for (const k of Object.keys(it)) {
+      if (seen.has(k)) continue;
+      if (k === "first_seen_at") continue;
+      seen.add(k);
+      columns.push(k);
+    }
+  }
+
+  return (
+    <div className="mt-5">
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-medium">
+          <Layers className="mr-1.5 inline h-3.5 w-3.5 -translate-y-0.5" />
+          Items ({items.length})
+        </h3>
+        {finding.group_key && (
+          <span
+            className="font-mono text-[10px] text-muted-foreground"
+            title="Grouping key"
+          >
+            {finding.group_key}
+          </span>
+        )}
+      </div>
+      <p className="mt-0.5 text-[11px] text-muted-foreground/80">
+        Every re-run of this tool against the same target folds into this
+        row. Individual hits are deduped by their natural key.
+      </p>
+      <div className="mt-2 max-h-64 overflow-auto rounded-md border border-border">
+        <table className="w-full border-collapse text-xs">
+          <thead className="sticky top-0 bg-popover">
+            <tr className="border-b border-border text-left">
+              {columns.map((c) => (
+                <th
+                  key={c}
+                  className="px-2 py-1.5 font-medium text-muted-foreground"
+                >
+                  {c}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {items.map((it, idx) => (
+              <tr
+                key={idx}
+                className="border-b border-border/40 last:border-0"
+              >
+                {columns.map((c) => {
+                  const v = it[c];
+                  return (
+                    <td
+                      key={c}
+                      className="px-2 py-1.5 font-mono text-[11px] text-foreground/90"
+                    >
+                      {v === null || v === undefined
+                        ? "—"
+                        : typeof v === "object"
+                          ? JSON.stringify(v)
+                          : String(v)}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
   );
 }
 

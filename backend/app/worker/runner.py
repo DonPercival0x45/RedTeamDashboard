@@ -558,10 +558,40 @@ class RunRunner:
         from datetime import UTC, datetime
 
         from app.models.finding import FindingStatus, default_status_for_phase
+        from app.services.finding_grouping import (
+            compute_group_key,
+            upsert_grouped_finding,
+        )
 
         phase = FindingPhase(phase_for_tool(tool))
         status = default_status_for_phase(phase)
+
+        # v1.4.0 (part 2): Nessus-style ingest grouping. When the tool has
+        # a declared category vocab, hits fold into ONE row per
+        # (engagement, group_key) with the per-hit records in details.items[].
+        # Unknown tools return group_key=None and fall back to the old
+        # per-hit INSERT path so nothing regresses silently.
+        group_key = compute_group_key(tool, args, data)
+
         with self._session_scope() as session:
+            if group_key:
+                row, _added = upsert_grouped_finding(
+                    session,
+                    engagement_id=engagement_id,
+                    group_key=group_key,
+                    tool=tool,
+                    thread_id=thread_id,
+                    args=args,
+                    data=data,
+                    incoming_severity=severity,
+                    default_title=title,
+                    phase=phase,
+                    status=status,
+                )
+                session.commit()
+                session.refresh(row)
+                return row
+
             row = Finding(
                 engagement_id=engagement_id,
                 title=title,

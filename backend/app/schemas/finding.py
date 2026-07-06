@@ -33,6 +33,15 @@ class FindingRead(BaseModel):
     # in report). See :class:`FindingExclusion` for the meaning of each
     # value.
     exclusion: FindingExclusion | None = None
+    # v1.4.0 (part 2): Nessus-style ingest grouping. When set, this row
+    # is a "parent" with per-hit records inside ``data.items[]``. When
+    # null, this row is a pre-grouping or ungroupable per-hit finding.
+    # See docs/FINDINGS_GROUPING.md.
+    group_key: str | None = None
+    # v1.4.0 (part 2): convenience for the Findings table so it doesn't
+    # have to introspect ``data.items[]`` on every render. 0 for
+    # un-grouped rows; N for grouped rows where N = len(data.items).
+    item_count: int = 0
     validated_at: datetime | None = None
     observed_at: datetime | None = None
     burp_serial_number: str | None = None
