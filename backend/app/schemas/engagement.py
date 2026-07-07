@@ -84,6 +84,15 @@ class EngagementRead(BaseModel):
     flushed_at: datetime | None
     created_at: datetime
     updated_at: datetime
+    # v1.4.5: scope quick-actions. Surfaces scope size on the engagement
+    # list cards so analysts can spot empty / outlier engagements at a
+    # glance. ``scope_count`` counts the actionable (non-exclusion) items;
+    # ``exclusion_count`` counts !-marked items. Populated by
+    # ``list_engagements``, ``get_engagement``, and ``update_engagement``
+    # (cheap aggregate, default 0 so existing test fixtures still construct
+    # cleanly).
+    scope_count: int = 0
+    exclusion_count: int = 0
 
 
 class ScopeItemCreate(BaseModel):

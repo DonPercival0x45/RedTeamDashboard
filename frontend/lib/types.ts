@@ -58,6 +58,10 @@ export interface Engagement {
   flushed_at: string | null;
   created_at: string;
   updated_at: string;
+  // v1.4.5: scope quick-actions. Optional so existing fixtures / cached
+  // payloads from before the field shipped don't break the type.
+  scope_count?: number;
+  exclusion_count?: number;
 }
 
 export interface ScopeItem {
