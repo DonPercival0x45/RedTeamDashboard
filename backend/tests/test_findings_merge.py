@@ -27,7 +27,6 @@ from app.main import app
 from app.models import Engagement, Finding, Severity, User, UserRole
 from app.runs.streams import inbound_stream, outbound_stream
 
-
 # ---------------------------------------------------------------------------
 # Fixtures (same shape as test_engagements_api)
 # ---------------------------------------------------------------------------
