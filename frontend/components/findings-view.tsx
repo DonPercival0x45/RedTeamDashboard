@@ -21,6 +21,7 @@ import {
   dismissSuggestion,
   listAttachments,
   listFindingSummaries,
+  listObservationsForFinding,
   loadAttachmentBlob,
   mergeFindings,
   regroupFindingsApply,
@@ -43,6 +44,7 @@ import type {
   FindingSort,
   FindingSummaryEntry,
   FindingValidationStatus,
+  Observation,
   RegroupProposal,
   Severity,
   Suggestion,
@@ -1048,6 +1050,8 @@ function FindingSlideOver({
 
   // Attachments
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  // v1.4.8: observations that reference this finding (back-refs).
+  const [linkedObs, setLinkedObs] = useState<Observation[] | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -1060,6 +1064,9 @@ function FindingSlideOver({
     listFindingSummaries(finding.id)
       .then(setSummaries)
       .catch(() => setSummaries([]));
+    listObservationsForFinding(finding.id)
+      .then(setLinkedObs)
+      .catch(() => setLinkedObs([]));
   }, [finding.id]);
 
   const doSaveSummary = async () => {
@@ -1540,6 +1547,31 @@ function FindingSlideOver({
                 >
                   Clear
                 </Button>
+              )}
+            </div>
+          </div>
+
+          {/* v1.4.8: observations referencing this finding (back-refs). */}
+          <div className="mt-3">
+            <p className="text-xs uppercase tracking-wide text-muted-foreground">
+              Referenced by
+            </p>
+            <div className="mt-1.5 space-y-1">
+              {linkedObs === null ? (
+                <p className="text-xs text-muted-foreground">Loading…</p>
+              ) : linkedObs.length === 0 ? (
+                <p className="text-xs text-muted-foreground">
+                  No observations reference this finding.
+                </p>
+              ) : (
+                linkedObs.map((o) => (
+                  <p
+                    key={o.id}
+                    className="rounded-md border border-border bg-muted/30 px-2 py-1 text-xs"
+                  >
+                    {o.content}
+                  </p>
+                ))
               )}
             </div>
           </div>

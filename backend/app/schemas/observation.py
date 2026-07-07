@@ -19,3 +19,5 @@ class ObservationRead(BaseModel):
     phase: FindingPhase | None
     created_by: UUID | None
     created_at: datetime
+    # v1.4.8: findings this observation references (supports / evidence).
+    finding_ids: list[UUID] = Field(default_factory=list)
