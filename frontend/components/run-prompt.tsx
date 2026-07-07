@@ -372,7 +372,7 @@ export function RunPrompt({
               </select>
             </div>
           )}
-          {error && <p className="text-sm text-destructive">{error}</p>}}
+          {error && <p className="text-sm text-destructive">{error}</p>}
 
           {lastDispatched && (
             <div
