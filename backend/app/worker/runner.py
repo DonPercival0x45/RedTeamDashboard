@@ -368,6 +368,18 @@ class RunRunner:
         graph: Any,
         acting_user_id: str | None,
     ) -> None:
+        # v1.4.10: accumulate per-run totals as the graph streams so we
+        # can update the tactical AgentExecution row on completion —
+        # fixes the "Tactical agent completed — no output" bug where the
+        # row was frozen at dispatch time with placeholder output.
+        totals: dict[str, Any] = {
+            "tokens_in": 0,
+            "tokens_out": 0,
+            "tools_count": 0,
+            "findings_count": 0,
+            "tool_calls": [],
+            "final_content": None,
+        }
         for chunk in graph.stream(input_, config=config):
             for node in chunk:
                 if node == "__interrupt__":
@@ -379,7 +391,7 @@ class RunRunner:
                     node=node,
                 )
             self._emit_from_chunk(
-                engagement_id, thread_id, chunk, acting_user_id
+                engagement_id, thread_id, chunk, acting_user_id, totals=totals
             )
 
         snapshot = graph.get_state(config)
@@ -398,6 +410,7 @@ class RunRunner:
                 engagement_id,
                 {"type": "run.completed", "thread_id": thread_id},
             )
+            self._finalize_tactical_execution(engagement_id, thread_id, totals)
         else:
             logger.info(
                 "worker.run_interrupted",
@@ -412,6 +425,8 @@ class RunRunner:
         thread_id: str,
         chunk: Mapping[str, Any],
         acting_user_id: str | None,
+        *,
+        totals: dict[str, Any] | None = None,
     ) -> None:
         # langgraph yields a special ``__interrupt__`` chunk when interrupt()
         # fires. The payload is a tuple of Interrupt(value=...) objects.
@@ -518,53 +533,66 @@ class RunRunner:
             # (``tool_call_count``, ``content_preview``) tells them why —
             # e.g. "LLM returned no tool calls, said 'I need in-scope
             # targets to work with'".
+            # v1.4.10: also audit-logged so the step log renders the LLM
+            # response post-completion (was: SSE-only, invisible after
+            # the run ended).
             for llm_evt in update.get("llm_events") or []:
+                llm_payload = {
+                    "thread_id": thread_id,
+                    "tokens_in": llm_evt.get("tokens_in"),
+                    "tokens_out": llm_evt.get("tokens_out"),
+                    "elapsed_ms": llm_evt.get("elapsed_ms"),
+                    "tool_call_count": llm_evt.get("tool_call_count"),
+                    "tool_calls": llm_evt.get("tool_calls"),
+                    "content_preview": llm_evt.get("content_preview"),
+                }
+                self._audit(engagement_id, "llm.responded", llm_payload)
                 self._emit(
                     engagement_id,
-                    {
-                        "type": "llm.responded",
-                        "thread_id": thread_id,
-                        "tokens_in": llm_evt.get("tokens_in"),
-                        "tokens_out": llm_evt.get("tokens_out"),
-                        "elapsed_ms": llm_evt.get("elapsed_ms"),
-                        "tool_call_count": llm_evt.get("tool_call_count"),
-                        "tool_calls": llm_evt.get("tool_calls"),
-                        "content_preview": llm_evt.get("content_preview"),
-                    },
+                    {"type": "llm.responded", **llm_payload},
                 )
+                if totals is not None:
+                    totals["tokens_in"] += int(llm_evt.get("tokens_in") or 0)
+                    totals["tokens_out"] += int(llm_evt.get("tokens_out") or 0)
+                    preview = llm_evt.get("content_preview")
+                    if preview:
+                        totals["final_content"] = preview
             # v1.4.3: per-tool trace — every dispatched tool call, its
             # args, whether it succeeded, elapsed time, findings emitted,
             # and a preview of the returned data. The step log surfaces
             # each so the analyst can see the exact command the agent
-            # ran (user request 2026-07-06).
+            # ran (user request 2026-07-06). v1.4.10: audit payload also
+            # carries ``data_preview`` (up to 8KB) so the step log shows
+            # the actual tool result post-completion — was invisible.
             for tool_evt in update.get("tool_events") or []:
-                self._audit(
-                    engagement_id,
-                    "tool.executed",
-                    {
-                        "thread_id": thread_id,
-                        "tool": tool_evt.get("tool"),
-                        "args": tool_evt.get("args"),
-                        "ok": tool_evt.get("ok"),
-                        "elapsed_ms": tool_evt.get("elapsed_ms"),
-                        "findings_emitted": tool_evt.get("findings_emitted"),
-                        "error": tool_evt.get("error"),
-                    },
-                )
+                tool_payload = {
+                    "thread_id": thread_id,
+                    "tool": tool_evt.get("tool"),
+                    "args": tool_evt.get("args"),
+                    "ok": tool_evt.get("ok"),
+                    "elapsed_ms": tool_evt.get("elapsed_ms"),
+                    "findings_emitted": tool_evt.get("findings_emitted"),
+                    "error": tool_evt.get("error"),
+                    "data_preview": tool_evt.get("data_preview"),
+                }
+                self._audit(engagement_id, "tool.executed", tool_payload)
                 self._emit(
                     engagement_id,
-                    {
-                        "type": "tool.executed",
-                        "thread_id": thread_id,
-                        "tool": tool_evt.get("tool"),
-                        "args": tool_evt.get("args"),
-                        "ok": tool_evt.get("ok"),
-                        "elapsed_ms": tool_evt.get("elapsed_ms"),
-                        "findings_emitted": tool_evt.get("findings_emitted"),
-                        "error": tool_evt.get("error"),
-                        "data_preview": tool_evt.get("data_preview"),
-                    },
+                    {"type": "tool.executed", **tool_payload},
                 )
+                if totals is not None:
+                    totals["tools_count"] += 1
+                    totals["findings_count"] += int(
+                        tool_evt.get("findings_emitted") or 0
+                    )
+                    totals["tool_calls"].append(
+                        {
+                            "name": tool_evt.get("tool"),
+                            "args": tool_evt.get("args"),
+                            "ok": tool_evt.get("ok"),
+                            "findings_emitted": tool_evt.get("findings_emitted"),
+                        }
+                    )
 
     # ------------------------------------------------------------------
     # Plumbing
@@ -664,6 +692,88 @@ class RunRunner:
             session.commit()
             session.refresh(row)
             return row
+
+    def _finalize_tactical_execution(
+        self,
+        engagement_id: uuid.UUID,
+        thread_id: str,
+        totals: Mapping[str, Any],
+    ) -> None:
+        """v1.4.10: rewrite the tactical ``AgentExecution.output`` row for
+        this run with the actual run outcome.
+
+        Tactical dispatch stamps the row at enqueue time with
+        ``output={"thread_id": ..., "prompt": ...}`` — placeholder
+        content that never gets refreshed. As a result the "Tactical
+        agent completed" card in the UI reads output as empty and shows
+        "no output" even when the run produced findings. On
+        ``run.completed`` we look the row up by
+        ``output->>'thread_id'`` and rewrite it with the streamed
+        ``tools_count``, ``findings_count``, ``tool_calls``, and the
+        LLM's final content preview + token totals.
+
+        Non-fatal: if the row isn't found (older dispatch, race) or the
+        update fails, we log and move on — the run has already been
+        marked complete via the audit event.
+        """
+        try:
+            from datetime import UTC, datetime
+
+            from sqlalchemy import or_
+
+            from app.models import AgentExecution, AgentExecutionStatus, AgentName
+
+            with self._session_scope() as session:
+                # The row's thread_id lives in ``input.thread_id`` for the
+                # analyst-clicked-Run path (engagements.py:2723) and in
+                # ``output.thread_id`` for the strategic-autonomous path
+                # (agents/tactical.py:161). Check both.
+                row = session.execute(
+                    select(AgentExecution).where(
+                        AgentExecution.engagement_id == engagement_id,
+                        AgentExecution.agent == AgentName.tactical,
+                        or_(
+                            AgentExecution.input["thread_id"].astext == thread_id,
+                            AgentExecution.output["thread_id"].astext == thread_id,
+                        ),
+                    ).order_by(AgentExecution.started_at.desc()).limit(1)
+                ).scalar_one_or_none()
+                if row is None:
+                    logger.info(
+                        "worker.finalize_tactical_missing_row",
+                        engagement_id=str(engagement_id),
+                        thread_id=thread_id,
+                    )
+                    return
+                current = dict(row.output or {})
+                current["tools_count"] = int(totals.get("tools_count") or 0)
+                current["findings_count"] = int(totals.get("findings_count") or 0)
+                current["tool_calls"] = list(totals.get("tool_calls") or [])
+                if totals.get("final_content"):
+                    current["final_content"] = totals["final_content"]
+                row.output = current
+                tokens_in = int(totals.get("tokens_in") or 0)
+                tokens_out = int(totals.get("tokens_out") or 0)
+                if tokens_in:
+                    row.tokens_in = tokens_in
+                if tokens_out:
+                    row.tokens_out = tokens_out
+                row.completed_at = datetime.now(tz=UTC)
+                row.status = AgentExecutionStatus.completed
+                session.commit()
+                logger.info(
+                    "worker.finalize_tactical_ok",
+                    engagement_id=str(engagement_id),
+                    thread_id=thread_id,
+                    tools=current["tools_count"],
+                    findings=current["findings_count"],
+                )
+        except Exception:  # noqa: BLE001 — non-fatal
+            logger.exception(
+                "worker.finalize_tactical_failed",
+                engagement_id=str(engagement_id),
+                thread_id=thread_id,
+            )
 
     def _audit(
         self,

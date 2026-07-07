@@ -1872,6 +1872,13 @@ def repair_groups(
 
     # Step 1 + 2 combined: iterate parents, rekey where needed, rebuild items.
     for parent in parents:
+        # v1.4.10: manual-merged rows are analyst-curated. Skip every
+        # step of repair for them — no rekey, no items rebuild, no fold
+        # into a computed-key parent. Their items[] was set by the merge
+        # endpoint and must not be re-derived from sources.
+        if parent.group_key and parent.group_key.startswith("manual:"):
+            continue
+
         sources = sources_by_parent.get(str(parent.id), [])
         # Figure out what the new key SHOULD be. Use the first source's
         # (tool, args, data) as the sample — all sources in a group share
@@ -2122,6 +2129,70 @@ def merge_findings(
             user.id,
         )
 
+    # v1.4.10: Union each child's items[] into the parent (with dedup)
+    # and stamp a manual:{...} group_key so the row survives future
+    # auto-regroup runs. On the first manual-merge into an ungrouped
+    # parent, project the parent's own raw data into items[] first so
+    # the parent's finding content isn't orphaned once children start
+    # appending.
+    from app.services.finding_grouping import extract_items, item_dedup_key
+
+    _RESERVED_DETAIL_KEYS = {"thread_id", "args", "items", "grouped", "merged_into"}
+
+    def _project_row_data(row: Finding) -> dict[str, Any]:
+        d = dict(row.details or {})
+        return {k: v for k, v in d.items() if k not in _RESERVED_DETAIL_KEYS}
+
+    parent_details = dict(parent.details or {})
+    parent_items = list(parent_details.get("items") or [])
+    parent_had_items = bool(parent_items)
+    if not parent_had_items:
+        for it in extract_items(parent.source_tool, _project_row_data(parent)):
+            if isinstance(it, dict):
+                seeded = dict(it)
+                seeded.setdefault("source_tool", parent.source_tool or "unknown")
+                parent_items.append(seeded)
+
+    seen_keys: set[str] = set()
+    for it in parent_items:
+        if isinstance(it, dict):
+            k = item_dedup_key(parent.source_tool, it)
+            if k:
+                seen_keys.add(k)
+
+    items_added = 0
+    for c in children:
+        c_details = dict(c.details or {})
+        c_items_field = c_details.get("items")
+        if isinstance(c_items_field, list) and c_items_field:
+            c_items = [it for it in c_items_field if isinstance(it, dict)]
+        else:
+            c_items = extract_items(c.source_tool, _project_row_data(c))
+        for it in c_items:
+            if not isinstance(it, dict):
+                continue
+            it_copy = dict(it)
+            it_copy.setdefault("source_tool", c.source_tool or "unknown")
+            k = item_dedup_key(c.source_tool, it_copy)
+            if k and k in seen_keys:
+                continue
+            if k:
+                seen_keys.add(k)
+            parent_items.append(it_copy)
+            items_added += 1
+
+    parent_details["items"] = parent_items
+    parent_details["grouped"] = True
+
+    # Stamp a manual:{...} group_key if the parent isn't already
+    # manual-keyed. Overwrites any prior auto-key — the row is now
+    # analyst-curated and must not be re-shuffled by regroup.
+    if not (parent.group_key and parent.group_key.startswith("manual:")):
+        parent_details["original_group_key"] = parent.group_key
+        parent.group_key = f"manual:{parent.id.hex[:8]}"
+
+    parent.details = parent_details
+
     now = datetime.now(tz=UTC)
     for c in children:
         c.deleted_at = now
@@ -2143,6 +2214,8 @@ def merge_findings(
                 "parent_id": str(parent.id),
                 "child_ids": [str(c.id) for c in children],
                 "final_severity": top_sev.value,
+                "items_added": items_added,
+                "group_key": parent.group_key,
             },
         )
     )
