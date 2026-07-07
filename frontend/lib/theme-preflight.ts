@@ -9,7 +9,7 @@
 import {
   FONT_SIZES,
   FONT_SIZE_STORAGE_KEY,
-} from "@/lib/font-size";
+} from "@/lib/font-sizes";
 import { THEMES, THEME_STORAGE_KEY } from "@/lib/themes";
 
 export function themePreHydrationScript(): string {
