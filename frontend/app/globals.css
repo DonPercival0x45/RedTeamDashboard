@@ -91,6 +91,236 @@
     --input: 0 0% 100%;
     --ring: 48 100% 60%;
   }
+
+  /* ── v1.9.0: seven additional themes ─────────────────────────────── */
+
+  /* Solarized Dark — Ethan Schoonover's classic. Deep teal surfaces,
+     warm yellow primary, ember red for danger. */
+  [data-theme="solarized-dark"] {
+    --background: 192 100% 11%;
+    --foreground: 186 8% 55%;
+    --card: 192 100% 11%;
+    --card-foreground: 186 8% 55%;
+    --popover: 192 81% 14%;
+    --popover-foreground: 180 7% 60%;
+    --primary: 45 100% 35%;
+    --primary-foreground: 192 100% 11%;
+    --secondary: 192 81% 14%;
+    --secondary-foreground: 180 7% 60%;
+    --muted: 192 87% 9%;
+    --muted-foreground: 194 14% 40%;
+    --accent: 18 80% 44%;
+    --accent-foreground: 44 87% 94%;
+    --destructive: 1 71% 52%;
+    --destructive-foreground: 44 87% 94%;
+    --critical: 1 71% 52%;
+    --critical-foreground: 44 87% 94%;
+    --border: 192 87% 20%;
+    --input: 192 87% 20%;
+    --ring: 45 100% 35%;
+  }
+
+  /* Solarized Light — cream paper, same accent hues, dark text. */
+  [data-theme="solarized-light"] {
+    --background: 44 87% 94%;
+    --foreground: 196 13% 45%;
+    --card: 44 87% 94%;
+    --card-foreground: 196 13% 45%;
+    --popover: 44 87% 94%;
+    --popover-foreground: 196 13% 45%;
+    --primary: 45 100% 35%;
+    --primary-foreground: 44 87% 94%;
+    --secondary: 46 42% 88%;
+    --secondary-foreground: 196 13% 40%;
+    --muted: 46 42% 90%;
+    --muted-foreground: 196 13% 50%;
+    --accent: 18 80% 44%;
+    --accent-foreground: 44 87% 94%;
+    --destructive: 1 71% 43%;
+    --destructive-foreground: 44 87% 94%;
+    --critical: 1 71% 43%;
+    --critical-foreground: 44 87% 94%;
+    --border: 46 42% 80%;
+    --input: 46 42% 78%;
+    --ring: 45 100% 35%;
+  }
+
+  /* Nord — cool polar-night blues with frost + aurora accents. */
+  [data-theme="nord"] {
+    --background: 220 16% 22%;
+    --foreground: 219 27% 88%;
+    --card: 220 16% 22%;
+    --card-foreground: 219 27% 88%;
+    --popover: 222 16% 28%;
+    --popover-foreground: 219 27% 88%;
+    --primary: 193 43% 67%;
+    --primary-foreground: 220 16% 15%;
+    --secondary: 222 16% 28%;
+    --secondary-foreground: 219 27% 88%;
+    --muted: 222 16% 26%;
+    --muted-foreground: 219 15% 62%;
+    --accent: 210 34% 63%;
+    --accent-foreground: 220 16% 15%;
+    --destructive: 354 42% 56%;
+    --destructive-foreground: 219 27% 92%;
+    --critical: 354 42% 56%;
+    --critical-foreground: 219 27% 92%;
+    --border: 222 16% 32%;
+    --input: 222 16% 32%;
+    --ring: 193 43% 67%;
+  }
+
+  /* Dracula — deep purple surfaces, playful pink + violet accents. */
+  [data-theme="dracula"] {
+    --background: 231 15% 18%;
+    --foreground: 60 30% 96%;
+    --card: 231 15% 18%;
+    --card-foreground: 60 30% 96%;
+    --popover: 232 14% 31%;
+    --popover-foreground: 60 30% 96%;
+    --primary: 265 89% 78%;
+    --primary-foreground: 231 15% 18%;
+    --secondary: 232 14% 31%;
+    --secondary-foreground: 60 30% 96%;
+    --muted: 232 14% 26%;
+    --muted-foreground: 232 10% 65%;
+    --accent: 326 100% 74%;
+    --accent-foreground: 231 15% 18%;
+    --destructive: 0 100% 67%;
+    --destructive-foreground: 60 30% 96%;
+    --critical: 0 100% 67%;
+    --critical-foreground: 60 30% 96%;
+    --border: 232 14% 35%;
+    --input: 232 14% 35%;
+    --ring: 265 89% 78%;
+  }
+
+  /* Gruvbox — warm earth tones, mustard yellow + rust red. */
+  [data-theme="gruvbox"] {
+    --background: 195 6% 12%;
+    --foreground: 43 59% 81%;
+    --card: 195 6% 12%;
+    --card-foreground: 43 59% 81%;
+    --popover: 20 5% 22%;
+    --popover-foreground: 43 59% 81%;
+    --primary: 41 96% 58%;
+    --primary-foreground: 195 6% 12%;
+    --secondary: 20 5% 22%;
+    --secondary-foreground: 43 59% 81%;
+    --muted: 20 5% 18%;
+    --muted-foreground: 43 25% 60%;
+    --accent: 21 87% 57%;
+    --accent-foreground: 195 6% 12%;
+    --destructive: 6 96% 59%;
+    --destructive-foreground: 43 59% 90%;
+    --critical: 6 96% 59%;
+    --critical-foreground: 43 59% 90%;
+    --border: 20 5% 28%;
+    --input: 20 5% 28%;
+    --ring: 41 96% 58%;
+  }
+
+  /* Tokyo Night — inky blue with luminous blue + purple. */
+  [data-theme="tokyo-night"] {
+    --background: 235 16% 13%;
+    --foreground: 226 34% 75%;
+    --card: 235 16% 13%;
+    --card-foreground: 226 34% 75%;
+    --popover: 226 27% 21%;
+    --popover-foreground: 226 34% 75%;
+    --primary: 220 89% 72%;
+    --primary-foreground: 235 16% 13%;
+    --secondary: 226 27% 21%;
+    --secondary-foreground: 226 34% 75%;
+    --muted: 226 27% 18%;
+    --muted-foreground: 226 15% 60%;
+    --accent: 261 84% 78%;
+    --accent-foreground: 235 16% 13%;
+    --destructive: 349 89% 72%;
+    --destructive-foreground: 235 16% 96%;
+    --critical: 349 89% 72%;
+    --critical-foreground: 235 16% 96%;
+    --border: 226 27% 26%;
+    --input: 226 27% 26%;
+    --ring: 220 89% 72%;
+  }
+
+  /* Catppuccin Mocha — pastel cocoa surfaces, lavender + rose accents. */
+  [data-theme="catppuccin-mocha"] {
+    --background: 240 21% 15%;
+    --foreground: 227 68% 88%;
+    --card: 240 21% 15%;
+    --card-foreground: 227 68% 88%;
+    --popover: 237 16% 23%;
+    --popover-foreground: 227 68% 88%;
+    --primary: 267 84% 81%;
+    --primary-foreground: 240 21% 15%;
+    --secondary: 237 16% 23%;
+    --secondary-foreground: 227 68% 88%;
+    --muted: 237 16% 20%;
+    --muted-foreground: 227 25% 70%;
+    --accent: 316 72% 86%;
+    --accent-foreground: 240 21% 15%;
+    --destructive: 343 81% 75%;
+    --destructive-foreground: 240 21% 96%;
+    --critical: 343 81% 75%;
+    --critical-foreground: 240 21% 96%;
+    --border: 237 16% 28%;
+    --input: 237 16% 28%;
+    --ring: 267 84% 81%;
+  }
+
+  /* Sandstone — warm parchment cream with dark chocolate text.
+     Foreground L=20% vs background L=92% → ~9.5:1 contrast (AAA). */
+  [data-theme="sandstone"] {
+    --background: 40 40% 92%;
+    --foreground: 25 30% 20%;
+    --card: 40 40% 92%;
+    --card-foreground: 25 30% 20%;
+    --popover: 38 30% 90%;
+    --popover-foreground: 25 30% 20%;
+    --primary: 30 55% 40%;
+    --primary-foreground: 40 40% 96%;
+    --secondary: 38 30% 85%;
+    --secondary-foreground: 25 30% 20%;
+    --muted: 38 30% 88%;
+    --muted-foreground: 25 20% 38%;
+    --accent: 35 65% 55%;
+    --accent-foreground: 25 30% 15%;
+    --destructive: 12 65% 42%;
+    --destructive-foreground: 40 40% 96%;
+    --critical: 12 65% 42%;
+    --critical-foreground: 40 40% 96%;
+    --border: 38 30% 78%;
+    --input: 38 30% 76%;
+    --ring: 30 55% 40%;
+  }
+
+  /* Sage — pale sage cream with deep-forest text.
+     Foreground L=18% vs background L=92% → ~10:1 contrast (AAA). */
+  [data-theme="sage"] {
+    --background: 90 35% 92%;
+    --foreground: 145 45% 18%;
+    --card: 90 35% 92%;
+    --card-foreground: 145 45% 18%;
+    --popover: 90 25% 90%;
+    --popover-foreground: 145 45% 18%;
+    --primary: 145 55% 28%;
+    --primary-foreground: 90 35% 96%;
+    --secondary: 90 25% 85%;
+    --secondary-foreground: 145 45% 18%;
+    --muted: 90 25% 88%;
+    --muted-foreground: 145 25% 35%;
+    --accent: 165 40% 35%;
+    --accent-foreground: 90 35% 96%;
+    --destructive: 4 55% 42%;
+    --destructive-foreground: 90 35% 96%;
+    --critical: 4 55% 42%;
+    --critical-foreground: 90 35% 96%;
+    --border: 90 25% 78%;
+    --input: 90 25% 76%;
+    --ring: 145 55% 28%;
+  }
 }
 
 @layer base {
