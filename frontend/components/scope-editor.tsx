@@ -74,6 +74,9 @@ export function ScopeEditor({
   };
 
   const onDelete = async (id: string) => {
+    if (!window.confirm("Delete this scope item?")) {
+      return;
+    }
     setLocalError(null);
     try {
       await deleteMutation.mutateAsync(id);

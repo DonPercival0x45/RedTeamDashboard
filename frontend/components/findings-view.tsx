@@ -968,6 +968,9 @@ function AttachmentThumb({
   }, [attachment.id, attachment.content_type]);
 
   const handleDelete = async () => {
+    if (!window.confirm("Delete this attachment? This cannot be undone.")) {
+      return;
+    }
     setDeleting(true);
     try {
       await deleteAttachment(attachment.id);

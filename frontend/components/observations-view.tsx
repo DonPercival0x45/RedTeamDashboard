@@ -58,6 +58,9 @@ export function ObservationsView({ slug }: { slug: string }) {
   };
 
   const handleDelete = async (id: string) => {
+    if (!window.confirm("Delete this observation? This cannot be undone.")) {
+      return;
+    }
     setLocalError(null);
     try {
       await deleteMutation.mutateAsync(id);
