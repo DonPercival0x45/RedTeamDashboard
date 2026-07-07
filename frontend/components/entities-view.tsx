@@ -2,7 +2,7 @@
 
 import { useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Search, Upload, X } from "lucide-react";
+import { Search, Upload, X, Zap } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -46,6 +46,42 @@ const TYPE_LABEL: Record<string, string> = {
   host: "Host",
 };
 
+// v1.4.13: roadmap #10 -- a first-move prompt per entity type. Returns
+// {label, prompt}; missing types fall back to no quick-action button.
+const ENTITY_QUICK_PROMPTS: Record<
+  string,
+  (value: string) => { label: string; prompt: string }
+> = {
+  domain: (v) => ({
+    label: "Enumerate domain",
+    prompt: `Enumerate subdomains, DNS records, and certificate-transparency logs for ${v}, then probe what's live.`,
+  }),
+  subdomain: (v) => ({
+    label: "Enumerate subdomain",
+    prompt: `Enumerate subdomains, DNS records, and certificate-transparency logs for ${v}, then probe what's live.`,
+  }),
+  host: (v) => ({
+    label: "Enumerate host",
+    prompt: `Enumerate subdomains, DNS records, and certificate-transparency logs for ${v}, then probe what's live.`,
+  }),
+  ip: (v) => ({
+    label: "Port-scan IP",
+    prompt: `Run port discovery and service detection against ${v}, then enumerate any open services.`,
+  }),
+  cidr: (v) => ({
+    label: "Sweep CIDR",
+    prompt: `Discover live hosts in ${v} and enumerate open ports and services across the range.`,
+  }),
+  url: (v) => ({
+    label: "Recon URL",
+    prompt: `Recon and probe ${v}: fingerprint the stack, enumerate paths, and surface anything notable.`,
+  }),
+  email: (v) => ({
+    label: "Investigate email",
+    prompt: `Investigate ${v}: pivot on the email for associated accounts, breaches, and exposed credentials.`,
+  }),
+};
+
 function typeLabel(t: string): string {
   return TYPE_LABEL[t] ?? t;
 }
@@ -54,7 +90,13 @@ function typeLabel(t: string): string {
 // searchable, filterable by type, clickable into provenance. Phase 10 adds
 // an "Imported" section above the derived list for entities that landed
 // from external sources (Maltego today, future Dehashed etc.).
-export function EntitiesView({ slug }: { slug: string }) {
+export function EntitiesView({
+  slug,
+  onQuickAction,
+}: {
+  slug: string;
+  onQuickAction?: (prompt: string) => void;
+}) {
   // v1.0.0: react-query owns the derived-entities fetch. Focus revalidation
   // catches new findings that landed while the tab was hidden.
   const { data: entities, error } = useEntities(slug);
@@ -173,7 +215,11 @@ export function EntitiesView({ slug }: { slug: string }) {
       )}
 
       {selected && (
-        <EntitySlideOver entity={selected} onClose={() => setSelected(null)} />
+        <EntitySlideOver
+          entity={selected}
+          onClose={() => setSelected(null)}
+          onQuickAction={onQuickAction}
+        />
       )}
     </div>
   );
@@ -393,10 +439,16 @@ function ImportedEntitiesSection({ slug }: { slug: string }) {
 function EntitySlideOver({
   entity,
   onClose,
+  onQuickAction,
 }: {
   entity: Entity;
   onClose: () => void;
+  onQuickAction?: (prompt: string) => void;
 }) {
+  // v1.4.13: entity-type -> first-move prompt (roadmap #10). Clicking a
+  // button hands the prompt to the page, which flips to the Scope tab and
+  // seeds the Start-a-run box.
+  const quickPrompt = ENTITY_QUICK_PROMPTS[entity.type]?.(entity.value);
   return (
     <>
       <div className="fixed inset-0 z-40 bg-black/60" onClick={onClose} aria-hidden />
@@ -428,6 +480,15 @@ function EntitySlideOver({
             seen in {entity.count} finding{entity.count === 1 ? "" : "s"}
           </span>
         </div>
+
+        {onQuickAction && quickPrompt && (
+          <div className="mt-4">
+            <Button size="sm" onClick={() => onQuickAction(quickPrompt.prompt)}>
+              <Zap className="mr-1.5 h-3.5 w-3.5" />
+              {quickPrompt.label}
+            </Button>
+          </div>
+        )}
 
         <h3 className="mt-6 text-sm font-medium">Disclosed by</h3>
         <ul className="mt-2 space-y-2">
