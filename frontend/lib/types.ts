@@ -715,6 +715,9 @@ export interface ReleaseCategories {
 export interface RoadmapSuggestion {
   id: string;
   author_user_id: string | null;
+  // v1.4.4: resolved names/emails for attribution display.
+  author_display_name: string | null;
+  author_email: string | null;
   body: string;
   agent_pros: string[];
   agent_cons: string[];
@@ -722,6 +725,8 @@ export interface RoadmapSuggestion {
   agent_execution_id: string | null;
   status: RoadmapSuggestionStatus;
   reviewed_by_user_id: string | null;
+  reviewed_by_display_name: string | null;
+  reviewed_by_email: string | null;
   reviewed_at: string | null;
   review_note: string | null;
   source: string;
@@ -733,6 +738,8 @@ export interface RoadmapSuggestion {
   // the Open section to the Shipped section.
   implemented_at: string | null;
   implemented_by_user_id: string | null;
+  implemented_by_display_name: string | null;
+  implemented_by_email: string | null;
   created_at: string;
   updated_at: string;
 }

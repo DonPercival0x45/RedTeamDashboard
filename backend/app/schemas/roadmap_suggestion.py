@@ -38,6 +38,11 @@ class RoadmapSuggestionRead(BaseModel):
 
     id: UUID
     author_user_id: UUID | None
+    # v1.4.4: resolved from ``author_user_id`` so the UI can show who
+    # submitted without a second round-trip. Null when the author row was
+    # deleted (FK is ON DELETE SET NULL) or was never set.
+    author_display_name: str | None = None
+    author_email: str | None = None
     body: str
     agent_pros: list[str]
     agent_cons: list[str]
@@ -45,6 +50,11 @@ class RoadmapSuggestionRead(BaseModel):
     agent_execution_id: UUID | None
     status: RoadmapSuggestionStatus
     reviewed_by_user_id: UUID | None
+    # v1.4.4: resolved from ``reviewed_by_user_id`` — the admin who
+    # approved/rejected. Null until a decision is made (or if that user
+    # row was later deleted).
+    reviewed_by_display_name: str | None = None
+    reviewed_by_email: str | None = None
     reviewed_at: datetime | None
     review_note: str | None
     source: str
@@ -58,6 +68,10 @@ class RoadmapSuggestionRead(BaseModel):
     # Shipped section of ROADMAP.md instead of the Open section.
     implemented_at: datetime | None = None
     implemented_by_user_id: UUID | None = None
+    # v1.4.4: resolved from ``implemented_by_user_id`` — who marked it
+    # shipped. Null until the row is stamped completed.
+    implemented_by_display_name: str | None = None
+    implemented_by_email: str | None = None
     created_at: datetime
     updated_at: datetime
 

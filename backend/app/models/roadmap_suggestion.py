@@ -20,7 +20,7 @@ from typing import Any
 
 from sqlalchemy import DateTime, Enum, ForeignKey, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin, uuid7
 
@@ -109,3 +109,45 @@ class RoadmapSuggestion(Base, TimestampMixin):
         ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
     )
+
+    # Resolved user rows for attribution display (v1.4.4). Three separate
+    # FKs to ``users``, so each relationship pins ``foreign_keys``
+    # explicitly. ``lazy="joined"`` folds them into the row load to avoid
+    # an N+1 when the list endpoint serializes many rows; ``viewonly``
+    # because these are read-only provenance, never written via the ORM
+    # relationship. They back the ``*_display_name`` / ``*_email``
+    # computed properties the API serializes so the feedback UI can show
+    # who submitted, who approved, and who shipped each suggestion.
+    author = relationship(
+        "User", foreign_keys=[author_user_id], lazy="joined", viewonly=True
+    )
+    reviewer = relationship(
+        "User", foreign_keys=[reviewed_by_user_id], lazy="joined", viewonly=True
+    )
+    implementer = relationship(
+        "User", foreign_keys=[implemented_by_user_id], lazy="joined", viewonly=True
+    )
+
+    @property
+    def author_display_name(self) -> str | None:
+        return self.author.display_name if self.author else None
+
+    @property
+    def author_email(self) -> str | None:
+        return self.author.email if self.author else None
+
+    @property
+    def reviewed_by_display_name(self) -> str | None:
+        return self.reviewer.display_name if self.reviewer else None
+
+    @property
+    def reviewed_by_email(self) -> str | None:
+        return self.reviewer.email if self.reviewer else None
+
+    @property
+    def implemented_by_display_name(self) -> str | None:
+        return self.implementer.display_name if self.implementer else None
+
+    @property
+    def implemented_by_email(self) -> str | None:
+        return self.implementer.email if self.implementer else None
