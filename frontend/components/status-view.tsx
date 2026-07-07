@@ -110,7 +110,7 @@ const OUTCOME_ICON: Record<StatusOutcome, LucideIcon> = {
 
 const OUTCOME_CLASS: Record<StatusOutcome, string> = {
   success: "border-emerald-500/50 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200",
-  empty: "border-slate-500/50 bg-slate-500/10 text-slate-200",
+  empty: "border-slate-500/50 bg-slate-500/10 text-slate-700 dark:text-slate-200",
   partial: "border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-200",
   errored: "border-rose-500/50 bg-rose-500/10 text-rose-700 dark:text-rose-200",
 };
@@ -145,7 +145,7 @@ const EVENT_COLORS: Record<RunEvent["type"], string> = {
   "tool.denied": "border-orange-500 text-orange-700 dark:text-orange-200",
   "tool.auto_approved": "border-violet-500 text-violet-700 dark:text-violet-200",
   "finding.created": "border-emerald-500 text-emerald-700 dark:text-emerald-200",
-  "run.completed": "border-zinc-500 text-zinc-300",
+  "run.completed": "border-zinc-500 text-zinc-600 dark:text-zinc-300",
   "run.errored": "border-rose-500 text-rose-700 dark:text-rose-200",
 };
 

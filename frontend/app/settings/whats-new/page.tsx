@@ -58,7 +58,7 @@ const CATEGORY_META: {
     key: "ops",
     label: "Operations",
     icon: Wrench,
-    tone: "border-slate-500/40 bg-slate-500/10 text-slate-200",
+    tone: "border-slate-500/40 bg-slate-500/10 text-slate-700 dark:text-slate-200",
   },
 ];
 

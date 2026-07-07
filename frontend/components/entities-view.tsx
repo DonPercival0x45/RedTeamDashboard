@@ -30,10 +30,10 @@ const SEVERITY_RANK: Record<Severity, number> = {
 
 const SEVERITY_CLASS: Record<Severity, string> = {
   critical: "border-critical/50 bg-critical/15 text-critical",
-  high: "border-zinc-500/40 text-zinc-100",
-  medium: "border-zinc-600/40 text-zinc-300",
-  low: "border-zinc-700/40 text-zinc-400",
-  info: "border-zinc-800 text-zinc-500",
+  high: "border-zinc-500/40 text-zinc-800 dark:text-zinc-100",
+  medium: "border-zinc-600/40 text-zinc-600 dark:text-zinc-300",
+  low: "border-zinc-700/40 text-zinc-700 dark:text-zinc-400",
+  info: "border-zinc-800 text-zinc-700 dark:text-zinc-500",
 };
 
 const TYPE_LABEL: Record<string, string> = {

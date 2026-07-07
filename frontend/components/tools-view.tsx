@@ -35,7 +35,7 @@ interface ManifestArgSpec {
 }
 
 const STATUS_TONE: Record<ToolInvocationStatus, string> = {
-  queued: "border-slate-500/50 bg-slate-500/10 text-slate-200",
+  queued: "border-slate-500/50 bg-slate-500/10 text-slate-700 dark:text-slate-200",
   running: "border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-200",
   completed: "border-emerald-500/50 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200",
   failed: "border-rose-500/50 bg-rose-500/10 text-rose-700 dark:text-rose-200",

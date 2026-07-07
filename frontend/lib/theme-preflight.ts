@@ -6,16 +6,32 @@
 // before React hydrates and stamps `data-theme` on <html> so users
 // don't see a flash of the SSR-default theme before their preference
 // takes effect.
-import { THEME_STORAGE_KEY } from "@/lib/themes";
+import {
+  FONT_SIZES,
+  FONT_SIZE_STORAGE_KEY,
+} from "@/lib/font-sizes";
+import { THEMES, THEME_STORAGE_KEY } from "@/lib/themes";
 
 export function themePreHydrationScript(): string {
-  // Also toggles the `.dark` class on <html> so every Tailwind `dark:`
-  // variant across the app resolves to its light-mode counterpart when
-  // the analyst picked the Light theme. High Contrast keeps `.dark` on
-  // because its background is still near-black.
+  // Handles two per-browser preferences in one head-inlined snippet:
+  //   1. Theme  — stamps ``data-theme`` and toggles ``.dark`` on <html>
+  //      so every Tailwind ``dark:`` variant flips as a group.
+  //   2. Font size — stamps ``data-font-size`` and inline ``style.fontSize``
+  //      so root-relative Tailwind text/spacing scales before paint.
+  // Both id lists are stamped in from their registries so future
+  // additions never require a script edit.
+  const validThemeIds = JSON.stringify(THEMES.map((t) => t.id));
+  const lightThemeIds = JSON.stringify(
+    THEMES.filter((t) => t.appearance === "light").map((t) => t.id),
+  );
+  const fontSizeMap = JSON.stringify(
+    Object.fromEntries(FONT_SIZES.map((s) => [s.id, s.cssValue])),
+  );
   return `
-(function(){try{var t=localStorage.getItem(${JSON.stringify(
+(function(){var h=document.documentElement;try{var t=localStorage.getItem(${JSON.stringify(
     THEME_STORAGE_KEY,
-  )});if(t==="dark"||t==="light"||t==="high-contrast"){var h=document.documentElement;h.setAttribute("data-theme",t);if(t==="light"){h.classList.remove("dark");}else{h.classList.add("dark");}}}catch(e){}})();
+  )});var V=${validThemeIds};var L=${lightThemeIds};if(V.indexOf(t)>=0){h.setAttribute("data-theme",t);if(L.indexOf(t)>=0){h.classList.remove("dark");}else{h.classList.add("dark");}}}catch(e){}try{var s=localStorage.getItem(${JSON.stringify(
+    FONT_SIZE_STORAGE_KEY,
+  )});var M=${fontSizeMap};if(s&&M[s]){h.setAttribute("data-font-size",s);h.style.fontSize=M[s];}}catch(e){}})();
 `.trim();
 }
