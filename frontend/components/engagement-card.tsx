@@ -9,7 +9,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { ChevronDown, ChevronUp, Plus } from "lucide-react";
+import { ArrowRight, ChevronDown, ChevronUp, Plus } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -107,22 +107,34 @@ export function EngagementCard({ eng }: { eng: Engagement }) {
             ? "no scope yet"
             : "scope set"}
         </span>
-        <button
-          type="button"
-          onClick={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            setExpanded((v) => !v);
-          }}
-          className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-secondary hover:text-foreground"
-        >
-          {expanded ? (
-            <ChevronUp className="h-3 w-3" />
-          ) : (
-            <ChevronDown className="h-3 w-3" />
-          )}
-          {expanded ? "Hide" : "Add to scope"}
-        </button>
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setExpanded((v) => !v);
+            }}
+            className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-secondary hover:text-foreground"
+          >
+            {expanded ? (
+              <ChevronUp className="h-3 w-3" />
+            ) : (
+              <ChevronDown className="h-3 w-3" />
+            )}
+            {expanded ? "Hide" : "Add to scope"}
+          </button>
+          {/* v1.4.11: explicit "Open" affordance so clickability is
+              obvious at a glance (roadmap #11). A real sibling <Link> so
+              it always navigates regardless of the card-overlay stacking. */}
+          <Link
+            href={`/e?slug=${encodeURIComponent(eng.slug)}`}
+            className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-xs font-medium text-foreground/80 hover:bg-secondary hover:text-foreground"
+          >
+            Open
+            <ArrowRight className="h-3 w-3 transition-transform group-hover:translate-x-0.5" />
+          </Link>
+        </div>
       </div>
 
       {expanded && (
