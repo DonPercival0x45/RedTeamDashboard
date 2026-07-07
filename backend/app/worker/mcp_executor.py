@@ -146,15 +146,30 @@ def _unwrap_exception_detail(exc: BaseException, depth: int = 0) -> str:
 def _coerce_tool_response(raw: Any) -> ToolResult:
     """Normalize an MCP tool response into the worker's ``ToolResult`` shape.
 
-    MCP tools return JSON-able dicts. Per the server convention:
-      - ``{"error": "..."}`` → ``ToolResult(ok=False, error=...)``
-      - ``{"findings": [...], "data": {...}}`` → leased response with raw
-        findings handed back to the worker for persistence + emit
-      - otherwise → ``ToolResult(ok=True, data=raw)``
+    v1.4.8: the MCP wire protocol returns tool results as a **list of content
+    parts** (``[{"type": "text", "text": "<json>"}]``), not as a bare dict.
+    Older versions of ``langchain-mcp-adapters`` unwrapped this for us; newer
+    versions surface the raw content-parts list. When we don't unwrap it,
+    the "subdomains" list on subfinder's response gets buried under
+    ``data={"value": [...content-parts...]}`` and every downstream call
+    (``compute_group_key``, ``extract_items``) sees ``data.subdomains =
+    None`` and produces empty items[]. This bug hid behind the silent MCP
+    401 for the whole 1.4.x line — analysts saw grouped rows with
+    items=[] but working tool.executed traces.
 
-    Strings come back as JSON-string content frames from some adapter
-    versions; we tolerate that by trying a json.loads pass.
+    Coercion priority (each step short-circuits the next):
+      1. Strings → JSON-parse.
+      2. Content-parts list (MCP wire format) → concatenate text parts and
+         JSON-parse the payload.
+      3. Object with ``.structuredContent`` (typed MCP ``CallToolResult``) →
+         use that dict directly.
+      4. Object with ``.content`` (typed) → treat as content-parts list.
+      5. Mapping → existing dict handling (error, _lease_findings, etc.).
+
+    All paths still honor the leased ``_lease_findings`` convention.
     """
+    raw = _unwrap_content_parts(raw)
+
     if isinstance(raw, str):
         try:
             raw = json.loads(raw)
@@ -173,3 +188,52 @@ def _coerce_tool_response(raw: Any) -> ToolResult:
         return ToolResult(ok=True, data=data, findings=list(findings))
 
     return ToolResult(ok=True, data=dict(raw))
+
+
+def _unwrap_content_parts(raw: Any) -> Any:
+    """Peel the MCP wire wrapper off ``raw`` so downstream code sees the
+    tool's raw JSON dict.
+
+    Handles three shapes seen from langchain-mcp-adapters versions 0.1.x
+    through 0.3.x:
+
+    - A typed ``CallToolResult`` object with ``.structuredContent`` and/or
+      ``.content`` attributes (newer adapters).
+    - A bare list of content parts (each a dict with ``type`` + ``text``
+      or a TextContent-like object).
+    - Anything else — returned unchanged.
+
+    Text parts are concatenated (multi-part responses are rare for OSINT
+    tools but the concatenation is safe) and json-parsed. If parsing
+    fails, we return the concatenated string and let the caller wrap it.
+    """
+    # Case 1: typed CallToolResult with structured payload.
+    structured = getattr(raw, "structuredContent", None)
+    if isinstance(structured, Mapping):
+        return dict(structured)
+
+    # Case 2: typed CallToolResult with .content (unwrap to list).
+    content = getattr(raw, "content", None)
+    if isinstance(content, list):
+        raw = content
+
+    # Case 3: bare list of content parts.
+    if isinstance(raw, list):
+        text_chunks: list[str] = []
+        for part in raw:
+            # Both dict-shaped {"type":"text","text":"..."} and object-shaped
+            # TextContent (with .text attribute) are common.
+            if isinstance(part, Mapping):
+                txt = part.get("text")
+            else:
+                txt = getattr(part, "text", None)
+            if isinstance(txt, str):
+                text_chunks.append(txt)
+        if text_chunks:
+            joined = "".join(text_chunks)
+            try:
+                return json.loads(joined)
+            except (ValueError, TypeError):
+                return joined
+
+    return raw
