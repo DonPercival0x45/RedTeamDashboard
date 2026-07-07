@@ -136,6 +136,56 @@ def test_resolver_picks_most_recent_when_multiple(
     assert out.api_key == "sk-ant-new"
 
 
+def test_resolver_key_id_picks_the_named_key_not_mru(
+    db: Session, redis_client: redis_lib.Redis
+) -> None:
+    """v1.4.12: passing key_id selects that exact key, overriding MRU."""
+    user = _make_user(db)
+    old = _seed(
+        redis_client, user, provider="openai", api_key="sk-old", name="old"
+    )
+    _seed(redis_client, user, provider="openai", api_key="sk-new", name="new")
+    out = resolve_for_user(
+        redis_client,
+        user_id=user.id,
+        provider="openai",
+        key_id=uuid.UUID(str(old["id"])),
+    )
+    assert out.api_key == "sk-old"
+    assert out.name == "old"
+
+
+def test_resolver_key_id_wrong_provider_raises(
+    db: Session, redis_client: redis_lib.Redis
+) -> None:
+    """A key_id that exists but belongs to a different provider is rejected."""
+    user = _make_user(db)
+    anthropic_key = _seed(
+        redis_client, user, provider="anthropic", api_key="sk-ant"
+    )
+    with pytest.raises(NoProviderKeyError):
+        resolve_for_user(
+            redis_client,
+            user_id=user.id,
+            provider="openai",  # mismatch
+            key_id=uuid.UUID(str(anthropic_key["id"])),
+        )
+
+
+def test_resolver_key_id_unknown_raises(
+    db: Session, redis_client: redis_lib.Redis
+) -> None:
+    user = _make_user(db)
+    _seed(redis_client, user, provider="openai", api_key="sk-real")
+    with pytest.raises(NoProviderKeyError):
+        resolve_for_user(
+            redis_client,
+            user_id=user.id,
+            provider="openai",
+            key_id=uuid.uuid4(),  # not cached
+        )
+
+
 def test_resolver_ignores_mcp_kind_rows(
     db: Session, redis_client: redis_lib.Redis
 ) -> None:
