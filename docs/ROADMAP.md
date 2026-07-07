@@ -56,7 +56,31 @@ You have a Section called Start a run and it asks for prompt. In addition to the
 
 _Approved 2026-07-06T20:34:50.015567+00:00 — suggestion id `019f390f-cedd-7df0-8be8-e2f4db7a99ba`_
 
-### 3. [P2] Visually distinguishing failed/empty agent runs from successful ones is a small, high-value observability fix that fits squarely inside the already-approved Status Tab Cleanup bundle rather than standing alone.
+### 3. [P1] Per-engagement and per-task model/key selection is a natural extension of BYO keys and the Phase 11 cost engine, and it overlaps meaningfully with already-approved UX-backlog #7 ("per-role multi-model support") — worth folding into that item rather than tracking separately.
+
+**Original suggestion:**
+
+> I put multiple keys on the key manager. I'd like the ability to select which key (denoted by label) for specific engagements. As well as for specific tasks. 
+
+Some LLMs are good at some tasks, and bad at others, and the ability to customize who does what would be great and would be good for cost management as well.
+
+**Pros:**
+- Builds directly on already-shipped infrastructure — BYO keys (merged) and Phase 11 cost attribution — so plumbing model/key selection through to agent_executions is mostly a routing + settings-UI change, not new subsystems.
+- Serves the 'analyst in control, agents assist' guiding principle by letting the analyst tune which model handles Strategic vs. Tactical vs. summarization work.
+- Directly supports cost management, which is the whole point of the Phase 11 Costs tab — cheap models for high-volume enum, premium models for reasoning-heavy Strategic runs is a clear win.
+- Aligns with UX backlog item #7 (per-role multi-model support, incl. GLM-5 / OpenAI-compatible endpoints), so this suggestion effectively sharpens an already-captured need.
+- No conflict with the 'agents scan, analysts exploit' invariant — this is routing/config, not an execution-surface change.
+
+**Cons:**
+- Overlaps with UX backlog #7 (per-role multi-model support) — should be merged into that item rather than tracked as a separate roadmap entry to avoid duplicate work.
+- Selection granularity is under-specified: per-engagement, per-agent-role (Strategic/Tactical), per-task-kind, or all three? — each level implies a different data model (engagement setting vs. task payload field vs. user default) and needs pinning before coding.
+- Introduces a resolution-order problem (task override → engagement default → user default → org fallback) that must be defined explicitly, or analysts will be surprised by which key actually ran a job.
+- Adds settings-UI surface area and a new selector inside the task/run kickoff flow, which competes with the already-approved 'scope-derived quick actions' work (id `019f390f-...`) that is also modifying that same run-kickoff surface.
+- Lower leverage than the four still-unfinished Charter ideas (attack-path UI, entities tab, engagement-setup wizard, feedback loop) and Phase 10 hybrid ingest — likely rides behind the existing P1/P2 queue.
+
+_Approved 2026-07-06T20:38:06.093669+00:00 — suggestion id `019f3924-2820-7583-b2df-0baf1d800b22`_
+
+### 4. [P2] Visually distinguishing failed/empty agent runs from successful ones is a small, high-value observability fix that fits squarely inside the already-approved Status Tab Cleanup bundle rather than standing alone.
 
 **Original suggestion:**
 
@@ -81,7 +105,18 @@ If an agent run happens, and it errors out, provides no results, or was generall
 
 _Approved 2026-07-02T17:01:24.354225+00:00 — suggestion id `019f1ea2-3abd-7e01-a498-c7a19b630087`_
 
-### 4. [P3] Admin-driven user/guest lifecycle management is a reasonable platform-hygiene ask, but it sits outside the Charter's North Star (analyst workflow / findings loop) and partially duplicates capabilities Entra already provides in a single-tenant deployment.
+### 5. [P2] (no summary)
+
+**Original suggestion:**
+
+> Let me add entities we found to the scope under a different section. 
+
+Defined Scope = Things the client provided to us formally, 
+Found Scope = Entities we found and should be able to run quick actions on to generate findings.
+
+_Approved 2026-07-07T19:16:11.001484+00:00 — suggestion id `019f3dfb-a7f7-7ad1-adb4-0cdc3e2909a9`_
+
+### 6. [P3] Admin-driven user/guest lifecycle management is a reasonable platform-hygiene ask, but it sits outside the Charter's North Star (analyst workflow / findings loop) and partially duplicates capabilities Entra already provides in a single-tenant deployment.
 
 **Original suggestion:**
 
@@ -102,7 +137,7 @@ _Approved 2026-07-02T17:01:24.354225+00:00 — suggestion id `019f1ea2-3abd-7e01
 
 _Approved 2026-07-02T17:00:45.372153+00:00 — suggestion id `019f191d-a0a7-7043-9755-eb2d0458f0bc`_
 
-### 5. [P3] Routing Suggestion Box AI evaluations through a dedicated, cheap platform key (e.g. GPT-4o) instead of the submitter's BYO key is a sensible consistency + fairness fix, but it introduces a new billing/secret-management surface that needs an owner and a cost cap.
+### 7. [P3] Routing Suggestion Box AI evaluations through a dedicated, cheap platform key (e.g. GPT-4o) instead of the submitter's BYO key is a sensible consistency + fairness fix, but it introduces a new billing/secret-management surface that needs an owner and a cost cap.
 
 **Original suggestion:**
 
@@ -126,7 +161,15 @@ _Approved 2026-07-02T17:00:45.372153+00:00 — suggestion id `019f191d-a0a7-7043
 
 _Approved 2026-07-06T20:33:58.451343+00:00 — suggestion id `019f3922-08a2-7712-b151-9879d32f74d3`_
 
-### 6. [P4] (no summary)
+### 8. [P3] (no summary)
+
+**Original suggestion:**
+
+> More quick actions, make them entity dependent and engagement aware. So if we've already run domain scan, maybe suggest something else? If there are tools available, suggest running tools, etc.
+
+_Approved 2026-07-07T19:16:05.062589+00:00 — suggestion id `019f3e01-01e7-7ef1-b91b-a27a5d7ad0b8`_
+
+### 9. [P4] (no summary)
 
 **Original suggestion:**
 
@@ -138,7 +181,31 @@ _Approved 2026-07-06T20:33:58.451343+00:00 — suggestion id `019f3922-08a2-7712
 
 _Approved 2026-07-02T16:58:53.646161+00:00 — suggestion id `019f1eae-eeef-7712-9f1e-77e6c73203f6`_
 
-### 7. [P8] (no summary)
+### 10. [P4] (no summary)
+
+**Original suggestion:**
+
+> Need the ability to run quick actions against known Entities.
+
+_Approved 2026-07-07T19:16:12.276157+00:00 — suggestion id `019f3dfa-1a6c-7a62-9a1f-bfc91630f1cf`_
+
+### 11. [P5] (no summary)
+
+**Original suggestion:**
+
+> When clicking on the engagement, its not immediately clear where you should click to open it. Either make the whole card clickable with a separate clickable + to add or make a tiny clickable 'Enter' 'Start' or 'Continue' or something to make it easy to find.
+
+_Approved 2026-07-07T19:16:07.757638+00:00 — suggestion id `019f3dff-be61-7bb0-8b37-37cc5f698997`_
+
+### 12. [P7] (no summary)
+
+**Original suggestion:**
+
+> Allow analysts to tweak which model they wish to use before doing actions. Either set the default model in the key setting or have per Engagement settings where the models the analyst wants to use are togglable. To find which models belong to which endpoints setup probe endpoints to detect all the current available models for use. Then save those preferences to the user.
+
+_Approved 2026-07-07T19:16:09.658665+00:00 — suggestion id `019f3dfe-40e6-7bb0-9ff5-0dcc1cae3340`_
+
+### 13. [P8] (no summary)
 
 **Original suggestion:**
 
@@ -150,7 +217,7 @@ Advanced: Customizations for every aspect of the experience.
 
 _Approved 2026-07-02T16:58:55.862818+00:00 — suggestion id `019f1eaa-139e-7ba2-af03-5422cf1aae48`_
 
-### 8. [P9] (no summary)
+### 14. [P9] (no summary)
 
 **Original suggestion:**
 
@@ -158,7 +225,7 @@ _Approved 2026-07-02T16:58:55.862818+00:00 — suggestion id `019f1eaa-139e-7ba2
 
 _Approved 2026-07-02T16:58:33.698557+00:00 — suggestion id `019f1f26-d5ee-73d3-95a0-d98ecbc5fe57`_
 
-### 9. [unranked] Adding an "Out of Scope / Outside RoE" finding state with report-omission is a low-cost, high-value extension of the existing validation workflow that fills a real engagement-hygiene gap.
+### 15. [unranked] Adding an "Out of Scope / Outside RoE" finding state with report-omission is a low-cost, high-value extension of the existing validation workflow that fills a real engagement-hygiene gap.
 
 **Original suggestion:**
 
@@ -179,7 +246,7 @@ _Approved 2026-07-02T16:58:33.698557+00:00 — suggestion id `019f1f26-d5ee-73d3
 
 _Approved 2026-06-29T21:06:53.572576+00:00 — suggestion id `019f1532-8501-7783-9416-498a85388019`_
 
-### 10. [unranked] This suggestion is already approved and on the roadmap (id `019f1536-4ab3-7403-9e77-3a493aa11cf4`, admin-noted "do it nao") — adding submitter/approver attribution to the Suggestion Box feedback flow.
+### 16. [unranked] This suggestion is already approved and on the roadmap (id `019f1536-4ab3-7403-9e77-3a493aa11cf4`, admin-noted "do it nao") — adding submitter/approver attribution to the Suggestion Box feedback flow.
 
 **Original suggestion:**
 
@@ -201,7 +268,7 @@ It should say who submitted it, and who approved it.
 
 _Approved 2026-06-29T21:08:53.781867+00:00 — suggestion id `019f1536-4ab3-7403-9e77-3a493aa11cf4`_
 
-### 11. [unranked] Linking observations to specific findings (and surfacing those back-references on the finding view) is a natural, low-cost extension of the existing Phase 8e observations system that strengthens the feedback-loop principle, but it overlaps with the proposed Entities tab and the recently-approved tagging/correlate work and needs a clear data-model decision before coding.
+### 17. [unranked] Linking observations to specific findings (and surfacing those back-references on the finding view) is a natural, low-cost extension of the existing Phase 8e observations system that strengthens the feedback-loop principle, but it overlaps with the proposed Entities tab and the recently-approved tagging/correlate work and needs a clear data-model decision before coding.
 
 **Original suggestion:**
 
@@ -232,7 +299,7 @@ Observations are then tagged back into the finding when you look at them later.
 
 _Approved 2026-06-30T12:54:31.621534+00:00 — suggestion id `019f159f-88ff-7c11-90f0-467aa6d8e48e`_
 
-### 12. [unranked] Reformatting the "What's New" surface to hide infra-only changes (Deploy/CLI/Images) and group entries by user-facing categories (Bug Fixes / Features / QoL / Ops) is a low-cost polish that improves the release-notes experience but is pure presentation work with no Charter or roadmap leverage.
+### 18. [unranked] Reformatting the "What's New" surface to hide infra-only changes (Deploy/CLI/Images) and group entries by user-facing categories (Bug Fixes / Features / QoL / Ops) is a low-cost polish that improves the release-notes experience but is pure presentation work with no Charter or roadmap leverage.
 
 **Original suggestion:**
 
@@ -254,30 +321,6 @@ _Approved 2026-06-30T12:54:31.621534+00:00 — suggestion id `019f159f-88ff-7c11
 **Admin note:** Whats New CleanUp
 
 _Approved 2026-07-01T15:29:24.258938+00:00 — suggestion id `019f193a-1835-7260-bed5-4195ee3e518a`_
-
-### 13. [unranked] Per-engagement and per-task model/key selection is a natural extension of BYO keys and the Phase 11 cost engine, and it overlaps meaningfully with already-approved UX-backlog #7 ("per-role multi-model support") — worth folding into that item rather than tracking separately.
-
-**Original suggestion:**
-
-> I put multiple keys on the key manager. I'd like the ability to select which key (denoted by label) for specific engagements. As well as for specific tasks. 
-
-Some LLMs are good at some tasks, and bad at others, and the ability to customize who does what would be great and would be good for cost management as well.
-
-**Pros:**
-- Builds directly on already-shipped infrastructure — BYO keys (merged) and Phase 11 cost attribution — so plumbing model/key selection through to agent_executions is mostly a routing + settings-UI change, not new subsystems.
-- Serves the 'analyst in control, agents assist' guiding principle by letting the analyst tune which model handles Strategic vs. Tactical vs. summarization work.
-- Directly supports cost management, which is the whole point of the Phase 11 Costs tab — cheap models for high-volume enum, premium models for reasoning-heavy Strategic runs is a clear win.
-- Aligns with UX backlog item #7 (per-role multi-model support, incl. GLM-5 / OpenAI-compatible endpoints), so this suggestion effectively sharpens an already-captured need.
-- No conflict with the 'agents scan, analysts exploit' invariant — this is routing/config, not an execution-surface change.
-
-**Cons:**
-- Overlaps with UX backlog #7 (per-role multi-model support) — should be merged into that item rather than tracked as a separate roadmap entry to avoid duplicate work.
-- Selection granularity is under-specified: per-engagement, per-agent-role (Strategic/Tactical), per-task-kind, or all three? — each level implies a different data model (engagement setting vs. task payload field vs. user default) and needs pinning before coding.
-- Introduces a resolution-order problem (task override → engagement default → user default → org fallback) that must be defined explicitly, or analysts will be surprised by which key actually ran a job.
-- Adds settings-UI surface area and a new selector inside the task/run kickoff flow, which competes with the already-approved 'scope-derived quick actions' work (id `019f390f-...`) that is also modifying that same run-kickoff surface.
-- Lower leverage than the four still-unfinished Charter ideas (attack-path UI, entities tab, engagement-setup wizard, feedback loop) and Phase 10 hybrid ingest — likely rides behind the existing P1/P2 queue.
-
-_Approved 2026-07-06T20:38:06.093669+00:00 — suggestion id `019f3924-2820-7583-b2df-0baf1d800b22`_
 
 ## Shipped
 
