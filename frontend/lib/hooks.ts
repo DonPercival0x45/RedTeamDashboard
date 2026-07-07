@@ -25,6 +25,8 @@ import {
   decideApproval,
   deleteObservation,
   deleteProviderKey,
+  linkObservationFinding,
+  unlinkObservationFinding,
   deleteScopeItem,
   deleteTool,
   flushEngagement,
@@ -216,6 +218,50 @@ export function useDeleteObservationMutation(slug: string) {
       qc.setQueryData<Observation[]>(qk.observations(slug), (prev) =>
         prev ? prev.filter((o) => o.id !== id) : [],
       ),
+  });
+}
+
+// v1.4.8: observation ↔ finding links. The mutation optimistically patches
+// the observation's finding_ids in the cache and also invalidates the
+// findings cache so the finding slide-over's back-ref stays fresh.
+export function useLinkObservationFindingMutation(slug: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ([obsId, findingId]: [string, string]) =>
+      linkObservationFinding(obsId, findingId),
+    onSuccess: (updated, [obsId]) => {
+      qc.setQueryData<Observation[]>(qk.observations(slug), (prev) =>
+        prev
+          ? prev.map((o) => (o.id === obsId ? { ...o, ...updated } : o))
+          : [updated],
+      );
+      qc.invalidateQueries({ queryKey: qk.findings(slug) });
+    },
+  });
+}
+
+export function useUnlinkObservationFindingMutation(slug: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ([obsId, findingId]: [string, string]) =>
+      unlinkObservationFinding(obsId, findingId),
+    onSuccess: (_res, [obsId, findingId]) => {
+      qc.setQueryData<Observation[]>(qk.observations(slug), (prev) =>
+        prev
+          ? prev.map((o) =>
+              o.id === obsId
+                ? {
+                    ...o,
+                    finding_ids: (o.finding_ids ?? []).filter(
+                      (fid) => fid !== findingId,
+                    ),
+                  }
+                : o,
+            )
+          : [],
+      );
+      qc.invalidateQueries({ queryKey: qk.findings(slug) });
+    },
   });
 }
 

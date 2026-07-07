@@ -1,12 +1,15 @@
 "use client";
 
 import { useState } from "react";
-import { Trash2 } from "lucide-react";
+import { Link as LinkIcon, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   useCreateObservationMutation,
   useDeleteObservationMutation,
+  useFindings,
+  useLinkObservationFindingMutation,
   useObservations,
+  useUnlinkObservationFindingMutation,
 } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
 import type { FindingPhase } from "@/lib/types";
@@ -32,8 +35,11 @@ export function ObservationsView({ slug }: { slug: string }) {
   // v1.0.0: react-query owns the fetch. Mutations invalidate/patch the cache;
   // localError catches submit/delete failures separately from the fetch error.
   const { data: observations = [], isLoading, error: queryError } = useObservations(slug);
+  const { data: findings = [] } = useFindings(slug);
   const createMutation = useCreateObservationMutation(slug);
   const deleteMutation = useDeleteObservationMutation(slug);
+  const linkMutation = useLinkObservationFindingMutation(slug);
+  const unlinkMutation = useUnlinkObservationFindingMutation(slug);
 
   const [content, setContent] = useState("");
   const [phase, setPhase] = useState<FindingPhase | "">("");
@@ -132,6 +138,41 @@ export function ObservationsView({ slug }: { slug: string }) {
                   </span>
                 )}
                 <p className="text-sm">{obs.content}</p>
+                {/* v1.4.8: linked findings + picker */}
+                <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                  {(obs.finding_ids ?? []).map((fid) => {
+                    const linked = findings.find((f) => f.id === fid);
+                    return (
+                      <span
+                        key={fid}
+                        className="inline-flex items-center gap-1 rounded-full border border-sky-500/40 bg-sky-500/10 px-2 py-0.5 text-xs text-sky-200"
+                        title={linked?.title ?? fid}
+                      >
+                        <LinkIcon className="h-3 w-3" />
+                        <span className="max-w-[14rem] truncate">
+                          {linked?.title ?? fid.slice(0, 8)}
+                        </span>
+                        <button
+                          type="button"
+                          aria-label="Unlink finding"
+                          disabled={unlinkMutation.isPending}
+                          onClick={() =>
+                            unlinkMutation.mutate([obs.id, fid])
+                          }
+                          className="text-muted-foreground hover:text-critical disabled:opacity-50"
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </span>
+                    );
+                  })}
+                  <FindingPicker
+                    findings={findings}
+                    excludeIds={obs.finding_ids ?? []}
+                    disabled={linkMutation.isPending}
+                    onPick={(fid) => linkMutation.mutate([obs.id, fid])}
+                  />
+                </div>
                 <p className="mt-1 text-xs text-muted-foreground">
                   {obs.created_at.slice(0, 16).replace("T", " ")} UTC
                 </p>
@@ -149,5 +190,42 @@ export function ObservationsView({ slug }: { slug: string }) {
         </div>
       )}
     </div>
+  );
+}
+
+// v1.4.8: tiny inline <select> that lists findings not yet linked to the
+// observation. Choosing one fires onPick and resets so it can be reused.
+function FindingPicker({
+  findings,
+  excludeIds,
+  disabled,
+  onPick,
+}: {
+  findings: { id: string; title: string; severity?: string }[];
+  excludeIds: string[];
+  disabled: boolean;
+  onPick: (findingId: string) => void;
+}) {
+  const exclude = new Set(excludeIds);
+  const available = findings.filter((f) => !exclude.has(f.id));
+  if (available.length === 0) return null;
+  return (
+    <select
+      value=""
+      disabled={disabled}
+      onChange={(e) => {
+        if (e.target.value) onPick(e.target.value);
+        e.target.value = "";
+      }}
+      className="rounded-md border border-border bg-background px-1.5 py-0.5 text-xs text-muted-foreground hover:text-foreground disabled:opacity-50"
+      aria-label="Link a finding"
+    >
+      <option value="">+ link finding…</option>
+      {available.map((f) => (
+        <option key={f.id} value={f.id}>
+          {f.title}
+        </option>
+      ))}
+    </select>
   );
 }

@@ -25,6 +25,7 @@ from app.models.finding_summary import FindingSummary
 from app.models.integration import Integration, IntegrationPurpose, IntegrationType
 from app.models.mcp_lease import MCPLease, MCPLeaseStatus
 from app.models.observation import Observation
+from app.models.observation_finding_link import ObservationFindingLink
 from app.models.roadmap_suggestion import (
     RoadmapSuggestion,
     RoadmapSuggestionStatus,
@@ -76,6 +77,7 @@ __all__ = [
     "MCPLease",
     "MCPLeaseStatus",
     "Observation",
+  "ObservationFindingLink",
     "OwnerEligibility",
     "RiskLevel",
     "RoadmapSuggestion",

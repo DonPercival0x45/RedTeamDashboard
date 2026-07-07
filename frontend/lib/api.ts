@@ -374,6 +374,33 @@ export function deleteObservation(observationId: string): Promise<void> {
   return request<void>(`/observations/${observationId}`, { method: "DELETE" });
 }
 
+// v1.4.8: observation ↔ finding links.
+export function linkObservationFinding(
+  observationId: string,
+  findingId: string,
+): Promise<Observation> {
+  return request<Observation>(
+    `/observations/${observationId}/findings/${findingId}`,
+    { method: "POST" },
+  );
+}
+
+export function unlinkObservationFinding(
+  observationId: string,
+  findingId: string,
+): Promise<void> {
+  return request<void>(
+    `/observations/${observationId}/findings/${findingId}`,
+    { method: "DELETE" },
+  );
+}
+
+export function listObservationsForFinding(
+  findingId: string,
+): Promise<Observation[]> {
+  return request<Observation[]>(`/findings/${findingId}/observations`);
+}
+
 // ---------------------------------------------------------------------------
 // Runs
 // ---------------------------------------------------------------------------

@@ -400,6 +400,8 @@ export interface Observation {
   phase: FindingPhase | null;
   created_by: string | null;
   created_at: string;
+  // v1.4.8: findings this observation references (supports / evidence).
+  finding_ids?: string[];
 }
 
 // ─── BYO provider keys ─────────────────────────────────────────────────────
