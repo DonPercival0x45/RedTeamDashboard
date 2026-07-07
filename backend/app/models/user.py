@@ -45,6 +45,11 @@ class User(Base, TimestampMixin):
         default=UserRole.user,
         nullable=False,
     )
+    # v1.4.11: per-analyst default model (roadmap #3 / #12). Nullable —
+    # users who never pick one keep the built-in default. Set from the
+    # Keys settings page; the Start-a-run prompt pre-selects it.
+    default_llm_provider: Mapped[str | None] = mapped_column(String(60))
+    default_llm_model: Mapped[str | None] = mapped_column(String(128))
 
     # ``is_admin`` was the pre-RBAC boolean; keep a read-only property so
     # existing call sites don't all need rewriting in one go.

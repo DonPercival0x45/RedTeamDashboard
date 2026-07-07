@@ -14,7 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { startRun } from "@/lib/api";
-import { useProviderKeys, useScope } from "@/lib/hooks";
+import { useMe, useProviderKeys, useScope } from "@/lib/hooks";
 import { CUSTOM_VALUE, getPresetModels } from "@/lib/llm-providers";
 import { runSlugFromId, useRunToast } from "@/components/run-toast-provider";
 import type { LLMProvider, ScopeItem, ScopeKind } from "@/lib/types";
@@ -106,6 +106,27 @@ export function RunPrompt({
   // same key, so the two share one round-trip. Best-effort: on 401 / Redis
   // miss, `keys` stays [] and the dropdown falls back to presets.
   const { data: keys = [] } = useProviderKeys();
+  // v1.4.11: pre-select the analyst's saved default model (roadmap #3 / #12)
+  // instead of the hardcoded Anthropic default. Fires once when /me loads.
+  const { data: me } = useMe();
+  useEffect(() => {
+    if (!me) return;
+    const dp = me.default_llm_provider;
+    const dm = me.default_llm_model;
+    if (!dp && !dm) return;
+    const nextProvider = (dp as LLMProvider) || provider;
+    if (dp) setProvider(nextProvider);
+    if (dm) {
+      const presets = getPresetModels(nextProvider);
+      if (presets.includes(dm)) {
+        setModelSelect(dm);
+      } else {
+        setModelSelect(CUSTOM_VALUE);
+        setCustomModel(dm);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [me?.default_llm_provider, me?.default_llm_model]);
   const runToast = useRunToast();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);

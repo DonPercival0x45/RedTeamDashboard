@@ -57,6 +57,7 @@ import {
   revokeAuthorization,
   revokeTool,
   updateIntegration,
+  updateMyPreferences,
   updateUserRole,
 } from "@/lib/api";
 import { loadReleases } from "@/lib/release-notes";
@@ -356,6 +357,16 @@ export function useMe() {
     queryKey: qk.me(),
     queryFn: getMe,
     staleTime: 5 * 60_000,
+  });
+}
+
+// v1.4.11: persist the analyst's default model; patches the /me cache.
+export function useUpdateMyPreferencesMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: Parameters<typeof updateMyPreferences>[0]) =>
+      updateMyPreferences(body),
+    onSuccess: (updated) => qc.setQueryData(qk.me(), updated),
   });
 }
 

@@ -851,6 +851,18 @@ export function getMe(): Promise<Me> {
   return request<Me>("/me");
 }
 
+// v1.4.11: set the analyst's default (provider, model) so the Start-a-run
+// prompt pre-selects it. Either field may be null to clear.
+export function updateMyPreferences(body: {
+  default_llm_provider?: string | null;
+  default_llm_model?: string | null;
+}): Promise<Me> {
+  return request<Me>("/me/preferences", {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
 export function flushMyProviderKeys(): Promise<void> {
   // Wipe every cached BYO key for the acting user. Called from the
   // sign-out path so a tab close doesn't leave plaintext keys reachable
