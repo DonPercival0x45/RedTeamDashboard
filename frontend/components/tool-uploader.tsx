@@ -150,8 +150,8 @@ export function ToolUploader({
             className={cn(
               "rounded-md border p-3 text-xs",
               result.validation_ok
-                ? "border-emerald-500/50 bg-emerald-500/5 text-emerald-100"
-                : "border-amber-500/50 bg-amber-500/5 text-amber-100",
+                ? "border-emerald-500/50 bg-emerald-500/5 text-emerald-800 dark:text-emerald-100"
+                : "border-amber-500/50 bg-amber-500/5 text-amber-800 dark:text-amber-100",
             )}
           >
             <p className="font-medium">
@@ -306,11 +306,11 @@ function AutoDetectPanel({
               </span>
             </p>
             {preview.missing.length === 0 ? (
-              <span className="rounded border border-emerald-500/50 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-emerald-200">
+              <span className="rounded border border-emerald-500/50 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-emerald-700 dark:text-emerald-200">
                 complete
               </span>
             ) : (
-              <span className="rounded border border-amber-500/50 bg-amber-500/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-amber-200">
+              <span className="rounded border border-amber-500/50 bg-amber-500/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-amber-700 dark:text-amber-200">
                 {preview.missing.length} missing
               </span>
             )}
@@ -322,7 +322,7 @@ function AutoDetectPanel({
           )}
           {preview.missing.length > 0 && (
             <div className="text-xs">
-              <p className="mb-1 text-amber-200">
+              <p className="mb-1 text-amber-700 dark:text-amber-200">
                 Backend couldn&apos;t infer these — add them to the TOOL
                 dict, or switch to the Guided form to fill them in:
               </p>
@@ -560,7 +560,7 @@ function GuidedFormPanel({
                 className={cn(
                   "rounded-md border px-2 py-0.5 text-xs",
                   state.network_egress.includes(t)
-                    ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-100"
+                    ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-800 dark:text-emerald-100"
                     : "border-border/60 text-muted-foreground hover:border-foreground/40",
                 )}
               >
@@ -726,7 +726,7 @@ function RadioRow({
           className={cn(
             "rounded-md border px-2 py-0.5 text-xs",
             value === o
-              ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-100"
+              ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-800 dark:text-emerald-100"
               : "border-border/60 text-muted-foreground hover:border-foreground/40",
           )}
         >
@@ -914,7 +914,7 @@ function BinaryPanel({
           <p
             className={cn(
               "mt-1 text-[11px]",
-              isPinned ? "text-emerald-300" : "text-amber-300",
+              isPinned ? "text-emerald-600 dark:text-emerald-300" : "text-amber-600 dark:text-amber-300",
             )}
           >
             {isPinned
@@ -964,7 +964,7 @@ function BinaryPanel({
               className={cn(
                 "rounded-md border px-2 py-0.5 text-xs",
                 state.network_egress.includes(t)
-                  ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-100"
+                  ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-800 dark:text-emerald-100"
                   : "border-border/60 text-muted-foreground hover:border-foreground/40",
               )}
             >

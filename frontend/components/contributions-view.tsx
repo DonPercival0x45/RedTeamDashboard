@@ -372,9 +372,9 @@ export function ContributionsView({ slug }: { slug: string }) {
 function EntryRow({ entry }: { entry: ContributionEntry }) {
   const kindClass =
     entry.actor_kind === "analyst"
-      ? "text-sky-200"
+      ? "text-sky-700 dark:text-sky-200"
       : entry.actor_kind === "agent"
-        ? "text-purple-200"
+        ? "text-purple-700 dark:text-purple-200"
         : "text-muted-foreground";
   const when = new Date(entry.when).toLocaleTimeString(undefined, {
     hour: "2-digit",

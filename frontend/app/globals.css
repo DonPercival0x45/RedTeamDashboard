@@ -3,14 +3,23 @@
 @tailwind utilities;
 
 /* ──────────────────────────────────────────────────────────────────────────
-   Monochromatic minimalism — all-black surfaces, grayscale text ramp, a
-   single ember-red accent (#E5484D ≈ hsl(358 75% 59%)) reserved for
-   criticals + focus/CTAs. The app is always dark; :root holds the dark
-   palette and <html> carries `.dark` so `dark:` utility variants resolve too.
-   Elevation is expressed with hairline borders, never fills or shadows.
+   Themed palettes (v1.8.0). Each `[data-theme="..."]` block redeclares the
+   shadcn-style HSL variables consumed by Tailwind + component code. The
+   base `:root` selector duplicates Dark so pre-hydration SSR (before the
+   inline script stamps `data-theme`) still renders with the app's original
+   look and doesn't need `[data-theme="dark"]` to be present.
+
+   Dark  — monochromatic minimalism, ember-red accent (#E5484D).
+   Light — inverse ramp: near-white surfaces, dark text, same ember accent.
+   High Contrast — WCAG-heavy: pure black/white, hot amber accent, thick
+                   border variables so surfaces read as hard edges.
+
+   Adding a theme = a new `[data-theme="..."]` block here + the matching
+   entry in `lib/themes.ts`.
    ────────────────────────────────────────────────────────────────────────── */
 @layer base {
-  :root {
+  :root,
+  [data-theme="dark"] {
     --background: 0 0% 0%;
     --foreground: 0 0% 96%;
     --card: 0 0% 0%;
@@ -35,29 +44,52 @@
     --radius: 0.5rem;
   }
 
-  /* Identical palette under .dark so dark: variants stay consistent. */
-  .dark {
+  [data-theme="light"] {
+    --background: 0 0% 100%;
+    --foreground: 0 0% 6%;
+    --card: 0 0% 100%;
+    --card-foreground: 0 0% 6%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 0 0% 6%;
+    --primary: 0 0% 12%;
+    --primary-foreground: 0 0% 98%;
+    --secondary: 0 0% 94%;
+    --secondary-foreground: 0 0% 12%;
+    --muted: 0 0% 96%;
+    --muted-foreground: 0 0% 40%;
+    --accent: 0 0% 92%;
+    --accent-foreground: 0 0% 6%;
+    --destructive: 358 75% 52%;
+    --destructive-foreground: 0 0% 100%;
+    --critical: 358 75% 52%;
+    --critical-foreground: 0 0% 100%;
+    --border: 0 0% 88%;
+    --input: 0 0% 86%;
+    --ring: 358 75% 52%;
+  }
+
+  [data-theme="high-contrast"] {
     --background: 0 0% 0%;
-    --foreground: 0 0% 96%;
+    --foreground: 0 0% 100%;
     --card: 0 0% 0%;
-    --card-foreground: 0 0% 96%;
-    --popover: 0 0% 4%;
-    --popover-foreground: 0 0% 96%;
-    --primary: 0 0% 92%;
-    --primary-foreground: 0 0% 4%;
-    --secondary: 0 0% 11%;
-    --secondary-foreground: 0 0% 92%;
-    --muted: 0 0% 9%;
-    --muted-foreground: 0 0% 56%;
-    --accent: 0 0% 14%;
-    --accent-foreground: 0 0% 96%;
-    --destructive: 358 75% 59%;
-    --destructive-foreground: 0 0% 98%;
-    --critical: 358 75% 59%;
-    --critical-foreground: 0 0% 98%;
-    --border: 0 0% 14%;
-    --input: 0 0% 16%;
-    --ring: 358 75% 59%;
+    --card-foreground: 0 0% 100%;
+    --popover: 0 0% 0%;
+    --popover-foreground: 0 0% 100%;
+    --primary: 48 100% 60%;
+    --primary-foreground: 0 0% 0%;
+    --secondary: 0 0% 12%;
+    --secondary-foreground: 0 0% 100%;
+    --muted: 0 0% 8%;
+    --muted-foreground: 0 0% 82%;
+    --accent: 48 100% 60%;
+    --accent-foreground: 0 0% 0%;
+    --destructive: 0 100% 60%;
+    --destructive-foreground: 0 0% 0%;
+    --critical: 0 100% 60%;
+    --critical-foreground: 0 0% 0%;
+    --border: 0 0% 100%;
+    --input: 0 0% 100%;
+    --ring: 48 100% 60%;
   }
 }
 

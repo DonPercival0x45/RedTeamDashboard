@@ -149,7 +149,7 @@ export function CostsView({ slug }: { slug: string }) {
         <div className="flex items-start gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3">
           <AlertTriangle className="h-5 w-5 shrink-0 text-amber-500" />
           <div className="min-w-0 flex-1">
-            <p className="text-sm font-medium text-amber-100">
+            <p className="text-sm font-medium text-amber-800 dark:text-amber-100">
               Unpriced model{data.unpriced_models.length > 1 ? "s" : ""}
             </p>
             <p className="mt-1 text-xs text-muted-foreground">
@@ -160,7 +160,7 @@ export function CostsView({ slug }: { slug: string }) {
               {data.unpriced_models.map((m) => (
                 <li
                   key={m}
-                  className="rounded-md border border-amber-500/30 bg-amber-500/5 px-2 py-0.5 text-xs font-mono text-amber-200"
+                  className="rounded-md border border-amber-500/30 bg-amber-500/5 px-2 py-0.5 text-xs font-mono text-amber-700 dark:text-amber-200"
                 >
                   {m}
                 </li>

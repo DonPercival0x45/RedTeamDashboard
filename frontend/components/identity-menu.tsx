@@ -8,6 +8,7 @@ import {
   HelpCircle,
   Key,
   MessageSquare,
+  Palette,
   UserCog,
   Wrench,
 } from "lucide-react";
@@ -69,6 +70,9 @@ export function IdentityMenu() {
       </span>
       <IconLink href="/settings/keys" label="Provider keys">
         <Key className="h-4 w-4" />
+      </IconLink>
+      <IconLink href="/settings/appearance" label="Appearance (theme)">
+        <Palette className="h-4 w-4" />
       </IconLink>
       <IconLink href="/settings/feedback" label="Feedback">
         <MessageSquare className="h-4 w-4" />

@@ -42,10 +42,10 @@ import type {
 } from "@/lib/types";
 
 const COLOR_BADGE: Record<StatusColor, string> = {
-  active: "border-emerald-500/50 bg-emerald-500/10 text-emerald-200",
-  pending: "border-sky-500/50 bg-sky-500/10 text-sky-200",
-  completed: "border-violet-500/50 bg-violet-500/10 text-violet-200",
-  failed: "border-rose-500/50 bg-rose-500/10 text-rose-200",
+  active: "border-emerald-500/50 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200",
+  pending: "border-sky-500/50 bg-sky-500/10 text-sky-700 dark:text-sky-200",
+  completed: "border-violet-500/50 bg-violet-500/10 text-violet-700 dark:text-violet-200",
+  failed: "border-rose-500/50 bg-rose-500/10 text-rose-700 dark:text-rose-200",
 };
 
 const COLOR_BORDER: Record<StatusColor, string> = {
@@ -84,10 +84,10 @@ const OUTCOME_ICON: Record<StatusOutcome, LucideIcon> = {
 };
 
 const OUTCOME_CLASS: Record<StatusOutcome, string> = {
-  success: "border-emerald-500/50 bg-emerald-500/10 text-emerald-200",
+  success: "border-emerald-500/50 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200",
   empty: "border-slate-500/50 bg-slate-500/10 text-slate-200",
-  partial: "border-amber-500/50 bg-amber-500/10 text-amber-200",
-  errored: "border-rose-500/50 bg-rose-500/10 text-rose-200",
+  partial: "border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-200",
+  errored: "border-rose-500/50 bg-rose-500/10 text-rose-700 dark:text-rose-200",
 };
 
 function fmtDate(value: string | null): string {

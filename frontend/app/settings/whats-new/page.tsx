@@ -40,19 +40,19 @@ const CATEGORY_META: {
     key: "features",
     label: "Features",
     icon: Sparkles,
-    tone: "border-emerald-500/40 bg-emerald-500/10 text-emerald-200",
+    tone: "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200",
   },
   {
     key: "fixes",
     label: "Bug Fixes",
     icon: Bug,
-    tone: "border-rose-500/40 bg-rose-500/10 text-rose-200",
+    tone: "border-rose-500/40 bg-rose-500/10 text-rose-700 dark:text-rose-200",
   },
   {
     key: "qol",
     label: "Quality of Life",
     icon: Rocket,
-    tone: "border-sky-500/40 bg-sky-500/10 text-sky-200",
+    tone: "border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-200",
   },
   {
     key: "ops",

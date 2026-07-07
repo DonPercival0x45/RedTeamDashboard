@@ -30,9 +30,9 @@ import { cn } from "@/lib/utils";
 import type { ToolRead } from "@/lib/types";
 
 const STATUS_TONE: Record<ToolRead["status"], string> = {
-  draft: "border-amber-500/50 bg-amber-500/10 text-amber-200",
-  approved: "border-emerald-500/50 bg-emerald-500/10 text-emerald-200",
-  revoked: "border-rose-500/50 bg-rose-500/10 text-rose-200",
+  draft: "border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-200",
+  approved: "border-emerald-500/50 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200",
+  revoked: "border-rose-500/50 bg-rose-500/10 text-rose-700 dark:text-rose-200",
 };
 
 const KIND_LABEL: Record<ToolRead["kind"], string> = {
@@ -306,7 +306,7 @@ function ToolRow({
             className={
               validationOk
                 ? undefined
-                : "border-amber-500/50 text-amber-200 hover:bg-amber-500/10"
+                : "border-amber-500/50 text-amber-700 dark:text-amber-200 hover:bg-amber-500/10"
             }
           >
             {validationOk ? "Approve" : "Approve (override)"}
@@ -328,7 +328,7 @@ function ToolRow({
             variant="outline"
             disabled={busy}
             onClick={() => void wrap(() => onDelete(tool.id))}
-            className="border-rose-500/40 text-rose-200 hover:bg-rose-500/10"
+            className="border-rose-500/40 text-rose-700 dark:text-rose-200 hover:bg-rose-500/10"
           >
             <Trash2 className="h-3.5 w-3.5" />
           </Button>
@@ -444,7 +444,7 @@ function ValidationPanels({ tool }: { tool: ToolRead }) {
               </li>
             )}
             {!imgRef.is_pinned && (
-              <li className="text-amber-200">
+              <li className="text-amber-700 dark:text-amber-200">
                 Tag reference (not a digest) — image content is mutable.
               </li>
             )}
@@ -482,7 +482,7 @@ function ValidationPanels({ tool }: { tool: ToolRead }) {
           {(shell.matches ?? []).map((m, i) => (
             <li key={i}>
               <div>
-                <code className="font-mono text-rose-300">{m.pattern}</code>{" "}
+                <code className="font-mono text-rose-600 dark:text-rose-300">{m.pattern}</code>{" "}
                 — line {m.line}
               </div>
               <div className="mt-0.5 font-mono text-[10px] text-muted-foreground">
@@ -511,7 +511,7 @@ function ValidationPanels({ tool }: { tool: ToolRead }) {
           }
         >
           {llm.skipped && (
-            <li className="text-amber-200">
+            <li className="text-amber-700 dark:text-amber-200">
               Skipped: {llm.skipped}. Analyst had no provider key at upload
               time; admin can still approve but the LLM gate did not run.
             </li>
@@ -527,9 +527,9 @@ function ValidationPanels({ tool }: { tool: ToolRead }) {
               <li>
                 Intent match:{" "}
                 {llm.matches_stated_intent ? (
-                  <span className="text-emerald-300">yes</span>
+                  <span className="text-emerald-600 dark:text-emerald-300">yes</span>
                 ) : (
-                  <span className="text-rose-300">no</span>
+                  <span className="text-rose-600 dark:text-rose-300">no</span>
                 )}
               </li>
               {(llm.concerns ?? []).length > 0 && (
