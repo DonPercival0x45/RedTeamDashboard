@@ -339,6 +339,65 @@ def test_create_and_list_scope_items(
     assert values == {"acme.com", "10.0.0.0/24"}
 
 
+def test_engagement_read_carries_scope_counts(
+    client: TestClient, cleanup_slugs: list[str]
+) -> None:
+    """v1.4.5: ``scope_count`` / ``exclusion_count`` ride on the engagement
+    read + list + patch shapes so list cards can render the counts."""
+    eng = _create(client, "Counted")
+    cleanup_slugs.append(eng["slug"])
+
+    # Empty engagement -> both counts zero.
+    fresh = client.get(f"/engagements/{eng['slug']}")
+    assert fresh.status_code == 200
+    assert fresh.json()["scope_count"] == 0
+    assert fresh.json()["exclusion_count"] == 0
+
+    for value, excl in [
+        ("acme.com", False),
+        ("10.0.0.0/24", False),
+        ("legacy.acme.com", True),  # exclusion
+    ]:
+        r = client.post(
+            f"/engagements/{eng['slug']}/scope",
+            json={"kind": "domain", "value": value, "is_exclusion": excl},
+            headers=_headers(),
+        )
+        assert r.status_code == 201, r.text
+
+    # GET one engagement -> 2 in scope, 1 exclusion.
+    got = client.get(f"/engagements/{eng['slug']}").json()
+    assert got["scope_count"] == 2
+    assert got["exclusion_count"] == 1
+
+    # LIST carries the counts too (no extra N+1).
+    listed = client.get("/engagements").json()
+    this = next(e for e in listed if e["slug"] == eng["slug"])
+    assert this["scope_count"] == 2
+    assert this["exclusion_count"] == 1
+
+    # PATCH echoes the same counts (rename shouldn't change scope).
+    patched = client.patch(
+        f"/engagements/{eng['slug']}",
+        json={"name": "Counted renamed"},
+        headers=_headers(),
+    ).json()
+    assert patched["scope_count"] == 2
+    assert patched["exclusion_count"] == 1
+
+    # Newly created engagement always reports zeros.
+    new = _create(client, "Untouched")
+    cleanup_slugs.append(new["slug"])
+    created = client.post(
+        "/engagements",
+        json={"name": "Also untouched"},
+        headers=_headers(),
+    )
+    assert created.status_code == 201
+    cleanup_slugs.append(created.json()["slug"])
+    assert created.json()["scope_count"] == 0
+
+
 def test_update_scope_item(
     client: TestClient, db: Session, cleanup_slugs: list[str]
 ) -> None:

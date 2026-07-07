@@ -150,6 +150,47 @@ def _get_engagement_or_404(session: DbSession, slug: str) -> Engagement:
     return eng
 
 
+# v1.4.5: scope quick-actions. Cheap aggregate so the engagement list
+# cards can render ``N in scope · M exclusions`` without an N+1 trip per
+# card. Returns ``(scope_count, exclusion_count)`` for one engagement.
+def _scope_counts_for(session: DbSession, engagement_id: uuid.UUID) -> tuple[int, int]:
+    rows = session.execute(
+        select(
+            func.count(ScopeItem.id),
+            func.sum(case((ScopeItem.is_exclusion.is_(True), 1), else_=0)),
+        ).where(ScopeItem.engagement_id == engagement_id)
+    ).one()
+    return int(rows[0] or 0), int(rows[1] or 0)
+
+
+def _populate_scope_counts(
+    session: DbSession, reads: list[EngagementRead]
+) -> list[EngagementRead]:
+    """Bulk fill ``scope_count`` / ``exclusion_count`` on a list of read
+    shapes with a single grouped query. No-op when ``reads`` is empty."""
+    if not reads:
+        return reads
+    engagement_ids = [r.id for r in reads]
+    grouped = session.execute(
+        select(
+            ScopeItem.engagement_id,
+            func.count(ScopeItem.id),
+            func.sum(case((ScopeItem.is_exclusion.is_(True), 1), else_=0)),
+        )
+        .where(ScopeItem.engagement_id.in_(engagement_ids))
+        .group_by(ScopeItem.engagement_id)
+    ).all()
+    counts: dict[uuid.UUID, tuple[int, int]] = {
+        row[0]: (int(row[1] or 0), int(row[2] or 0))
+        for row in grouped
+    }
+    for r in reads:
+        scope, excl = counts.get(r.id, (0, 0))
+        r.scope_count = scope
+        r.exclusion_count = excl
+    return reads
+
+
 def _build_export_payload(
     session: DbSession,
     eng: Engagement,
@@ -311,7 +352,7 @@ def create_engagement(
     body: EngagementCreate,
     session: DbSession,
     user: CurrentNonGuestUser,
-) -> Engagement:
+) -> EngagementRead:
     base_slug = _slugify(body.slug) if body.slug else _slugify(body.name)
     slug = _unique_slug(session, base_slug)
     eng = Engagement(
@@ -327,7 +368,8 @@ def create_engagement(
     session.add(eng)
     session.commit()
     session.refresh(eng)
-    return eng
+    # Newly created engagement has no scope items yet — counts are 0.
+    return EngagementRead.model_validate(eng)
 
 
 @router.get("/engagements", response_model=list[EngagementRead])
@@ -337,17 +379,22 @@ def list_engagements(
         EngagementStatus | None,
         Query(alias="status", description="Filter by status."),
     ] = None,
-) -> list[Engagement]:
+) -> list[EngagementRead]:
     stmt = select(Engagement)
     if status_filter is not None:
         stmt = stmt.where(Engagement.status == status_filter)
     stmt = stmt.order_by(Engagement.created_at.desc())
-    return list(session.execute(stmt).scalars())
+    rows = list(session.execute(stmt).scalars())
+    reads = [EngagementRead.model_validate(r) for r in rows]
+    return _populate_scope_counts(session, reads)
 
 
 @router.get("/engagements/{slug}", response_model=EngagementRead)
-def get_engagement(slug: str, session: DbSession) -> Engagement:
-    return _get_engagement_or_404(session, slug)
+def get_engagement(slug: str, session: DbSession) -> EngagementRead:
+    eng = _get_engagement_or_404(session, slug)
+    read = EngagementRead.model_validate(eng)
+    read.scope_count, read.exclusion_count = _scope_counts_for(session, eng.id)
+    return read
 
 
 @router.patch("/engagements/{slug}", response_model=EngagementRead)
@@ -356,7 +403,7 @@ def update_engagement(
     body: EngagementUpdate,
     session: DbSession,
     _user: CurrentNonGuestUser,
-) -> Engagement:
+) -> EngagementRead:
     eng = _get_engagement_or_404(session, slug)
     _reject_flushed(eng)
 
@@ -380,7 +427,9 @@ def update_engagement(
 
     session.commit()
     session.refresh(eng)
-    return eng
+    read = EngagementRead.model_validate(eng)
+    read.scope_count, read.exclusion_count = _scope_counts_for(session, eng.id)
+    return read
 
 
 @router.post("/engagements/{slug}/export", dependencies=[Depends(RequireScope(APIKeyScope.admin))])
