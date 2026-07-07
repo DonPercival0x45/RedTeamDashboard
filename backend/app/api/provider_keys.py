@@ -33,10 +33,13 @@ from app.schemas.provider_key import (
     ProviderKeyImport,
     ProviderKeyImportErrorRow,
     ProviderKeyImportResult,
+    ProviderKeyProbe,
+    ProviderKeyProbeResult,
     ProviderKeyRead,
     ProviderKeyUpdate,
 )
 from app.services import ephemeral_provider_key as keys
+from app.services import provider_probe
 from app.services.secret_box import last4
 
 logger = structlog.get_logger(__name__)
@@ -109,6 +112,30 @@ def _names_for_user(redis: RedisClient, user_id: uuid.UUID) -> set[str]:
     }
 
 
+def _run_probe(
+    *, provider: str, api_key: str | None, endpoint: str | None, is_local: bool
+) -> ProviderKeyProbeResult:
+    from app.core.config import settings
+
+    result = provider_probe.probe(
+        provider,
+        api_key=api_key,
+        endpoint=endpoint,
+        is_local=is_local,
+        ollama_host=settings.ollama_host,
+    )
+    return ProviderKeyProbeResult(
+        ok=result.ok,
+        reachable=result.reachable,
+        supported=result.supported,
+        status_code=result.status_code,
+        latency_ms=result.latency_ms,
+        models=result.models,
+        checked_url=result.checked_url,
+        error=result.error,
+    )
+
+
 # ── list / read ──────────────────────────────────────────────────────────
 
 
@@ -131,6 +158,49 @@ def get_my_provider_key(
     if entry is None:
         raise HTTPException(status_code=404, detail="provider key not found")
     return _entry_to_read(entry)
+
+
+# ── probe (test key + discover models) ─────────────────────────
+#
+# Path-ordering: the literal ``/probe`` route MUST be declared before the
+# ``/{key_id}`` routes below so FastAPI doesn't try to parse "probe" as a
+# UUID. (Same caveat pattern as the roadmap-suggestions router.)
+
+
+@router.post(
+    "/me/provider-keys/probe", response_model=ProviderKeyProbeResult
+)
+def probe_provider_key(
+    body: ProviderKeyProbe, user: CurrentNonGuestUser
+) -> ProviderKeyProbeResult:
+    """Test an *unsaved* key + endpoint and return the live model list.
+    Used by the Quick Add / key form before the row is created."""
+    return _run_probe(
+        provider=body.provider,
+        api_key=body.api_key,
+        endpoint=body.endpoint,
+        is_local=body.is_local,
+    )
+
+
+@router.post(
+    "/me/provider-keys/{key_id}/probe",
+    response_model=ProviderKeyProbeResult,
+)
+def probe_saved_provider_key(
+    key_id: uuid.UUID, redis: RedisClient, user: CurrentNonGuestUser
+) -> ProviderKeyProbeResult:
+    """Test an already-saved key (plaintext read from the ephemeral Redis
+    cache, never returned) and return its live model list."""
+    entry = keys.get_one(redis, user_id=user.id, key_id=key_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="provider key not found")
+    return _run_probe(
+        provider=entry.get("provider", ""),
+        api_key=entry.get("api_key"),
+        endpoint=entry.get("endpoint"),
+        is_local=bool(entry.get("is_local", False)),
+    )
 
 
 # ── create one ───────────────────────────────────────────────────────────

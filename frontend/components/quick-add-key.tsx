@@ -6,17 +6,17 @@
 // it in" flow.
 
 import { useMemo, useState } from "react";
-import { Plus } from "lucide-react";
+import { Check, Loader2, Plus, Wifi } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { createProviderKey } from "@/lib/api";
+import { createProviderKey, probeUnsavedProviderKey } from "@/lib/api";
 import {
   CUSTOM_VALUE,
   PROVIDER_PRESETS,
   type ProviderPreset,
 } from "@/lib/llm-providers";
-import type { ProviderKey } from "@/lib/types";
+import type { ProviderKey, ProviderKeyProbeResult } from "@/lib/types";
 
 type Kind = "model_provider" | "mcp_server" | "other";
 
@@ -40,6 +40,15 @@ export function QuickAddKey({
   const [name, setName] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // v0.8.4: Test-key probe state. ``probeResult`` reflects the most recent
+  // Test click — its models list is auto-applied to the entry that gets
+  // saved (overriding preset defaults), and the ok/reachable flags drive
+  // the inline status pill below the Test button.
+  const [probing, setProbing] = useState(false);
+  const [probeResult, setProbeResult] = useState<ProviderKeyProbeResult | null>(
+    null,
+  );
+  const [probeError, setProbeError] = useState<string | null>(null);
 
   const preset = useMemo(
     () => PROVIDER_PRESETS.find((p) => p.slug === presetSlug),
@@ -64,6 +73,45 @@ export function QuickAddKey({
       : `${effectiveProvider}`;
   }, [effectiveProvider, apiKey]);
 
+  const canTest =
+    !!effectiveProvider &&
+    !probing &&
+    (apiKeyRequired ? !!apiKey : true) &&
+    (endpointRequired ? !!endpoint.trim() : true);
+
+  const onTest = async () => {
+    setProbeError(null);
+    setProbeResult(null);
+    if (!effectiveProvider) {
+      setProbeError("Provider is required.");
+      return;
+    }
+    if (apiKeyRequired && !apiKey) {
+      setProbeError("API key is required to test this provider.");
+      return;
+    }
+    if (endpointRequired && !endpoint.trim()) {
+      setProbeError("Endpoint is required to test this provider.");
+      return;
+    }
+    setProbing(true);
+    try {
+      const result = await probeUnsavedProviderKey({
+        name: (name.trim() || defaultName).trim() || "probe",
+        provider: effectiveProvider,
+        kind,
+        is_local: preset?.isLocal ?? false,
+        endpoint: endpoint.trim() || null,
+        api_key: apiKey || null,
+      });
+      setProbeResult(result);
+    } catch (err) {
+      setProbeError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setProbing(false);
+    }
+  };
+
   const onSubmit = async () => {
     setError(null);
     if (!effectiveProvider) {
@@ -78,6 +126,9 @@ export function QuickAddKey({
       setError("Endpoint is required for this provider/kind.");
       return;
     }
+    // v0.8.4: a fresh probe catalog wins over the preset's defaults when
+    // both are available — the analyst just confirmed the live list.
+    const liveModels = probeResult?.ok ? probeResult.models : null;
     setSubmitting(true);
     try {
       const created = await createProviderKey({
@@ -85,7 +136,7 @@ export function QuickAddKey({
         provider: effectiveProvider,
         kind,
         is_local: preset?.isLocal ?? false,
-        models: preset?.modelsDefault ?? [],
+        models: liveModels ?? preset?.modelsDefault ?? [],
         endpoint: endpoint.trim() || null,
         api_key: apiKey || null,
       });
@@ -209,7 +260,40 @@ export function QuickAddKey({
 
       {error && <p className="text-sm text-critical">{error}</p>}
 
-      <div className="flex items-center justify-end">
+      {(probeResult || probeError) && (
+        <div className="rounded-md border border-border bg-muted/30 px-3 py-2 text-xs">
+          {probeResult ? (
+            probeResult.ok ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-emerald-600 dark:text-emerald-400">
+                  <Check className="h-3 w-3" /> test passed
+                </span>
+                <span className="text-muted-foreground">
+                  {probeResult.models.length} model{probeResult.models.length === 1 ? "" : "s"}
+                  {probeResult.latency_ms != null ? ` · ${probeResult.latency_ms} ms` : ""}
+                  {probeResult.checked_url ? ` · ${probeResult.checked_url}` : ""}
+                </span>
+              </div>
+            ) : (
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-amber-600 dark:text-amber-400">
+                    <Wifi className="h-3 w-3" />
+                    {probeResult.reachable ? "reachable but rejected" : "unreachable"}
+                  </span>
+                  {probeResult.status_code != null && (
+                    <span className="text-muted-foreground">HTTP {probeResult.status_code}</span>
+                  )}
+                </div>
+                {probeResult.error && <p className="text-critical">{probeResult.error}</p>}
+              </div>
+            )
+          ) : null}
+          {probeError && <p className="text-critical">{probeError}</p>}
+        </div>
+      )}
+
+      <div className="flex items-center justify-end gap-2">
         <Button
           type="button"
           onClick={onSubmit}
@@ -222,6 +306,19 @@ export function QuickAddKey({
         >
           <Plus className="mr-1.5 h-3.5 w-3.5" />
           {submitting ? "Adding…" : "Add key"}
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          onClick={onTest}
+          disabled={!canTest}
+        >
+          {probing ? (
+            <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Wifi className="mr-1.5 h-3.5 w-3.5" />
+          )}
+          {probing ? "Testing…" : "Test"}
         </Button>
       </div>
     </div>

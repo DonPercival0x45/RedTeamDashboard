@@ -506,6 +506,27 @@ export function updateProviderKey(
   );
 }
 
+// Test an *unsaved* key + endpoint and pull the live model catalog. Used by
+// the Quick Add form before the row is created.
+export function probeUnsavedProviderKey(
+  body: import("@/lib/types").ProviderKeyEntry & { api_key?: string | null },
+): Promise<import("@/lib/types").ProviderKeyProbeResult> {
+  return request<import("@/lib/types").ProviderKeyProbeResult>(
+    "/me/provider-keys/probe",
+    { method: "POST", body: JSON.stringify(body) },
+  );
+}
+
+// Test an already-saved key by ID (plaintext stays in the backend).
+export function probeSavedProviderKey(
+  keyId: string,
+): Promise<import("@/lib/types").ProviderKeyProbeResult> {
+  return request<import("@/lib/types").ProviderKeyProbeResult>(
+    `/me/provider-keys/${keyId}/probe`,
+    { method: "POST" },
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Orchestrator (Phase 9)
 // ---------------------------------------------------------------------------
