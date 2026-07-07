@@ -223,10 +223,11 @@ def _unwrap_content_parts(raw: Any) -> Any:
         for part in raw:
             # Both dict-shaped {"type":"text","text":"..."} and object-shaped
             # TextContent (with .text attribute) are common.
-            if isinstance(part, Mapping):
-                txt = part.get("text")
-            else:
-                txt = getattr(part, "text", None)
+            txt = (
+                part.get("text")
+                if isinstance(part, Mapping)
+                else getattr(part, "text", None)
+            )
             if isinstance(txt, str):
                 text_chunks.append(txt)
         if text_chunks:
