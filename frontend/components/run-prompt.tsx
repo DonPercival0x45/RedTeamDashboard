@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { CheckCircle2, Loader2 } from "lucide-react";
+import { CheckCircle2, Loader2, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -14,10 +14,10 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { startRun } from "@/lib/api";
-import { useProviderKeys } from "@/lib/hooks";
+import { useProviderKeys, useScope } from "@/lib/hooks";
 import { CUSTOM_VALUE, getPresetModels } from "@/lib/llm-providers";
 import { runSlugFromId, useRunToast } from "@/components/run-toast-provider";
-import type { LLMProvider } from "@/lib/types";
+import type { LLMProvider, ScopeItem, ScopeKind } from "@/lib/types";
 
 interface LastDispatched {
   threadId: string;
@@ -61,6 +61,23 @@ const PROVIDER_OPTIONS: { value: LLMProvider; label: string }[] = [
   { value: "custom", label: "Custom (OpenAI-compatible)" },
 ];
 
+// v1.4.5: scope-derived quick-action chips (roadmap #2, "Scope Fix").
+// Each actionable (non-exclusion) scope item maps to a canned first-move
+// prompt; clicking a chip prefills the prompt so the analyst reviews and
+// hits Start. Batch "fire all" is intentionally deferred — the roadmap
+// flags its concurrency / LLM-cost concerns and those need a cap +
+// confirmation step before shipping.
+const SCOPE_ACTION_TEMPLATES: Record<ScopeKind, (value: string) => string> = {
+  domain: (v) =>
+    `Enumerate subdomains, DNS records, and certificate-transparency logs for ${v}, then probe what's live.`,
+  ip: (v) =>
+    `Run port discovery and service detection against ${v}, then enumerate any open services.`,
+  cidr: (v) =>
+    `Discover live hosts in ${v} and enumerate open ports and services across the range.`,
+  url: (v) =>
+    `Recon and probe ${v}: fingerprint the stack, enumerate paths, and surface anything notable.`,
+};
+
 export function RunPrompt({
   slug,
   onStarted,
@@ -70,6 +87,11 @@ export function RunPrompt({
 }) {
   const [prompt, setPrompt] = useState(
     "enumerate acme.com subdomains and probe what's live",
+  );
+  const { data: scopeItems } = useScope(slug);
+  const scopeActions = useMemo<ScopeItem[]>(
+    () => (scopeItems ?? []).filter((s) => !s.is_exclusion),
+    [scopeItems],
   );
   const [provider, setProvider] = useState<LLMProvider>("anthropic");
   // v0.8.3: model is now a hybrid dropdown. ``modelSelect`` is what's
@@ -200,6 +222,30 @@ export function RunPrompt({
               onChange={(event) => setPrompt(event.target.value)}
               rows={3}
             />
+            {scopeActions.length > 0 && (
+              <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                <span className="text-xs text-muted-foreground">
+                  Quick actions:
+                </span>
+                {scopeActions.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() =>
+                      setPrompt(
+                        SCOPE_ACTION_TEMPLATES[item.kind](item.value),
+                      )
+                    }
+                    className="inline-flex items-center gap-1 rounded-full border border-border bg-muted/40 px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:border-foreground/40 hover:bg-secondary hover:text-foreground"
+                    title={`Prefill a run for ${item.value}`}
+                  >
+                    <Zap className="h-3 w-3" />
+                    <span className="font-mono">{item.kind}</span>
+                    <span className="max-w-[12rem] truncate">{item.value}</span>
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-2">
