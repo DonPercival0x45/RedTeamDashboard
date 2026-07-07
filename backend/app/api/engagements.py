@@ -71,6 +71,7 @@ from app.models import (
     FindingStatus,
     FindingSummary,
     Observation,
+    ObservationFindingLink,
     ScopeItem,
     Severity,
     TaskKind,
@@ -875,16 +876,51 @@ def validate_finding(
 # ---------------------------------------------------------------------------
 
 
+def _observation_to_read(
+    obs: Observation, finding_ids: list[uuid.UUID] | None = None
+) -> dict[str, Any]:
+    """Project an Observation ORM row into the wire shape, attaching the
+    findings it references. ``finding_ids`` is passed in (batched at the
+    list layer) to avoid an N+1 per observation."""
+    return {
+        "id": obs.id,
+        "content": obs.content,
+        "phase": obs.phase,
+        "created_by": obs.created_by,
+        "created_at": obs.created_at,
+        "finding_ids": list(finding_ids or []),
+    }
+
+
+def _observation_finding_ids(
+    session: DbSession, observation_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, list[uuid.UUID]]:
+    """Batched lookup: observation_id -> [finding_id, ...] it references."""
+    if not observation_ids:
+        return {}
+    rows = session.execute(
+        select(ObservationFindingLink.observation_id, ObservationFindingLink.finding_id)
+        .where(ObservationFindingLink.observation_id.in_(observation_ids))
+        .order_by(ObservationFindingLink.created_at)
+    ).all()
+    out: dict[uuid.UUID, list[uuid.UUID]] = {}
+    for obs_id, finding_id in rows:
+        out.setdefault(obs_id, []).append(finding_id)
+    return out
+
+
 @router.get("/engagements/{slug}/observations", response_model=list[ObservationRead])
-def list_observations(slug: str, session: DbSession) -> list[Observation]:
+def list_observations(slug: str, session: DbSession) -> list[dict[str, Any]]:
     eng = _get_engagement_or_404(session, slug)
-    return list(
+    rows = list(
         session.execute(
             select(Observation)
             .where(Observation.engagement_id == eng.id)
             .order_by(Observation.created_at)
         ).scalars()
     )
+    finding_ids = _observation_finding_ids(session, [o.id for o in rows])
+    return [_observation_to_read(o, finding_ids.get(o.id, [])) for o in rows]
 
 
 @router.post(
@@ -897,7 +933,7 @@ def create_observation(
     body: ObservationCreate,
     session: DbSession,
     user: CurrentUser,
-) -> Observation:
+) -> dict[str, Any]:
     eng = _get_engagement_or_404(session, slug)
     _reject_flushed(eng)
     obs = Observation(
@@ -909,7 +945,7 @@ def create_observation(
     session.add(obs)
     session.commit()
     session.refresh(obs)
-    return obs
+    return _observation_to_read(obs, [])
 
 
 @router.delete("/observations/{observation_id}", status_code=204)
@@ -924,6 +960,115 @@ def delete_observation(
     session.delete(obs)
     session.commit()
     return Response(status_code=204)
+
+
+# ── observation ↔ finding links (v1.4.8) ──────────────────────────────
+
+
+def _engagement_for_observation(session: DbSession, observation_id: uuid.UUID) -> uuid.UUID:
+    eng_id = session.execute(
+        select(Observation.engagement_id).where(Observation.id == observation_id)
+    ).scalar_one_or_none()
+    if eng_id is None:
+        raise HTTPException(status_code=404, detail="observation not found")
+    return eng_id
+
+
+@router.post(
+    "/observations/{observation_id}/findings/{finding_id}",
+    response_model=ObservationRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def link_observation_to_finding(
+    observation_id: uuid.UUID,
+    finding_id: uuid.UUID,
+    session: DbSession,
+    _user: CurrentUser,
+) -> dict[str, Any]:
+    """Attach an observation to a finding it supports. Idempotent — a
+    repeat call returns the observation with the link already present."""
+    obs_eng = _engagement_for_observation(session, observation_id)
+    finding = session.get(Finding, finding_id)
+    if finding is None:
+        raise HTTPException(status_code=404, detail="finding not found")
+    # Cross-engagement links make no sense and would confuse the report.
+    if finding.engagement_id != obs_eng:
+        raise HTTPException(
+            status_code=400,
+            detail="observation and finding belong to different engagements",
+        )
+    existing = session.get(
+        ObservationFindingLink,
+        {"observation_id": observation_id, "finding_id": finding_id},
+    )
+    if existing is None:
+        session.add(
+            ObservationFindingLink(
+                observation_id=observation_id, finding_id=finding_id
+            )
+        )
+        session.commit()
+    obs = session.get(Observation, observation_id)
+    assert obs is not None
+    return _observation_to_read(
+        obs, _observation_finding_ids(session, [observation_id]).get(observation_id, [])
+    )
+
+
+@router.delete(
+    "/observations/{observation_id}/findings/{finding_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+)
+def unlink_observation_from_finding(
+    observation_id: uuid.UUID,
+    finding_id: uuid.UUID,
+    session: DbSession,
+    _user: CurrentUser,
+) -> Response:
+    """Remove an observation→finding reference. Idempotent — 204 whether or
+    not the link existed."""
+    link = session.get(
+        ObservationFindingLink,
+        {"observation_id": observation_id, "finding_id": finding_id},
+    )
+    if link is not None:
+        session.delete(link)
+        session.commit()
+    return Response(status_code=204)
+
+
+@router.get(
+    "/findings/{finding_id}/observations", response_model=list[ObservationRead]
+)
+def list_observations_for_finding(
+    finding_id: uuid.UUID, session: DbSession
+) -> list[dict[str, Any]]:
+    """Back-references for the finding slide-over — the observations that
+    reference this finding. Fetched on open (like attachments) so the
+    findings list stays N+1-free."""
+    finding = session.get(Finding, finding_id)
+    if finding is None:
+        raise HTTPException(status_code=404, detail="finding not found")
+    obs_ids = [
+        row[0]
+        for row in session.execute(
+            select(ObservationFindingLink.observation_id).where(
+                ObservationFindingLink.finding_id == finding_id
+            )
+        ).all()
+    ]
+    if not obs_ids:
+        return []
+    rows = list(
+        session.execute(
+            select(Observation)
+            .where(Observation.id.in_(obs_ids))
+            .order_by(Observation.created_at)
+        ).scalars()
+    )
+    finding_ids = _observation_finding_ids(session, [o.id for o in rows])
+    return [_observation_to_read(o, finding_ids.get(o.id, [])) for o in rows]
 
 
 # ---------------------------------------------------------------------------

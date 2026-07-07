@@ -580,6 +580,77 @@ def test_finding_tags_cap_at_twenty(
     assert created["tags"][-1] == "tag-19"
 
 
+def test_observation_finding_link_round_trip(
+    client: TestClient, cleanup_slugs: list[str]
+) -> None:
+    """v1.4.8: an observation can reference findings; the back-ref shows up
+    on the finding, and unlink removes it."""
+    eng = _create(client, f"Link holder {uuid.uuid4().hex[:6]}")
+    cleanup_slugs.append(eng["slug"])
+
+    finding = _create_finding(client, eng["slug"], title="hardened domain")
+    fid = finding["id"]
+
+    obs = client.post(
+        f"/engagements/{eng['slug']}/observations",
+        json={"content": "This domain is remarkably hardened."},
+        headers=_headers(),
+    ).json()
+    oid = obs["id"]
+    # New observations carry an empty finding_ids list.
+    assert obs["finding_ids"] == []
+
+    # Link (idempotent — call twice, still one ref).
+    linked = client.post(f"/observations/{oid}/findings/{fid}", headers=_headers())
+    assert linked.status_code == 201, linked.text
+    assert linked.json()["finding_ids"] == [fid]
+    again = client.post(f"/observations/{oid}/findings/{fid}", headers=_headers())
+    assert again.status_code == 201
+    assert again.json()["finding_ids"] == [fid]
+
+    # The observation list carries the link too.
+    listed = client.get(f"/engagements/{eng['slug']}/observations").json()
+    assert listed[0]["finding_ids"] == [fid]
+
+    # Back-ref: the finding surfaces the observations that reference it.
+    back = client.get(f"/findings/{fid}/observations").json()
+    assert len(back) == 1
+    assert back[0]["id"] == oid
+
+    # Unlink (idempotent).
+    gone = client.delete(f"/observations/{oid}/findings/{fid}", headers=_headers())
+    assert gone.status_code == 204
+    assert (
+        client.delete(f"/observations/{oid}/findings/{fid}", headers=_headers()).status_code
+        == 204
+    )
+    assert client.get(f"/findings/{fid}/observations").json() == []
+
+
+def test_observation_link_rejects_cross_engagement(
+    client: TestClient, cleanup_slugs: list[str]
+) -> None:
+    """A link across two different engagements is rejected — it would
+    confuse the report and the back-ref surface."""
+    eng_a = _create(client, f"Eng A {uuid.uuid4().hex[:6]}")
+    eng_b = _create(client, f"Eng B {uuid.uuid4().hex[:6]}")
+    cleanup_slugs.extend([eng_a["slug"], eng_b["slug"]])
+
+    finding_b = _create_finding(client, eng_b["slug"], title="other eng finding")
+    obs_a = client.post(
+        f"/engagements/{eng_a['slug']}/observations",
+        json={"content": "note in eng A"},
+        headers=_headers(),
+    ).json()
+
+    bad = client.post(
+        f"/observations/{obs_a['id']}/findings/{finding_b['id']}",
+        headers=_headers(),
+    )
+    assert bad.status_code == 400
+    assert "different engagements" in bad.json()["detail"]
+
+
 # ---------------------------------------------------------------------------
 # Runs
 # ---------------------------------------------------------------------------
