@@ -457,6 +457,70 @@ def test_list_findings_empty_for_new_engagement(
     assert response.json() == []
 
 
+def _create_finding(
+    client: TestClient, slug: str, title: str = "t", **fields: Any
+) -> dict[str, Any]:
+    body: dict[str, Any] = {"title": title}
+    body.update(fields)
+    r = client.post(f"/engagements/{slug}/findings", json=body, headers=_headers())
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+def test_finding_tags_round_trip(client: TestClient, cleanup_slugs: list[str]) -> None:
+    """v1.4.7: free-form tags survive create -> read -> patch -> clear."""
+    eng = _create(client, f"Tags holder {uuid.uuid4().hex[:6]}")
+    cleanup_slugs.append(eng["slug"])
+
+    # Create with messy tags — normalizer trims, de-dups, caps length.
+    created = _create_finding(
+        client,
+        eng["slug"],
+        title="tagged",
+        tags=[" xss ", "xss", "recon", "z" * 50],
+    )
+    assert created["tags"] == ["xss", "recon", "z" * 40]
+
+    # List carries the tags.
+    listed = client.get(f"/engagements/{eng['slug']}/findings").json()
+    assert listed[0]["tags"] == ["xss", "recon", "z" * 40]
+
+    fid = created["id"]
+    # PATCH replaces the whole list.
+    patched = client.patch(
+        f"/findings/{fid}",
+        json={"tags": ["xss", "cred-leak"]},
+        headers=_headers(),
+    ).json()
+    assert patched["tags"] == ["xss", "cred-leak"]
+
+    # PATCH with [] clears.
+    cleared = client.patch(
+        f"/findings/{fid}",
+        json={"tags": []},
+        headers=_headers(),
+    ).json()
+    assert cleared["tags"] == []
+
+    # A finding created without tags defaults to [].
+    bare = _create_finding(client, eng["slug"], title="no tags")
+    assert bare["tags"] == []
+
+
+def test_finding_tags_cap_at_twenty(
+    client: TestClient, cleanup_slugs: list[str]
+) -> None:
+    """The normalizer caps at 20 tags so the column can't be abused."""
+    eng = _create(client, f"Cap holder {uuid.uuid4().hex[:6]}")
+    cleanup_slugs.append(eng["slug"])
+    created = _create_finding(
+        client, eng["slug"], tags=[f"tag-{i}" for i in range(30)]
+    )
+    assert len(created["tags"]) == 20
+    assert created["tags"][0] == "tag-0"
+    assert created["tags"][-1] == "tag-19"
+
+
 # ---------------------------------------------------------------------------
 # Runs
 # ---------------------------------------------------------------------------

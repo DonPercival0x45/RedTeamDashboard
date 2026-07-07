@@ -697,6 +697,8 @@ export function updateFinding(
     // v1.4.0: pass null explicitly to clear the exclusion; omit the key
     // to leave it unchanged. `undefined` is skipped by JSON.stringify.
     exclusion?: import("@/lib/types").FindingExclusion | null;
+    // v1.4.7: replace the whole tag list. Pass [] to clear.
+    tags?: string[];
   },
 ): Promise<Finding> {
   return request<Finding>(`/findings/${findingId}`, {
