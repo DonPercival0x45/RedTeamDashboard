@@ -215,6 +215,8 @@ export function FindingsView({
   // "all" means no severity filter active. Pending validation has its own
   // tile that toggles the status filter to pending_validation instead.
   const [severityFilter, setSeverityFilter] = useState<Severity | "all">("all");
+  // v1.4.7: tag filter set by clicking a tag chip on a row (null = off).
+  const [tagFilter, setTagFilter] = useState<string | null>(null);
 
   const counts = {
     critical: findings.filter((f) => f.severity === "critical").length,
@@ -269,6 +271,7 @@ export function FindingsView({
     .filter((f) => phase === "all" || f.phase === phase)
     .filter((f) => status === "all" || f.status === status)
     .filter((f) => severityFilter === "all" || f.severity === severityFilter)
+    .filter((f) => tagFilter === null || (f.tags ?? []).includes(tagFilter))
     .filter(matchesSearch)
     .slice()
     .sort(compareFindings);
@@ -695,6 +698,29 @@ export function FindingsView({
                           {EXCLUSION_LABEL[f.exclusion]}
                         </Badge>
                       )}
+                      {(f.tags ?? []).map((tag) => (
+                        <button
+                          key={tag}
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setTagFilter((prev) => (prev === tag ? null : tag));
+                          }}
+                          className={cn(
+                            "rounded-full border px-1.5 py-0.5 text-[10px]",
+                            tagFilter === tag
+                              ? "border-foreground/60 bg-secondary text-foreground"
+                              : "border-border bg-muted/40 text-muted-foreground hover:border-foreground/40 hover:text-foreground",
+                          )}
+                          title={
+                            tagFilter === tag
+                              ? `Click to stop filtering by “${tag}”`
+                              : `Click to filter by “${tag}”`
+                          }
+                        >
+                          {tag}
+                        </button>
+                      ))}
                     </div>
                     <div className="text-xs text-muted-foreground">
                       {PHASE_LABEL[f.phase]}
@@ -1199,6 +1225,37 @@ function FindingSlideOver({
     }
   };
 
+  // v1.4.7: free-form tags. Replace the whole list on each change so the
+  // backend PATCH semantics (tags = full list) line up with the UI. The
+  // normalizer on the backend trims / de-dups / caps, so we keep it dumb
+  // here — just append the trimmed input.
+  const [tagDraft, setTagDraft] = useState("");
+  const setTags = async (next: string[]) => {
+    setBusy(true);
+    setError(null);
+    try {
+      onUpdated(await updateFinding(finding.id, { tags: next }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const addTag = () => {
+    const t = tagDraft.trim();
+    if (!t) return;
+    const current = finding.tags ?? [];
+    if (current.includes(t)) {
+      setTagDraft("");
+      return;
+    }
+    setTagDraft("");
+    void setTags([...current, t]);
+  };
+  const removeTag = (tag: string) => {
+    void setTags((finding.tags ?? []).filter((t) => t !== tag));
+  };
+
   // Agents may run scan/enum paths only — never exploitation (CHARTER decided).
   const agentAllowed = finding.phase !== "exploit";
 
@@ -1578,6 +1635,60 @@ function FindingSlideOver({
                   Clear
                 </Button>
               )}
+            </div>
+          </div>
+
+          {/* v1.4.7: free-form tags. Correlate / filter foundation. */}
+          <div className="mt-3">
+            <p className="text-xs uppercase tracking-wide text-muted-foreground">
+              Tags
+            </p>
+            <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+              {(finding.tags ?? []).map((tag) => (
+                <span
+                  key={tag}
+                  className="inline-flex items-center gap-1 rounded-full border border-border bg-muted/40 px-2 py-0.5 text-xs"
+                >
+                  {tag}
+                  <button
+                    type="button"
+                    aria-label={`Remove tag ${tag}`}
+                    disabled={busy}
+                    onClick={() => removeTag(tag)}
+                    className="text-muted-foreground hover:text-critical disabled:opacity-50"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </span>
+              ))}
+              {(finding.tags ?? []).length === 0 && (
+                <span className="text-xs text-muted-foreground">
+                  No tags yet.
+                </span>
+              )}
+            </div>
+            <div className="mt-1.5 flex gap-2">
+              <Input
+                value={tagDraft}
+                onChange={(e) => setTagDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    addTag();
+                  }
+                }}
+                placeholder="Add a tag (e.g. xss, cred-leak)"
+                disabled={busy}
+                className="h-8 flex-1 text-xs"
+              />
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={busy || !tagDraft.trim()}
+                onClick={addTag}
+              >
+                Add
+              </Button>
             </div>
           </div>
 

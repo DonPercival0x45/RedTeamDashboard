@@ -158,3 +158,10 @@ class Finding(Base, TimestampMixin):
     # with the per-hit records stored inside ``details['items']``.
     # Partial unique index is defined in migration 0036.
     group_key: Mapped[str | None] = mapped_column(String(200), nullable=True)
+
+    # Free-form analyst tags (v1.4.7). JSONB list of trimmed strings —
+    # the correlate/filter foundation roadmap #1 was after. Defaults to
+    # an empty list; normalized (trimmed, de-duplicated, capped) on write
+    # in the schemas. Not populated by importers — tags are analyst-
+    # curated post-ingest.
+    tags: Mapped[list[str]] = mapped_column(JSONB, default=list, nullable=False)
