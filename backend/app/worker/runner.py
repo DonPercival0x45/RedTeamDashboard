@@ -184,10 +184,13 @@ class RunRunner:
 
             from app.services.ephemeral_provider_key import resolve_for_user
 
+            key_id_raw = model_raw.get("key_id")
+            key_id = _uuid.UUID(str(key_id_raw)) if key_id_raw else None
             resolved = resolve_for_user(
                 self._redis,
                 user_id=_uuid.UUID(str(acting_user_id_raw)),
                 provider=provider,
+                key_id=key_id,
             )
             model["api_key"] = resolved.api_key
             model["endpoint"] = resolved.endpoint

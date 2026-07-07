@@ -180,6 +180,9 @@ class RunModel(BaseModel):
             "faster than this repo."
         ),
     )
+    # v1.4.12: select a specific cached provider key by id (roadmap #3 —
+    # "keys for specific tasks"). Omit / null to keep the MRU behavior.
+    key_id: UUID | None = None
 
 
 class RunStart(BaseModel):

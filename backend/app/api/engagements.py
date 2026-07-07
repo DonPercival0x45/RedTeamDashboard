@@ -2850,8 +2850,36 @@ def start_run(
         provider, model_name = body.model.provider, body.model.name
     else:
         provider, model_name = default_provider_model()
-    _require_user_provider_key(redis_client, user_id=user.id, provider=provider)
-    effective_model = RunModel(provider=provider, name=model_name)
+    # v1.4.12: if the analyst pinned a specific cached key, validate it
+    # belongs to them and matches the provider BEFORE we stash it for the
+    # worker. resolve_for_user with key_id does the membership/kind/provider
+    # checks and raises NoProviderKeyError on any mismatch.
+    chosen_key_id = body.model.key_id if body.model is not None else None
+    if chosen_key_id is not None:
+        from app.services.ephemeral_provider_key import (
+            NoProviderKeyError,
+            resolve_for_user,
+        )
+
+        try:
+            resolve_for_user(
+                redis_client,
+                user_id=user.id,
+                provider=provider,
+                key_id=chosen_key_id,
+            )
+        except NoProviderKeyError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "the selected provider key isn't cached for "
+                    f"'{provider}' (or doesn't belong to you). Upload or "
+                    "re-select it at /settings/keys."
+                ),
+            ) from exc
+    else:
+        _require_user_provider_key(redis_client, user_id=user.id, provider=provider)
+    effective_model = RunModel(provider=provider, name=model_name, key_id=chosen_key_id)
 
     thread_id = uuid.uuid4()
     # Stash the (provider, model) so the approval endpoint can echo it on
@@ -2862,6 +2890,7 @@ def start_run(
         provider=effective_model.provider,
         model_name=effective_model.name,
         acting_user_id=user.id,
+        key_id=chosen_key_id,
     )
 
     # Stage 3+1: every worker run carries an MCP lease — the Stage 1.5

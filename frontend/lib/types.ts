@@ -582,6 +582,8 @@ export type LLMProvider =
 export interface RunModel {
   provider: LLMProvider;
   name: string;
+  // v1.4.12: pin a specific cached provider key by id (roadmap #3).
+  key_id?: string | null;
 }
 
 export interface RunStartResponse {

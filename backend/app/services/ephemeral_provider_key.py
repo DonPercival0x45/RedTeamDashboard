@@ -205,15 +205,43 @@ def resolve_for_user(
     *,
     user_id: uuid.UUID,
     provider: str,
+    key_id: uuid.UUID | None = None,
 ) -> ResolvedProviderKey:
-    """Return the user's most-recently-updated ``model_provider`` entry
-    for ``provider``. Raises :class:`NoProviderKeyError` if none cached.
+    """Return the user's ``model_provider`` entry for ``provider``.
 
-    Selection rule: MRU within ``kind=model_provider`` matching the
-    requested provider (case-insensitive). MCP-server entries are
-    ignored — they live in the same hash but never satisfy an LLM call.
+    Selection rule:
+      * ``key_id`` given — that exact entry (must be ``model_provider``,
+        belong to ``user_id``, and match ``provider``). Lets the analyst
+        pick a specific key for a run instead of always taking the MRU
+        one (roadmap #3 — "keys for specific tasks").
+      * else — the most-recently-updated entry for ``provider`` (MRU),
+        the original behavior.
+
+    Raises :class:`NoProviderKeyError` if none cached (or the named
+    ``key_id`` isn't a valid ``model_provider`` entry for this provider).
+    MCP-server entries are ignored — they never satisfy an LLM call.
     """
     provider_norm = provider.strip().lower()
+
+    if key_id is not None:
+        entry = get_one(redis, user_id=user_id, key_id=key_id)
+        if (
+            entry is None
+            or entry.get("kind") != "model_provider"
+            or (entry.get("provider") or "").lower() != provider_norm
+        ):
+            raise NoProviderKeyError(user_id=user_id, provider=provider_norm)
+        if not entry.get("api_key") and not entry.get("is_local"):
+            raise NoProviderKeyError(user_id=user_id, provider=provider_norm)
+        return ResolvedProviderKey(
+            row_id=uuid.UUID(str(entry["id"])),
+            name=str(entry.get("name") or ""),
+            provider=str(entry.get("provider") or provider_norm),
+            is_local=bool(entry.get("is_local")),
+            api_key=entry.get("api_key"),
+            endpoint=entry.get("endpoint"),
+        )
+
     candidates: list[dict[str, Any]] = []
     for entry in list_all(redis, user_id=user_id):
         if entry.get("kind") != "model_provider":
