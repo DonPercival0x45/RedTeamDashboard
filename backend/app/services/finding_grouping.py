@@ -117,7 +117,7 @@ def compute_group_key(
     if not tool:
         return None
     args = args or {}
-    data = data or {}
+    data = _unwrap_legacy_mcp_wrapper(data or {})
 
     if tool == "subfinder":
         domain = str(data.get("domain") or args.get("domain") or "").strip().lower()
@@ -210,6 +210,50 @@ def compute_group_key(
 # ---------------------------------------------------------------------------
 
 
+def _unwrap_legacy_mcp_wrapper(data: Mapping[str, Any] | None) -> Mapping[str, Any]:
+    """v1.4.9: heal legacy finding rows that were persisted before v1.4.8's
+    MCP content-parts fix landed.
+
+    Before v1.4.8, the worker's ``_coerce_tool_response`` didn't unwrap the
+    MCP wire format's content-parts list (``[{"type":"text","text":"…json…"}]``)
+    and returned ``ToolResult(data={"value": [content-parts]})``. Every
+    finding created by those runs has its actual tool output (subdomains,
+    open ports, etc.) buried inside ``data["value"][0]["text"]`` as a
+    JSON string. Repair-groups called ``extract_items`` on those rows,
+    which saw ``data.subdomains = None`` and produced empty items[].
+
+    This helper detects that wrapper shape and returns the parsed inner
+    dict so the extractors can find the real keys. Non-wrapper data
+    passes through untouched.
+    """
+    if not isinstance(data, Mapping):
+        return {}
+    value = data.get("value")
+    if not (isinstance(value, list) and value):
+        return data
+    text_chunks: list[str] = []
+    for part in value:
+        txt = (
+            part.get("text")
+            if isinstance(part, Mapping)
+            else getattr(part, "text", None)
+        )
+        if isinstance(txt, str):
+            text_chunks.append(txt)
+    if not text_chunks:
+        return data
+    joined = "".join(text_chunks)
+    try:
+        import json as _json
+
+        parsed = _json.loads(joined)
+    except (ValueError, TypeError):
+        return data
+    if isinstance(parsed, Mapping):
+        return parsed
+    return data
+
+
 def extract_items(
     tool: str | None,
     data: Mapping[str, Any] | None,
@@ -222,10 +266,14 @@ def extract_items(
 
     Unknown tools fall back to ``[data]`` — the whole blob becomes one
     item so nothing gets lost.
+
+    v1.4.9: transparently unwraps legacy content-parts wrappers before
+    extracting so Repair-groups can heal rows created by pre-v1.4.8
+    worker code.
     """
     if not tool:
         return [dict(data)] if data else []
-    data = data or {}
+    data = _unwrap_legacy_mcp_wrapper(data)
 
     if tool in ("subfinder", "crt_sh"):
         return [
