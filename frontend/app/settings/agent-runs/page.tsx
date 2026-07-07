@@ -85,7 +85,7 @@ const OUTCOME_ICON: Record<StatusOutcome, LucideIcon> = {
 
 const OUTCOME_CLASS: Record<StatusOutcome, string> = {
   success: "border-emerald-500/50 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200",
-  empty: "border-slate-500/50 bg-slate-500/10 text-slate-200",
+  empty: "border-slate-500/50 bg-slate-500/10 text-slate-700 dark:text-slate-200",
   partial: "border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-200",
   errored: "border-rose-500/50 bg-rose-500/10 text-rose-700 dark:text-rose-200",
 };

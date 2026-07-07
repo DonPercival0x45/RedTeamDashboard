@@ -61,7 +61,7 @@ function bucketToFilters(b: PriorityBucket): {
 }
 
 function priorityChipClass(p: number | null): string {
-  if (p === null) return "border-slate-500/40 bg-slate-500/10 text-slate-200";
+  if (p === null) return "border-slate-500/40 bg-slate-500/10 text-slate-700 dark:text-slate-200";
   if (p <= 3) return "border-rose-500/40 bg-rose-500/10 text-rose-700 dark:text-rose-200";
   if (p <= 6) return "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-200";
   return "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200";
