@@ -71,6 +71,9 @@ export interface ScopeItem {
   value: string;
   is_exclusion: boolean;
   note: string | null;
+  // v1.4.13: provenance (roadmap #5). "defined" = client-provided,
+  // "found" = added from findings.
+  source?: string;
   created_at: string;
   updated_at: string;
 }
