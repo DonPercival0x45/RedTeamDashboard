@@ -1,11 +1,11 @@
 "use client";
 
 import { useState } from "react";
-import { Trash2 } from "lucide-react";
+import { Check, Loader2, Trash2, Wifi } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { deleteProviderKey } from "@/lib/api";
-import type { ProviderKey } from "@/lib/types";
+import { deleteProviderKey, probeSavedProviderKey } from "@/lib/api";
+import type { ProviderKey, ProviderKeyProbeResult } from "@/lib/types";
 
 export function ProviderKeyList({
   keys,
@@ -16,6 +16,34 @@ export function ProviderKeyList({
 }) {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // v0.8.5: saved-key retest state (wires up the previously-unused
+  // probeSavedProviderKey fn). One probe at a time; results cached per key
+  // id so re-opening a row still shows the last outcome.
+  const [probingId, setProbingId] = useState<string | null>(null);
+  const [probes, setProbes] = useState<Record<string, ProviderKeyProbeResult>>(
+    {},
+  );
+  const [probeErrors, setProbeErrors] = useState<Record<string, string>>({});
+
+  const onTest = async (k: ProviderKey) => {
+    setProbingId(k.id);
+    setProbeErrors((prev) => {
+      const next = { ...prev };
+      delete next[k.id];
+      return next;
+    });
+    try {
+      const result = await probeSavedProviderKey(k.id);
+      setProbes((prev) => ({ ...prev, [k.id]: result }));
+    } catch (err) {
+      setProbeErrors((prev) => ({
+        ...prev,
+        [k.id]: err instanceof Error ? err.message : String(err),
+      }));
+    } finally {
+      setProbingId(null);
+    }
+  };
 
   const onDelete = async (k: ProviderKey) => {
     if (!confirm(`Delete '${k.name}'? Anything using it will fall back to env defaults.`)) {
@@ -89,16 +117,67 @@ export function ProviderKeyList({
                   <span className="text-critical">key: (missing)</span>
                 )}
               </div>
+              {probes[k.id] && (
+                <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+                  {probes[k.id].ok ? (
+                    <>
+                      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-emerald-600 dark:text-emerald-400">
+                        <Check className="h-3 w-3" /> test passed
+                      </span>
+                      <span className="text-muted-foreground">
+                        {probes[k.id].models.length} model{probes[k.id].models.length === 1 ? "" : "s"}
+                        {probes[k.id].latency_ms != null
+                          ? ` · ${probes[k.id].latency_ms} ms`
+                          : ""}
+                      </span>
+                    </>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-amber-600 dark:text-amber-400">
+                      <Wifi className="h-3 w-3" />
+                      {probes[k.id].reachable
+                        ? "reachable but rejected"
+                        : "unreachable"}
+                      {probes[k.id].status_code != null
+                        ? ` · HTTP ${probes[k.id].status_code}`
+                        : ""}
+                    </span>
+                  )}
+                  {probes[k.id].error && (
+                    <span className="text-critical">{probes[k.id].error}</span>
+                  )}
+                </div>
+              )}
+              {probeErrors[k.id] && (
+                <p className="mt-2 text-xs text-critical">{probeErrors[k.id]}</p>
+              )}
             </div>
-            <Button
-              size="icon"
-              variant="ghost"
-              disabled={deletingId === k.id}
-              onClick={() => onDelete(k)}
-              aria-label={`Delete ${k.name}`}
-            >
-              <Trash2 className="h-4 w-4" />
-            </Button>
+            <div className="flex items-center gap-1">
+              {k.kind !== "mcp_server" && (
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  disabled={probingId === k.id}
+                  onClick={() => onTest(k)}
+                  aria-label={`Test ${k.name}`}
+                  title="Test this key + endpoint and list available models"
+                >
+                  {probingId === k.id ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Wifi className="h-4 w-4" />
+                  )}
+                </Button>
+              )}
+              <Button
+                size="icon"
+                variant="ghost"
+                disabled={deletingId === k.id}
+                onClick={() => onDelete(k)}
+                aria-label={`Delete ${k.name}`}
+              >
+                <Trash2 className="h-4 w-4" />
+              </Button>
+            </div>
           </li>
         ))}
       </ul>
