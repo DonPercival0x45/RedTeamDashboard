@@ -294,7 +294,7 @@ function ConfiguredTile({
         <p
           className={cn(
             "mt-1 text-[10px]",
-            row.enabled ? "text-emerald-300" : "text-muted-foreground",
+            row.enabled ? "text-emerald-600 dark:text-emerald-300" : "text-muted-foreground",
           )}
         >
           {row.enabled ? "Enabled" : "Disabled"} · saved{" "}

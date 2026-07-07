@@ -145,7 +145,7 @@ export function ObservationsView({ slug }: { slug: string }) {
                     return (
                       <span
                         key={fid}
-                        className="inline-flex items-center gap-1 rounded-full border border-sky-500/40 bg-sky-500/10 px-2 py-0.5 text-xs text-sky-200"
+                        className="inline-flex items-center gap-1 rounded-full border border-sky-500/40 bg-sky-500/10 px-2 py-0.5 text-xs text-sky-700 dark:text-sky-200"
                         title={linked?.title ?? fid}
                       >
                         <LinkIcon className="h-3 w-3" />

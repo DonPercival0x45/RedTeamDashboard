@@ -62,9 +62,9 @@ function bucketToFilters(b: PriorityBucket): {
 
 function priorityChipClass(p: number | null): string {
   if (p === null) return "border-slate-500/40 bg-slate-500/10 text-slate-200";
-  if (p <= 3) return "border-rose-500/40 bg-rose-500/10 text-rose-200";
-  if (p <= 6) return "border-amber-500/40 bg-amber-500/10 text-amber-200";
-  return "border-emerald-500/40 bg-emerald-500/10 text-emerald-200";
+  if (p <= 3) return "border-rose-500/40 bg-rose-500/10 text-rose-700 dark:text-rose-200";
+  if (p <= 6) return "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-200";
+  return "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200";
 }
 
 // Tenant-global feedback surface. Any authenticated analyst drops in a product
@@ -81,9 +81,9 @@ const STATUS_LABEL: Record<RoadmapSuggestionStatus, string> = {
 
 const STATUS_CLASS: Record<RoadmapSuggestionStatus, string> = {
   pending_review:
-    "border-amber-500/40 bg-amber-500/10 text-amber-200",
-  approved: "border-emerald-500/40 bg-emerald-500/10 text-emerald-200",
-  rejected: "border-rose-500/40 bg-rose-500/10 text-rose-200",
+    "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-200",
+  approved: "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200",
+  rejected: "border-rose-500/40 bg-rose-500/10 text-rose-700 dark:text-rose-200",
 };
 
 export default function SettingsFeedbackPage() {
@@ -532,7 +532,7 @@ export default function SettingsFeedbackPage() {
                 onClick={() => setSortByPriority((v) => !v)}
                 className={`ml-2 rounded-full border px-2.5 py-0.5 text-xs transition ${
                   sortByPriority
-                    ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-100"
+                    ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-800 dark:text-emerald-100"
                     : "border-border text-muted-foreground hover:text-foreground"
                 }`}
               >
@@ -678,7 +678,7 @@ function CombineReviewModal({
                     {c.reasoning}
                   </p>
                   <div className="mt-2 rounded-md border border-emerald-500/40 bg-emerald-500/5 p-2 text-xs">
-                    <p className="mb-1 text-[10px] uppercase tracking-wide text-emerald-300">
+                    <p className="mb-1 text-[10px] uppercase tracking-wide text-emerald-600 dark:text-emerald-300">
                       Survivor
                     </p>
                     <p className="whitespace-pre-wrap text-foreground">
@@ -690,7 +690,7 @@ function CombineReviewModal({
                       key={m.id}
                       className="mt-1.5 rounded-md border border-rose-500/40 bg-rose-500/5 p-2 text-xs"
                     >
-                      <p className="mb-1 text-[10px] uppercase tracking-wide text-rose-300">
+                      <p className="mb-1 text-[10px] uppercase tracking-wide text-rose-600 dark:text-rose-300">
                         Fold into survivor
                       </p>
                       <p className="whitespace-pre-wrap text-foreground">
@@ -879,7 +879,7 @@ function SuggestionRow({
           </span>
           {isShipped && (
             <span
-              className="rounded-full border border-violet-500/40 bg-violet-500/10 px-2 py-0.5 text-[10px] uppercase tracking-wide text-violet-200"
+              className="rounded-full border border-violet-500/40 bg-violet-500/10 px-2 py-0.5 text-[10px] uppercase tracking-wide text-violet-700 dark:text-violet-200"
               title={`Marked shipped ${new Date(row.implemented_at as string).toLocaleString()}`}
             >
               <CheckCircle2 className="-mt-0.5 mr-1 inline-block h-3 w-3" />
@@ -919,7 +919,7 @@ function SuggestionRow({
         <div className="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-2">
           {row.agent_pros.length > 0 && (
             <div>
-              <p className="text-[10px] font-semibold uppercase tracking-wide text-emerald-300">
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-emerald-600 dark:text-emerald-300">
                 Pros
               </p>
               <ul className="mt-1 list-disc pl-4 text-xs text-muted-foreground">
@@ -931,7 +931,7 @@ function SuggestionRow({
           )}
           {row.agent_cons.length > 0 && (
             <div>
-              <p className="text-[10px] font-semibold uppercase tracking-wide text-rose-300">
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-rose-600 dark:text-rose-300">
                 Cons
               </p>
               <ul className="mt-1 list-disc pl-4 text-xs text-muted-foreground">
@@ -1036,7 +1036,7 @@ function SuggestionRow({
               variant="outline"
               onClick={() => onSetCompletion(row, true)}
               title="Mark this feedback as shipped. It moves to the Shipped section of ROADMAP.md."
-              className="border-violet-500/40 text-violet-100 hover:bg-violet-500/10"
+              className="border-violet-500/40 text-violet-800 dark:text-violet-100 hover:bg-violet-500/10"
             >
               <CheckCircle2 className="mr-1.5 h-3.5 w-3.5" />
               Mark completed

@@ -10,6 +10,7 @@ import { useCallback, useEffect, useState } from "react";
 import {
   DEFAULT_THEME,
   THEME_STORAGE_KEY,
+  isDarkAppearance,
   isThemeId,
   type ThemeId,
 } from "@/lib/themes";
@@ -38,7 +39,16 @@ export function useTheme(): {
 
   const setTheme = useCallback((next: ThemeId) => {
     if (typeof document !== "undefined") {
-      document.documentElement.setAttribute("data-theme", next);
+      const root = document.documentElement;
+      root.setAttribute("data-theme", next);
+      // Keep `.dark` on <html> only when the picked theme's appearance
+      // is dark. This flips every `dark:` Tailwind utility across the
+      // app in one write.
+      if (isDarkAppearance(next)) {
+        root.classList.add("dark");
+      } else {
+        root.classList.remove("dark");
+      }
     }
     try {
       window.localStorage.setItem(THEME_STORAGE_KEY, next);

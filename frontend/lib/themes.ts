@@ -16,6 +16,11 @@ export interface ThemeMeta {
   id: ThemeId;
   label: string;
   description: string;
+  // "dark" (near-black background) vs "light" (near-white background).
+  // Drives whether the `.dark` class is present on <html>, which flips
+  // every Tailwind `dark:` variant across the app so hardcoded colour
+  // pills / badges pick the right text ramp per theme.
+  appearance: "dark" | "light";
   // Five representative HSL triples surfaced as a swatch strip in the
   // picker so the analyst can eyeball a theme without applying it. Order
   // is: background, surface, foreground, accent, danger.
@@ -28,6 +33,7 @@ export const THEMES: ThemeMeta[] = [
     label: "Dark (default)",
     description:
       "Monochromatic minimalism — all-black surfaces, grayscale text ramp, single ember-red accent.",
+    appearance: "dark",
     swatches: [
       "0 0% 0%", // background
       "0 0% 9%", // muted
@@ -41,6 +47,7 @@ export const THEMES: ThemeMeta[] = [
     label: "Light",
     description:
       "Inverse of Dark — near-white surfaces, dark text, same ember accent for continuity.",
+    appearance: "light",
     swatches: [
       "0 0% 100%",
       "0 0% 96%",
@@ -54,6 +61,7 @@ export const THEMES: ThemeMeta[] = [
     label: "High Contrast",
     description:
       "Accessibility-first — pure black surfaces, pure white text, hot amber accent, thick borders.",
+    appearance: "dark",
     swatches: [
       "0 0% 0%",
       "0 0% 0%",
@@ -74,4 +82,13 @@ export function isThemeId(v: unknown): v is ThemeId {
   return (
     typeof v === "string" && THEMES.some((t) => t.id === v)
   );
+}
+
+// Whether ``.dark`` should live on <html> for the given theme. Every
+// theme whose ``appearance === "dark"`` gets it so the app's dense
+// forest of ``dark:`` Tailwind variants keeps working. Light themes
+// clear it so those variants fall through to their base colours.
+export function isDarkAppearance(id: ThemeId): boolean {
+  const t = THEMES.find((x) => x.id === id);
+  return t ? t.appearance === "dark" : true;
 }

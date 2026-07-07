@@ -313,14 +313,14 @@ export function RunPrompt({
           {lastDispatched && (
             <div
               role="status"
-              className="flex items-start gap-2 rounded-md border border-emerald-500/50 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-100"
+              className="flex items-start gap-2 rounded-md border border-emerald-500/50 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-800 dark:text-emerald-100"
             >
-              <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-300" />
+              <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-300" />
               <div className="min-w-0 flex-1">
-                <p className="font-medium text-emerald-50">
+                <p className="font-medium text-emerald-900 dark:text-emerald-50">
                   Run dispatched to the worker.
                 </p>
-                <p className="mt-0.5 text-xs text-emerald-200/80">
+                <p className="mt-0.5 text-xs text-emerald-700 dark:text-emerald-200/80">
                   thread{" "}
                   <code className="font-mono">
                     {lastDispatched.threadId.slice(0, 8)}
@@ -333,7 +333,7 @@ export function RunPrompt({
               <button
                 type="button"
                 onClick={() => setLastDispatched(null)}
-                className="text-xs text-emerald-300/70 hover:text-emerald-100"
+                className="text-xs text-emerald-600 dark:text-emerald-300/70 hover:text-emerald-800 dark:text-emerald-100"
                 aria-label="Dismiss"
               >
                 ×

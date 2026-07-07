@@ -60,7 +60,7 @@ export default function SettingsKeysPage() {
           shown back. Rotate by uploading again with the same name (after
           deleting the old one).
         </p>
-        <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-200">
+        <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-200">
           <span className="font-semibold uppercase tracking-wide">Session-only.</span>{" "}
           Your keys are held briefly in this session — they expire after
           30 minutes of inactivity, on sign-out, or if the backend

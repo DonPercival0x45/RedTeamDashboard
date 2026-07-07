@@ -65,11 +65,11 @@ const SEVERITY_RANK: Record<Severity, number> = {
 // Used by the severity Badge in the findings table and by the
 // SeverityMetricCard tiles up top.
 const SEVERITY_CLASS: Record<Severity, string> = {
-  critical: "border-rose-500/50 bg-rose-500/15 text-rose-200",
-  high: "border-pink-400/50 bg-pink-400/15 text-pink-200",
-  medium: "border-yellow-400/50 bg-yellow-400/15 text-yellow-100",
-  low: "border-emerald-500/50 bg-emerald-500/15 text-emerald-200",
-  info: "border-sky-500/50 bg-sky-500/15 text-sky-200",
+  critical: "border-rose-500/50 bg-rose-500/15 text-rose-700 dark:text-rose-200",
+  high: "border-pink-400/50 bg-pink-400/15 text-pink-700 dark:text-pink-200",
+  medium: "border-yellow-400/50 bg-yellow-400/15 text-yellow-800 dark:text-yellow-100",
+  low: "border-emerald-500/50 bg-emerald-500/15 text-emerald-700 dark:text-emerald-200",
+  info: "border-sky-500/50 bg-sky-500/15 text-sky-700 dark:text-sky-200",
 };
 
 const STATUS_LABEL: Record<FindingValidationStatus, string> = {
@@ -97,8 +97,8 @@ const EXCLUSION_LABEL: Record<FindingExclusion, string> = {
 };
 
 const EXCLUSION_BADGE_CLASS: Record<FindingExclusion, string> = {
-  out_of_scope: "border-amber-500/60 bg-amber-500/15 text-amber-100",
-  outside_roe: "border-orange-500/60 bg-orange-500/15 text-orange-100",
+  out_of_scope: "border-amber-500/60 bg-amber-500/15 text-amber-800 dark:text-amber-100",
+  outside_roe: "border-orange-500/60 bg-orange-500/15 text-orange-800 dark:text-orange-100",
 };
 
 const SEVERITY_OPTIONS: Severity[] = ["info", "low", "medium", "high", "critical"];
@@ -508,7 +508,7 @@ export function FindingsView({
             "rounded-md border px-3 py-2 text-xs",
             repairError
               ? "border-critical/50 bg-critical/10 text-critical"
-              : "border-emerald-500/40 bg-emerald-500/10 text-emerald-100",
+              : "border-emerald-500/40 bg-emerald-500/10 text-emerald-800 dark:text-emerald-100",
           )}
         >
           {repairError || repairMessage}
@@ -564,7 +564,7 @@ export function FindingsView({
                 size="sm"
                 variant="outline"
                 onClick={() => setShowManualMergeModal(true)}
-                className="border-sky-500/50 text-sky-200 hover:bg-sky-500/10"
+                className="border-sky-500/50 text-sky-700 dark:text-sky-200 hover:bg-sky-500/10"
                 title="Fold the selected findings into one parent row. The parent's group_key becomes manual:<...> so re-running Group findings leaves it alone."
               >
                 <Link2 className="mr-1.5 h-3.5 w-3.5" />
@@ -578,8 +578,8 @@ export function FindingsView({
               onClick={doBulkDelete}
               className={
                 confirmingBulk
-                  ? "border-rose-500 bg-rose-500/15 text-rose-100 hover:bg-rose-500/25"
-                  : "border-rose-500/50 text-rose-200 hover:bg-rose-500/10"
+                  ? "border-rose-500 bg-rose-500/15 text-rose-800 dark:text-rose-100 hover:bg-rose-500/25"
+                  : "border-rose-500/50 text-rose-700 dark:text-rose-200 hover:bg-rose-500/10"
               }
             >
               <Trash2 className="mr-1.5 h-3.5 w-3.5" />
@@ -681,7 +681,7 @@ export function FindingsView({
                       )}
                       {f.group_key && (
                         <span
-                          className="rounded border border-sky-500/40 bg-sky-500/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-sky-200"
+                          className="rounded border border-sky-500/40 bg-sky-500/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-sky-700 dark:text-sky-200"
                           title={`Grouped: ${f.group_key}`}
                         >
                           <Layers className="mr-1 inline h-3 w-3" />
@@ -842,17 +842,17 @@ export function FindingsView({
 type SeverityTone = "critical" | "high" | "info" | "pending";
 
 const SEVERITY_TONE_CLASS: Record<SeverityTone, string> = {
-  critical: "border-rose-500/50 bg-rose-500/10 text-rose-100",
-  high: "border-pink-400/50 bg-pink-400/10 text-pink-100",
-  info: "border-sky-500/50 bg-sky-500/10 text-sky-100",
-  pending: "border-orange-500/50 bg-orange-500/10 text-orange-100",
+  critical: "border-rose-500/50 bg-rose-500/10 text-rose-800 dark:text-rose-100",
+  high: "border-pink-400/50 bg-pink-400/10 text-pink-800 dark:text-pink-100",
+  info: "border-sky-500/50 bg-sky-500/10 text-sky-800 dark:text-sky-100",
+  pending: "border-orange-500/50 bg-orange-500/10 text-orange-800 dark:text-orange-100",
 };
 
 const SEVERITY_TONE_VALUE_CLASS: Record<SeverityTone, string> = {
-  critical: "text-rose-50",
-  high: "text-pink-50",
-  info: "text-sky-50",
-  pending: "text-orange-50",
+  critical: "text-rose-900 dark:text-rose-50",
+  high: "text-pink-900 dark:text-pink-50",
+  info: "text-sky-900 dark:text-sky-50",
+  pending: "text-orange-900 dark:text-orange-50",
 };
 
 const SEVERITY_TONE_ACTIVE_RING: Record<SeverityTone, string> = {
@@ -955,18 +955,18 @@ function MediumLowSplitCard({
         style={{ clipPath: "polygon(100% 0, 100% 100%, 0 100%)" }}
       />
       <div className="pointer-events-none absolute left-3 top-2 leading-tight">
-        <div className="text-2xl font-semibold tabular-nums text-yellow-50">
+        <div className="text-2xl font-semibold tabular-nums text-yellow-900 dark:text-yellow-50">
           {medium}
         </div>
-        <div className="text-[10px] uppercase tracking-wide text-yellow-100/85">
+        <div className="text-[10px] uppercase tracking-wide text-yellow-800 dark:text-yellow-100/85">
           Medium
         </div>
       </div>
       <div className="pointer-events-none absolute bottom-2 right-3 text-right leading-tight">
-        <div className="text-[10px] uppercase tracking-wide text-emerald-100/85">
+        <div className="text-[10px] uppercase tracking-wide text-emerald-800 dark:text-emerald-100/85">
           Low
         </div>
-        <div className="text-2xl font-semibold tabular-nums text-emerald-50">
+        <div className="text-2xl font-semibold tabular-nums text-emerald-900 dark:text-emerald-50">
           {low}
         </div>
       </div>
@@ -1734,8 +1734,8 @@ function FindingSlideOver({
               onClick={doDelete}
               className={
                 confirmingDelete
-                  ? "border-rose-500 bg-rose-500/10 text-rose-100 hover:bg-rose-500/20"
-                  : "border-rose-500/40 text-rose-300 hover:bg-rose-500/10"
+                  ? "border-rose-500 bg-rose-500/10 text-rose-800 dark:text-rose-100 hover:bg-rose-500/20"
+                  : "border-rose-500/40 text-rose-600 dark:text-rose-300 hover:bg-rose-500/10"
               }
               title="Soft-delete this finding — hidden from Findings, Report, and JSON export. audit_log preserves who + when."
             >
@@ -2112,13 +2112,13 @@ function RegroupModal({
                               {g.projected_severity}
                             </Badge>
                             <span
-                              className="rounded border border-sky-500/40 bg-sky-500/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-sky-200"
+                              className="rounded border border-sky-500/40 bg-sky-500/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-sky-700 dark:text-sky-200"
                               title={`Group key: ${g.group_key}`}
                             >
                               × {g.projected_item_count} items
                             </span>
                             {g.absorbs_into_existing_parent_id && (
-                              <span className="rounded border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-amber-100">
+                              <span className="rounded border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-amber-800 dark:text-amber-100">
                                 absorbs existing
                               </span>
                             )}
@@ -2138,7 +2138,7 @@ function RegroupModal({
                         </div>
                         <div className="flex shrink-0 flex-col items-end gap-1">
                           {isDone ? (
-                            <span className="text-xs text-emerald-300">
+                            <span className="text-xs text-emerald-600 dark:text-emerald-300">
                               <Layers className="mr-1 inline h-3.5 w-3.5" />
                               merged
                             </span>
