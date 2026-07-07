@@ -152,11 +152,13 @@ def _get_engagement_or_404(session: DbSession, slug: str) -> Engagement:
 
 # v1.4.5: scope quick-actions. Cheap aggregate so the engagement list
 # cards can render ``N in scope · M exclusions`` without an N+1 trip per
-# card. Returns ``(scope_count, exclusion_count)`` for one engagement.
+# card. ``scope_count`` counts the actionable (non-exclusion) items; 
+# ``exclusion_count`` counts the !-marked items. Returns
+# ``(scope_count, exclusion_count)`` for one engagement.
 def _scope_counts_for(session: DbSession, engagement_id: uuid.UUID) -> tuple[int, int]:
     rows = session.execute(
         select(
-            func.count(ScopeItem.id),
+            func.sum(case((ScopeItem.is_exclusion.is_(False), 1), else_=0)),
             func.sum(case((ScopeItem.is_exclusion.is_(True), 1), else_=0)),
         ).where(ScopeItem.engagement_id == engagement_id)
     ).one()
@@ -174,7 +176,7 @@ def _populate_scope_counts(
     grouped = session.execute(
         select(
             ScopeItem.engagement_id,
-            func.count(ScopeItem.id),
+            func.sum(case((ScopeItem.is_exclusion.is_(False), 1), else_=0)),
             func.sum(case((ScopeItem.is_exclusion.is_(True), 1), else_=0)),
         )
         .where(ScopeItem.engagement_id.in_(engagement_ids))

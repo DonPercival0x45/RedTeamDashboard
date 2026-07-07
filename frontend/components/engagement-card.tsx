@@ -103,7 +103,7 @@ export function EngagementCard({ eng }: { eng: Engagement }) {
 
       <div className="relative mt-3 flex items-center justify-between">
         <span className="text-xs text-muted-foreground">
-          {hasCounts && scopeCount === 0
+          {hasCounts && scopeCount === 0 && exclusionCount === 0
             ? "no scope yet"
             : "scope set"}
         </span>
