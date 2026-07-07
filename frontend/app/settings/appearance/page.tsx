@@ -12,15 +12,17 @@
 // theme's actual HSL values (see lib/themes.ts).
 import Link from "next/link";
 import { Palette } from "lucide-react";
+import { FONT_SIZES, type FontSizeId, useFontSize } from "@/lib/font-size";
 import { useTheme } from "@/lib/theme";
 import { THEMES, type ThemeMeta } from "@/lib/themes";
 import { cn } from "@/lib/utils";
 
 export default function SettingsAppearancePage() {
   const { theme, setTheme } = useTheme();
+  const { size, setSize } = useFontSize();
 
   return (
-    <div className="mx-auto max-w-3xl space-y-6 px-4 py-6">
+    <div className="mx-auto max-w-3xl space-y-8 px-4 py-6">
       <div>
         <Link
           href="/"
@@ -33,13 +35,81 @@ export default function SettingsAppearancePage() {
           Appearance
         </h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Pick the theme this browser uses for the dashboard. Your choice is
-          saved locally — it doesn&apos;t sync across devices or teammates.
+          Pick the theme + font size this browser uses for the dashboard.
+          Your choices are saved locally — they don&apos;t sync across
+          devices or teammates.
         </p>
       </div>
 
-      <ThemeGroup label="Dark themes" appearance="dark" active={theme} setTheme={setTheme} />
-      <ThemeGroup label="Light themes" appearance="light" active={theme} setTheme={setTheme} />
+      {/* v1.9.0: "Colors" section holds the theme picker. */}
+      <section className="space-y-4">
+        <h2 className="text-base font-semibold text-foreground">Colors</h2>
+        <ThemeGroup label="Dark themes" appearance="dark" active={theme} setTheme={setTheme} />
+        <ThemeGroup label="Light themes" appearance="light" active={theme} setTheme={setTheme} />
+      </section>
+
+      {/* v1.9.0: font-size picker sits under Colors. Segmented buttons
+          keep the four choices compact + all-visible; clicking commits
+          immediately via useFontSize. Independent of theme. */}
+      <section className="space-y-3">
+        <div>
+          <h2 className="text-base font-semibold text-foreground">Font size</h2>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            Scales every text + spacing rem uniformly across the app. Applies
+            instantly.
+          </p>
+        </div>
+        <FontSizePicker active={size} setSize={setSize} />
+      </section>
+    </div>
+  );
+}
+
+// v1.9.0: segmented button row for font size. Four choices sit compact
+// on one line; the active choice gets the critical-tinted active pill
+// matching the theme picker's "Active" chip vocabulary.
+function FontSizePicker({
+  active,
+  setSize,
+}: {
+  active: FontSizeId;
+  setSize: (id: FontSizeId) => void;
+}) {
+  return (
+    <div>
+      <div
+        role="radiogroup"
+        aria-label="Font size"
+        className="inline-flex flex-wrap gap-1 rounded-lg border border-border bg-muted/30 p-1"
+      >
+        {FONT_SIZES.map((s) => {
+          const selected = s.id === active;
+          return (
+            <button
+              key={s.id}
+              type="button"
+              role="radio"
+              aria-checked={selected}
+              onClick={() => setSize(s.id)}
+              className={cn(
+                "rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
+                selected
+                  ? "border border-critical/60 bg-critical/10 text-critical"
+                  : "text-muted-foreground hover:bg-background hover:text-foreground",
+              )}
+              // Preview the size inline: the button's own text scales to
+              // its cssValue so the analyst sees the outcome before
+              // committing.
+              style={{ fontSize: s.cssValue }}
+            >
+              {s.label}
+            </button>
+          );
+        })}
+      </div>
+      <p className="mt-2 text-xs text-muted-foreground">
+        {FONT_SIZES.find((s) => s.id === active)?.description}
+      </p>
     </div>
   );
 }
