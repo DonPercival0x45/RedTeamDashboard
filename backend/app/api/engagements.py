@@ -295,6 +295,7 @@ def _finding_to_read(f: Finding) -> dict[str, Any]:
         "observed_at": f.observed_at,
         "burp_serial_number": f.burp_serial_number,
         "created_at": f.created_at,
+        "tags": list(f.tags or []),
     }
 
 
@@ -1425,6 +1426,12 @@ def update_finding(
         # Passing null clears the exclusion; passing a value sets it.
         finding.exclusion = body.exclusion
         changed["exclusion"] = body.exclusion.value if body.exclusion else None
+    if "tags" in body.model_fields_set:
+        # Replace the whole list. body.tags is None only if the client
+        # sent ``null``; treat that the same as [] (clear).
+        new_tags = body.tags or []
+        finding.tags = new_tags
+        changed["tags"] = new_tags
 
     if changed:
         session.add(
@@ -1490,6 +1497,7 @@ def create_finding(
         validated_at=now if finding_status == FindingStatus.validated else None,
         validated_by=user.id if finding_status == FindingStatus.validated else None,
         observed_at=body.observed_at,
+        tags=body.tags,
     )
     session.add(finding)
     session.flush()

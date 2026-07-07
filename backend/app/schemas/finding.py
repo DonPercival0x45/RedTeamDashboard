@@ -12,9 +12,28 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.models import FindingExclusion, FindingPhase, FindingStatus, Severity
+
+
+def _normalize_tags(raw: list[str] | None) -> list[str]:
+    """Trim, drop empties, de-dup (case-sensitive, order-preserving), and
+    cap so a chatty analyst can't blow up the column. Shared by the
+    create + update shapes."""
+    if not raw:
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for tag in raw:
+        if not isinstance(tag, str):
+            continue
+        tag = tag.strip()[:40]
+        if not tag or tag in seen:
+            continue
+        seen.add(tag)
+        out.append(tag)
+    return out[:20]
 
 
 class FindingRead(BaseModel):
@@ -46,6 +65,9 @@ class FindingRead(BaseModel):
     observed_at: datetime | None = None
     burp_serial_number: str | None = None
     created_at: datetime
+    # v1.4.7: free-form analyst tags. Empty list by default; populated
+    # via PATCH /findings/{id} or at manual-create time.
+    tags: list[str] = Field(default_factory=list)
 
 
 class FindingUpdate(BaseModel):
@@ -61,6 +83,14 @@ class FindingUpdate(BaseModel):
     severity: Severity | None = None
     phase: FindingPhase | None = None
     exclusion: FindingExclusion | None = None
+    # v1.4.7: replace the whole tag list. Distinguish not-set from
+    # set-to-empty via ``model_fields_set`` — pass ``[]`` to clear.
+    tags: list[str] | None = None
+
+    @field_validator("tags")
+    @classmethod
+    def _normalize_tags_field(cls, v: list[str] | None) -> list[str] | None:
+        return _normalize_tags(v) if v is not None else None
 
 
 class FindingCreate(BaseModel):
@@ -76,6 +106,13 @@ class FindingCreate(BaseModel):
     phase: FindingPhase = FindingPhase.general
     target: str | None = None
     observed_at: datetime | None = None
+    # v1.4.7: optional tags at create time.
+    tags: list[str] = Field(default_factory=list)
+
+    @field_validator("tags")
+    @classmethod
+    def _normalize_tags_field(cls, v: list[str] | None) -> list[str]:
+        return _normalize_tags(v)
 
 
 class CorrelateGroup(BaseModel):

@@ -141,6 +141,8 @@ export interface Finding {
   observed_at: string | null;
   burp_serial_number: string | null;
   created_at: string;
+  // v1.4.7: free-form analyst tags (correlate / filter foundation).
+  tags?: string[];
 }
 
 // v1.4.0: body for POST /engagements/{slug}/findings — the manual
@@ -152,6 +154,7 @@ export interface FindingCreate {
   phase?: FindingPhase;
   target?: string | null;
   observed_at?: string | null;
+  tags?: string[];
 }
 
 // v1.4.0: one cluster proposed by the CorrelateAgent. `finding_ids` first
