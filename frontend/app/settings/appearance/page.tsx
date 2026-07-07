@@ -114,9 +114,11 @@ function FontSizePicker({
   );
 }
 
-// v1.9.0: themes are grouped by appearance so a 10-item list stays
-// scannable. The picker header labels each group; radio rows keep the
-// same swatch-strip preview as v1.8.0.
+// v1.9.0: themes render as a grid of tiles — 4 across on desktop, 2 on
+// small screens. Dark (8 themes) wraps into 2 rows of 4; Light (4
+// themes) fits one row of 4. Each tile is a compact card with the
+// theme name + swatch strip; hovering shows the description in the
+// tooltip. Click anywhere on the tile commits the choice.
 function ThemeGroup({
   label,
   appearance,
@@ -131,49 +133,48 @@ function ThemeGroup({
   const entries = THEMES.filter((t) => t.appearance === appearance);
   if (entries.length === 0) return null;
   return (
-    <fieldset className="space-y-2">
-      <legend className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+    <fieldset>
+      <legend className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
         {label}
       </legend>
-      {entries.map((t) => {
-        const selected = t.id === active;
-        return (
-          <label
-            key={t.id}
-            className={cn(
-              "flex cursor-pointer items-start gap-3 rounded-lg border p-3 transition-colors",
-              selected
-                ? "border-critical/60 bg-critical/5"
-                : "border-border hover:border-foreground/40 hover:bg-muted/40",
-            )}
-          >
-            <input
-              type="radio"
-              name="theme"
-              value={t.id}
-              checked={selected}
-              onChange={() => setTheme(t.id)}
-              className="mt-1.5 accent-critical"
-            />
-            <div className="min-w-0 flex-1">
-              <div className="flex items-baseline justify-between gap-3">
-                <p className="text-sm font-medium text-foreground">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4">
+        {entries.map((t) => {
+          const selected = t.id === active;
+          return (
+            <label
+              key={t.id}
+              title={t.description}
+              className={cn(
+                "group flex cursor-pointer flex-col gap-2 rounded-lg border p-3 transition-colors",
+                selected
+                  ? "border-critical/60 bg-critical/5"
+                  : "border-border hover:border-foreground/40 hover:bg-muted/40",
+              )}
+            >
+              <div className="flex items-start justify-between gap-2">
+                <span className="text-sm font-medium text-foreground">
                   {t.label}
-                  {selected && (
-                    <span className="ml-2 rounded-full border border-critical/40 bg-critical/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-critical">
-                      Active
-                    </span>
-                  )}
-                </p>
+                </span>
+                <input
+                  type="radio"
+                  name="theme"
+                  value={t.id}
+                  checked={selected}
+                  onChange={() => setTheme(t.id)}
+                  className="mt-0.5 shrink-0 accent-critical"
+                  aria-label={`Select ${t.label}`}
+                />
               </div>
-              <p className="mt-0.5 text-xs text-muted-foreground">
-                {t.description}
-              </p>
               <SwatchStrip theme={t} />
-            </div>
-          </label>
-        );
-      })}
+              {selected && (
+                <span className="self-start rounded-full border border-critical/40 bg-critical/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-critical">
+                  Active
+                </span>
+              )}
+            </label>
+          );
+        })}
+      </div>
     </fieldset>
   );
 }
@@ -182,6 +183,8 @@ function ThemeGroup({
 // analyst previews the palette without applying it. Inline styles are
 // intentional — we're rendering with values that AREN'T necessarily the
 // currently-active theme, so we can't lean on CSS variables here.
+// v1.9.0: swatches stretch to fill the tile so the palette reads
+// clearly on the 4-across grid.
 function SwatchStrip({ theme }: { theme: ThemeMeta }) {
   const labels: [string, string, string, string, string] = [
     "background",
@@ -191,12 +194,12 @@ function SwatchStrip({ theme }: { theme: ThemeMeta }) {
     "accent",
   ];
   return (
-    <div className="mt-2 flex gap-1.5">
+    <div className="flex gap-1">
       {theme.swatches.map((hsl, i) => (
         <div
           key={i}
           title={`${labels[i]} — hsl(${hsl})`}
-          className="h-6 w-10 rounded border border-border/60"
+          className="h-6 flex-1 rounded border border-border/60"
           style={{ backgroundColor: `hsl(${hsl})` }}
         />
       ))}
