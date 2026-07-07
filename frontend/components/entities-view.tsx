@@ -1,8 +1,8 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Search, Upload, X, Zap } from "lucide-react";
+import { Check, Search, Upload, X, Zap } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -10,7 +10,7 @@ import {
   importEntitiesDarkweb,
   importEntitiesMaltego,
 } from "@/lib/api";
-import { qk, useEntities, useStoredEntities } from "@/lib/hooks";
+import { qk, useEntities, useFindings, useStoredEntities } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
 import type {
   DarkwebImportResult,
@@ -48,38 +48,111 @@ const TYPE_LABEL: Record<string, string> = {
 
 // v1.4.13: roadmap #10 -- a first-move prompt per entity type. Returns
 // {label, prompt}; missing types fall back to no quick-action button.
-const ENTITY_QUICK_PROMPTS: Record<
-  string,
-  (value: string) => { label: string; prompt: string }
-> = {
-  domain: (v) => ({
-    label: "Enumerate domain",
-    prompt: `Enumerate subdomains, DNS records, and certificate-transparency logs for ${v}, then probe what's live.`,
-  }),
-  subdomain: (v) => ({
-    label: "Enumerate subdomain",
-    prompt: `Enumerate subdomains, DNS records, and certificate-transparency logs for ${v}, then probe what's live.`,
-  }),
-  host: (v) => ({
-    label: "Enumerate host",
-    prompt: `Enumerate subdomains, DNS records, and certificate-transparency logs for ${v}, then probe what's live.`,
-  }),
-  ip: (v) => ({
-    label: "Port-scan IP",
-    prompt: `Run port discovery and service detection against ${v}, then enumerate any open services.`,
-  }),
-  cidr: (v) => ({
-    label: "Sweep CIDR",
-    prompt: `Discover live hosts in ${v} and enumerate open ports and services across the range.`,
-  }),
-  url: (v) => ({
-    label: "Recon URL",
-    prompt: `Recon and probe ${v}: fingerprint the stack, enumerate paths, and surface anything notable.`,
-  }),
-  email: (v) => ({
-    label: "Investigate email",
-    prompt: `Investigate ${v}: pivot on the email for associated accounts, breaches, and exposed credentials.`,
-  }),
+// v1.4.14: roadmap #8 -- engagement-aware quick actions. Each entity
+// type maps to an ORDERED recon chain; the slide-over highlights the
+// next un-run step as primary and dims steps already completed against
+// this entity (detected from findings with matching target + tool).
+// ``tool`` is the source_tool name to match against finding.tool; null
+// means "not a tool run" (e.g. email investigation) so it's never dimmed.
+type EntityAction = {
+  tool: string | null;
+  label: string;
+  prompt: (value: string) => string;
+};
+
+const ENTITY_ACTION_CHAINS: Record<string, EntityAction[]> = {
+  domain: [
+    {
+      tool: "subfinder",
+      label: "Enumerate subdomains",
+      prompt: (v) =>
+        `Enumerate subdomains, DNS records, and certificate-transparency logs for ${v}, then probe what's live.`,
+    },
+    {
+      tool: "portscan",
+      label: "Port-scan discovered hosts",
+      prompt: (v) =>
+        `Run port discovery against the hosts discovered under ${v}, then enumerate open services.`,
+    },
+    {
+      tool: "service_detect",
+      label: "Service-detect open ports",
+      prompt: (v) =>
+        `Service-detect and fingerprint the open ports discovered under ${v}.`,
+    },
+  ],
+  subdomain: [
+    {
+      tool: "subfinder",
+      label: "Enumerate subdomains",
+      prompt: (v) =>
+        `Enumerate subdomains, DNS records, and certificate-transparency logs for ${v}, then probe what's live.`,
+    },
+    {
+      tool: "portscan",
+      label: "Port-scan host",
+      prompt: (v) =>
+        `Run port discovery and service detection against ${v}, then enumerate any open services.`,
+    },
+  ],
+  host: [
+    {
+      tool: "subfinder",
+      label: "Enumerate subdomains",
+      prompt: (v) =>
+        `Enumerate subdomains, DNS records, and certificate-transparency logs for ${v}, then probe what's live.`,
+    },
+    {
+      tool: "portscan",
+      label: "Port-scan host",
+      prompt: (v) =>
+        `Run port discovery and service detection against ${v}, then enumerate any open services.`,
+    },
+  ],
+  ip: [
+    {
+      tool: "portscan",
+      label: "Port-scan IP",
+      prompt: (v) =>
+        `Run port discovery and service detection against ${v}, then enumerate any open services.`,
+    },
+    {
+      tool: "service_detect",
+      label: "Service-detect open ports",
+      prompt: (v) =>
+        `Service-detect and fingerprint the open ports on ${v}.`,
+    },
+  ],
+  cidr: [
+    {
+      tool: "subnet_sweep",
+      label: "Sweep CIDR for live hosts",
+      prompt: (v) =>
+        `Discover live hosts in ${v} and enumerate open ports and services across the range.`,
+    },
+    {
+      tool: "portscan",
+      label: "Port-scan live hosts",
+      prompt: (v) =>
+        `Port-scan the live hosts discovered in ${v} and enumerate open services.`,
+    },
+  ],
+  url: [
+    {
+      tool: "httpx_probe",
+      label: "Probe URL",
+      prompt: (v) =>
+        `Recon and probe ${v}: fingerprint the stack, enumerate paths, and surface anything notable.`,
+    },
+  ],
+  email: [
+    {
+      tool: null,
+      label: "Investigate email",
+      prompt: (v) =>
+        `Investigate ${v}: pivot on the email for associated accounts, breaches, and exposed credentials.`,
+    },
+  ],
 };
 
 function typeLabel(t: string): string {
@@ -100,6 +173,23 @@ export function EntitiesView({
   // v1.0.0: react-query owns the derived-entities fetch. Focus revalidation
   // catches new findings that landed while the tab was hidden.
   const { data: entities, error } = useEntities(slug);
+  // v1.4.14: roadmap #8 -- which tools have already produced a finding
+  // against each entity value, so the slide-over can suggest the NEXT
+  // un-run recon step instead of repeating completed ones.
+  const { data: findings = [] } = useFindings(slug);
+  const toolsByValue = useMemo(() => {
+    const m = new Map<string, Set<string>>();
+    for (const f of findings) {
+      if (!f.target || !f.tool) continue;
+      let s = m.get(f.target);
+      if (!s) {
+        s = new Set<string>();
+        m.set(f.target, s);
+      }
+      s.add(f.tool);
+    }
+    return m;
+  }, [findings]);
   const [search, setSearch] = useState("");
   const [type, setType] = useState<string>("all");
   const [selected, setSelected] = useState<Entity | null>(null);
@@ -219,6 +309,7 @@ export function EntitiesView({
           entity={selected}
           onClose={() => setSelected(null)}
           onQuickAction={onQuickAction}
+          doneTools={toolsByValue.get(selected.value) ?? new Set<string>()}
         />
       )}
     </div>
@@ -440,15 +531,19 @@ function EntitySlideOver({
   entity,
   onClose,
   onQuickAction,
+  doneTools,
 }: {
   entity: Entity;
   onClose: () => void;
   onQuickAction?: (prompt: string) => void;
+  doneTools: Set<string>;
 }) {
-  // v1.4.13: entity-type -> first-move prompt (roadmap #10). Clicking a
-  // button hands the prompt to the page, which flips to the Scope tab and
-  // seeds the Start-a-run box.
-  const quickPrompt = ENTITY_QUICK_PROMPTS[entity.type]?.(entity.value);
+  // v1.4.14: engagement-aware quick actions (roadmap #8). The chain is
+  // ordered; the first step whose tool HASN'T produced a finding against
+  // this entity is the "suggested next" (primary). Completed steps dim
+  // with a check so the analyst sees what's left.
+  const chain = ENTITY_ACTION_CHAINS[entity.type] ?? [];
+  const nextStep = chain.find((a) => a.tool && !doneTools.has(a.tool));
   return (
     <>
       <div className="fixed inset-0 z-40 bg-black/60" onClick={onClose} aria-hidden />
@@ -481,12 +576,45 @@ function EntitySlideOver({
           </span>
         </div>
 
-        {onQuickAction && quickPrompt && (
-          <div className="mt-4">
-            <Button size="sm" onClick={() => onQuickAction(quickPrompt.prompt)}>
-              <Zap className="mr-1.5 h-3.5 w-3.5" />
-              {quickPrompt.label}
-            </Button>
+        {onQuickAction && chain.length > 0 && (
+          <div className="mt-4 space-y-2">
+            <div className="text-xs uppercase tracking-wide text-muted-foreground">
+              {nextStep ? "Suggested next" : "Recon actions"}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {chain.map((action) => {
+                const done = action.tool != null && doneTools.has(action.tool);
+                const isNext = action === nextStep;
+                return (
+                  <Button
+                    key={action.label}
+                    size="sm"
+                    variant={isNext ? "default" : "outline"}
+                    disabled={done && !isNext}
+                    className={done && !isNext ? "opacity-50" : ""}
+                    onClick={() => onQuickAction(action.prompt(entity.value))}
+                    title={
+                      done
+                        ? `Already run (${action.tool}) — click to re-run`
+                        : action.label
+                    }
+                  >
+                    {isNext ? (
+                      <Zap className="mr-1.5 h-3.5 w-3.5" />
+                    ) : done ? (
+                      <Check className="mr-1.5 h-3.5 w-3.5" />
+                    ) : null}
+                    {action.label}
+                  </Button>
+                );
+              })}
+            </div>
+            {!nextStep && chain.some((a) => a.tool) && (
+              <p className="text-xs text-muted-foreground">
+                All recon steps for this entity have a finding — re-run any
+                above if you want fresh data.
+              </p>
+            )}
           </div>
         )}
 
