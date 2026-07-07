@@ -362,11 +362,20 @@ jobs:
   release:
     name: GitHub Release
     runs-on: ubuntu-latest
-    # NOTE: publish-cli is intentionally NOT in `needs`. PyPI Trusted
-    # Publisher setup is operator-side and lags the first releases; we
-    # let the CLI publish run in parallel and best-effort while the
-    # GitHub Release itself ships images + kit + viewer bundle.
-    needs: [version, publish, publish-worker-alias, publish-viewer-static]
+    # v1.8.0: publish-viewer-static removed from `needs`. That job builds
+    # the deprecated SWA static bundle and has been failing every release
+    # since v1.0.1 (layout.tsx `dynamic="force-dynamic"` vs
+    # `output: "export"`). SWA is being decommissioned in favour of the
+    # viewer Container App; letting its failure gate the GitHub Release
+    # was silently suppressing release-note publication (What's New page
+    # stuck at v1.4.9 through v1.4.10..v1.7.0). We still download the
+    # bundle artifact below and attach it if present — best-effort — so
+    # any consumer still pulling it isn't left empty-handed.
+    #
+    # publish-cli is also intentionally NOT in `needs`: PyPI Trusted
+    # Publisher setup is operator-side and lags first-time releases; we
+    # let the CLI publish run in parallel and best-effort.
+    needs: [version, publish, publish-worker-alias]
     steps:
       - uses: actions/checkout@v4
         # Full history so the release-notes step can git-log between tags.
@@ -378,6 +387,12 @@ jobs:
         with:
           name: rtd-viewer-static
           path: .
+        # v1.8.0: publish-viewer-static was removed from `needs`. If it
+        # failed (SWA static-bundle build), this artifact won't exist —
+        # tolerate the miss so the GitHub Release still ships. The
+        # softprops files: glob below is already lenient about a missing
+        # match.
+        continue-on-error: true
 
       - name: Package the Azure kit
         run: |

@@ -7,6 +7,7 @@ import { QueryProvider } from "@/components/query-provider";
 import { RunToastProvider } from "@/components/run-toast-provider";
 import { AuthProvider } from "@/lib/auth";
 import { readServerConfig, RUNTIME_CONFIG_WINDOW_KEY } from "@/lib/config";
+import { themePreHydrationScript } from "@/lib/theme-preflight";
 import "./globals.css";
 
 // Force per-request rendering so the runtime env is read fresh on every load
@@ -31,10 +32,19 @@ export default function RootLayout({
     runtimeConfig,
   )};`;
 
-  // `dark` is pinned on <html>: the app is always the monochrome dark theme.
+  // v1.8.0: theme selection lives in localStorage (see lib/themes.ts).
+  // SSR default is `dark` — the pre-hydration script below stamps the
+  // analyst's saved preference on <html> before React mounts to avoid a
+  // theme flash. `.dark` stays on <html> too so any lingering `dark:`
+  // Tailwind utility variants still resolve (harmless when data-theme
+  // switches to light or high-contrast; the CSS variables win).
   return (
-    <html lang="en" className="dark">
+    <html lang="en" className="dark" data-theme="dark">
       <head>
+        <script
+          // eslint-disable-next-line react/no-danger
+          dangerouslySetInnerHTML={{ __html: themePreHydrationScript() }}
+        />
         <script
           // eslint-disable-next-line react/no-danger
           dangerouslySetInnerHTML={{ __html: runtimeConfigScript }}
