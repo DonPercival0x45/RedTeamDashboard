@@ -167,6 +167,11 @@ function EngagementDetail({ slug }: { slug: string }) {
     [params, router],
   );
 
+  // v1.4.13: one-shot prefill for the Start-a-run box, set when an entity
+  // quick-action fires on the Entities tab (roadmap #10). Consumed on
+  // RunPrompt mount.
+  const [pendingPrompt, setPendingPrompt] = useState<string | null>(null);
+
   // v1.0.0: engagement + findings live in the React Query cache. Navigating
   // away and back is instant (cache-served) and window-focus revalidates
   // both. SSE events merge into the findings cache directly via
@@ -401,7 +406,15 @@ function EngagementDetail({ slug }: { slug: string }) {
             />
           )}
 
-          {view === "entities" && <EntitiesView slug={slug} />}
+          {view === "entities" && (
+            <EntitiesView
+              slug={slug}
+              onQuickAction={(p) => {
+                setPendingPrompt(p);
+                setView("scope");
+              }}
+            />
+          )}
 
           {view === "observations" && <ObservationsView slug={slug} />}
 
@@ -421,7 +434,11 @@ function EngagementDetail({ slug }: { slug: string }) {
             <div className="space-y-6">
               <ScopeEditor slug={slug} canWrite={canWrite} />
               {engagement.status === "active" ? (
-                <RunPrompt slug={slug} />
+                <RunPrompt
+                  slug={slug}
+                  initialPrompt={pendingPrompt ?? undefined}
+                  onPromptConsumed={() => setPendingPrompt(null)}
+                />
               ) : (
                 <p className="text-sm text-muted-foreground">
                   This engagement is {engagement.status}; runs are disabled.
