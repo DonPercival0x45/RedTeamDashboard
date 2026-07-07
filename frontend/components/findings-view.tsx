@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { qk, useMe } from "@/lib/hooks";
-import { Ban, Layers, Plus, Search, Sparkles, Trash2, Upload, Wand2, Wrench, X } from "lucide-react";
+import { Ban, Layers, Link2, Plus, Search, Sparkles, Trash2, Upload, Wand2, Wrench, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -206,6 +206,10 @@ export function FindingsView({
   const [confirmingBulk, setConfirmingBulk] = useState(false);
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const [bulkError, setBulkError] = useState<string | null>(null);
+  // v1.4.10: manual merge — the checked selection can also be folded
+  // into one parent row via the ManualMergeModal. Opens on demand from
+  // the bulk-action bar; only enabled when >= 2 rows are checked.
+  const [showManualMergeModal, setShowManualMergeModal] = useState(false);
 
   // v0.8.1: severity-only filter driven by clicking the metric tiles.
   // "all" means no severity filter active. Pending validation has its own
@@ -526,8 +530,11 @@ export function FindingsView({
         />
       )}
 
-      {/* v0.10.0 bulk-delete action bar. Only rendered when at least one
-          row is checked; sticks between filters and the table. */}
+      {/* v0.10.0 bulk-select action bar. Only rendered when at least one
+          row is checked; sticks between filters and the table.
+          v1.4.10: adds a Merge button once >= 2 rows are checked. Merge
+          folds children into a chosen parent and stamps the parent's
+          group_key with 'manual:<...>' so re-grouping leaves it alone. */}
       {checkedIds.size > 0 && (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-rose-500/40 bg-rose-500/5 px-3 py-2">
           <div className="flex items-center gap-3 text-sm">
@@ -546,24 +553,38 @@ export function FindingsView({
               <span className="text-xs text-muted-foreground">{bulkError}</span>
             )}
           </div>
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={bulkDeleting}
-            onClick={doBulkDelete}
-            className={
-              confirmingBulk
-                ? "border-rose-500 bg-rose-500/15 text-rose-100 hover:bg-rose-500/25"
-                : "border-rose-500/50 text-rose-200 hover:bg-rose-500/10"
-            }
-          >
-            <Trash2 className="mr-1.5 h-3.5 w-3.5" />
-            {bulkDeleting
-              ? "Deleting…"
-              : confirmingBulk
-                ? `Confirm delete ${checkedIds.size}`
-                : `Delete ${checkedIds.size} finding${checkedIds.size === 1 ? "" : "s"}`}
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            {checkedIds.size >= 2 && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setShowManualMergeModal(true)}
+                className="border-sky-500/50 text-sky-200 hover:bg-sky-500/10"
+                title="Fold the selected findings into one parent row. The parent's group_key becomes manual:<...> so re-running Group findings leaves it alone."
+              >
+                <Link2 className="mr-1.5 h-3.5 w-3.5" />
+                Merge {checkedIds.size} into one
+              </Button>
+            )}
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={bulkDeleting}
+              onClick={doBulkDelete}
+              className={
+                confirmingBulk
+                  ? "border-rose-500 bg-rose-500/15 text-rose-100 hover:bg-rose-500/25"
+                  : "border-rose-500/50 text-rose-200 hover:bg-rose-500/10"
+              }
+            >
+              <Trash2 className="mr-1.5 h-3.5 w-3.5" />
+              {bulkDeleting
+                ? "Deleting…"
+                : confirmingBulk
+                  ? `Confirm delete ${checkedIds.size}`
+                  : `Delete ${checkedIds.size} finding${checkedIds.size === 1 ? "" : "s"}`}
+            </Button>
+          </div>
         </div>
       )}
 
@@ -770,6 +791,19 @@ export function FindingsView({
             // of a source also removes it from the visible set. The
             // page-level query will refetch the parent on next focus.
             absorbedIds.forEach((id) => onDeleted(id));
+          }}
+        />
+      )}
+
+      {showManualMergeModal && (
+        <ManualMergeModal
+          findings={findings.filter((f) => checkedIds.has(f.id))}
+          onClose={() => setShowManualMergeModal(false)}
+          onMerged={(parent, absorbedIds) => {
+            onUpdated(parent);
+            absorbedIds.forEach((cid) => onDeleted(cid));
+            setCheckedIds(new Set());
+            setShowManualMergeModal(false);
           }}
         />
       )}
@@ -2490,6 +2524,200 @@ function CorrelateModal({
         <div className="flex justify-end gap-2 border-t border-border px-5 py-3">
           <Button variant="outline" size="sm" onClick={onClose}>
             Close
+          </Button>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ── v1.4.10: Manual merge modal ────────────────────────────────────────────
+//
+// Analyst picks 2+ findings via the table checkboxes, opens this modal
+// from the bulk-action bar, chooses which one is the parent (default:
+// highest severity), and confirms. Server-side merge unions items[] and
+// stamps ``group_key = "manual:<...>"`` on the parent so auto-regroup
+// leaves the row alone.
+
+function ManualMergeModal({
+  findings,
+  onClose,
+  onMerged,
+}: {
+  findings: Finding[];
+  onClose: () => void;
+  onMerged: (parent: Finding, absorbedIds: string[]) => void;
+}) {
+  const defaultParentId = useMemo(() => {
+    if (findings.length === 0) return "";
+    // Highest severity wins; ties broken by newest created_at.
+    let winner = findings[0]!;
+    for (const f of findings.slice(1)) {
+      const bySev = SEVERITY_RANK[f.severity] - SEVERITY_RANK[winner.severity];
+      if (bySev > 0) winner = f;
+      else if (bySev === 0 && f.created_at > winner.created_at) winner = f;
+    }
+    return winner.id;
+  }, [findings]);
+  const [parentId, setParentId] = useState<string>(defaultParentId);
+  const [merging, setMerging] = useState(false);
+  const [errorText, setErrorText] = useState<string | null>(null);
+
+  const parent = findings.find((f) => f.id === parentId) ?? null;
+  const childCount = Math.max(findings.length - 1, 0);
+  const childItemsProjected = findings
+    .filter((f) => f.id !== parentId)
+    .reduce((n, f) => n + (f.item_count ?? 0), 0);
+  const topSeverity = findings.reduce<Severity>((top, f) => {
+    return SEVERITY_RANK[f.severity] > SEVERITY_RANK[top] ? f.severity : top;
+  }, "info");
+
+  const confirm = async () => {
+    if (!parent) return;
+    setMerging(true);
+    setErrorText(null);
+    try {
+      const childIds = findings.filter((f) => f.id !== parent.id).map((f) => f.id);
+      const merged = await mergeFindings(parent.id, childIds);
+      onMerged(merged, childIds);
+    } catch (err) {
+      setErrorText(err instanceof Error ? err.message : String(err));
+    } finally {
+      setMerging(false);
+    }
+  };
+
+  return (
+    <>
+      <div
+        className="fixed inset-0 z-[60] bg-black/70"
+        onClick={onClose}
+        aria-hidden
+      />
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Merge findings"
+        className="fixed left-1/2 top-1/2 z-[70] flex max-h-[90vh] w-[min(680px,94vw)] -translate-x-1/2 -translate-y-1/2 flex-col rounded-lg border border-border bg-popover shadow-xl"
+      >
+        <div className="flex items-start justify-between gap-4 border-b border-border px-5 py-4">
+          <div>
+            <h3 className="text-sm font-semibold text-foreground">
+              <Link2 className="mr-1.5 inline h-4 w-4 -translate-y-0.5" />
+              Merge {findings.length} findings
+            </h3>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              Pick the parent row. Children fold in — their items[] union
+              into the parent, severity climbs to the highest across the
+              group, and the parent&apos;s group_key becomes{" "}
+              <span className="font-mono">manual:&hellip;</span> so future
+              auto-regroup runs leave this row alone.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-muted-foreground hover:text-foreground"
+            aria-label="Close"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <div className="overflow-y-auto px-5 py-4">
+          <ul className="space-y-1.5">
+            {findings.map((f) => (
+              <li key={f.id} className="flex items-start gap-2 text-xs">
+                <input
+                  type="radio"
+                  name="manual-merge-parent"
+                  value={f.id}
+                  checked={parentId === f.id}
+                  disabled={merging}
+                  onChange={() => setParentId(f.id)}
+                  className="mt-0.5 cursor-pointer accent-sky-500"
+                  aria-label={`Choose ${shortId(f.id)} as parent`}
+                />
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-mono text-[10px] text-muted-foreground">
+                      {shortId(f.id)}
+                    </span>
+                    <Badge
+                      variant="outline"
+                      className={cn("text-[10px]", SEVERITY_CLASS[f.severity])}
+                    >
+                      {f.severity}
+                    </Badge>
+                    <span className="truncate text-foreground">{f.title}</span>
+                    {typeof f.item_count === "number" && f.item_count > 0 && (
+                      <span className="text-[10px] text-muted-foreground">
+                        · {f.item_count} item{f.item_count === 1 ? "" : "s"}
+                      </span>
+                    )}
+                    {f.group_key && (
+                      <span
+                        className="font-mono text-[10px] text-muted-foreground"
+                        title={f.group_key}
+                      >
+                        · {f.group_key}
+                      </span>
+                    )}
+                  </div>
+                  {f.target && (
+                    <p className="mt-0.5 font-mono text-[11px] text-muted-foreground">
+                      {f.target}
+                    </p>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ul>
+
+          <div className="mt-4 rounded-md border border-border bg-background/50 p-3 text-xs text-muted-foreground">
+            <div>
+              <span className="text-foreground">Parent:</span>{" "}
+              {parent ? (
+                <>
+                  <span className="font-mono">{shortId(parent.id)}</span>{" "}
+                  &mdash; {parent.title}
+                </>
+              ) : (
+                <span className="italic">none picked</span>
+              )}
+            </div>
+            <div className="mt-1">
+              Will absorb {childCount} finding
+              {childCount === 1 ? "" : "s"}
+              {childItemsProjected > 0
+                ? ` and ${childItemsProjected} item${childItemsProjected === 1 ? "" : "s"}`
+                : ""}
+              . Final severity:{" "}
+              <Badge
+                variant="outline"
+                className={cn("text-[10px]", SEVERITY_CLASS[topSeverity])}
+              >
+                {topSeverity}
+              </Badge>
+              .
+            </div>
+          </div>
+
+          {errorText && (
+            <div className="mt-3 rounded-md border border-critical/40 bg-critical/10 p-3 text-xs text-critical">
+              {errorText}
+            </div>
+          )}
+        </div>
+
+        <div className="flex justify-end gap-2 border-t border-border px-5 py-3">
+          <Button variant="outline" size="sm" onClick={onClose} disabled={merging}>
+            Cancel
+          </Button>
+          <Button size="sm" onClick={confirm} disabled={merging || !parent}>
+            {merging
+              ? "Merging…"
+              : `Merge ${childCount} into parent`}
           </Button>
         </div>
       </div>

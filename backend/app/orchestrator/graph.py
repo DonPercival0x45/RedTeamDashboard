@@ -353,15 +353,28 @@ def _tool_dispatch_node(
             expanded = _expand_findings(name, effective_args, result)
             out_findings.extend(expanded)
         # v1.4.3: trace event so the analyst sees exactly what the
-        # agent called and what came back. Data preview is bounded so
-        # heavy responses (big JSON blobs) don't blow up the SSE frame.
+        # agent called and what came back. v1.4.10: preview is emitted
+        # as the RAW dict/list when JSON size is ≤ 8KB so the step log
+        # renders it as nested JSON (readable) rather than an escaped
+        # string. Large responses fall back to a truncated string with
+        # a byte marker. Persisted in both the SSE frame and the
+        # audit_log jsonb row, so the step log shows the actual tool
+        # result post-completion (was: 400-char string preview, absent
+        # from audit).
         data_preview: Any = None
         if result.ok:
             try:
                 import json as _json
 
                 raw = _json.dumps(result.data, default=str)
-                data_preview = raw[:400] + ("…" if len(raw) > 400 else "")
+                if len(raw) <= 8192:
+                    data_preview = result.data
+                else:
+                    truncated_bytes = len(raw) - 8192
+                    data_preview = (
+                        raw[:8192]
+                        + f"…(truncated {truncated_bytes} bytes)"
+                    )
             except Exception:  # noqa: BLE001
                 data_preview = "(unserializable)"
         out_tool_events.append(
