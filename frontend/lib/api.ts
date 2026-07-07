@@ -158,6 +158,7 @@ export function createScopeItem(
     value: string;
     is_exclusion?: boolean;
     note?: string | null;
+    source?: "defined" | "found";
   },
 ) {
   return request<import("@/lib/types").ScopeItem>(

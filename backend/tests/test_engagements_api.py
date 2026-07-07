@@ -337,6 +337,38 @@ def test_create_and_list_scope_items(
     assert len(rows) == 2
     values = {r["value"] for r in rows}
     assert values == {"acme.com", "10.0.0.0/24"}
+    # v1.4.13: items created without a source default to "defined".
+    assert {r["source"] for r in rows} == {"defined"}
+
+
+def test_scope_item_source_found_round_trips(
+    client: TestClient, cleanup_slugs: list[str]
+) -> None:
+    """v1.4.13 (roadmap #5): a scope item can be marked source='found'
+    (added from findings) and the marker survives a read."""
+    eng = _create(client, "Found scope holder")
+    cleanup_slugs.append(eng["slug"])
+
+    created = client.post(
+        f"/engagements/{eng['slug']}/scope",
+        json={"kind": "domain", "value": "shadow.acme.com", "source": "found"},
+        headers=_headers(),
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["source"] == "found"
+
+    rows = client.get(f"/engagements/{eng['slug']}/scope").json()
+    found_rows = [r for r in rows if r["source"] == "found"]
+    assert len(found_rows) == 1
+    assert found_rows[0]["value"] == "shadow.acme.com"
+
+    # An invalid source is rejected by the Literal validator.
+    bad = client.post(
+        f"/engagements/{eng['slug']}/scope",
+        json={"kind": "domain", "value": "x.io", "source": "bogus"},
+        headers=_headers(),
+    )
+    assert bad.status_code == 422
 
 
 def test_engagement_read_carries_scope_counts(

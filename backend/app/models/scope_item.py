@@ -31,3 +31,8 @@ class ScopeItem(Base, TimestampMixin):
     value: Mapped[str] = mapped_column(String(500), nullable=False)
     is_exclusion: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     note: Mapped[str | None] = mapped_column(String(500))
+    # v1.4.13: provenance (roadmap #5). ``defined`` = original client-
+    # provided scope; ``found`` = added from findings / discovered
+    # mid-engagement (UI tints green). Defaults to ``defined`` so legacy
+    # rows and the importer stay client-scope.
+    source: Mapped[str] = mapped_column(String(20), default="defined", nullable=False)

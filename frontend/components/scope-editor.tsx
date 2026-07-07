@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { cn } from "@/lib/utils";
 import { importScope } from "@/lib/api";
 import {
   qk,
@@ -43,6 +44,7 @@ export function ScopeEditor({
   const [kind, setKind] = useState<ScopeKind>("domain");
   const [value, setValue] = useState("");
   const [isExclusion, setIsExclusion] = useState(false);
+  const [isFound, setIsFound] = useState(false);
   const [note, setNote] = useState("");
   const [localError, setLocalError] = useState<string | null>(null);
   const error =
@@ -64,10 +66,12 @@ export function ScopeEditor({
         value: value.trim(),
         is_exclusion: isExclusion,
         note: note.trim() || null,
+        source: isFound ? "found" : "defined",
       });
       setValue("");
       setNote("");
       setIsExclusion(false);
+      setIsFound(false);
     } catch (err) {
       setLocalError(err instanceof Error ? err.message : String(err));
     }
@@ -167,6 +171,15 @@ export function ScopeEditor({
             />
             Exclusion (carves out from a broader include above)
           </label>
+          <label className="flex items-center gap-2 text-sm sm:col-span-2">
+            <input
+              type="checkbox"
+              checked={isFound}
+              onChange={(event) => setIsFound(event.target.checked)}
+              className="h-4 w-4 rounded border-input"
+            />
+            Found (turned up in findings, not original client scope)
+          </label>
           <Input
             value={note}
             onChange={(event) => setNote(event.target.value)}
@@ -192,10 +205,15 @@ export function ScopeEditor({
 
         {items && items.length > 0 && (
           <ul className="divide-y">
-            {items.map((item) => (
+            {items.map((item) => {
+              const found = item.source === "found";
+              return (
               <li
                 key={item.id}
-                className="flex items-center justify-between py-2"
+                className={cn(
+                  "flex items-center justify-between py-2 px-2 -mx-2 rounded",
+                  found && "bg-emerald-500/10",
+                )}
               >
                 <div className="flex items-center gap-3">
                   <Badge
@@ -205,6 +223,14 @@ export function ScopeEditor({
                     {item.is_exclusion ? " · exclude" : ""}
                   </Badge>
                   <span className="font-mono text-sm">{item.value}</span>
+                  {found && (
+                    <span
+                      className="rounded-full border border-emerald-500/50 bg-emerald-500/15 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-emerald-600 dark:text-emerald-400"
+                      title="Added from findings, not original client scope"
+                    >
+                      found
+                    </span>
+                  )}
                   {item.note && (
                     <span className="text-xs text-muted-foreground">
                       {item.note}
@@ -222,7 +248,8 @@ export function ScopeEditor({
                   </Button>
                 )}
               </li>
-            ))}
+              );
+            })}
           </ul>
         )}
       </CardContent>
