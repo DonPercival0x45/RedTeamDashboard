@@ -747,7 +747,10 @@ def test_run_endpoint_defaults_model_when_body_omits(
 
     queued = redis_client.xrange(inbound_stream(uuid.UUID(eng["id"])))
     payload = json.loads(queued[-1][1]["data"])
-    assert payload["model"] == body["model"]
+    # v1.4.12: model now carries an optional key_id; compare the fields
+    # that matter, not exact-dict equality.
+    assert payload["model"]["provider"] == body["model"]["provider"]
+    assert payload["model"]["name"] == body["model"]["name"]
 
 
 def test_run_endpoint_passes_through_explicit_model(
@@ -768,12 +771,15 @@ def test_run_endpoint_passes_through_explicit_model(
     )
     assert response.status_code == 202, response.text
     body = response.json()
-    assert body["model"] == chosen
+    # v1.4.12: model now carries an optional key_id; compare fields.
+    assert body["model"]["provider"] == chosen["provider"]
+    assert body["model"]["name"] == chosen["name"]
 
     payload = json.loads(
         redis_client.xrange(inbound_stream(uuid.UUID(eng["id"])))[-1][1]["data"]
     )
-    assert payload["model"] == chosen
+    assert payload["model"]["provider"] == chosen["provider"]
+    assert payload["model"]["name"] == chosen["name"]
 
     cached = redis_client.hgetall(f"run:model:{body['thread_id']}")
     # The cache hash also stores acting_user_id so the approval-resume
