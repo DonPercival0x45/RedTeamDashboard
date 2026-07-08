@@ -1,40 +1,55 @@
-// v1.11.0: shared taxonomy for grouping tools by task_kind on the
-// Settings > Tools banner and the Scope-tab "Current Tools" panel.
+// v1.11.0: shared taxonomy for grouping tools on the Settings > Tools
+// banner and the Scope-tab "Current Tools" panel.
 //
-// task_kind is the charter-gate taxonomy — the agent dispatcher enforces
-// enum/scan-only; exploit-kind tools are analyst-only regardless of
-// lane. Same three buckets show up in the UI so analysts immediately
-// see what an agent will and won't reach for on their behalf.
-//
-// v1.12.0: switched from ``ToolRead`` (analyst-uploaded catalog) to
-// ``OrchestratorTool`` (built-in FastMCP registry — subfinder,
-// dns_lookup, port_scan, etc.). The two surfaces (Settings banner +
-// Scope-tab panel) always want the built-ins; there's no case where
-// the analyst-upload catalog belongs in either.
+// v1.12.1: grouping switched from task-kind (enum/scan/exploit) to
+// FindingPhase (osint/vuln_scan/…). The orchestrator ToolSpec's
+// ``kind`` field is actually the target scope-kind (domain/ip/cidr),
+// not the task-kind — the v1.12.0 wire projected it as-is and every
+// tool fell through empty groups (see v1.12.0 → v1.12.1 hotfix). The
+// correct grouping axis is ``phase_for_tool()`` on the backend, which
+// returns FindingPhase strings.
 
-import type { OrchestratorTool, ToolTaskKind } from "@/lib/types";
+import type { OrchestratorTool } from "@/lib/types";
+
+// FindingPhase from backend/app/models/finding.py.
+export type ToolPhase =
+  | "osint"
+  | "vuln_scan"
+  | "exploit"
+  | "phishing"
+  | "general";
 
 export interface ToolPhaseMeta {
-  key: ToolTaskKind;
+  key: ToolPhase;
   label: string;
   hint: string;
 }
 
 export const TOOL_PHASES: ToolPhaseMeta[] = [
   {
-    key: "enum",
-    label: "Enumeration",
-    hint: "Passive discovery — agents dispatch these on their own.",
+    key: "osint",
+    label: "OSINT",
+    hint: "Passive recon — subfinder, dns, whois, crt.sh, and friends.",
   },
   {
-    key: "scan",
+    key: "vuln_scan",
     label: "Scanning",
-    hint: "Active probes — agents dispatch inside the approved scope.",
+    hint: "Active probes — port scans, subnet sweeps, service detection.",
   },
   {
     key: "exploit",
     label: "Analyst-only",
     hint: "Validation / proof-of-concept — analyst dispatches manually.",
+  },
+  {
+    key: "phishing",
+    label: "Phishing",
+    hint: "Phishing workflows — analyst-driven.",
+  },
+  {
+    key: "general",
+    label: "Other",
+    hint: "Uncategorized tools.",
   },
 ];
 
@@ -51,17 +66,16 @@ export function groupToolsByPhase(
   return TOOL_PHASES.map((phase) => ({
     phase,
     tools: tools
-      .filter((t) => t.kind === phase.key)
+      .filter((t) => t.phase === phase.key)
       .slice()
       .sort((a, b) => a.name.localeCompare(b.name)),
   }));
 }
 
 // Fallback rendered on the Scope panel when a tool has no curated
-// example_prompt. Deliberately generic — encourages tool authors to
-// ship a real one but doesn't leave the button empty. Orchestrator
-// tools always ship an example_prompt (backend fills one for known
-// tools + generic fallback for the rest) so this is mostly defensive.
+// example_prompt. Orchestrator tools always ship an example_prompt
+// (backend fills one for known tools + generic fallback for the
+// rest), so this is mostly defensive.
 export function toolPromptOrFallback(tool: OrchestratorTool): string {
   if (tool.example_prompt && tool.example_prompt.trim().length > 0) {
     return tool.example_prompt.trim();
