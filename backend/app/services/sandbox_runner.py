@@ -25,14 +25,15 @@ Shared invariants enforced HERE (not per-runner):
       payload = json.loads(base64.b64decode(os.environ["RTD_ARGS_JSON"]))
       args = payload["args"]
       scope = payload["scope"]
+      entities = payload.get("entities", {})
 
   Env var chosen over stdin so both runners have a uniform contract
   (ACI does not expose per-invocation stdin via the mgmt API).
 
   Payload shape::
 
-      {"args": {...}, "scope": {...}, "invocation_id": "...",
-       "tool_name": "...", "tool_version": N}
+      {"args": {...}, "scope": {...}, "entities": {...},
+       "invocation_id": "...", "tool_name": "...", "tool_version": N}
 
   Tools do their work, print results to stdout, exit 0. Errors go to
   stderr, non-zero exit.
@@ -86,6 +87,12 @@ class SandboxRequest:
     python_deps: list[str] = field(default_factory=list)
     args: dict[str, Any] = field(default_factory=dict)
     scope: dict[str, Any] = field(default_factory=dict)
+    # v0.16.0: discovered entities (emails / hosts / IPs extracted from
+    # findings) grouped by type. Parallel to ``scope`` (which is the
+    # engagement's *defined* targets) so a tool can tell apart "what's
+    # authorized" from "what we've found". Delivered to the entrypoint
+    # under payload["entities"].
+    entities: dict[str, Any] = field(default_factory=dict)
     invocation_id: str = ""
     timeout_seconds: int = 120
     cpu_limit: float = 1.0
@@ -128,6 +135,7 @@ def build_args_env(req: SandboxRequest) -> str:
         {
             "args": req.args,
             "scope": req.scope,
+            "entities": req.entities,
             "invocation_id": req.invocation_id,
             "tool_name": req.tool_name,
             "tool_version": req.tool_version,
