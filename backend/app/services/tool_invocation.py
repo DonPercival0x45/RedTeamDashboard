@@ -31,6 +31,7 @@ from app.models import (
     AuditLog,
     Engagement,
     Entity,
+    Finding,
     ScopeItem,
     Tool,
     ToolInvocation,
@@ -40,6 +41,7 @@ from app.models import (
     ToolTaskKind,
     User,
 )
+from app.services.entities import extract_entities
 from app.services.sandbox_local import LocalDockerRunner
 from app.services.sandbox_runner import (
     RUNTIME_RATES_USD_PER_SECOND,
@@ -276,28 +278,47 @@ def _build_scope(session: Session, engagement: Engagement) -> dict[str, Any]:
 def _build_entities(session: Session, engagement: Engagement) -> dict[str, list[str]]:
     """Group the engagement's discovered entities by type (v0.16.0).
 
-    Parallel to :func:`_build_scope` but for *discovered* data (emails,
-    hosts, IPs extracted from findings) rather than the engagement's
-    *defined* targets. Entity ``type`` is free-form (email / ip / domain /
-    host / subdomain / url / cidr / person / asn / …), so we group by
-    whatever types actually exist rather than a fixed set — a future
+    Mirrors what the analyst sees in the entities view: entities
+    **derived from findings** (the primary source — emails/hosts/IPs
+    extracted via :func:`extract_entities`) merged with **stored**
+    entities (Maltego import). Entity ``type`` is free-form, so we group
+    by whatever types actually exist rather than a fixed set — a future
     "IP reputation" tool reads ``entities['ip']``, a UPN enum reads
     ``entities['email']``, and types we don't know about yet still flow
-    through under their own key. Values are deduped, order preserved.
+    through under their own key. Values are deduped (derived wins on
+    collision), order preserved (derived first, then stored).
     """
-    rows = list(
+    grouped: dict[str, list[str]] = {}
+
+    def _add(type_: str, value: str) -> None:
+        bucket = grouped.setdefault(type_, [])
+        val = value.strip()
+        if val and val not in bucket:
+            bucket.append(val)
+
+    # 1. derived — computed from findings (Finding.target + content).
+    findings = list(
+        session.execute(
+            select(Finding).where(
+                Finding.engagement_id == engagement.id,
+                Finding.deleted_at.is_(None),
+            )
+        ).scalars()
+    )
+    for e in extract_entities(findings):
+        _add(e.get("type", ""), e.get("value", ""))
+
+    # 2. stored — persisted via Maltego import / manual entry.
+    stored = list(
         session.execute(
             select(Entity)
             .where(Entity.engagement_id == engagement.id)
             .order_by(Entity.type, Entity.value)
         ).scalars()
     )
-    grouped: dict[str, list[str]] = {}
-    for r in rows:
-        grouped.setdefault(r.type, [])
-        val = r.value.strip()
-        if val and val not in grouped[r.type]:
-            grouped[r.type].append(val)
+    for r in stored:
+        _add(r.type, r.value)
+
     return grouped
 
 
