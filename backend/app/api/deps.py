@@ -269,14 +269,30 @@ def current_user(
             claims = validate_token(token)
         except EntraError as exc:
             raise HTTPException(status_code=401, detail=f"invalid token: {exc}") from exc
-        return upsert_entra_user(session, claims)
+        return _require_active(upsert_entra_user(session, claims))
 
     if not x_user_id:
         raise HTTPException(
             status_code=401,
             detail="X-API-Key, Authorization: Bearer, or X-User-Id header required",
         )
-    return upsert_user(session, x_user_id)
+    return _require_active(upsert_user(session, x_user_id))
+
+
+def _require_active(user: User) -> User:
+    """Reject deactivated users (roadmap #6).
+
+    An admin can soft-deactivate a user via ``PATCH /admin/users/{id}/active``;
+    this is where that flag actually bites. Applies to browser-SSO and dev
+    ``X-User-Id`` sessions. API-key / bootstrap identities are automation and
+    aren't gated here.
+    """
+    if not user.is_active:
+        raise HTTPException(
+            status_code=403,
+            detail="this account has been deactivated; contact an admin",
+        )
+    return user
 
 
 def require_admin_user(

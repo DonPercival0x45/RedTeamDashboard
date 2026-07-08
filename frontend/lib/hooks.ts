@@ -60,6 +60,7 @@ import {
   updateIntegration,
   updateMyPreferences,
   updateUserRole,
+  updateUserActive,
 } from "@/lib/api";
 import { loadReleases } from "@/lib/release-notes";
 import type {
@@ -415,6 +416,16 @@ export function useUpdateUserRoleMutation() {
   return useMutation({
     mutationFn: (params: { userId: string; role: UserRole }) =>
       updateUserRole(params.userId, params.role),
+    onSuccess: () =>
+      qc.invalidateQueries({ queryKey: qk.adminUsers() }),
+  });
+}
+
+export function useUpdateUserActiveMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (params: { userId: string; is_active: boolean }) =>
+      updateUserActive(params.userId, params.is_active),
     onSuccess: () =>
       qc.invalidateQueries({ queryKey: qk.adminUsers() }),
   });
