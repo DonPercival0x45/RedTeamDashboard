@@ -135,3 +135,92 @@ def triage_finding_summary(
         # no-op for this row.
         session.commit()
         raise
+
+
+# v0.20.0 (roadmap #1): AI-assisted rewrite of a manually-entered
+# finding description. Sibling of triage, but refines the analyst's OWN
+# draft instead of generating from scratch — and is explicitly
+# constrained NOT to introduce facts the analyst didn't write (the
+# fabrication guardrail the roadmap flagged).
+_REWRITE_SYSTEM_PROMPT = (
+    "You improve a security analyst's draft finding description for "
+    "clarity, concision, and report-readiness. HARD CONSTRAINT: use ONLY "
+    "information present in the draft. Do NOT add CVE IDs, hostnames, "
+    "tool names, ports, users, severities, or any technical detail not "
+    "already in the text. Do NOT drop material facts. Fix grammar, "
+    "tighten wording, fix ordering, and make the impact clear. If the "
+    "draft is already clear, return it substantially unchanged. "
+    "Plain text ONLY — no markdown, no headers, no bullets."
+)
+
+
+def _build_rewrite_user_prompt(draft: str) -> str:
+    return f"Rewrite this finding description:\n\n{draft}"
+
+
+def rewrite_finding_summary(
+    session: Session,
+    redis_client: Any,
+    *,
+    finding: Finding,
+    draft: str,
+    acting_user_id: uuid.UUID,
+) -> tuple[AgentExecution, str]:
+    """Refine an analyst's draft summary via the LLM (roadmap #1).
+
+    Like :func:`triage_finding_summary` but the source is the analyst's
+    own draft text, and the system prompt forbids introducing facts not
+    in the draft. Returns ``(execution, rewritten_text)``; caller commits.
+    Raises whatever the key resolver / LLM SDK raise.
+    """
+    provider, model_name = default_provider_model()
+    resolved = resolve_for_user(
+        redis_client, user_id=acting_user_id, provider=provider
+    )
+    llm = _make_chat_model(
+        provider,
+        model_name,
+        api_key=resolved.api_key,
+        endpoint=resolved.endpoint,
+    )
+
+    execution = AgentExecution(
+        engagement_id=finding.engagement_id,
+        agent=AgentName.triage,
+        trigger=AgentTrigger.manual,
+        input={"finding_id": str(finding.id), "rewrite": True},
+        model_provider=provider,
+        model_name=model_name,
+        status=AgentExecutionStatus.running,
+        started_at=datetime.now(tz=UTC),
+    )
+    session.add(execution)
+    session.commit()
+    session.refresh(execution)
+
+    try:
+        response = llm.invoke(
+            [
+                ("system", _REWRITE_SYSTEM_PROMPT),
+                ("user", _build_rewrite_user_prompt(draft)),
+            ]
+        )
+        raw = response.content
+        summary = (raw if isinstance(raw, str) else str(raw)).strip()
+        tokens_in, tokens_out = _extract_usage(response)
+        cost = pricing.cost_usd(model_name, tokens_in, tokens_out, provider=provider)
+        execution.status = AgentExecutionStatus.completed
+        execution.completed_at = datetime.now(tz=UTC)
+        execution.tokens_in = tokens_in
+        execution.tokens_out = tokens_out
+        execution.cost_usd = cost
+        execution.output = {"rewrite_chars": len(summary)}
+        session.commit()
+        session.refresh(execution)
+        return execution, summary
+    except Exception as exc:
+        execution.status = AgentExecutionStatus.failed
+        execution.completed_at = datetime.now(tz=UTC)
+        execution.error = str(exc)[:1000]
+        session.commit()
+        raise
