@@ -72,6 +72,14 @@ class TriageFindingResponse(BaseModel):
     summary: str
 
 
+class FindingRewriteRequest(BaseModel):
+    """Body for ``POST /findings/{id}/rewrite-summary`` (roadmap #1). The
+    analyst's current draft text, to be refined for clarity without
+    introducing facts not in the draft."""
+
+    draft: str = Field(min_length=1, max_length=8000)
+
+
 class AcceptSuggestionResponse(BaseModel):
     """Returned by ``POST /suggestions/{id}/accept``.
 

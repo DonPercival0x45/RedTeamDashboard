@@ -549,6 +549,21 @@ export function triageFinding(
   });
 }
 
+export function rewriteFindingSummary(
+  findingId: string,
+  draft: string,
+): Promise<TriageFindingResponse> {
+  // v0.20.0 (roadmap #1): refine an analyst's draft description via
+  // the LLM. Mirrors triageFinding but sends the current draft text.
+  return request<TriageFindingResponse>(
+    `/findings/${findingId}/rewrite-summary`,
+    {
+      method: "POST",
+      body: JSON.stringify({ draft }),
+    },
+  );
+}
+
 export function listSuggestions(
   slug: string,
   status?: SuggestionStatus,

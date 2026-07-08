@@ -28,6 +28,7 @@ import {
   regroupFindingsPreview,
   repairFindingGroups,
   triageFinding,
+  rewriteFindingSummary,
   updateFinding,
   uploadAttachment,
   validateFinding,
@@ -1104,6 +1105,9 @@ function FindingSlideOver({
   // AI Triage — populates the textarea with an LLM-written summary; the
   // analyst then edits + clicks Save. Does NOT auto-save.
   const [triaging, setTriaging] = useState(false);
+  // v0.20.0 (roadmap #1): AI rewrite — refines the analyst's CURRENT
+  // draft for clarity (no fabrication). Also fills the textarea; no auto-save.
+  const [rewriting, setRewriting] = useState(false);
 
   // Summary history (newest first). Refreshed after each Save.
   const [summaries, setSummaries] = useState<FindingSummaryEntry[] | null>(null);
@@ -1167,6 +1171,21 @@ function FindingSlideOver({
       setSummaryError(err instanceof Error ? err.message : String(err));
     } finally {
       setTriaging(false);
+    }
+  };
+
+  const doRewrite = async () => {
+    const draft = summary.trim();
+    if (!draft) return; // button is disabled in this case, but guard anyway
+    setRewriting(true);
+    setSummaryError(null);
+    try {
+      const res = await rewriteFindingSummary(finding.id, draft);
+      setSummary(res.summary);
+    } catch (err) {
+      setSummaryError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRewriting(false);
     }
   };
 
@@ -1388,6 +1407,15 @@ function FindingSlideOver({
               title="Ask the LLM to draft a report-ready summary into the textarea. You can edit, then Save."
             >
               {triaging ? "Triaging…" : "AI Triage"}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={rewriting || savingSummary || triaging || !summary.trim()}
+              onClick={doRewrite}
+              title="Refine the current draft for clarity. The LLM is constrained not to add facts you didn't write."
+            >
+              {rewriting ? "Rewriting…" : "AI Rewrite"}
             </Button>
             {summaryError && (
               <p className="text-xs text-critical">{summaryError}</p>
