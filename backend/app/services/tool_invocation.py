@@ -30,6 +30,8 @@ from app.models import (
     ActorType,
     AuditLog,
     Engagement,
+    Entity,
+    Finding,
     ScopeItem,
     Tool,
     ToolInvocation,
@@ -39,6 +41,7 @@ from app.models import (
     ToolTaskKind,
     User,
 )
+from app.services.entities import extract_entities
 from app.services.sandbox_local import LocalDockerRunner
 from app.services.sandbox_runner import (
     RUNTIME_RATES_USD_PER_SECOND,
@@ -93,6 +96,7 @@ async def invoke_tool(
 
     validated_args = _validate_args(tool, args)
     scope = _build_scope(session, engagement)
+    entities = _build_entities(session, engagement)
     source_bytes = _decode_source(tool)
 
     # v0.15.0: shared_kali_box runtime lands in v0.17. Refuse it
@@ -131,6 +135,7 @@ async def invoke_tool(
         python_deps=python_deps,
         args=validated_args,
         scope=scope,
+        entities=entities,
         invocation_id=str(row.id),
         timeout_seconds=int(manifest_spec.get("timeout_seconds", 120)),
         allow_network=(
@@ -268,6 +273,53 @@ def _build_scope(session: Session, engagement: Engagement) -> dict[str, Any]:
         "cidrs": cidrs,
         "urls": urls,
     }
+
+
+def _build_entities(session: Session, engagement: Engagement) -> dict[str, list[str]]:
+    """Group the engagement's discovered entities by type (v0.16.0).
+
+    Mirrors what the analyst sees in the entities view: entities
+    **derived from findings** (the primary source — emails/hosts/IPs
+    extracted via :func:`extract_entities`) merged with **stored**
+    entities (Maltego import). Entity ``type`` is free-form, so we group
+    by whatever types actually exist rather than a fixed set — a future
+    "IP reputation" tool reads ``entities['ip']``, a UPN enum reads
+    ``entities['email']``, and types we don't know about yet still flow
+    through under their own key. Values are deduped (derived wins on
+    collision), order preserved (derived first, then stored).
+    """
+    grouped: dict[str, list[str]] = {}
+
+    def _add(type_: str, value: str) -> None:
+        bucket = grouped.setdefault(type_, [])
+        val = value.strip()
+        if val and val not in bucket:
+            bucket.append(val)
+
+    # 1. derived — computed from findings (Finding.target + content).
+    findings = list(
+        session.execute(
+            select(Finding).where(
+                Finding.engagement_id == engagement.id,
+                Finding.deleted_at.is_(None),
+            )
+        ).scalars()
+    )
+    for e in extract_entities(findings):
+        _add(e.get("type", ""), e.get("value", ""))
+
+    # 2. stored — persisted via Maltego import / manual entry.
+    stored = list(
+        session.execute(
+            select(Entity)
+            .where(Entity.engagement_id == engagement.id)
+            .order_by(Entity.type, Entity.value)
+        ).scalars()
+    )
+    for r in stored:
+        _add(r.type, r.value)
+
+    return grouped
 
 
 def _decode_source(tool: Tool) -> bytes | None:
