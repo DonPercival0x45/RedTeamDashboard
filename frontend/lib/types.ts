@@ -695,6 +695,9 @@ export interface Me {
   display_name: string | null;
   is_admin: boolean;
   role: UserRole;
+  // v1.4.11: per-analyst default model (roadmap #3 / #12).
+  default_llm_provider?: string | null;
+  default_llm_model?: string | null;
 }
 
 export type RoadmapSuggestionStatus =

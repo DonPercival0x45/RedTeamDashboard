@@ -13,6 +13,7 @@ import {
 import { ProviderKeyImporter } from "@/components/provider-key-importer";
 import { ProviderKeyList } from "@/components/provider-key-list";
 import { QuickAddKey } from "@/components/quick-add-key";
+import { DefaultModelCard } from "@/components/default-model-card";
 import { qk, useMe, useProviderKeys } from "@/lib/hooks";
 import type { ProviderKeyImportResult } from "@/lib/types";
 
@@ -84,6 +85,8 @@ export default function SettingsKeysPage() {
 
       {me?.role !== "guest" && (
       <>
+      <DefaultModelCard />
+
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Quick add</CardTitle>
