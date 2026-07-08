@@ -5,8 +5,8 @@
 // Start-a-run prompt pre-selects it on every engagement instead of
 // resetting to the hardcoded Anthropic default each run.
 
-import { useEffect, useState } from "react";
-import { Check } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { Check, Loader2, Wifi } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -17,8 +17,14 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { useMe, useUpdateMyPreferencesMutation } from "@/lib/hooks";
+import {
+  useMe,
+  useProviderKeys,
+  useUpdateMyPreferencesMutation,
+} from "@/lib/hooks";
+import { probeSavedProviderKey } from "@/lib/api";
 import { PROVIDER_PRESETS } from "@/lib/llm-providers";
+import type { ProviderKeyProbeResult } from "@/lib/types";
 
 export function DefaultModelCard() {
   const { data: me } = useMe();
@@ -30,6 +36,57 @@ export function DefaultModelCard() {
   const [provider, setProvider] = useState(initialProvider);
   const [model, setModel] = useState(initialModel);
   const [error, setError] = useState<string | null>(null);
+  // v0.19.0 (roadmap #27): model discovery. Probe the analyst's cached
+  // key for the selected provider and feed the live model catalog into a
+  // <datalist> on the model input, so they pick from what actually works
+  // instead of hand-typing a model string.
+  const { data: keys } = useProviderKeys();
+  const matchingKey = useMemo(
+    () =>
+      (keys ?? []).find(
+        (k) =>
+          k.provider === provider && k.kind === "model_provider",
+      ),
+    [keys, provider],
+  );
+  const [probe, setProbe] = useState<ProviderKeyProbeResult | null>(null);
+  const [probing, setProbing] = useState(false);
+  const [probeError, setProbeError] = useState<string | null>(null);
+
+  // Reset probe state when the provider (and thus the key) changes.
+  useEffect(() => {
+    setProbe(null);
+    setProbeError(null);
+  }, [matchingKey?.id]);
+
+  const discoveredModels = useMemo(() => {
+    const fromProbe = probe?.ok ? probe.models : [];
+    const fromKey = matchingKey?.models ?? [];
+    // dedupe, preserve order (probe first, then any stored on the key)
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const m of [...fromProbe, ...fromKey]) {
+      if (m && !seen.has(m)) {
+        seen.add(m);
+        out.push(m);
+      }
+    }
+    return out;
+  }, [probe, matchingKey]);
+
+  const onDiscover = async () => {
+    if (!matchingKey) return;
+    setProbing(true);
+    setProbeError(null);
+    try {
+      const result = await probeSavedProviderKey(matchingKey.id);
+      setProbe(result);
+    } catch (err) {
+      setProbeError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setProbing(false);
+    }
+  };
 
   // Sync local state once the cached default loads (useMe is async).
   useEffect(() => {
@@ -98,13 +155,61 @@ export function DefaultModelCard() {
           <Label htmlFor="dm-model" className="text-xs">
             Model
           </Label>
-          <Input
-            id="dm-model"
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-            placeholder="e.g. gpt-4o, claude-opus-4-7, llama3.1:8b"
-            className="font-mono text-sm"
-          />
+          <div className="flex items-center gap-2">
+            <Input
+              id="dm-model"
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              placeholder="e.g. gpt-4o, claude-opus-4-7, llama3.1:8b"
+              className="font-mono text-sm"
+              list="dm-discovered-models"
+            />
+            {matchingKey && (
+              <Button
+                size="sm"
+                variant="outline"
+                className="shrink-0"
+                disabled={probing}
+                onClick={onDiscover}
+                title="Probe your cached key and list the models it actually serves"
+              >
+                {probing ? (
+                  <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Wifi className="mr-1 h-3.5 w-3.5" />
+                )}
+                Discover
+              </Button>
+            )}
+            <datalist id="dm-discovered-models">
+              {discoveredModels.map((m) => (
+                <option key={m} value={m} />
+              ))}
+            </datalist>
+          </div>
+          {/* discovery status / guidance */}
+          {probe?.ok && (
+            <p className="text-[11px] text-emerald-600 dark:text-emerald-400">
+              {probe.models.length} model{probe.models.length === 1 ? "" : "s"} found
+              {probe.latency_ms != null ? ` · ${probe.latency_ms} ms` : ""}{" "}
+              — pick from the dropdown or keep typing.
+            </p>
+          )}
+          {probe && !probe.ok && (
+            <p className="text-[11px] text-amber-600 dark:text-amber-400">
+              {probe.reachable ? "reachable but rejected" : "unreachable"}
+              {probe.status_code != null ? ` · HTTP ${probe.status_code}` : ""}
+              {probe.error ? ` · ${probe.error}` : ""}
+            </p>
+          )}
+          {probeError && (
+            <p className="text-[11px] text-critical">{probeError}</p>
+          )}
+          {!matchingKey && provider && (
+            <p className="text-[11px] text-muted-foreground">
+              No cached key for “{provider}” — add one above to discover models.
+            </p>
+          )}
         </div>
         {error && <p className="text-sm text-critical">{error}</p>}
         <div className="flex items-center gap-2">
