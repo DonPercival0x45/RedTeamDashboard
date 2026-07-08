@@ -1044,6 +1044,16 @@ export function updateUserRole(
   });
 }
 
+export function updateUserActive(
+  userId: string,
+  isActive: boolean,
+): Promise<AdminUser> {
+  return request<AdminUser>(`/admin/users/${userId}/active`, {
+    method: "PATCH",
+    body: JSON.stringify({ is_active: isActive }),
+  });
+}
+
 export async function downloadRoadmapMarkdown(): Promise<void> {
   const response = await fetch(`${API_BASE_URL}/roadmap-suggestions/export`, {
     headers: await authHeaders(),
