@@ -30,6 +30,7 @@ from app.models import (
     ActorType,
     AuditLog,
     Engagement,
+    Entity,
     ScopeItem,
     Tool,
     ToolInvocation,
@@ -93,6 +94,7 @@ async def invoke_tool(
 
     validated_args = _validate_args(tool, args)
     scope = _build_scope(session, engagement)
+    entities = _build_entities(session, engagement)
     source_bytes = _decode_source(tool)
 
     # v0.15.0: shared_kali_box runtime lands in v0.17. Refuse it
@@ -131,6 +133,7 @@ async def invoke_tool(
         python_deps=python_deps,
         args=validated_args,
         scope=scope,
+        entities=entities,
         invocation_id=str(row.id),
         timeout_seconds=int(manifest_spec.get("timeout_seconds", 120)),
         allow_network=(
@@ -268,6 +271,34 @@ def _build_scope(session: Session, engagement: Engagement) -> dict[str, Any]:
         "cidrs": cidrs,
         "urls": urls,
     }
+
+
+def _build_entities(session: Session, engagement: Engagement) -> dict[str, list[str]]:
+    """Group the engagement's discovered entities by type (v0.16.0).
+
+    Parallel to :func:`_build_scope` but for *discovered* data (emails,
+    hosts, IPs extracted from findings) rather than the engagement's
+    *defined* targets. Entity ``type`` is free-form (email / ip / domain /
+    host / subdomain / url / cidr / person / asn / …), so we group by
+    whatever types actually exist rather than a fixed set — a future
+    "IP reputation" tool reads ``entities['ip']``, a UPN enum reads
+    ``entities['email']``, and types we don't know about yet still flow
+    through under their own key. Values are deduped, order preserved.
+    """
+    rows = list(
+        session.execute(
+            select(Entity)
+            .where(Entity.engagement_id == engagement.id)
+            .order_by(Entity.type, Entity.value)
+        ).scalars()
+    )
+    grouped: dict[str, list[str]] = {}
+    for r in rows:
+        grouped.setdefault(r.type, [])
+        val = r.value.strip()
+        if val and val not in grouped[r.type]:
+            grouped[r.type].append(val)
+    return grouped
 
 
 def _decode_source(tool: Tool) -> bytes | None:
