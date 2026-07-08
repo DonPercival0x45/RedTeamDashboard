@@ -1,12 +1,13 @@
 "use client";
 
 // v1.11.0: Settings > Tools tab banner.
+// v1.12.0: source is the orchestrator FastMCP registry (subfinder,
+// dns_lookup, port_scan, …) instead of the analyst-upload DB catalog.
 //
 // Sits above the admin catalog on /settings/tools and shows the tools
-// that ship with the install (first-party, seeded, approved). Analyst-
-// uploaded rows continue to render in the admin catalog below. The
-// banner is read-only — no manage buttons — so it stays useful even
-// when the analyst isn't an admin.
+// that ship with the backend image. Analyst-uploaded rows continue to
+// render in the admin catalog below. Read-only — no manage buttons —
+// so it stays useful even when the analyst isn't an admin.
 //
 // Shares the phase taxonomy (Enumeration / Scanning / Analyst-only)
 // with the Scope-tab "Current Tools" panel so the mental model stays
@@ -51,15 +52,16 @@ export function DefaultToolsBanner() {
           Ships with the install
         </CardTitle>
         <CardDescription>
-          First-party tools seeded on install. Admins can revoke them, but
-          they don&apos;t need approval to run — the engagement gets them
-          out of the box. Analyst uploads land in the catalog below.
+          Built-in orchestrator tools baked into the backend image.
+          Agents dispatch these during a run; analysts can call them
+          manually via the Scope tab. Analyst-uploaded tools land in the
+          catalog below.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         {totalDefaults === 0 && (
           <p className="text-xs text-muted-foreground">
-            No first-party tools registered on this install yet.
+            No built-in tools registered on this backend image.
           </p>
         )}
         {grouped.map(({ phase, tools: phaseTools }) => {
@@ -77,13 +79,13 @@ export function DefaultToolsBanner() {
               <div className="flex flex-wrap gap-1.5">
                 {phaseTools.map((t) => (
                   <span
-                    key={t.id}
-                    title={t.description ?? undefined}
+                    key={t.name}
+                    title={t.description || undefined}
                     className="rounded-md border border-border/60 bg-background px-2 py-1 text-xs"
                   >
                     <span className="font-medium">{t.name}</span>
                     <span className="ml-1.5 text-[10px] text-muted-foreground/70">
-                      {t.kind} · {t.risk_level}
+                      {t.phase} · {t.risk}
                     </span>
                   </span>
                 ))}

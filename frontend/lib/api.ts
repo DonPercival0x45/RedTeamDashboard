@@ -61,6 +61,7 @@ import type {
   ToolLane,
   ToolStatus,
   ToolInvocationRead,
+  OrchestratorTool,
 } from "@/lib/types";
 
 // Auth-only headers (no Content-Type — request() adds that for JSON bodies).
@@ -1177,6 +1178,12 @@ export function listTools(
 
 export function getTool(toolId: string): Promise<ToolRead> {
   return request<ToolRead>(`/tools/${toolId}`);
+}
+
+// v1.12.0: built-in orchestrator MCP tools (subfinder, dns_lookup, etc.).
+// See backend/app/api/orchestrator_tools.py.
+export function listOrchestratorTools(): Promise<OrchestratorTool[]> {
+  return request<OrchestratorTool[]>("/orchestrator/tools");
 }
 
 export async function uploadTool(
