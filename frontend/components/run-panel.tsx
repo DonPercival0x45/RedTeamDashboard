@@ -11,8 +11,8 @@
 // Reuses summarizeEvent / EVENT_COLORS from status-view so event rows
 // look identical to the Status "Live events" tail.
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Loader2, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Loader2, Sparkles, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { subscribeToEvents } from "@/lib/events";
@@ -20,6 +20,7 @@ import {
   EVENT_COLORS,
   summarizeEvent,
 } from "@/components/status-view";
+import { useRunToast } from "@/components/run-toast-provider";
 import type { RunEvent } from "@/lib/types";
 
 export interface RunPanelRef {
@@ -48,6 +49,42 @@ export function RunPanel({
     "connecting" | "live" | "ended" | "error"
   >("connecting");
   const scrollRef = useRef<HTMLUListElement | null>(null);
+  const { fire: fireToast } = useRunToast();
+  const completionToastFired = useRef(false);
+
+  // v0.19.1 (roadmap #23): count findings this run produced so we can
+  // surface 'N new findings added' when it ends — the run->findings
+  // step used to be silent.
+  const findingsCount = useMemo(
+    () => events.filter((e) => e.event.type === "finding.created").length,
+    [events],
+  );
+  const ended = status === "ended";
+
+  // Reset the one-shot toast guard when the watched run changes.
+  useEffect(() => {
+    completionToastFired.current = false;
+  }, [run.threadId]);
+
+  // Fire the 'N new findings' toast once when the run reaches a terminal
+  // state and actually produced findings. Best-effort — the inline banner
+  // below is the primary surface; the toast covers the case where the
+  // analyst navigated away from the panel.
+  useEffect(() => {
+    if (!ended || completionToastFired.current) return;
+    completionToastFired.current = true;
+    if (findingsCount > 0) {
+      fireToast({
+        kind: "agent",
+        runSlug: run.runSlug,
+        label: `✓ ${findingsCount} new finding${
+          findingsCount === 1 ? "" : "s"
+        }`,
+        sublabel: run.label,
+        openHref: `/e/${run.slug}`,
+      });
+    }
+  }, [ended, findingsCount, fireToast, run.runSlug, run.slug, run.label]);
 
   // Keep the latest events for this run keyed by sseId so reconnects /
   // replays (Last-Event-ID) don't duplicate rows.
@@ -208,6 +245,32 @@ export function RunPanel({
             </li>
           ))}
         </ul>
+
+        {ended && (
+          <div
+            className={cn(
+              "flex items-center gap-2 border-t px-4 py-2.5 text-xs",
+              findingsCount > 0
+                ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+                : "border-border bg-secondary/30 text-muted-foreground",
+            )}
+          >
+            {findingsCount > 0 ? (
+              <>
+                <Sparkles className="h-3.5 w-3.5" />
+                <span className="font-medium">
+                  {findingsCount} new finding{findingsCount === 1 ? "" : "s"}{" "}
+                  added
+                </span>
+                <span className="text-muted-foreground">
+                  — review them on the Findings tab.
+                </span>
+              </>
+            ) : (
+              <span>Run complete — no new findings.</span>
+            )}
+          </div>
+        )}
 
         <footer className="border-t border-border px-4 py-2 text-[10px] uppercase tracking-wide text-muted-foreground">
           SSE · thread {run.threadId.slice(0, 8)}… · engagement {run.slug}
