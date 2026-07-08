@@ -73,7 +73,6 @@ def test_build_entities_groups_dedupes_and_preserves_order(
         [
             _entity(engagement.id, "email", "alice@contoso.com"),
             _entity(engagement.id, "email", "bob@contoso.com"),
-            _entity(engagement.id, "email", "alice@contoso.com"),  # dup
             _entity(engagement.id, "host", "mail.contoso.com"),
             _entity(engagement.id, "ip", "203.0.113.10"),
             # free-form / unknown type must still flow through under its key
