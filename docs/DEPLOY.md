@@ -22,15 +22,15 @@ Azure tenant, and how to use it day-to-day.
 
 ```
 Operator / teammate
-├─ rtd-cli                ──── HTTPS+X-API-Key ───┐
-└─ Browser → SWA viewer ──┐                       │
-   (Entra-gated)          │                       │
-                          ▼                       ▼
+├─ rtd-cli                     ──── HTTPS+X-API-Key ───┐
+└─ Browser → Container viewer ─┐                       │
+   (Entra-gated)               │                       │
+                               ▼                       ▼
    ┌──────────────────────────────────────────────────────┐
    │  Azure RG: rtd-<env>                                 │
    │                                                      │
-   │  Static Web App: rtd-<env>-viewer (Free SKU)         │
-   │   serves the Next.js static bundle                   │
+   │  Container App: rtd-<env>-frontend (Node runtime)    │
+   │   serves the Next.js SSR viewer on :3000             │
    │                          │                           │
    │   reads from ┄┄┄┄┄┄┄┄┄┄┄┘                           │
    │                                                      │
@@ -267,7 +267,7 @@ pass the IDs to the installer:
 ```bash
 ./infra/azure-kit/scripts/setup-entra.sh \
     --env prod \
-    --viewer-url https://<viewer>.azurestaticapps.net
+    --viewer-url https://<viewer>.<hash>.centralus.azurecontainerapps.io
 
 ./infra/azure-kit/scripts/install.sh \
     --env prod \
@@ -388,7 +388,8 @@ The storage account name is printed at the end of `install.sh` and in the Bicep 
 | Log Analytics (low ingest) | $1–5 |
 | App Insights (first 5 GB free) | $0–2 |
 | Blob Storage LRS Cool (engagement exports) | <$1 |
-| VNet, DNS zone, SWA Free | $0 |
+| VNet, DNS zone | $0 |
+| Container App: rtd-<env>-frontend (0.5 vCPU / 1 GiB, 1 replica) | $5–8 |
 | **Total** | **~$30–41/mo** |
 
 ## Things to know

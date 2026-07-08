@@ -1,9 +1,12 @@
-# v0.x → v1.0.0: SWA → Container App migration
+# v0.x → v1.0.0 → v1.10.0: SWA → Container App migration (COMPLETE)
+
+**Status:** completed 2026-07-08 with v1.10.0. The SWA was
+decommissioned; the frontend Container App is the sole viewer.
 
 ## What changed
 
 The viewer moved from Azure Static Web Apps (static Next.js export) to
-Azure Container Apps (Node runtime + SSR). This unlocks:
+Azure Container Apps (Node runtime + SSR). Unlocked:
 
 - **Runtime config.** One image serves any environment; no more baking
   `NEXT_PUBLIC_*` into the build. The Node server reads `RTD_*` env vars
@@ -16,72 +19,33 @@ Azure Container Apps (Node runtime + SSR). This unlocks:
   `run.errored`) merge directly into the query cache, so live updates
   land without waiting for the next 2 s status poll.
 
-## What did NOT change
+## Migration timeline
 
-- The backend Container App, Postgres, Key Vault, Application Insights,
-  storage, VNet, and MCP app are unchanged.
-- MSAL.js is still the browser auth layer. SSO flow is identical.
-- The API surface is unchanged.
-- Existing engagements + findings + all persisted state carry over.
+- **v1.0.0 (2026-06-30 to 2026-07-06):** Container App shipped as a
+  parallel viewer alongside the SWA. Both live, same backend,
+  same Entra app registration.
+- **v1.4.x (2026-07-06 to 2026-07-07):** Container App became the
+  primary path on 5qprod (SWA static export broke at v1.0.1 due to a
+  `dynamic="force-dynamic"` + `output: "export"` collision in
+  `frontend/app/layout.tsx`).
+- **v1.10.0 (2026-07-08):** Hard cut. Deleted `modules/viewer.bicep`,
+  the `publish-viewer-static` job, `frontend/staticwebapp.config.json.template`,
+  and the SWA build+deploy block in `install.sh`. Removed the
+  `rtd-<env>-viewer` resource.
 
-## Fresh-env deploys
+## Where things live now
 
-The kit installs both viewers in parallel:
+- Viewer runtime: `rtd-<env>-frontend` Container App (Node, port 3000)
+- Env vars (`RTD_API_BASE_URL` / `RTD_ENTRA_*`): frontend Container App
+  container env — set by Bicep on every deploy
+- IP allowlist: frontend Container App ingress
+  `properties.configuration.ingress.ipSecurityRestrictions[]`
+- Resolve chain: see `CLAUDE.md` § "Viewer: frontend Container App +
+  IP allowlist"
 
-- **SWA** (`modules/viewer.bicep`) — Standard SKU. Kept live during the
-  parallel week so operators can roll back by pointing bookmarks at the
-  old URL if the Container App misbehaves.
-- **Container App** (`modules/frontend.bicep`, new) — Node runtime.
-  Ingress on 3000. Same env vars as the SWA (via a runtime injection
-  instead of a build-time bake).
+## Rollback (historical — no longer possible)
 
-Both are provisioned by a single `./scripts/install.sh` run. Nothing
-different for the operator.
-
-## Env vars
-
-The Container App reads these at request time. Empty `RTD_ENTRA_*` values
-still boot but fall back to `analyst@localhost` dev identity.
-
-| Var | Where set | Purpose |
-| --- | --- | --- |
-| `RTD_API_BASE_URL` | Bicep, from backend FQDN | Base URL for API calls |
-| `RTD_ENTRA_TENANT_ID` | Bicep, from `entraTenantId` | MSAL tenant |
-| `RTD_ENTRA_CLIENT_ID` | Bicep, from `entraClientId` | MSAL app registration |
-| `RTD_ENTRA_API_SCOPE` | Bicep, `api://<clientId>/access_as_user` | Backend scope |
-
-## IP allowlist
-
-Same source of truth as the SWA: `RTD_VIEWER_ALLOWED_IPS`. Precedence
-order (unchanged from v0.x):
-
-1. `--allowed-ips` CLI flag (empty value clears the lock)
-2. SWA Environment Variables blade
-3. Shell env
-
-`install.sh` reads the resolved list once and stamps it into **both** the
-SWA `networking.allowedIpRanges` (staticwebapp.config.json) and the
-Container App ingress `ipSecurityRestrictions`. During the parallel week
-they enforce identically; after decommission the Container App is the
-only enforcement point.
-
-## Entra redirect URI
-
-The Container App is a new SPA origin from MSAL's POV. **The Entra app
-registration must have BOTH the SWA URL and the Container App URL listed
-under Authentication → Single-page application → Redirect URIs.** The
-kit doesn't touch the app registration; add manually. See
-`docs/V1_CUTOVER_CHECKLIST.md` for the exact steps.
-
-Failing to add the Container App URL → `AADSTS50011: redirect URI
-mismatch` on first sign-in.
-
-## Rollback
-
-If the Container App misbehaves:
-
-- **Bookmark rollback.** Point users at the SWA URL. Both are live during
-  the parallel week; nothing else changes.
-- **Full rollback.** Deploy the previous kit tag: `./scripts/install.sh
-  --env <env> --image-tag <prev>`. The SWA path is unchanged from v0.x, so
-  it comes back exactly as before.
+Rollback to the SWA was the v1.0.0-week strategy while it existed. Post-
+v1.10.0 the SWA resource is deleted and its release-workflow artifact
+gone. To restore an SWA path you'd have to revert both the Bicep and
+the release workflow to pre-v1.10.0 shape.

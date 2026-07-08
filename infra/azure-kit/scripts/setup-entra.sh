@@ -11,7 +11,7 @@
 # ever want third parties to call the API.
 #
 # Usage:
-#   ./setup-entra.sh --viewer-url https://<viewer>.azurestaticapps.net
+#   ./setup-entra.sh --viewer-url https://<viewer>.<hash>.centralus.azurecontainerapps.io
 #   ./setup-entra.sh --env prod --viewer-url https://… --dev-origin http://localhost:3001
 #
 # Prereqs:
@@ -32,7 +32,7 @@ usage() {
 Usage: $0 --viewer-url <url> [options]
 
 Options:
-  --viewer-url URL   The deployed viewer origin (SWA). Required for prod sign-in.
+  --viewer-url URL   The deployed viewer origin (frontend Container App). Required for prod sign-in.
   --env NAME         Env name used in the app display name (default: prod).
   --dev-origin URL   Extra SPA redirect origin for local dev (default: http://localhost:3001).
   -h, --help         Show this help.

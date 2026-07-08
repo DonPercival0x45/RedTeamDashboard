@@ -32,7 +32,7 @@ work conducted by analysts during authorized engagements, not unauthorized intru
 | Phase 10 | 🔄 In Progress | Hybrid execution (import-first model) |
 | Phase 11 | ✅ Complete | Cost engine (LLM spend tracking, rollup, Costs tab) |
 | Analyst UX | ✅ Complete | Finding importer, JSON export, summary editor, screenshot attachments |
-| v1.0.0 | 🚀 In flight | SWA → Container App viewer + TanStack Query data layer + SSE-to-cache bridge |
+| v1.0.0 → v1.10.0 | ✅ Complete | SWA → Container App viewer, TanStack Query data layer, SSE-to-cache bridge, SWA hard-cut at v1.10.0 (2026-07-08) |
 
 ## v1.0.0 — Viewer as Container App (July 2026)
 
@@ -41,9 +41,9 @@ producing stale UI: every page navigation forced a full re-fetch; status
 columns didn't update without an F5. Two structural fixes:
 
 - **Node runtime.** Frontend runs as its own Azure Container App
-  (`modules/frontend.bicep`) alongside the existing SWA (parallel week).
-  Runtime config injection via `<script>` in the SSR `<head>` — one image
-  serves any env.
+  (`modules/frontend.bicep`). Started alongside the SWA during the
+  v1.0.0 parallel week; SWA hard-cut at v1.10.0. Runtime config
+  injection via `<script>` in the SSR `<head>` — one image serves any env.
 - **TanStack Query data layer.** Every fetch across the frontend is on
   `useQuery` / `useMutation` with a shared cache. Focus revalidation +
   per-entity polling + prefetch-on-hover + SSE-to-cache bridge together

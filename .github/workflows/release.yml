@@ -8,9 +8,12 @@
 # What gets published per release `v0.1.0`:
 #   - ghcr.io/<owner>/rtd-backend:0.1.0  (+ :latest)
 #   - ghcr.io/<owner>/rtd-worker:0.1.0   (+ :latest, alias of rtd-backend)
-#   - ghcr.io/<owner>/rtd-viewer:0.1.0   (+ :latest)
+#   - ghcr.io/<owner>/rtd-viewer:0.1.0   (+ :latest, Container App runtime image)
 #   - GitHub Release v0.1.0 with rtd-azure-kit-v0.1.0.tar.gz attached and
 #     auto-generated changelog from commit messages.
+#
+# v1.10.0: publish-viewer-static removed. The SWA has been decommissioned;
+# the viewer runs as a Node Container App from rtd-viewer above.
 name: Release
 
 on:
@@ -316,83 +319,25 @@ jobs:
           # token to the PyPI project via pre-configured trust on pypi.org.
 
   # ---------------------------------------------------------------------------
-  # Build the static viewer bundle for Azure Static Web Apps. End users'
-  # install.sh downloads this zip + uploads it to their SWA resource — they
-  # don't need npm or a build pipeline locally.
-  # ---------------------------------------------------------------------------
-  publish-viewer-static:
-    name: Publish viewer static bundle
-    runs-on: ubuntu-latest
-    needs: [version]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-
-      - working-directory: frontend
-        run: npm ci --no-audit --no-fund
-
-      - name: Build static export
-        working-directory: frontend
-        env:
-          NEXT_OUTPUT: export
-          NODE_ENV: production
-        run: npm run build
-
-      - name: Zip the bundle
-        working-directory: frontend
-        run: |
-          TAG="${{ needs.version.outputs.tag }}"
-          cd out && zip -qr "../../rtd-viewer-static-${TAG}.zip" . && cd ..
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: rtd-viewer-static
-          path: rtd-viewer-static-*.zip
-          retention-days: 1
-
-  # ---------------------------------------------------------------------------
   # Bundle the Azure deployment kit + cut the GitHub Release. Runs last so the
   # release page links to a kit whose images are already pushable.
   # ---------------------------------------------------------------------------
   release:
     name: GitHub Release
     runs-on: ubuntu-latest
-    # v1.8.0: publish-viewer-static removed from `needs`. That job builds
-    # the deprecated SWA static bundle and has been failing every release
-    # since v1.0.1 (layout.tsx `dynamic="force-dynamic"` vs
-    # `output: "export"`). SWA is being decommissioned in favour of the
-    # viewer Container App; letting its failure gate the GitHub Release
-    # was silently suppressing release-note publication (What's New page
-    # stuck at v1.4.9 through v1.4.10..v1.7.0). We still download the
-    # bundle artifact below and attach it if present — best-effort — so
-    # any consumer still pulling it isn't left empty-handed.
+    # publish-cli is intentionally NOT in `needs`: PyPI Trusted Publisher
+    # setup is operator-side and lags first-time releases; we let the CLI
+    # publish run in parallel and best-effort.
     #
-    # publish-cli is also intentionally NOT in `needs`: PyPI Trusted
-    # Publisher setup is operator-side and lags first-time releases; we
-    # let the CLI publish run in parallel and best-effort.
+    # v1.10.0: publish-viewer-static job removed entirely (SWA
+    # decommissioned). The viewer now ships as a Container App runtime
+    # image (rtd-viewer), which is built in the `publish` matrix above.
     needs: [version, publish, publish-worker-alias]
     steps:
       - uses: actions/checkout@v4
         # Full history so the release-notes step can git-log between tags.
         with:
           fetch-depth: 0
-
-      - name: Download viewer static bundle
-        uses: actions/download-artifact@v4
-        with:
-          name: rtd-viewer-static
-          path: .
-        # v1.8.0: publish-viewer-static was removed from `needs`. If it
-        # failed (SWA static-bundle build), this artifact won't exist —
-        # tolerate the miss so the GitHub Release still ships. The
-        # softprops files: glob below is already lenient about a missing
-        # match.
-        continue-on-error: true
 
       - name: Package the Azure kit
         run: |
@@ -459,7 +404,6 @@ jobs:
           tag_name: ${{ needs.version.outputs.tag }}
           files: |
             rtd-azure-kit-*.tar.gz
-            rtd-viewer-static-*.zip
           body: |
             ${{ steps.notes.outputs.body }}
 
