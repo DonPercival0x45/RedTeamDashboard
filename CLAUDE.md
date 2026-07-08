@@ -92,26 +92,32 @@ Recent additions on `phase-11-costs` (June 2026):
 - **Suggestion box + planner agent** — `RoadmapSuggestion` model + migration `0017`; `/settings/suggestions` UI; tenant-global PlanningAgent reads `CHARTER.md` + `docs/HANDOFF.md` and emits pros/cons; admin (`users.is_admin`) approves; `GET /roadmap-suggestions/export` returns ROADMAP.md.
 - **Ephemeral BYO keys** — migration `0018` drops `user_provider_keys` (and the `provider_key_kind` enum). Keys now live in Redis under `provider_keys:<user_id>` with a 30-min sliding TTL (`provider_key_ttl_seconds`). Resolver is `app/services/ephemeral_provider_key.resolve_for_user(redis, user_id=..., provider=...)` — takes a Redis client, not a Session. Strategic / Tactical / Planner all require `acting_user_id` as a kwarg (no engagement-creator fallback). The worker envelope and every `finding.created` event carry `acting_user_id`; producers MUST stamp it.
 
-## Viewer SWA: Standard SKU + IP allowlist
+## Viewer: frontend Container App + IP allowlist
 
-The viewer SWA is **Standard SKU** (bumped from Free 2026-06-29) so the
-`networking.allowedIpRanges` block in `staticwebapp.config.json` takes
-effect. The config file is generated at deploy time from
-`frontend/staticwebapp.config.json.template` by `install.sh`.
+**v1.10.0:** the viewer SWA was decommissioned. The Next.js viewer now
+runs exclusively as `rtd-<env>-frontend` (Azure Container App, Node
+runtime). IP restrictions are enforced at the Container App ingress via
+`properties.configuration.ingress.ipSecurityRestrictions`.
 
-**IP allowlist source of truth: the SWA's Environment Variables blade**
-(Azure Portal → `rtd-<env>-viewer` → Settings → Environment variables →
-`RTD_VIEWER_ALLOWED_IPS`). install.sh resolves the value with this
-precedence on every run:
+**IP allowlist source of truth: the frontend Container App's live
+ingress config**. install.sh resolves the value with this precedence on
+every run:
 
 1. `--allowed-ips` CLI flag — explicit override; empty value clears the lock
-2. SWA Environment Variables (`RTD_VIEWER_ALLOWED_IPS`)
+2. Live ingress on `rtd-<env>-frontend`
+   (`properties.configuration.ingress.ipSecurityRestrictions[].ipAddressRange`)
 3. Shell env var `RTD_VIEWER_ALLOWED_IPS`
 
-Whatever resolves is written **back** to the SWA's env vars at the end
-of every install — so "set once, install many times" works for anyone
-with az access. Operators can also edit directly in the Portal between
-installs; install.sh picks up the change on the next run.
+Whatever resolves is passed to Bicep, which stamps it onto the ingress
+— so "set once, install many times" works for anyone with az access.
+Operators can also edit directly in the Portal (rtd-<env>-frontend →
+Ingress → IP security restrictions); install.sh picks up the change on
+the next run.
+
+The same precedence applies to `RTD_ENTRA_TENANT_ID` +
+`RTD_ENTRA_CLIENT_ID`, resolved from the frontend Container App's env
+vars (`properties.template.containers[0].env[?name==...]`) instead of
+the ingress.
 
 ```bash
 # First install on an env — seed the IPs:
@@ -119,13 +125,13 @@ installs; install.sh picks up the change on the next run.
     --allowed-ips '1.2.3.4/32,5.6.7.8/32' \
     [other args]
 
-# Later installs — IPs auto-resolve from SWA app settings, no flag needed:
+# Later installs — IPs auto-resolve from live ingress, no flag needed:
 ./scripts/install.sh --env 5qprod [other args]
 ```
 
-Empty resolved value → the `networking` block is dropped and the SWA
-stays open. MSAL.js stays as the only auth layer (no SWA-level `auth`
-block).
+Empty resolved value → `ipSecurityRestrictions` is null (Container Apps
+treats absent as no restriction). MSAL.js in the browser is the only
+auth layer.
 
 ## Planner context sync
 

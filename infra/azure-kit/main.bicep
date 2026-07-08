@@ -9,7 +9,8 @@
 //   - Key Vault (RBAC mode) with seeded secrets
 //   - Container Apps Environment (Consumption, VNet-integrated)
 //   - One Container App with three colocated containers: backend, worker, redis
-//   - Azure Static Web App hosting the viewer (gated by Entra ID)
+//   - A second Container App running the Next.js viewer (Node runtime),
+//     gated by Entra ID via MSAL.js in the browser
 //
 // What's NOT here:
 //   - Any container registry: images are public on GHCR. No auth needed.
@@ -54,14 +55,14 @@ param llmProvider string = 'anthropic'
 @description('Default Anthropic model when the run uses Anthropic without picking one. Per-run override wins.')
 param anthropicModel string = 'claude-opus-4-7'
 
-@description('Extra CORS allow-origins for the browser viewer. The kit auto-appends the in-tenant Static Web App URL; use this only to add other origins (e.g. a self-hosted viewer at a custom domain). Comma-separated.')
+@description('Extra CORS allow-origins for the browser viewer. The kit auto-appends the in-tenant frontend Container App URL; use this only to add other origins (e.g. a self-hosted viewer at a custom domain). Comma-separated.')
 param extraCorsAllowOrigins string = 'http://localhost:3001,http://127.0.0.1:3001'
 
 @description('Entra tenant + app (client) id for analyst SSO (from setup-entra.sh). Blank → Entra auth stays off; backend uses API keys. See docs/ENTRA_SETUP.md.')
 param entraTenantId string = ''
 param entraClientId string = ''
 
-@description('v1.0.0: Comma-separated IPv4 CIDRs the frontend Container App will accept. Empty → no restriction. install.sh resolves + persists this the same way it does for the SWA (RTD_VIEWER_ALLOWED_IPS).')
+@description('Comma-separated IPv4 CIDRs the frontend Container App will accept. Empty → no restriction. install.sh resolves + persists via the ingress ipSecurityRestrictions array (RTD_VIEWER_ALLOWED_IPS in the shell env / help text).')
 param frontendAllowedIps string = ''
 
 var namePrefix = 'rtd-${env}'
@@ -182,16 +183,6 @@ module caenv 'modules/containerappsenv.bicep' = {
   }
 }
 
-module viewer 'modules/viewer.bicep' = {
-  name: 'viewer'
-  scope: rg
-  params: {
-    namePrefix: namePrefix
-    location: location
-    tags: tags
-  }
-}
-
 var backendImage = 'ghcr.io/${imageRepoOwner}/rtd-backend:${imageTag}'
 var workerImage = 'ghcr.io/${imageRepoOwner}/rtd-worker:${imageTag}'
 var frontendImage = 'ghcr.io/${imageRepoOwner}/rtd-viewer:${imageTag}'
@@ -224,9 +215,9 @@ module mcpApp 'modules/mcp_app.bicep' = {
 var frontendFqdn = '${namePrefix}-frontend.${caenv.outputs.defaultDomain}'
 var backendFqdn = '${namePrefix}-app.${caenv.outputs.defaultDomain}'
 
-// v1.0.0: frontend Container App (Node runtime). Runs alongside the SWA
-// during the parallel week; after decommission this becomes the only
-// viewer. Uses the composed backend FQDN as its RTD_API_BASE_URL.
+// Frontend Container App (Node runtime) — the sole viewer as of v1.10.0
+// (SWA decommissioned). Uses the composed backend FQDN as its
+// RTD_API_BASE_URL.
 module frontend 'modules/frontend.bicep' = {
   name: 'frontend'
   scope: rg
@@ -260,11 +251,10 @@ module apps 'modules/containerapps.bicep' = {
     workerImage: workerImage
     llmProvider: llmProvider
     anthropicModel: anthropicModel
-    // v1.0.0: two viewer origins during the parallel week — the SWA
-    // (viewer.outputs.url) and the new frontend Container App
-    // (frontendFqdn, composed above). Both need CORS access to the
-    // backend.
-    corsAllowOrigins: '${extraCorsAllowOrigins},${viewer.outputs.url},https://${frontendFqdn}'
+    // Only one viewer origin now (post-v1.10.0 SWA decommission) — the
+    // frontend Container App. Composed above from name + defaultDomain
+    // to avoid a Bicep dependency cycle between `apps` and `frontend`.
+    corsAllowOrigins: '${extraCorsAllowOrigins},https://${frontendFqdn}'
     entraTenantId: entraTenantId
     entraClientId: entraClientId
     appInsightsConnectionString: ai.outputs.connectionString
@@ -307,9 +297,7 @@ output appFqdn string = apps.outputs.appFqdn
 output appName string = apps.outputs.appName
 output keyVaultName string = kv.outputs.name
 output postgresFqdn string = postgres.outputs.fqdn
-output viewerName string = viewer.outputs.name
-output viewerUrl string = viewer.outputs.url
-// v1.0.0: frontend Container App outputs.
+// Frontend Container App outputs — the sole viewer path as of v1.10.0.
 output frontendAppName string = frontend.outputs.appName
 output frontendUrl string = frontend.outputs.url
 output appInsightsName string = ai.outputs.name
