@@ -169,6 +169,11 @@ function EngagementDetail({ slug }: { slug: string }) {
     [params, router],
   );
 
+  // v1.4.13: one-shot prefill for the Start-a-run box, set when an entity
+  // quick-action fires on the Entities tab (roadmap #10). Consumed on
+  // RunPrompt mount.
+  const [pendingPrompt, setPendingPrompt] = useState<string | null>(null);
+
   // v1.0.0: engagement + findings live in the React Query cache. Navigating
   // away and back is instant (cache-served) and window-focus revalidates
   // both. SSE events merge into the findings cache directly via
@@ -403,7 +408,15 @@ function EngagementDetail({ slug }: { slug: string }) {
             />
           )}
 
-          {view === "entities" && <EntitiesView slug={slug} />}
+          {view === "entities" && (
+            <EntitiesView
+              slug={slug}
+              onQuickAction={(p) => {
+                setPendingPrompt(p);
+                setView("scope");
+              }}
+            />
+          )}
 
           {view === "observations" && <ObservationsView slug={slug} />}
 
@@ -426,10 +439,17 @@ function EngagementDetail({ slug }: { slug: string }) {
                 // v1.11.0: ToolsPanel + RunPrompt share a bridge so a
                 // click on a tool button drops its example prompt into
                 // the run textarea below.
+                // v1.15.0 (#93): entity quick-actions on the Entities
+                // tab also seed the textarea via ``initialPrompt``; both
+                // paths coexist because RunPrompt owns the prompt state.
                 <RunPromptBridgeProvider>
                   <ToolsPanel />
                   <div className="mt-6">
-                    <RunPrompt slug={slug} />
+                    <RunPrompt
+                      slug={slug}
+                      initialPrompt={pendingPrompt ?? undefined}
+                      onPromptConsumed={() => setPendingPrompt(null)}
+                    />
                   </div>
                 </RunPromptBridgeProvider>
               ) : (

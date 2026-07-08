@@ -100,6 +100,9 @@ class ScopeItemCreate(BaseModel):
     value: str = Field(min_length=1, max_length=500)
     is_exclusion: bool = False
     note: str | None = Field(default=None, max_length=500)
+    # v1.4.13: provenance (roadmap #5). "defined" = client-provided,
+    # "found" = added from findings. Defaults to "defined".
+    source: Literal["defined", "found"] = "defined"
 
 
 class ScopeItemUpdate(BaseModel):
@@ -117,6 +120,7 @@ class ScopeItemRead(BaseModel):
     value: str
     is_exclusion: bool
     note: str | None
+    source: str = "defined"
     created_at: datetime
     updated_at: datetime
 

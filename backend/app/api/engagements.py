@@ -537,6 +537,7 @@ def create_scope_item(
         value=body.value,
         is_exclusion=body.is_exclusion,
         note=body.note,
+        source=body.source,
     )
     session.add(item)
     session.commit()

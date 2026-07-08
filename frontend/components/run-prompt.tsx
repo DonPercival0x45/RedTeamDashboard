@@ -82,17 +82,31 @@ const SCOPE_ACTION_TEMPLATES: Record<ScopeKind, (value: string) => string> = {
 export function RunPrompt({
   slug,
   onStarted,
+  initialPrompt,
+  onPromptConsumed,
 }: {
   slug: string;
   onStarted?: (threadId: string) => void;
+  // v1.4.13: a one-shot prefill (roadmap #10 entity quick-actions). When
+  // the page hands one in (after switching to the Scope tab), it seeds the
+  // textarea on mount; ``onPromptConsumed`` lets the page clear it so a
+  // later tab-flip doesn't clobber the analyst's edits.
+  initialPrompt?: string;
+  onPromptConsumed?: () => void;
 }) {
   const [prompt, setPrompt] = useState(
-    "enumerate acme.com subdomains and probe what's live",
+    initialPrompt ?? "enumerate acme.com subdomains and probe what's live",
   );
   // v1.11.0: expose setPrompt to the ToolsPanel bridge so tool buttons
   // can drop their example prompt into the textarea without either
   // component owning the other's state.
   useRegisterRunPromptTarget(setPrompt);
+  // v1.15.0 (#93): clear the page's pending-prompt slot on mount so a
+  // later tab-flip doesn't clobber the analyst's edits.
+  useEffect(() => {
+    onPromptConsumed?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const { data: scopeItems } = useScope(slug);
   const scopeActions = useMemo<ScopeItem[]>(
     () => (scopeItems ?? []).filter((s) => !s.is_exclusion),
