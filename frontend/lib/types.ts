@@ -948,6 +948,21 @@ export interface ToolUploadResponse {
   validation_errors: string[];
 }
 
+// v1.12.0: built-in orchestrator MCP tool (subfinder, dns_lookup, port_scan,
+// etc.) — the tools shipped in the backend image and dispatched by the
+// Tactical agent. Separate universe from ``ToolRead`` (analyst-uploaded
+// runtime tools in the ``tools`` DB catalog). Served from
+// ``GET /orchestrator/tools``.
+export interface OrchestratorTool {
+  name: string;
+  description: string;
+  kind: ToolTaskKind; // enum | scan | exploit — same shape as ToolRead.task_kind
+  phase: string; // FindingPhase: osint | vuln_scan | exploit | phishing | general
+  risk: string; // passive | active | destructive
+  target_arg: string;
+  example_prompt: string;
+}
+
 // Response from POST /tools/infer — the auto-detect upload path.
 export interface ToolInferResponse {
   name: string | null;

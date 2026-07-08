@@ -1,12 +1,18 @@
 // v1.11.0: shared taxonomy for grouping tools by task_kind on the
 // Settings > Tools banner and the Scope-tab "Current Tools" panel.
 //
-// task_kind on Tool is the charter-gate taxonomy — the agent dispatcher
-// enforces enum/scan-only; exploit-kind tools are analyst-only regardless
-// of lane. Same three buckets show up in the UI so analysts immediately
+// task_kind is the charter-gate taxonomy — the agent dispatcher enforces
+// enum/scan-only; exploit-kind tools are analyst-only regardless of
+// lane. Same three buckets show up in the UI so analysts immediately
 // see what an agent will and won't reach for on their behalf.
+//
+// v1.12.0: switched from ``ToolRead`` (analyst-uploaded catalog) to
+// ``OrchestratorTool`` (built-in FastMCP registry — subfinder,
+// dns_lookup, port_scan, etc.). The two surfaces (Settings banner +
+// Scope-tab panel) always want the built-ins; there's no case where
+// the analyst-upload catalog belongs in either.
 
-import type { ToolRead, ToolTaskKind } from "@/lib/types";
+import type { OrchestratorTool, ToolTaskKind } from "@/lib/types";
 
 export interface ToolPhaseMeta {
   key: ToolTaskKind;
@@ -34,16 +40,18 @@ export const TOOL_PHASES: ToolPhaseMeta[] = [
 
 export interface ToolsByPhase {
   phase: ToolPhaseMeta;
-  tools: ToolRead[];
+  tools: OrchestratorTool[];
 }
 
 // Group + sort tools into TOOL_PHASES order. Empty phases are kept so
 // the UI can either show "nothing seeded here" hints or hide them.
-export function groupToolsByPhase(tools: readonly ToolRead[]): ToolsByPhase[] {
+export function groupToolsByPhase(
+  tools: readonly OrchestratorTool[],
+): ToolsByPhase[] {
   return TOOL_PHASES.map((phase) => ({
     phase,
     tools: tools
-      .filter((t) => t.task_kind === phase.key)
+      .filter((t) => t.kind === phase.key)
       .slice()
       .sort((a, b) => a.name.localeCompare(b.name)),
   }));
@@ -51,8 +59,10 @@ export function groupToolsByPhase(tools: readonly ToolRead[]): ToolsByPhase[] {
 
 // Fallback rendered on the Scope panel when a tool has no curated
 // example_prompt. Deliberately generic — encourages tool authors to
-// ship a real one but doesn't leave the button empty.
-export function toolPromptOrFallback(tool: ToolRead): string {
+// ship a real one but doesn't leave the button empty. Orchestrator
+// tools always ship an example_prompt (backend fills one for known
+// tools + generic fallback for the rest) so this is mostly defensive.
+export function toolPromptOrFallback(tool: OrchestratorTool): string {
   if (tool.example_prompt && tool.example_prompt.trim().length > 0) {
     return tool.example_prompt.trim();
   }

@@ -47,6 +47,7 @@ import {
   listIntegrations,
   listObservations,
   listProviderKeys,
+  listOrchestratorTools,
   listRoadmapSuggestions,
   listScope,
   listStoredEntities,
@@ -113,6 +114,7 @@ export const qk = {
     ["engagement-costs", slug] as const,
   tools: (opts: { status?: ToolStatus; first_party?: boolean }) =>
     ["tools", opts] as const,
+  orchestratorTools: () => ["orchestrator-tools"] as const,
   toolInvocations: (slug: string) =>
     ["tool-invocations", slug] as const,
 };
@@ -686,12 +688,20 @@ export function useTools(
   });
 }
 
-// v1.11.0: default tools = seeded (created_by_user_id IS NULL) + approved.
-// Two consumers: the Settings > Tools tab banner and the Scope-tab
-// "Current Tools" panel. Both want a stable, cached list of the tools
-// the analyst can immediately reach for without an admin approval step.
+// v1.12.0: default tools = the orchestrator's built-in MCP tools
+// (subfinder, dns_lookup, port_scan, etc.). Shared by the Settings >
+// Tools tab banner and the Scope-tab "Current Tools" panel.
+//
+// v1.11.0 pointed at ``useTools({first_party:true})`` — the analyst-
+// upload catalog filtered by ``created_by_user_id IS NULL``. That
+// table is empty on a fresh install, so the banner rendered as "no
+// tools registered." The actual defaults live in the orchestrator's
+// FastMCP registry (see backend/app/api/orchestrator_tools.py).
 export function useDefaultTools() {
-  return useTools({ status: "approved", first_party: true });
+  return useQuery({
+    queryKey: qk.orchestratorTools(),
+    queryFn: () => listOrchestratorTools(),
+  });
 }
 
 export function useToolInvocations(slug: string) {

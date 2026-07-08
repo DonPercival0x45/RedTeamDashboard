@@ -1,13 +1,15 @@
 "use client";
 
 // v1.11.0: Scope-tab "Current Tools" panel.
+// v1.12.0: source is the orchestrator FastMCP registry (subfinder,
+// dns_lookup, port_scan, …) instead of the analyst-upload catalog.
 //
 // Sits above the <RunPrompt> textarea on the engagement Scope tab.
-// Renders the first-party tool catalog grouped by task_kind
-// (Enumeration / Scanning / Analyst-only). Each tool is a compact
-// pill button; clicking one calls into the RunPromptBridge to drop
-// the tool's example_prompt (falling back to "Run <name> against an
-// in-scope target." when no curated example ships).
+// Renders the built-in tool catalog grouped by task_kind (Enumeration /
+// Scanning / Analyst-only). Each tool is a compact pill button;
+// clicking one calls into the RunPromptBridge to drop the tool's
+// example_prompt (falling back to "Run <name> against an in-scope
+// target." when no curated example ships).
 //
 // Reads through the same useDefaultTools cache as the Settings > Tools
 // banner — the two surfaces share the query so a change on one
@@ -24,7 +26,7 @@ import {
 import { useDefaultTools } from "@/lib/hooks";
 import { groupToolsByPhase, toolPromptOrFallback } from "@/lib/tool-phases";
 import { useRunPromptBridge } from "@/components/run-prompt-context";
-import type { ToolRead } from "@/lib/types";
+import type { OrchestratorTool } from "@/lib/types";
 
 export function ToolsPanel() {
   const { data: tools, error } = useDefaultTools();
@@ -49,7 +51,7 @@ export function ToolsPanel() {
       <CardContent className="space-y-3 pb-4">
         {nothing && (
           <p className="text-xs text-muted-foreground">
-            No first-party tools registered on this install.
+            No built-in tools registered on this backend image.
           </p>
         )}
         {grouped.map(({ phase, tools: phaseTools }) => {
@@ -62,7 +64,7 @@ export function ToolsPanel() {
               <div className="flex flex-wrap gap-1.5">
                 {phaseTools.map((t) => (
                   <ToolButton
-                    key={t.id}
+                    key={t.name}
                     tool={t}
                     onPick={(text) => bridge.insert(text)}
                   />
@@ -80,7 +82,7 @@ function ToolButton({
   tool,
   onPick,
 }: {
-  tool: ToolRead;
+  tool: OrchestratorTool;
   onPick: (text: string) => void;
 }) {
   const prompt = toolPromptOrFallback(tool);
@@ -88,11 +90,11 @@ function ToolButton({
     <button
       type="button"
       onClick={() => onPick(prompt)}
-      title={tool.description ?? prompt}
+      title={tool.description || prompt}
       className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-2 py-1 text-xs transition-colors hover:border-foreground/40 hover:bg-secondary"
     >
       <span className="font-medium">{tool.name}</span>
-      <span className="text-[10px] text-muted-foreground/70">{tool.kind}</span>
+      <span className="text-[10px] text-muted-foreground/70">{tool.phase}</span>
     </button>
   );
 }
