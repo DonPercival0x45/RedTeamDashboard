@@ -220,6 +220,11 @@ export function RunPrompt({
         label: "Run dispatched",
         sublabel: prompt.trim().slice(0, 80),
         openHref: `/e/${slug}?run=${result.thread_id}`,
+        // v1.10.0: give the toast the run ref so "Open live" opens the
+        // side panel (SSE stream) instead of a URL that only the Status
+        // tab knows how to consume.
+        slug,
+        threadId: result.thread_id,
       });
       onStarted?.(result.thread_id);
     } catch (err) {
