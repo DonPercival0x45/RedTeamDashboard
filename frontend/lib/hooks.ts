@@ -111,7 +111,8 @@ export const qk = {
     ["global-agent-run-steps", executionId] as const,
   engagementCosts: (slug: string) =>
     ["engagement-costs", slug] as const,
-  tools: (opts: { status?: ToolStatus }) => ["tools", opts] as const,
+  tools: (opts: { status?: ToolStatus; first_party?: boolean }) =>
+    ["tools", opts] as const,
   toolInvocations: (slug: string) =>
     ["tool-invocations", slug] as const,
 };
@@ -676,11 +677,21 @@ export function useEngagementCosts(slug: string) {
   });
 }
 
-export function useTools(opts: { status?: ToolStatus } = {}) {
+export function useTools(
+  opts: { status?: ToolStatus; first_party?: boolean } = {},
+) {
   return useQuery({
     queryKey: qk.tools(opts),
     queryFn: () => listTools(opts),
   });
+}
+
+// v1.11.0: default tools = seeded (created_by_user_id IS NULL) + approved.
+// Two consumers: the Settings > Tools tab banner and the Scope-tab
+// "Current Tools" panel. Both want a stable, cached list of the tools
+// the analyst can immediately reach for without an admin approval step.
+export function useDefaultTools() {
+  return useTools({ status: "approved", first_party: true });
 }
 
 export function useToolInvocations(slug: string) {

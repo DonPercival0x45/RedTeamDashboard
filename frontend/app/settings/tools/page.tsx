@@ -18,6 +18,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { DefaultToolsBanner } from "@/components/default-tools-banner";
 import { ToolUploader } from "@/components/tool-uploader";
 import {
   useApproveToolMutation,
@@ -124,6 +125,8 @@ export default function SettingsToolsPage() {
           </CardContent>
         </Card>
       )}
+
+      <DefaultToolsBanner />
 
       <div className="flex items-center justify-between">
         <div className="text-xs text-muted-foreground">

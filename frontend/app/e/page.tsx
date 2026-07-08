@@ -30,7 +30,9 @@ import { StatusView } from "@/components/status-view";
 import { ToolsView } from "@/components/tools-view";
 import { GrantsCard } from "@/components/grants-card";
 import { RunPrompt } from "@/components/run-prompt";
+import { RunPromptBridgeProvider } from "@/components/run-prompt-context";
 import { ScopeEditor } from "@/components/scope-editor";
+import { ToolsPanel } from "@/components/tools-panel";
 import { downloadEngagementExport } from "@/lib/api";
 import { subscribeToEvents } from "@/lib/events";
 import {
@@ -421,7 +423,15 @@ function EngagementDetail({ slug }: { slug: string }) {
             <div className="space-y-6">
               <ScopeEditor slug={slug} canWrite={canWrite} />
               {engagement.status === "active" ? (
-                <RunPrompt slug={slug} />
+                // v1.11.0: ToolsPanel + RunPrompt share a bridge so a
+                // click on a tool button drops its example prompt into
+                // the run textarea below.
+                <RunPromptBridgeProvider>
+                  <ToolsPanel />
+                  <div className="mt-6">
+                    <RunPrompt slug={slug} />
+                  </div>
+                </RunPromptBridgeProvider>
               ) : (
                 <p className="text-sm text-muted-foreground">
                   This engagement is {engagement.status}; runs are disabled.

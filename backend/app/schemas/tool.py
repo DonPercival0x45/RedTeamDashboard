@@ -27,6 +27,9 @@ class ToolRead(BaseModel):
     validation: dict[str, Any]
     has_artifact: bool
     version: int
+    # v1.11.0: curated "Run <tool> like this" prompt shown on the Scope-tab
+    # "Current Tools" panel. Null → frontend derives a fallback string.
+    example_prompt: str | None = None
     created_by_user_id: UUID | None = None
     approved_by_user_id: UUID | None = None
     approved_at: datetime | None = None

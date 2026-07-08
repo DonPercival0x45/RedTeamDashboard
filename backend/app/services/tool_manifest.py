@@ -114,6 +114,12 @@ class ToolSpec(BaseModel):
 class ToolMetadata(BaseModel):
     name: str = Field(min_length=1, max_length=120, pattern=r"^[a-z][a-z0-9-]*$")
     description: str | None = Field(default=None, max_length=500)
+    # v1.11.0: curated one-liner rendered as a Scope-tab "Current Tools"
+    # button — clicking a button drops this string into the run-prompt
+    # textarea. Optional; frontend falls back to a "Run <name>" template
+    # when null. Kept short so it reads as a single-line hint on the
+    # panel and expands cleanly when inserted into the textarea.
+    example_prompt: str | None = Field(default=None, max_length=300)
 
 
 class ToolManifest(BaseModel):

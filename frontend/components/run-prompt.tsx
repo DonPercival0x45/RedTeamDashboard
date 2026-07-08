@@ -17,6 +17,7 @@ import { startRun } from "@/lib/api";
 import { useProviderKeys, useScope } from "@/lib/hooks";
 import { CUSTOM_VALUE, getPresetModels } from "@/lib/llm-providers";
 import { runSlugFromId, useRunToast } from "@/components/run-toast-provider";
+import { useRegisterRunPromptTarget } from "@/components/run-prompt-context";
 import type { LLMProvider, ScopeItem, ScopeKind } from "@/lib/types";
 
 interface LastDispatched {
@@ -88,6 +89,10 @@ export function RunPrompt({
   const [prompt, setPrompt] = useState(
     "enumerate acme.com subdomains and probe what's live",
   );
+  // v1.11.0: expose setPrompt to the ToolsPanel bridge so tool buttons
+  // can drop their example prompt into the textarea without either
+  // component owning the other's state.
+  useRegisterRunPromptTarget(setPrompt);
   const { data: scopeItems } = useScope(slug);
   const scopeActions = useMemo<ScopeItem[]>(
     () => (scopeItems ?? []).filter((s) => !s.is_exclusion),
