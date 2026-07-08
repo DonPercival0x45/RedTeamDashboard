@@ -58,18 +58,11 @@ def admin_and_targets(
     try:
         yield admin, targets
     finally:
+        # audit_log is append-only (DB trigger audit_log_immutable rejects
+        # DELETE), so we only drop the test users -- they carry no findings /
+        # suggestions / engagements, so nothing else references them.
         for u in targets:
-            # remove audit rows we wrote for this user, then the user
-            db.execute(
-                AuditLog.__table__.delete().where(
-                    AuditLog.actor_id == str(u.id)
-                )
-            )
             db.delete(u)
-        # admin's own audit rows
-        db.execute(
-            AuditLog.__table__.delete().where(AuditLog.actor_id == str(admin.id))
-        )
         db.commit()
 
 
@@ -115,8 +108,9 @@ def test_deactivate_blocks_sign_in(
     target = _make_target(db, f"target-block-{uuid.uuid4().hex[:8]}@example.com")
     targets.append(target)
 
-    # Target can hit the API while active.
-    r = client.get("/engagements", headers={"X-User-Id": target.email})
+    # Target can hit the API while active (GET /me resolves via CurrentUser,
+    # so it exercises the is_active gate).
+    r = client.get("/me", headers={"X-User-Id": target.email})
     assert r.status_code == 200
 
     # Admin deactivates them.
@@ -129,7 +123,7 @@ def test_deactivate_blocks_sign_in(
     assert r.json()["is_active"] is False
 
     # Their very next request is now rejected via the is_active gate.
-    r = client.get("/engagements", headers={"X-User-Id": target.email})
+    r = client.get("/me", headers={"X-User-Id": target.email})
     assert r.status_code == 403
 
 
@@ -146,7 +140,7 @@ def test_reactivate_restores_access(
         headers=_admin_headers(admin),
     )
     assert (
-        client.get("/engagements", headers={"X-User-Id": target.email}).status_code
+        client.get("/me", headers={"X-User-Id": target.email}).status_code
         == 403
     )
 
@@ -159,7 +153,7 @@ def test_reactivate_restores_access(
     assert r.status_code == 200
     assert r.json()["is_active"] is True
     assert (
-        client.get("/engagements", headers={"X-User-Id": target.email}).status_code
+        client.get("/me", headers={"X-User-Id": target.email}).status_code
         == 200
     )
 
