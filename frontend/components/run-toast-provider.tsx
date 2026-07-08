@@ -22,6 +22,7 @@ import Link from "next/link";
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
 import { ExternalLink, X } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { RunPanel, type RunPanelRef } from "@/components/run-panel";
 
 interface RunToast {
   id: string;
@@ -34,10 +35,16 @@ interface RunToast {
   // Kind is metadata only — the UI treats them uniformly right now
   // but it's here so a future filter/tray can group by kind.
   kind: "agent" | "planner" | "triage";
+  // v1.10.0: when slug + threadId are present the "Open ->" button
+  // opens the live side panel instead of navigating. Tenant-global
+  // runs (no engagement slug) keep the link behaviour.
+  slug?: string;
+  threadId?: string;
 }
 
 interface RunToastContextValue {
   fire: (t: Omit<RunToast, "id">) => void;
+  openRunPanel: (ref: RunPanelRef) => void;
 }
 
 const RunToastContext = createContext<RunToastContextValue | null>(null);
@@ -46,10 +53,15 @@ const AUTO_DISMISS_MS = 8_000;
 
 export function RunToastProvider({ children }: { children: React.ReactNode }) {
   const [toasts, setToasts] = useState<RunToast[]>([]);
+  const [activeRun, setActiveRun] = useState<RunPanelRef | null>(null);
 
   const fire = useCallback((t: Omit<RunToast, "id">) => {
     const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     setToasts((prev) => [...prev, { ...t, id }]);
+  }, []);
+
+  const openRunPanel = useCallback((ref: RunPanelRef) => {
+    setActiveRun(ref);
   }, []);
 
   const dismiss = useCallback((id: string) => {
@@ -57,15 +69,23 @@ export function RunToastProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <RunToastContext.Provider value={{ fire }}>
+    <RunToastContext.Provider value={{ fire, openRunPanel }}>
       {children}
+      {activeRun && (
+        <RunPanel run={activeRun} onClose={() => setActiveRun(null)} />
+      )}
       <div
         aria-live="polite"
         aria-label="Run notifications"
         className="pointer-events-none fixed bottom-4 right-4 z-[80] flex w-[min(360px,92vw)] flex-col gap-2"
       >
         {toasts.map((t) => (
-          <RunToastCard key={t.id} toast={t} onDismiss={() => dismiss(t.id)} />
+          <RunToastCard
+            key={t.id}
+            toast={t}
+            onDismiss={() => dismiss(t.id)}
+            onOpenPanel={openRunPanel}
+          />
         ))}
       </div>
     </RunToastContext.Provider>
@@ -75,14 +95,30 @@ export function RunToastProvider({ children }: { children: React.ReactNode }) {
 function RunToastCard({
   toast,
   onDismiss,
+  onOpenPanel,
 }: {
   toast: RunToast;
   onDismiss: () => void;
+  onOpenPanel: (ref: RunPanelRef) => void;
 }) {
   useEffect(() => {
     const timer = window.setTimeout(onDismiss, AUTO_DISMISS_MS);
     return () => window.clearTimeout(timer);
   }, [onDismiss]);
+
+  // v1.10.0: pre-narrow so the panel ref is fully typed (no `!`). When
+  // the toast carries an engagement slug + thread id we open the live
+  // side panel; otherwise (tenant-global runs) we fall back to the link.
+  const panelRef =
+    toast.slug && toast.threadId
+      ? {
+          slug: toast.slug,
+          threadId: toast.threadId,
+          runSlug: toast.runSlug,
+          label: toast.label,
+          sublabel: toast.sublabel,
+        }
+      : null;
 
   return (
     <div
@@ -118,13 +154,26 @@ function RunToastCard({
         </button>
       </div>
       <div className="mt-2 flex justify-end">
-        <Link
-          href={toast.openHref}
-          onClick={onDismiss}
-          className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-0.5 text-[11px] text-muted-foreground transition-colors hover:border-foreground hover:text-foreground"
-        >
-          Open <ExternalLink className="h-3 w-3" />
-        </Link>
+        {panelRef ? (
+          <button
+            type="button"
+            onClick={() => {
+              onOpenPanel(panelRef);
+              onDismiss();
+            }}
+            className="inline-flex items-center gap-1 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-[11px] text-foreground transition-colors hover:bg-emerald-500/20"
+          >
+            Open live <ExternalLink className="h-3 w-3" />
+          </button>
+        ) : (
+          <Link
+            href={toast.openHref}
+            onClick={onDismiss}
+            className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-0.5 text-[11px] text-muted-foreground transition-colors hover:border-foreground hover:text-foreground"
+          >
+            Open <ExternalLink className="h-3 w-3" />
+          </Link>
+        )}
       </div>
     </div>
   );
@@ -136,7 +185,7 @@ export function useRunToast(): RunToastContextValue {
     // Optional consumer — if the provider isn't mounted (e.g. test
     // renderer), swallow the call. This keeps producers dependency-
     // free and lets the toast be a pure UX enhancement.
-    return { fire: () => {} };
+    return { fire: () => {}, openRunPanel: () => {} };
   }
   return ctx;
 }

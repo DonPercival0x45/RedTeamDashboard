@@ -139,7 +139,7 @@ function fmtDate(value: string | null): string {
 
 // v0.8.2: Live events log helpers — used to lifted from event-log.tsx.
 
-const EVENT_COLORS: Record<RunEvent["type"], string> = {
+export const EVENT_COLORS: Record<RunEvent["type"], string> = {
   "run.started": "border-sky-500 text-sky-700 dark:text-sky-200",
   "approval.pending": "border-amber-500 text-amber-700 dark:text-amber-200",
   "tool.denied": "border-orange-500 text-orange-700 dark:text-orange-200",
@@ -149,7 +149,7 @@ const EVENT_COLORS: Record<RunEvent["type"], string> = {
   "run.errored": "border-rose-500 text-rose-700 dark:text-rose-200",
 };
 
-function summarizeEvent(event: RunEvent): string {
+export function summarizeEvent(event: RunEvent): string {
   switch (event.type) {
     case "run.started":
       return event.prompt;
