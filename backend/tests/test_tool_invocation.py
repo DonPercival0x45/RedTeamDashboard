@@ -132,8 +132,8 @@ def test_build_entities_merges_derived_and_stored(
 
     # derived appears once (deduped across findings + stored), stored once
     assert grouped["email"] == ["derived@contoso.com", "stored@contoso.com"]
-    # the mail.contoso.com target was classified as a host (derived)
-    assert grouped["host"] == ["mail.contoso.com"]
+    # the mail.contoso.com target was classified as a domain (derived)
+    assert grouped["domain"] == ["mail.contoso.com"]
 
 
 def test_build_args_env_serialises_entities_into_payload() -> None:
