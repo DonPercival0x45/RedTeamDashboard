@@ -89,6 +89,13 @@ class ToolSpec(BaseModel):
     # ``shared_kali_box`` will invoke inside a long-lived Kali box per
     # engagement — schema-only in v0.15, wired end-to-end in v0.17.
     runtime: Literal["fresh_container", "shared_kali_box"] = "fresh_container"
+    # v0.16.1: declares which engagement entity type(s) this tool sources
+    # from payload["entities"] by default (e.g. [email] for a UPN enum,
+    # [ip, host] for an IP-reputation tool). Drives the invocation UI's
+    # "will run against N <type> entities" preview before kicking.
+    # Advisory — the tool's source is the source of truth; this is a hint
+    # so the analyst knows what they're about to run against.
+    entity_source: list[str] = Field(default_factory=list)
 
     @field_validator("risk_level")
     @classmethod
