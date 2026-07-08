@@ -105,6 +105,7 @@ def _tool_to_read(row: Tool) -> ToolRead:
         validation=dict(row.validation or {}),
         has_artifact=row.artifact_ref is not None,
         version=row.version,
+        example_prompt=row.example_prompt,
         created_by_user_id=row.created_by_user_id,
         approved_by_user_id=row.approved_by_user_id,
         approved_at=row.approved_at,
@@ -406,8 +407,15 @@ def list_tools(
     kind: Annotated[ToolKind | None, Query()] = None,
     lane: Annotated[ToolLane | None, Query()] = None,
     tool_status: Annotated[ToolStatus | None, Query(alias="status")] = None,
+    first_party: Annotated[bool | None, Query()] = None,
 ) -> list[ToolRead]:
-    """Catalog list — any authenticated user."""
+    """Catalog list — any authenticated user.
+
+    v1.11.0: ``first_party=true`` restricts to seeded tools
+    (``created_by_user_id IS NULL``); ``first_party=false`` restricts to
+    analyst-uploaded ones. Omit for the full catalog. Used by the
+    Settings > Tools banner and the Scope-tab "Current Tools" panel.
+    """
     stmt = select(Tool).order_by(Tool.created_at.desc())
     if kind is not None:
         stmt = stmt.where(Tool.kind == kind)
@@ -415,6 +423,10 @@ def list_tools(
         stmt = stmt.where(Tool.lane == lane)
     if tool_status is not None:
         stmt = stmt.where(Tool.status == tool_status)
+    if first_party is True:
+        stmt = stmt.where(Tool.created_by_user_id.is_(None))
+    elif first_party is False:
+        stmt = stmt.where(Tool.created_by_user_id.is_not(None))
     rows = session.execute(stmt).scalars()
     return [_tool_to_read(r) for r in rows]
 

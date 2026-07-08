@@ -932,6 +932,9 @@ export interface ToolRead {
   validation: Record<string, unknown>;
   has_artifact: boolean;
   version: number;
+  // v1.11.0: curated one-liner shown as a Scope-tab "Current Tools"
+  // button. Null → fall back to a "Run <name>" template client-side.
+  example_prompt: string | null;
   created_by_user_id: string | null;
   approved_by_user_id: string | null;
   approved_at: string | null;

@@ -114,6 +114,11 @@ class Tool(Base):
         JSONB, nullable=False, default=dict
     )
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    # v1.11.0: a curated one-liner shown as a Scope-tab "Current Tools"
+    # button. Clicking a button drops this string into the run-prompt
+    # textarea. Nullable — analyst-uploaded tools without a curated
+    # example fall back to a generic "Run <name>" shape client-side.
+    example_prompt: Mapped[str | None] = mapped_column(Text)
     created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
     )

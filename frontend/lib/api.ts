@@ -1160,12 +1160,17 @@ export function listTools(
     kind?: ToolKind | null;
     lane?: ToolLane | null;
     status?: ToolStatus | null;
+    // v1.11.0: filter by provenance. true → seeded first-party tools
+    // (created_by_user_id IS NULL); false → analyst uploads only.
+    first_party?: boolean | null;
   } = {},
 ): Promise<ToolRead[]> {
   const qs = new URLSearchParams();
   if (filters.kind) qs.set("kind", filters.kind);
   if (filters.lane) qs.set("lane", filters.lane);
   if (filters.status) qs.set("status", filters.status);
+  if (filters.first_party === true) qs.set("first_party", "true");
+  else if (filters.first_party === false) qs.set("first_party", "false");
   const q = qs.toString();
   return request<ToolRead[]>(`/tools${q ? `?${q}` : ""}`);
 }
