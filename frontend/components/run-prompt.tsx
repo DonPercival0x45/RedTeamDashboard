@@ -107,6 +107,9 @@ export function RunPrompt({
     DEFAULT_MODELS.anthropic,
   );
   const [customModel, setCustomModel] = useState<string>("");
+  // v1.4.12: optionally pin a specific cached key for this run (roadmap #3).
+  // null/"" = auto (MRU). Reset whenever the provider changes.
+  const [keyId, setKeyId] = useState<string>("");
   // v1.0.0: shared useProviderKeys cache. The /settings/keys page hits the
   // same key, so the two share one round-trip. Best-effort: on 401 / Redis
   // miss, `keys` stays [] and the dropdown falls back to presets.
@@ -169,9 +172,15 @@ export function RunPrompt({
 
   const isCustom = modelSelect === CUSTOM_VALUE;
   const effectiveModel = isCustom ? customModel.trim() : modelSelect;
+  // v1.4.12: cached keys for the selected provider — drive the key picker.
+  const providerKeys = useMemo(
+    () => keys.filter((k) => k.provider === provider),
+    [keys, provider],
+  );
 
   const onProviderChange = (next: LLMProvider) => {
     setProvider(next);
+    setKeyId(""); // a key pinned for the old provider won't match the new one
     // Pick a sensible default for the new provider: first stored, else
     // first preset, else fall straight into Custom (the textbox).
     const storedForNext = keys
@@ -201,7 +210,7 @@ export function RunPrompt({
     try {
       const result = await startRun(slug, {
         prompt: prompt.trim(),
-        model: { provider, name: effectiveModel },
+        model: { provider, name: effectiveModel, key_id: keyId || undefined },
       });
       setLastDispatched({
         threadId: result.thread_id,
@@ -339,6 +348,30 @@ export function RunPrompt({
               )}
             </div>
           </div>
+          {providerKeys.length >= 2 && (
+            <div className="space-y-2">
+              <Label htmlFor="run-key">
+                Key{" "}
+                <span className="text-xs font-normal text-muted-foreground">
+                  which cached {provider} key to use (default: most-recent)
+                </span>
+              </Label>
+              <select
+                id="run-key"
+                value={keyId}
+                onChange={(event) => setKeyId(event.target.value)}
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+              >
+                <option value="">Auto (most-recent)</option>
+                {providerKeys.map((k) => (
+                  <option key={k.id} value={k.id}>
+                    {k.name}
+                    {k.key_last4 ? ` · …${k.key_last4}` : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
           {error && <p className="text-sm text-destructive">{error}</p>}
 
           {lastDispatched && (
