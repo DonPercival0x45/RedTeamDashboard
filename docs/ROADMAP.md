@@ -411,6 +411,115 @@ _Approved 2026-07-01T15:29:24.258938+00:00 — suggestion id `019f193a-1835-7260
 
 _Approved 2026-07-08T22:47:26.837585+00:00 — suggestion id `019f4377-b6d1-7382-8dce-15459b07420e`_
 
+### 23. [unranked] A "N new findings added" toast after an agent run is a small, high-leverage observability fix that closes a specific pain point already flagged in approved bundle #12, and should almost certainly ship as part of the Status Tab Cleanup workstream rather than as a standalone item.
+
+**Original suggestion:**
+
+> If a new finding was added, give me a toast notification after an agent run to let me know it added something.
+
+**Pros:**
+- Directly serves the Charter's feedback-loop principle by making the 'run → new findings on the table' step visible instead of silent, which HANDOFF/roadmap #12 explicitly calls out as a current disconnect ('no confirmation that there were any new findings automatically added').
+- Very low implementation cost given existing infrastructure — v1.0.0's SSE-to-cache bridge and TanStack Query cache already surface new findings client-side, and `agent_executions` + the run-ID toast from shipped Status Tab Cleanup item `019f1a48-...` give a natural place to attach a delta count.
+- Fits cleanly inside the already-approved Status Tab Cleanup bundle (roadmap items #8 per-run synopsis, #9 run-ID toast, #14 step-by-step execution log, and #12's run-feedback half) — this suggestion sharpens the acceptance criteria rather than opening new scope.
+- Reinforces the 'one pane of glass' North Star — analysts stop tabbing between Status and Findings to confirm a run actually produced something.
+- No conflict with the 'agents scan, analysts exploit' invariant — this is a notification surface, not an execution path, and all resulting findings still land as pending_validation per Phase 8a.
+
+**Cons:**
+- Duplicates the run-feedback half of already-approved roadmap item #12 ('no confirmation that there were any new findings automatically added') and overlaps with #8/#9 — should be folded into that bundle rather than tracked as a separate roadmap entry, or you'll get a fifth parallel record for the same workstream.
+- Under-specified on click behavior — does the toast deep-link to the new findings, filter the Findings table to just the run's output, or open the first new finding's slide-over? Each has different UX and routing implications.
+- Needs a rule for zero-finding runs — silent, a neutral 'run complete, no new findings' toast, or rolled into the failed/empty-run visual treatment from shipped item `019f1ea2-...` — otherwise analysts will still wonder whether the run actually finished.
+- Toast-only notifications are ephemeral; without a persistent counterpart (e.g. the per-run synopsis in Status, or approved item #17's persistent approval notifications pattern), an analyst who misses the toast has no recovery path.
+- Pure observability polish — doesn't advance any of the four still-unfinished Charter ideas (attack-path UI, entities tab, engagement-setup wizard, feedback loop proper) or Phase 10 hybrid ingest, though its cost is small enough that leverage-per-hour is still favorable.
+
+_Approved 2026-07-08T23:01:31.360011+00:00 — suggestion id `019f43ee-c72b-7203-82b5-22871adb1f01`_
+
+### 24. [unranked] A "this run already produced findings" indicator on the Status page is a small, high-leverage observability fix that fits squarely inside the already-approved Status Tab Cleanup / run→finding causality bundle rather than standing alone.
+
+**Original suggestion:**
+
+> If an agent run already yielded a finding, make it say that in the status page or something so we don't re-run the same agent runs over and over.
+
+**Pros:**
+- Directly serves the Charter's feedback-loop North Star by making the run→finding relationship visible where the analyst decides what to run next.
+- Very cheap given existing infrastructure — `agent_executions`, the finding-created events, and the v1.0.0 SSE-to-cache bridge already carry everything needed to badge a run with 'produced N findings'.
+- Reduces wasted LLM spend and duplicate agent work, which reinforces the Phase 11 Costs tab investment.
+- Reinforces the 'one pane of glass' principle by keeping the 'should I re-run this?' decision on the Status view instead of forcing a hunt through the Findings tab.
+- Overlaps cleanly with already-approved roadmap items #8 (per-run synopsis), #9 (visible run→finding feedback), #10 (engagement-aware quick actions that suggest something else if a run already happened), and shipped #019f1a44 — should be folded into that bundle.
+
+**Cons:**
+- Substantial duplicate of already-approved roadmap item #12's run-feedback half and prior Status Tab Cleanup entries — risks becoming a fourth parallel tracking record for the same workstream.
+- Under-specified on scope: does 'already yielded a finding' mean any finding ever from that tool+target pair, only findings from that specific run, or a dedup by (tool, target, engagement)? Each has different data-model implications.
+- Doesn't advance any of the four still-unfinished Charter ideas (attack-path UI, entities tab, engagement-setup wizard, feedback loop proper) or Phase 10 hybrid ingest, so it should ride inside the Status Cleanup bundle rather than jump the queue.
+- Needs a UI decision (badge on the run row, disabled 'Run again' button, or a soft warning toast) that should be settled alongside item #10's engagement-aware quick actions to avoid two inconsistent 'already ran this' surfaces.
+
+_Approved 2026-07-08T23:01:29.689604+00:00 — suggestion id `019f43f0-8d57-78a0-9f74-049facea52ed`_
+
+### 25. [unranked] Adding filters + table/card view toggle to the Status screen is a reasonable observability polish that sits squarely inside the already-approved "Status Tab Cleanup" bundle and should be folded into that workstream rather than tracked as an independent roadmap item.
+
+**Original suggestion:**
+
+> Custom Filter options in the status screen. Table view vs Card View... let filter for all Strategic runs, Filter for Tactical runs, Filter various other parameters.. etc
+
+**Pros:**
+- Fits naturally with the in-flight Status Tab Cleanup bundle (shipped items 019f1a44/019f1a48/019f23c3 and approved run→finding causality work #12), so this sharpens acceptance criteria rather than opening a new workstream.
+- Reinforces the 'one pane of glass' North Star — analysts can slice Strategic vs. Tactical runs, failed vs. successful, per-finding, etc., without hunting across sub-tabs.
+- Low implementation cost given v1.0.0's TanStack Query data layer and the existing `agent_executions` table already carrying agent kind, status, model, and finding_id — filters are largely a query-param + UI change, not new infrastructure.
+- A table view pairs well with the Charter's 'findings as a clickable table' aesthetic (Idea 1) and gives power users a scannable surface, while cards remain the friendlier default — consistent with the platform's existing design language.
+- No conflict with the 'agents scan, analysts exploit' invariant — this is pure view-layer filtering over already-recorded executions.
+
+**Cons:**
+- Overlaps materially with the already-approved Status Tab Cleanup items (per-run synopsis #8, run-ID toast #9, step-by-step log #14, failed/empty run visual distinction shipped 2026-07-07) — should be merged into that bundle to avoid a parallel tracking record.
+- Filter dimensions are under-specified ('various other parameters') — needs an explicit list (agent kind, status, model, date range, finding_id, dispatch_method?) before design, or the filter bar will grow unbounded.
+- Table vs. card is a design-language decision that affects more than just Status (findings, entities, observations all have similar tension) — worth a broader call with Nasir/Ken rather than settling it inside one tab.
+- Pure observability polish — doesn't advance any of the four still-unfinished Charter ideas (attack-path UI, entities tab, engagement-setup wizard, feedback loop) or in-progress Phase 10 hybrid ingest, so it competes for attention with higher-leverage work.
+- Filter state persistence (URL params vs. per-user preference vs. session-only) is an unresolved sub-question that will bite on first review if not decided up front.
+
+_Approved 2026-07-08T23:01:28.146372+00:00 — suggestion id `019f43f2-2b3d-70d1-aee2-8389c9255422`_
+
+### 26. [unranked] Adding time-of-day (not just date) to finding timestamps with a per-user UTC/local toggle is a small, sensible precision fix that supports audit and activity-log work, but it's UI-layer polish that doesn't advance any unfinished Charter idea and needs a clear per-user preference story before coding.
+
+**Original suggestion:**
+
+> Timestamp as well as dates in findings. Can be set to UTC, or Local based on user settings or preferences
+
+**Pros:**
+- Directly supports the already-approved per-finding activity log (roadmap #2 / UX backlog #2), which will be unreadable if events only carry dates — timestamps are a prerequisite for 'Ken initiated crt.sh - datetime'.
+- Low implementation cost — the backend audit log, agent_executions, and finding rows already store full UTC timestamps; this is largely a serializer/formatter and a user-settings toggle, not a data-model change.
+- Improves audit defensibility across the platform (finding.updated, attachment uploads, suggestion approvals) — pairs naturally with the submitter/approver attribution work (id `019f1536-...`) that's already queued.
+- Per-user UTC vs. local preference fits the existing Settings page pattern established by BYO provider keys, so there's a natural home for the toggle without new surface area.
+- No conflict with the 'agents scan, analysts exploit' invariant — this is pure display/preference work.
+
+**Cons:**
+- Pure display polish — doesn't advance any of the four still-unfinished Charter ideas (attack-path UI, entities tab, engagement-setup wizard, feedback loop) or Phase 10 hybrid ingest.
+- Under-specified scope: 'findings' alone, or all timestamped surfaces (findings, observations, tasks, agent runs, suggestions, audit log, What's New)? — inconsistent formatting across the portal is worse than the current date-only state.
+- Needs a decision on storage vs. display — canonical UTC in DB (already the case) with client-side rendering is the clean answer, but the suggestion phrasing ('can be set to UTC or Local') could be misread as storing local time, which would corrupt cross-user audit trails.
+- Introduces a user-preferences surface that doesn't exist yet beyond BYO keys — timezone, 12h/24h, ISO vs. relative ('2h ago') are all adjacent asks that will land next and should be scoped together rather than piecemeal.
+- Competes for attention with higher-leverage P1/P2 roadmap items (AI-rewrite of finding summaries, activity log, quick-add-to-scope) that would benefit from timestamps but shouldn't be blocked on this if it grows.
+
+_Approved 2026-07-08T23:01:26.207132+00:00 — suggestion id `019f43f4-21b1-77e1-875d-3fd1414ab83d`_
+
+### 27. [unranked] A concrete UX refinement of the already-approved model-probe work (roadmap #13) and per-engagement model selection (#5, #8) — replace the free-text model input in the default-model selector with a dropdown populated by probing the provider endpoint.
+
+**Original suggestion:**
+
+> In the default model selector, USE THE PROBE and LET ME PICK FROM A LIST. Don't make me type it in.
+
+**Pros:**
+- Sharpens already-approved roadmap item #13.2 (probe the endpoint's /models to enumerate available models) with a specific UX requirement — dropdown, not typed input — so this is scope refinement rather than net-new work.
+- Directly serves the 'analyst in control' principle by removing a footgun: typo'd model names silently route to unpriced or nonexistent models and break Phase 11 cost attribution (`_RATE_TABLE` substring matching in `pricing.py`).
+- Complements approved items #5 and #8 (per-engagement/per-task model selection, togglable model preferences) — a probe-backed picker is the obvious input control for those settings screens.
+- Low implementation cost given BYO keys infrastructure already exists; this is a probe endpoint + a Select component, not a new subsystem.
+- No conflict with the 'agents scan, analysts exploit' invariant — pure settings/UX plumbing.
+
+**Cons:**
+- Duplicates part of approved item #13 — should be folded into that entry as an acceptance criterion, not tracked as a separate roadmap row, or you'll get two parallel implementations of the same probe.
+- Providers vary: OpenAI-compatible endpoints expose `/models`, but Azure OpenAI (deployment names) and some local runtimes don't follow the same shape — needs a per-provider probe strategy with a graceful fallback to free-text when probing fails.
+- Under-specified failure UX: what happens when the key is invalid, the endpoint is unreachable, or the provider returns hundreds of models (OpenRouter-style)? Needs pinning before coding.
+- Probe results should probably be cached per-key to avoid hammering provider endpoints on every settings-page render — small but real infra decision (TTL, invalidation on key edit).
+- Pure settings-surface polish — doesn't advance any of the four still-unfinished Charter ideas (attack-path UI, entities tab, engagement-setup wizard, feedback loop) or Phase 10 hybrid ingest.
+
+_Approved 2026-07-08T23:01:24.525446+00:00 — suggestion id `019f43f4-ef2b-7791-a9f5-5433a0335c56`_
+
 ## Shipped
 
 Approved items that have landed. Kept here (not deleted) so the roadmap doubles as a running changelog.
