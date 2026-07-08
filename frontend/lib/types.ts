@@ -956,8 +956,13 @@ export interface ToolUploadResponse {
 export interface OrchestratorTool {
   name: string;
   description: string;
-  kind: ToolTaskKind; // enum | scan | exploit — same shape as ToolRead.task_kind
-  phase: string; // FindingPhase: osint | vuln_scan | exploit | phishing | general
+  // v1.12.1: what type of scope-item the tool accepts (domain / ip /
+  // cidr / url). NOT the charter task-kind (enum/scan/exploit) — that
+  // grouping is derived from ``phase``.
+  scope_kind: string;
+  // FindingPhase: osint | vuln_scan | exploit | phishing | general.
+  // This is what the UI groups by (see ``lib/tool-phases.ts``).
+  phase: string;
   risk: string; // passive | active | destructive
   target_arg: string;
   example_prompt: string;

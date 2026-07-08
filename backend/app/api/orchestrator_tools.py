@@ -32,22 +32,18 @@ router = APIRouter()
 class OrchestratorToolRead(BaseModel):
     """One built-in orchestrator tool, projected for the UI.
 
-    Two taxonomy fields ship together so the frontend can pick its
-    grouping without a follow-up query:
-
-    - ``kind`` is the charter task-kind gate (``enum`` / ``scan`` /
-      ``exploit``). Agents can dispatch ``enum`` + ``scan``; ``exploit``
-      is analyst-only. Same field the DB ``Tool.task_kind`` uses, so
-      the frontend's existing ``TOOL_PHASES`` maps 1:1.
-    - ``phase`` is the finding-phase this tool populates
-      (``osint`` / ``vuln_scan`` / ``exploit`` / ``phishing`` /
-      ``general``). More specific than ``kind`` when it comes to the
-      actual work the tool does.
+    v1.12.1: ``kind`` used to be labeled as the charter task-kind (enum
+    / scan / exploit); it's actually the ``ScopeKind`` (domain / ip /
+    cidr / url) — the type of scope-item the tool accepts. Renamed to
+    ``scope_kind`` so callers stop reaching for it as a phase axis.
+    ``phase`` is the correct grouping axis (osint / vuln_scan / …).
     """
 
     name: str
     description: str
-    kind: str = Field(description="TaskKind: enum | scan | exploit")
+    scope_kind: str = Field(
+        description="ScopeKind of the target: domain | ip | cidr | url",
+    )
     phase: str = Field(
         description="FindingPhase: osint | vuln_scan | exploit | phishing | general",
     )
@@ -116,13 +112,15 @@ def list_orchestrator_tools(_user: CurrentUser) -> list[OrchestratorToolRead]:
             OrchestratorToolRead(
                 name=spec.name,
                 description=spec.description or "",
-                kind=spec.kind.value,
+                scope_kind=spec.kind.value,
                 phase=phase_for_tool(spec.name) or "general",
                 risk=spec.risk.value,
                 target_arg=spec.target_arg,
                 example_prompt=_example_for(spec),
             )
         )
-    # Stable ordering makes the UI reproducible across requests.
-    out.sort(key=lambda t: (t.kind, t.name))
+    # Stable ordering makes the UI reproducible across requests. Phase
+    # first so the response groups sanely if the client ignores our
+    # taxonomy hints and iterates in order.
+    out.sort(key=lambda t: (t.phase, t.name))
     return out
