@@ -1,8 +1,9 @@
 "use client";
 
-// Management — admin-only role-assignment surface. Lists every user in
-// the tenant with a role dropdown; saving sends PATCH /admin/users/{id}/role.
-// Backend refuses to demote the acting admin themselves (avoid lockout).
+// Management — admin-only user-admin surface. Lists every user in
+// the tenant with a role dropdown (PATCH .../role) and an
+// activate/deactivate toggle (PATCH .../active). Backend refuses to
+// demote or deactivate the acting admin themselves (avoid lockout).
 
 import Link from "next/link";
 import { useState } from "react";
@@ -17,6 +18,7 @@ import {
   useAdminUsers,
   useMe,
   useUpdateUserRoleMutation,
+  useUpdateUserActiveMutation,
 } from "@/lib/hooks";
 import type { AdminUser, UserRole } from "@/lib/types";
 
@@ -37,6 +39,7 @@ export default function SettingsManagementPage() {
   const { data: me } = useMe();
   const { data: users, error: queryError } = useAdminUsers();
   const roleMutation = useUpdateUserRoleMutation();
+  const activeMutation = useUpdateUserActiveMutation();
   const [savingId, setSavingId] = useState<string | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
   const error =
@@ -60,6 +63,27 @@ export default function SettingsManagementPage() {
     }
   };
 
+  const onToggleActive = async (user: AdminUser) => {
+    // Deactivate needs a confirm — it instantly revokes the user's access
+    // (next request they make 403s via the is_active gate in deps.py).
+    // Reactivate is harmless; no confirm.
+    if (user.is_active && !confirm(`Deactivate '${user.email}'?`)) {
+      return;
+    }
+    setSavingId(user.id);
+    setLocalError(null);
+    try {
+      await activeMutation.mutateAsync({
+        userId: user.id,
+        is_active: !user.is_active,
+      });
+    } catch (err) {
+      setLocalError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSavingId(null);
+    }
+  };
+
   return (
     <div className="mx-auto max-w-4xl space-y-6 px-4 py-6">
       <div>
@@ -73,9 +97,9 @@ export default function SettingsManagementPage() {
           Management
         </h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Assign roles to every user in the tenant. Admin-only. Demoting
-          yourself is blocked — promote someone else first, then ask them
-          to demote you.
+          Assign roles and activate / deactivate users in the tenant.
+          Admin-only. Demoting or deactivating yourself is blocked —
+          promote someone else first, then ask them to act on you.
         </p>
       </div>
 
@@ -92,9 +116,10 @@ export default function SettingsManagementPage() {
           <CardHeader>
             <CardTitle className="text-base">Users</CardTitle>
             <CardDescription>
-              The role dropdown saves on change. Audit log records every
-              role change (event{" "}
-              <code className="text-foreground">user.role_changed</code>).
+              The role dropdown saves on change; the toggle activates /
+              deactivates (soft — their row and created-by refs stay).
+              Audit log records each as <code className="text-foreground">user.role_changed</code> and
+              <code className="text-foreground"> user.active_changed</code>.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
@@ -113,7 +138,9 @@ export default function SettingsManagementPage() {
                 return (
                   <li
                     key={u.id}
-                    className="flex flex-wrap items-center gap-3 py-3"
+                    className={`flex flex-wrap items-center gap-3 py-3 ${
+                      u.is_active ? "" : "opacity-60"
+                    }`}
                   >
                     <div className="min-w-0 flex-1">
                       <p className="text-sm font-medium text-foreground">
@@ -121,6 +148,11 @@ export default function SettingsManagementPage() {
                         {isMe && (
                           <span className="ml-1 text-[10px] text-muted-foreground">
                             (you)
+                          </span>
+                        )}
+                        {!u.is_active && (
+                          <span className="ml-1 rounded-full border border-critical/40 bg-critical/10 px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-critical">
+                            inactive
                           </span>
                         )}
                       </p>
@@ -153,6 +185,21 @@ export default function SettingsManagementPage() {
                         ),
                       )}
                     </select>
+                    <button
+                      type="button"
+                      onClick={() => onToggleActive(u)}
+                      disabled={savingId === u.id || isMe}
+                      title={
+                        isMe
+                          ? "you can't deactivate yourself"
+                          : u.is_active
+                            ? "Deactivate — blocks sign-in"
+                            : "Reactivate"
+                      }
+                      className="rounded-md border border-border bg-background px-2 py-1 text-xs hover:bg-secondary disabled:opacity-50"
+                    >
+                      {u.is_active ? "Deactivate" : "Activate"}
+                    </button>
                   </li>
                 );
               })}
