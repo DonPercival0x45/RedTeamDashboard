@@ -18,7 +18,13 @@ import {
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { invokeTool } from "@/lib/api";
-import { qk, useToolInvocations, useTools } from "@/lib/hooks";
+import {
+  qk,
+  useEntities,
+  useStoredEntities,
+  useToolInvocations,
+  useTools,
+} from "@/lib/hooks";
 import { cn } from "@/lib/utils";
 import type {
   ToolInvocationRead,
@@ -235,6 +241,34 @@ function ToolInvokeForm({
     return spec?.args ?? [];
   }, [tool.manifest]);
 
+  // v0.16.1: entity source preview. If the tool's manifest declares
+  // ``entity_source`` (the entity type(s) it reads from the engagement's
+  // discovered entities), show how many of each are available before the
+  // analyst kicks — so they know what the tool will actually run against.
+  const entitySource: string[] = useMemo(() => {
+    const spec = (tool.manifest as Record<string, unknown>)?.spec as
+      | { entity_source?: string[] }
+      | undefined;
+    return spec?.entity_source ?? [];
+  }, [tool.manifest]);
+
+  const { data: derivedEntities } = useEntities(slug);
+  const { data: storedEntities } = useStoredEntities(slug);
+  const entityCounts: Record<string, number> = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const t of entitySource) {
+      const seen = new Set<string>();
+      for (const e of derivedEntities ?? []) {
+        if (e.type === t && e.value) seen.add(e.value);
+      }
+      for (const e of storedEntities ?? []) {
+        if (e.type === t && e.value) seen.add(e.value);
+      }
+      counts[t] = seen.size;
+    }
+    return counts;
+  }, [entitySource, derivedEntities, storedEntities]);
+
   const [values, setValues] = useState<Record<string, string | boolean>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -328,6 +362,45 @@ function ToolInvokeForm({
         ))}
 
         {error && <p className="text-xs text-critical">{error}</p>}
+
+        {entitySource.length > 0 && (
+          <div className="rounded-md border border-border bg-secondary/30 px-3 py-2 text-xs">
+            <p className="mb-1 text-[10px] uppercase tracking-wide text-muted-foreground/70">
+              Will run against
+            </p>
+            <ul className="space-y-0.5">
+              {entitySource.map((t) => {
+                const n = entityCounts[t] ?? 0;
+                return (
+                  <li
+                    key={t}
+                    className="flex items-center justify-between gap-2"
+                  >
+                    <span className="text-muted-foreground">
+                      <span className="font-mono text-foreground">{t}</span>{" "}
+                      entities
+                    </span>
+                    <span
+                      className={
+                        n === 0
+                          ? "font-medium text-amber-600 dark:text-amber-400"
+                          : "font-medium text-foreground"
+                      }
+                    >
+                      {n}
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+            {entitySource.some((t) => (entityCounts[t] ?? 0) === 0) && (
+              <p className="mt-1.5 text-[11px] text-amber-600 dark:text-amber-400">
+                No entities of this type yet — the tool will have nothing to
+                enumerate. Add findings that disclose it, or import via Maltego.
+              </p>
+            )}
+          </div>
+        )}
 
         <Button size="sm" disabled={busy} onClick={submit}>
           <Play className="mr-1.5 h-3.5 w-3.5" />
