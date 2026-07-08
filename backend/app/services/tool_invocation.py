@@ -20,7 +20,7 @@ import base64
 from datetime import UTC, datetime
 from decimal import Decimal
 from functools import lru_cache
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -42,6 +42,9 @@ from app.models import (
     User,
 )
 from app.services.entities import extract_entities
+
+if TYPE_CHECKING:
+    import redis as redis_lib
 from app.services.sandbox_local import LocalDockerRunner
 from app.services.sandbox_runner import (
     RUNTIME_RATES_USD_PER_SECOND,
@@ -71,6 +74,7 @@ async def invoke_tool(
     args: dict[str, Any],
     invoker: User,
     actor_type: ActorType = ActorType.user,
+    redis_client: redis_lib.Redis | None = None,
 ) -> ToolInvocation:
     """Kick a tool invocation end-to-end. Returns the persisted row
     with terminal status set (completed / failed / timeout).
@@ -176,6 +180,37 @@ async def invoke_tool(
 
     session.add(_audit(engagement, tool, row, invoker, "tool.invocation_completed"))
     session.commit()
+
+    # v0.18.0: opt-in finding analysis. If the manifest declares
+    # analyze_findings and the run succeeded, ask the invoker's LLM to
+    # pull findings out of the captured stdout and persist them. Best-
+    # effort — never affects the invocation's own terminal status.
+    if (
+        redis_client is not None
+        and row.status == ToolInvocationStatus.completed
+        and bool(
+            (tool.manifest or {}).get("spec", {}).get("analyze_findings")
+        )
+    ):
+        from app.services.tool_finding_analysis import analyze_and_persist
+
+        try:
+            await analyze_and_persist(
+                session,
+                redis_client,
+                engagement=engagement,
+                invocation=row,
+                tool=tool,
+                invoker=invoker,
+            )
+        except Exception:  # noqa: BLE001 — analysis must not fail the invoke
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "tool_finding_analysis.failed",
+                extra={"invocation_id": str(row.id)},
+            )
+
     return row
 
 
