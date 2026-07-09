@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import {
@@ -21,9 +21,13 @@ import {
   linkObservationFinding,
   listAttachments,
   listFindingSummaries,
+  listFindings,
   listObservationsForFinding,
+  listScope,
+  listTasks,
   updateFinding,
   uploadAttachment,
+  validateFinding,
 } from "@/lib/api";
 import {
   useAcceptFindingChatActionMutation,
@@ -38,6 +42,7 @@ import { cn } from "@/lib/utils";
 import type {
   Attachment,
   Finding,
+  FindingExclusion,
   FindingActivityEntry,
   FindingChatAction,
   FindingChatMessage,
@@ -45,7 +50,9 @@ import type {
   FindingSummaryEntry,
   FindingValidationStatus,
   Observation,
+  ScopeItem,
   Severity,
+  Task,
 } from "@/lib/types";
 
 const SEVERITY_CLASS: Record<Severity, string> = {
@@ -303,16 +310,118 @@ function FindingWorkbench({
         {tab === "ai" && <ChatRail findingId={finding.id} />}
         {tab === "notes" && (
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-            <SummaryPanel finding={finding} />
+            <DecisionPanel finding={finding} />
             <TagsPanel finding={finding} />
+            <SummaryPanel finding={finding} />
             <CommentsPanel finding={finding} slug={slug} />
           </div>
         )}
-        {tab === "evidence" && <AttachmentsPanel finding={finding} />}
-        {tab === "details" && <DetailsPanel finding={finding} />}
-        {tab === "tools" && <AgentToolsPanel findingId={finding.id} />}
+        {tab === "evidence" && (
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+            <EvidenceChecklistPanel finding={finding} />
+            <AttachmentsPanel finding={finding} />
+          </div>
+        )}
+        {tab === "details" && (
+          <div className="space-y-4">
+            <ScopeStatusPanel finding={finding} slug={slug} />
+            <RelatedPanel finding={finding} slug={slug} />
+            <ReportPreviewPanel finding={finding} />
+            <DetailsPanel finding={finding} />
+          </div>
+        )}
+        {tab === "tools" && <AgentToolsPanel findingId={finding.id} slug={slug} />}
       </div>
     </section>
+  );
+}
+
+function DecisionPanel({ finding }: { finding: Finding }) {
+  const qc = useQueryClient();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function setStatus(status: FindingValidationStatus) {
+    setBusy(true);
+    setError(null);
+    try {
+      const updated = await validateFinding(finding.id, status);
+      qc.setQueryData(qk.finding(finding.id), updated);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function setExclusion(exclusion: FindingExclusion | null) {
+    setBusy(true);
+    setError(null);
+    try {
+      const updated = await updateFinding(finding.id, { exclusion });
+      qc.setQueryData(qk.finding(finding.id), updated);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="rounded-lg border border-border bg-card/40 p-4">
+      <h2 className="text-sm font-medium">Decision</h2>
+      <p className="mt-1 text-xs text-muted-foreground">
+        Validation and reportability controls for this finding.
+      </p>
+      <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+        <InfoTile label="Status" value={STATUS_LABEL[finding.status]} />
+        <InfoTile label="Reportability" value={finding.exclusion ?? "included"} />
+      </div>
+      <div className="mt-3 flex flex-wrap gap-2">
+        <SmallButton disabled={busy} onClick={() => setStatus("validated")}>
+          Validate
+        </SmallButton>
+        <SmallButton disabled={busy} onClick={() => setStatus("rejected")}>
+          Reject
+        </SmallButton>
+        <SmallButton disabled={busy} onClick={() => setStatus("false_positive")}>
+          False positive
+        </SmallButton>
+        <SmallButton disabled={busy} onClick={() => setExclusion("out_of_scope")}>
+          Out of scope
+        </SmallButton>
+        <SmallButton disabled={busy} onClick={() => setExclusion("outside_roe")}>
+          Outside ROE
+        </SmallButton>
+        {finding.exclusion && (
+          <SmallButton disabled={busy} onClick={() => setExclusion(null)}>
+            Clear exclusion
+          </SmallButton>
+        )}
+      </div>
+      {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
+    </section>
+  );
+}
+
+function SmallButton({
+  children,
+  disabled,
+  onClick,
+}: {
+  children: ReactNode;
+  disabled?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      className="rounded-md border border-border px-3 py-1.5 text-xs hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+    >
+      {children}
+    </button>
   );
 }
 
@@ -555,6 +664,109 @@ function CommentsPanel({ finding, slug }: { finding: Finding; slug: string | nul
   );
 }
 
+function EvidenceChecklistPanel({ finding }: { finding: Finding }) {
+  const checks = evidenceChecks(finding);
+  return (
+    <section className="rounded-lg border border-border bg-card/40 p-4">
+      <h2 className="text-sm font-medium">Evidence checklist</h2>
+      <p className="mt-1 text-xs text-muted-foreground">
+        Quick report-readiness indicators for the finding record.
+      </p>
+      <ul className="mt-3 space-y-2">
+        {checks.map((check) => (
+          <li
+            key={check.label}
+            className="flex items-center justify-between rounded-md border border-border bg-background p-2 text-sm"
+          >
+            <span>{check.label}</span>
+            <span
+              className={cn(
+                "rounded-full px-2 py-0.5 text-[10px] font-medium",
+                check.ok
+                  ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-200"
+                  : "bg-muted text-muted-foreground",
+              )}
+            >
+              {check.ok ? "yes" : "missing"}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function evidenceChecks(finding: Finding): Array<{ label: string; ok: boolean }> {
+  const blob = JSON.stringify({ data: finding.data, args: finding.args }).toLowerCase();
+  return [
+    { label: "Has affected target", ok: Boolean(finding.target) },
+    { label: "Has timestamp", ok: Boolean(finding.observed_at || finding.created_at) },
+    { label: "Has analyst summary", ok: Boolean(finding.summary?.trim()) },
+    { label: "Has raw output/details", ok: Object.keys(finding.data ?? {}).length > 0 },
+    {
+      label: "Mentions remediation",
+      ok: /remediation|recommend|mitigat|fix|patch/.test(
+        `${finding.summary ?? ""} ${blob}`.toLowerCase(),
+      ),
+    },
+    {
+      label: "Mentions evidence artifact",
+      ok: /screenshot|attachment|evidence|output|banner|nmap|log/.test(
+        `${finding.summary ?? ""} ${blob}`.toLowerCase(),
+      ),
+    },
+  ];
+}
+
+function extractedIndicators(finding: Finding): string[] {
+  const text = JSON.stringify({
+    target: finding.target,
+    title: finding.title,
+    summary: finding.summary,
+    data: finding.data,
+  });
+  const ips = text.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g) ?? [];
+  const domains = text.match(/\b(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}\b/g) ?? [];
+  return Array.from(new Set([...ips, ...domains])).slice(0, 30);
+}
+
+function scopeIndicators(finding: Finding, scope: ScopeItem[]) {
+  const values = extractedIndicators(finding);
+  return values.flatMap((value) =>
+    scope
+      .filter((item) =>
+        value.toLowerCase().includes(item.value.toLowerCase()) ||
+        item.value.toLowerCase().includes(value.toLowerCase()),
+      )
+      .map((item) => ({ value, item })),
+  );
+}
+
+function scopeStateClass(state: string): string {
+  if (state === "excluded") return "bg-rose-500/15 text-rose-700 dark:text-rose-200";
+  if (state === "declared scope") return "bg-emerald-500/15 text-emerald-700 dark:text-emerald-200";
+  if (state === "found scope") return "bg-sky-500/15 text-sky-700 dark:text-sky-200";
+  return "bg-amber-500/15 text-amber-700 dark:text-amber-200";
+}
+
+function isRelatedFinding(
+  finding: Finding,
+  other: Finding,
+  indicators: string[],
+): boolean {
+  if (finding.target && other.target && finding.target === other.target) return true;
+  if (finding.tool && other.tool && finding.tool === other.tool) return true;
+  const tags = new Set(finding.tags ?? []);
+  if ((other.tags ?? []).some((tag) => tags.has(tag))) return true;
+  const otherText = JSON.stringify({
+    target: other.target,
+    title: other.title,
+    summary: other.summary,
+    data: other.data,
+  }).toLowerCase();
+  return indicators.some((value) => otherText.includes(value.toLowerCase()));
+}
+
 function AttachmentsPanel({ finding }: { finding: Finding }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [rows, setRows] = useState<Attachment[] | null>(null);
@@ -614,6 +826,142 @@ function AttachmentsPanel({ finding }: { finding: Finding }) {
   );
 }
 
+function ScopeStatusPanel({ finding, slug }: { finding: Finding; slug: string | null }) {
+  const [scope, setScope] = useState<ScopeItem[] | null>(null);
+  useEffect(() => {
+    if (!slug) {
+      setScope([]);
+      return;
+    }
+    listScope(slug).then(setScope).catch(() => setScope([]));
+  }, [slug]);
+  const indicators = scopeIndicators(finding, scope ?? []);
+  const exclusions = indicators.filter((i) => i.item.is_exclusion);
+  const inclusions = indicators.filter((i) => !i.item.is_exclusion);
+  const state = exclusions.length
+    ? "excluded"
+    : inclusions.some((i) => i.item.source === "found")
+      ? "found scope"
+      : inclusions.length
+        ? "declared scope"
+        : "unknown";
+
+  return (
+    <section className="rounded-lg border border-border bg-card/40 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-sm font-medium">Scope / ROE status</h2>
+        <span className={cn("rounded-full px-2 py-0.5 text-xs font-medium", scopeStateClass(state))}>
+          {state}
+        </span>
+      </div>
+      <p className="mt-2 text-xs text-muted-foreground">
+        Compares extracted IP/domain/URL indicators from this finding against
+        engagement scope and exclusions.
+      </p>
+      {scope === null ? (
+        <p className="mt-3 text-xs text-muted-foreground">Loading scope…</p>
+      ) : indicators.length === 0 ? (
+        <p className="mt-3 rounded-md border border-dashed border-border p-3 text-xs text-muted-foreground">
+          No exact scope match found for the extracted indicators. Confirm ROE
+          before approving active agent actions.
+        </p>
+      ) : (
+        <ul className="mt-3 space-y-2">
+          {indicators.map(({ value, item }) => (
+            <li key={`${item.id}-${value}`} className="rounded-md border border-border bg-background p-2 text-xs">
+              <span className="font-mono">{value}</span>
+              <span className="ml-2 text-muted-foreground">
+                matched {item.kind}:{item.value} · {item.is_exclusion ? "exclusion" : item.source ?? "defined"}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+function RelatedPanel({ finding, slug }: { finding: Finding; slug: string | null }) {
+  const [rows, setRows] = useState<Finding[] | null>(null);
+  useEffect(() => {
+    if (!slug) {
+      setRows([]);
+      return;
+    }
+    listFindings(slug).then(setRows).catch(() => setRows([]));
+  }, [slug]);
+  const indicators = extractedIndicators(finding);
+  const related = (rows ?? [])
+    .filter((row) => row.id !== finding.id)
+    .filter((row) => isRelatedFinding(finding, row, indicators))
+    .slice(0, 10);
+
+  return (
+    <section className="rounded-lg border border-border bg-card/40 p-4">
+      <h2 className="text-sm font-medium">Related findings / entities</h2>
+      <p className="mt-1 text-xs text-muted-foreground">
+        Same target, tags, source tool, or extracted IP/domain indicators.
+      </p>
+      <div className="mt-3 flex flex-wrap gap-1.5">
+        {indicators.length === 0 ? (
+          <span className="text-xs text-muted-foreground">No extracted entities.</span>
+        ) : (
+          indicators.map((v) => (
+            <span key={v} className="rounded-full border border-border bg-muted/40 px-2 py-0.5 font-mono text-[10px]">
+              {v}
+            </span>
+          ))
+        )}
+      </div>
+      {rows === null ? (
+        <p className="mt-3 text-xs text-muted-foreground">Loading…</p>
+      ) : related.length === 0 ? (
+        <p className="mt-3 text-xs text-muted-foreground">No related findings found.</p>
+      ) : (
+        <ul className="mt-3 space-y-2">
+          {related.map((row) => (
+            <li key={row.id} className="rounded-md border border-border bg-background p-2 text-xs">
+              <p className="font-medium">{row.title}</p>
+              <p className="mt-1 text-muted-foreground">
+                {row.severity} · {row.status} · {row.target ?? "no target"}
+              </p>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+function ReportPreviewPanel({ finding }: { finding: Finding }) {
+  const included = finding.status === "validated" && !finding.exclusion;
+  return (
+    <section className="rounded-lg border border-border bg-card/40 p-4">
+      <div className="flex items-center justify-between gap-2">
+        <h2 className="text-sm font-medium">Report preview</h2>
+        <span className={cn("rounded-full px-2 py-0.5 text-[10px] font-medium", included ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-200" : "bg-muted text-muted-foreground")}>
+          {included ? "reportable" : "not reportable yet"}
+        </span>
+      </div>
+      <div className="mt-3 rounded-md border border-border bg-background p-4">
+        <div className="flex flex-wrap gap-2">
+          <Badge variant="outline" className={cn("border", SEVERITY_CLASS[finding.severity])}>
+            {finding.severity}
+          </Badge>
+          <Badge variant="secondary" className="text-[10px]">
+            {PHASE_LABEL[finding.phase]}
+          </Badge>
+        </div>
+        <h3 className="mt-3 text-base font-semibold">{finding.title}</h3>
+        {finding.target && <p className="mt-1 font-mono text-xs text-muted-foreground">{finding.target}</p>}
+        <p className="mt-3 whitespace-pre-wrap text-sm">
+          {finding.summary || "No report narrative has been written yet."}
+        </p>
+      </div>
+    </section>
+  );
+}
+
 function DetailsPanel({ finding }: { finding: Finding }) {
   return (
     <section className="rounded-lg border border-border bg-card/40 p-4 lg:col-span-2">
@@ -650,13 +998,30 @@ function openToolActions(messages: FindingChatMessage[]) {
   );
 }
 
-function AgentToolsPanel({ findingId }: { findingId: string }) {
+function AgentToolsPanel({ findingId, slug }: { findingId: string; slug: string | null }) {
   const { data: chat } = useFindingChat(findingId);
   const acceptAction = useAcceptFindingChatActionMutation(findingId);
   const proposedActions = openToolActions(chat?.messages ?? []);
+  const [tasks, setTasks] = useState<Task[] | null>(null);
+
+  const refreshTasks = () => {
+    if (!slug) {
+      setTasks([]);
+      return;
+    }
+    listTasks(slug).then(setTasks).catch(() => setTasks([]));
+  };
+
+  useEffect(() => {
+    refreshTasks();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [slug, findingId]);
+
+  const findingTasks = (tasks ?? []).filter((task) => task.finding_id === findingId);
 
   return (
-    <section className="rounded-lg border border-amber-400/40 bg-amber-400/10 p-4">
+    <section className="space-y-4">
+      <div className="rounded-lg border border-amber-400/40 bg-amber-400/10 p-4">
       <div className="flex items-center justify-between gap-2">
         <h2 className="flex items-center gap-2 text-sm font-medium">
           <Sparkles className="h-4 w-4 text-amber-500" />
@@ -683,19 +1048,69 @@ function AgentToolsPanel({ findingId }: { findingId: string }) {
               key={`${messageId}-${index}`}
               action={action}
               onAccept={() =>
-                acceptAction.mutate({ messageId, actionIndex: index })
+                acceptAction.mutate(
+                  { messageId, actionIndex: index },
+                  { onSuccess: refreshTasks },
+                )
               }
               accepting={acceptAction.isPending}
             />
           ))}
         </div>
       )}
-      {acceptAction.error && (
-        <p className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 p-2 text-xs text-destructive">
-          {acceptAction.error instanceof Error
-            ? acceptAction.error.message
-            : "Tool dispatch failed"}
+        {acceptAction.error && (
+          <p className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 p-2 text-xs text-destructive">
+            {acceptAction.error instanceof Error
+              ? acceptAction.error.message
+              : "Tool dispatch failed"}
+          </p>
+        )}
+      </div>
+      <ActionHistoryPanel tasks={findingTasks} loading={tasks === null} />
+    </section>
+  );
+}
+
+function ActionHistoryPanel({
+  tasks,
+  loading,
+}: {
+  tasks: Task[];
+  loading: boolean;
+}) {
+  return (
+    <section className="rounded-lg border border-border bg-card/40 p-4">
+      <h2 className="text-sm font-medium">Action history</h2>
+      <p className="mt-1 text-xs text-muted-foreground">
+        Approved agent actions, task status, run ids, and dispatch metadata.
+      </p>
+      {loading ? (
+        <p className="mt-3 text-xs text-muted-foreground">Loading tasks…</p>
+      ) : tasks.length === 0 ? (
+        <p className="mt-3 text-xs text-muted-foreground">
+          No approved tool actions yet.
         </p>
+      ) : (
+        <ul className="mt-3 space-y-2">
+          {tasks.map((task) => (
+            <li key={task.id} className="rounded-md border border-border bg-background p-3 text-xs">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="font-medium">{task.title}</p>
+                <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
+                  {task.status}
+                </span>
+              </div>
+              <p className="mt-1 font-mono text-[10px] text-muted-foreground">
+                {String(task.payload.tool ?? "?")} → {String(task.payload.target ?? "?")}
+              </p>
+              <div className="mt-2 grid grid-cols-1 gap-2 text-[10px] text-muted-foreground sm:grid-cols-3">
+                <span>run: {task.run_id ?? "not dispatched"}</span>
+                <span>sent: {fmtTs(task.dispatched_at)}</span>
+                <span>done: {fmtTs(task.completed_at)}</span>
+              </div>
+            </li>
+          ))}
+        </ul>
       )}
     </section>
   );
