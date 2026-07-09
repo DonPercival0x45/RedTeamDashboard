@@ -27,6 +27,7 @@ import type {
   FindingPhase,
   FindingSort,
   FindingSummaryEntry,
+  FindingActivityEntry,
   FindingValidationStatus,
   StatusEntity,
   StatusKind,
@@ -210,6 +211,17 @@ export function listFindings(
   if (filters?.sort) q.set("sort", filters.sort);
   const suffix = q.toString() ? `?${q.toString()}` : "";
   return request<Finding[]>(`/engagements/${slug}/findings${suffix}`);
+}
+
+// v0.21.0 (finding pane): single-finding + activity timeline fetches.
+export function getFinding(findingId: string): Promise<Finding> {
+  return request<Finding>(`/findings/${findingId}`);
+}
+
+export function getFindingActivity(
+  findingId: string,
+): Promise<FindingActivityEntry[]> {
+  return request<FindingActivityEntry[]>(`/findings/${findingId}/activity`);
 }
 
 // POST /engagements/{slug}/findings/import/burp — Burp Pro Issue Export XML.
@@ -547,6 +559,21 @@ export function triageFinding(
   return request<TriageFindingResponse>(`/findings/${findingId}/triage`, {
     method: "POST",
   });
+}
+
+export function rewriteFindingSummary(
+  findingId: string,
+  draft: string,
+): Promise<TriageFindingResponse> {
+  // v0.20.0 (roadmap #1): refine an analyst's draft description via
+  // the LLM. Mirrors triageFinding but sends the current draft text.
+  return request<TriageFindingResponse>(
+    `/findings/${findingId}/rewrite-summary`,
+    {
+      method: "POST",
+      body: JSON.stringify({ draft }),
+    },
+  );
 }
 
 export function listSuggestions(

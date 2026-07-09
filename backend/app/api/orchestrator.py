@@ -62,9 +62,12 @@ from app.schemas.cost import (
     ToolCost,
     ToolCostSummary,
 )
+from app.schemas.finding import FindingRead
 from app.schemas.orchestrator import (
     AcceptSuggestionResponse,
     AnalyzeFindingResponse,
+    FindingActivityEntry,
+    FindingRewriteRequest,
     SuggestionRead,
     TaskRead,
     TriageFindingResponse,
@@ -160,6 +163,54 @@ def analyze_finding(
 # ---------------------------------------------------------------------------
 
 
+@router.get(
+    "/findings/{finding_id}",
+    response_model=FindingRead,
+)
+def get_finding(
+    finding_id: uuid.UUID,
+    session: DbSession,
+    _user: CurrentUser,
+) -> FindingRead:
+    """Single-finding read for the finding pane (deep-linkable full page).
+
+    The engagement-scoped list stays the source of truth for the table;
+    this is the cross-engagement fetch the pane needs so it can render
+    from just the finding id in the URL.
+    """
+    finding = session.get(Finding, finding_id)
+    if finding is None:
+        raise HTTPException(status_code=404, detail="finding not found")
+    # Return the ORM row; FastAPI's response_model validates with
+    # from_attributes=True (FindingRead has no explicit model_config).
+    return finding
+
+
+@router.get(
+    "/findings/{finding_id}/activity",
+    response_model=list[FindingActivityEntry],
+)
+def finding_activity(
+    finding_id: uuid.UUID,
+    session: DbSession,
+    _user: CurrentUser,
+) -> list[FindingActivityEntry]:
+    """Activity timeline for the finding pane of glass (Phase 1).
+
+    Merges creation origin, finding-scoped Tasks, agent executions that
+    reference the finding, and audit-log events into one chronological
+    feed. Read-only — the pane renders it as the "what's happened here"
+    log alongside the summary/observations/evidence sections.
+    """
+    from app.services.finding_activity import build_finding_activity
+
+    finding = session.get(Finding, finding_id)
+    if finding is None:
+        raise HTTPException(status_code=404, detail="finding not found")
+    rows = build_finding_activity(session, finding_id)
+    return [FindingActivityEntry(**r) for r in rows]
+
+
 @router.post(
     "/findings/{finding_id}/triage",
     response_model=TriageFindingResponse,
@@ -232,6 +283,77 @@ def triage_finding(
             payload={
                 "finding_id": str(finding.id),
                 "execution_id": str(execution.id),
+                "summary_chars": len(summary),
+            },
+        )
+    )
+    session.commit()
+
+    return TriageFindingResponse(
+        execution_id=execution.id,
+        summary=summary,
+    )
+
+
+@router.post(
+    "/findings/{finding_id}/rewrite-summary",
+    response_model=TriageFindingResponse,
+)
+def rewrite_finding_summary_endpoint(
+    finding_id: uuid.UUID,
+    body: FindingRewriteRequest,
+    session: DbSession,
+    redis_client: RedisClient,
+    user: CurrentNonGuestUser,
+) -> TriageFindingResponse:
+    """Refine an analyst's draft finding description via the LLM (roadmap #1).
+
+    Sibling of AI Triage, but the source is the analyst's OWN draft and the
+    system prompt forbids introducing facts not in the draft (fabrication
+    guardrail). The response ``summary`` drops into the Summary textarea
+    for review + manual save — this endpoint does NOT mutate
+    ``findings.summary``.
+    """
+    from app.services.ephemeral_provider_key import NoProviderKeyError
+    from app.services.triage import rewrite_finding_summary
+
+    finding = session.get(Finding, finding_id)
+    if finding is None:
+        raise HTTPException(status_code=404, detail="finding not found")
+
+    try:
+        execution, summary = rewrite_finding_summary(
+            session,
+            redis_client,
+            finding=finding,
+            draft=body.draft,
+            acting_user_id=user.id,
+        )
+    except NoProviderKeyError as exc:
+        session.rollback()
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"No provider key configured for the LLM call ({exc}). "
+                "Add one under /settings/keys."
+            ),
+        ) from exc
+    except Exception as exc:
+        session.commit()
+        raise HTTPException(
+            status_code=502, detail=f"rewrite failed: {exc}"
+        ) from exc
+
+    session.add(
+        AuditLog(
+            engagement_id=finding.engagement_id,
+            actor_type=ActorType.user,
+            actor_id=str(user.id),
+            event_type="finding.summary_rewritten",
+            payload={
+                "finding_id": str(finding.id),
+                "execution_id": str(execution.id),
+                "draft_chars": len(body.draft),
                 "summary_chars": len(summary),
             },
         )

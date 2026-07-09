@@ -1,9 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { useQueryClient } from "@tanstack/react-query";
 import { qk, useMe } from "@/lib/hooks";
-import { Ban, Layers, Link2, Plus, Search, Sparkles, Trash2, Upload, Wand2, Wrench, X } from "lucide-react";
+import { Ban, Layers, Link2, Maximize2, Plus, Search, Sparkles, Trash2, Upload, Wand2, Wrench, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -28,6 +29,7 @@ import {
   regroupFindingsPreview,
   repairFindingGroups,
   triageFinding,
+  rewriteFindingSummary,
   updateFinding,
   uploadAttachment,
   validateFinding,
@@ -769,6 +771,7 @@ export function FindingsView({
       {selected && (
         <FindingSlideOver
           finding={selected}
+          slug={slug}
           onClose={() => setSelected(null)}
           onUpdated={handleUpdated}
           onDeleted={(id) => {
@@ -1071,11 +1074,13 @@ function AttachmentThumb({
 
 function FindingSlideOver({
   finding,
+  slug,
   onClose,
   onUpdated,
   onDeleted,
 }: {
   finding: Finding;
+  slug: string;
   onClose: () => void;
   onUpdated: (f: Finding) => void;
   onDeleted: (findingId: string) => void;
@@ -1104,6 +1109,9 @@ function FindingSlideOver({
   // AI Triage — populates the textarea with an LLM-written summary; the
   // analyst then edits + clicks Save. Does NOT auto-save.
   const [triaging, setTriaging] = useState(false);
+  // v0.20.0 (roadmap #1): AI rewrite — refines the analyst's CURRENT
+  // draft for clarity (no fabrication). Also fills the textarea; no auto-save.
+  const [rewriting, setRewriting] = useState(false);
 
   // Summary history (newest first). Refreshed after each Save.
   const [summaries, setSummaries] = useState<FindingSummaryEntry[] | null>(null);
@@ -1167,6 +1175,21 @@ function FindingSlideOver({
       setSummaryError(err instanceof Error ? err.message : String(err));
     } finally {
       setTriaging(false);
+    }
+  };
+
+  const doRewrite = async () => {
+    const draft = summary.trim();
+    if (!draft) return; // button is disabled in this case, but guard anyway
+    setRewriting(true);
+    setSummaryError(null);
+    try {
+      const res = await rewriteFindingSummary(finding.id, draft);
+      setSummary(res.summary);
+    } catch (err) {
+      setSummaryError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRewriting(false);
     }
   };
 
@@ -1338,6 +1361,15 @@ function FindingSlideOver({
             <X className="h-5 w-5" />
           </button>
         </div>
+        <div className="mt-1 flex justify-end">
+          <Link
+            href={`/e/findings/${finding.id}?slug=${encodeURIComponent(slug)}`}
+            className="inline-flex items-center gap-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+            title="Open the full finding pane — activity timeline, context, and (soon) the AI assistant"
+          >
+            <Maximize2 className="h-3 w-3" /> Open full view
+          </Link>
+        </div>
 
         <div className="mt-3 flex items-center gap-2">
           <Badge variant="outline" className={SEVERITY_CLASS[finding.severity]}>
@@ -1388,6 +1420,15 @@ function FindingSlideOver({
               title="Ask the LLM to draft a report-ready summary into the textarea. You can edit, then Save."
             >
               {triaging ? "Triaging…" : "AI Triage"}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={rewriting || savingSummary || triaging || !summary.trim()}
+              onClick={doRewrite}
+              title="Refine the current draft for clarity. The LLM is constrained not to add facts you didn't write."
+            >
+              {rewriting ? "Rewriting…" : "AI Rewrite"}
             </Button>
             {summaryError && (
               <p className="text-xs text-critical">{summaryError}</p>

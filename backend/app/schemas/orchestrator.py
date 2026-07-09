@@ -72,6 +72,14 @@ class TriageFindingResponse(BaseModel):
     summary: str
 
 
+class FindingRewriteRequest(BaseModel):
+    """Body for ``POST /findings/{id}/rewrite-summary`` (roadmap #1). The
+    analyst's current draft text, to be refined for clarity without
+    introducing facts not in the draft."""
+
+    draft: str = Field(min_length=1, max_length=8000)
+
+
 class AcceptSuggestionResponse(BaseModel):
     """Returned by ``POST /suggestions/{id}/accept``.
 
@@ -103,3 +111,20 @@ class AgentExecutionRead(BaseModel):
     error: str | None
     started_at: datetime
     completed_at: datetime | None
+
+
+class FindingActivityEntry(BaseModel):
+    """One row in the finding's activity timeline (pane of glass, Phase 1).
+
+    A flat ``(ts, kind, label, actor, detail, ref)`` row merged from Tasks,
+    agent executions, and the audit log so the frontend renders the
+    timeline uniformly without knowing the source model.
+    """
+
+    ts: str | None = None
+    kind: str
+    label: str
+    actor: str | None = None
+    detail: str | None = None
+    ref_type: str | None = None
+    ref_id: str | None = None
