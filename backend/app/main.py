@@ -27,6 +27,7 @@ from sqlalchemy import text
 from app.api.admin_users import router as admin_users_router
 from app.api.api_keys import router as api_keys_router
 from app.api.approvals import router as approvals_router
+from app.api.agent_configurations import router as agent_configurations_router
 from app.api.authorizations import router as authorizations_router
 from app.api.contributions import router as contributions_router
 from app.api.deps import AsyncRedisClient, DbSession
@@ -92,6 +93,7 @@ app.include_router(contributions_router)
 app.include_router(tools_router)
 app.include_router(releases_router)
 app.include_router(tool_invocations_router)
+app.include_router(agent_configurations_router)
 
 # MCP server — auth-gated SSE endpoint for agent clients (Claude Code, etc.)
 # Agents connect via: claude mcp add rtd --transport sse --url https://<fqdn>/mcp/sse

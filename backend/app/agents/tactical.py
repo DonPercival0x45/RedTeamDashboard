@@ -38,6 +38,7 @@ from app.models import (
 )
 from app.orchestrator.llm import default_provider_model
 from app.orchestrator.tools import get_tool
+from app.services.agent_model_resolver import resolve_agent_model
 from app.runs.events import encode_command
 from app.runs.streams import inbound_stream, store_run_model
 
@@ -104,7 +105,25 @@ class TacticalAgent:
             "Report exactly what the tool returns; do not call any other tool."
         )
 
-        provider, model_name = default_provider_model()
+        # v1.24.0: honor the acting analyst's Settings > Configurations
+        # pinning for this engagement + Tactical role. Falls back to the
+        # user's default_model, then to the process-wide default.
+        resolved = resolve_agent_model(
+            session,
+            user_id=acting_user_id,
+            engagement_id=task.engagement_id,
+            role=AgentName.tactical,
+        )
+        if resolved is not None:
+            provider, model_name = resolved
+            if provider is None:
+                # Fall back on the process default provider if the analyst
+                # typed a bare model string we couldn't map — keeps the
+                # dispatch running instead of failing.
+                default_provider, _ = default_provider_model()
+                provider = default_provider
+        else:
+            provider, model_name = default_provider_model()
         thread_id = uuid.uuid4()
 
         # Stage 1 of per-task MCP composition: mint a lease for this dispatch

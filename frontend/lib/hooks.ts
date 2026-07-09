@@ -22,8 +22,13 @@ import {
   askFindingChat,
   cancelAgentExecution,
   cancelTask,
+  clearAgentConfiguration,
   clearFindingChat,
   createIntegration,
+  downloadAgentConfigurations,
+  importAgentConfigurations,
+  listAgentConfigurations,
+  putAgentConfiguration,
   createObservation,
   deleteIntegration,
   createScopeItem,
@@ -72,6 +77,10 @@ import {
 } from "@/lib/api";
 import { loadReleases } from "@/lib/release-notes";
 import type {
+  AgentConfigExport,
+  AgentConfigImportResult,
+  AgentConfigPut,
+  AgentConfigRead,
   ContributionSource,
   Finding,
   FindingChatActionResponse,
@@ -91,6 +100,7 @@ export const qk = {
   me: () => ["me"] as const,
   releases: () => ["releases"] as const,
   providerKeys: () => ["provider-keys"] as const,
+  agentConfigurations: () => ["agent-configurations"] as const,
   adminUsers: () => ["admin-users"] as const,
   integrations: () => ["integrations"] as const,
   roadmapSuggestions: (filters: RoadmapListFilters | undefined) =>
@@ -488,6 +498,79 @@ export function useDeleteProviderKeyMutation() {
     mutationFn: (keyId: string) => deleteProviderKey(keyId),
     onSuccess: () =>
       qc.invalidateQueries({ queryKey: qk.providerKeys() }),
+  });
+}
+
+// ── v1.24.0 Settings > Configurations ────────────────────────────────
+
+export function useAgentConfigurations() {
+  return useQuery({
+    queryKey: qk.agentConfigurations(),
+    queryFn: () => listAgentConfigurations(),
+  });
+}
+
+export function usePutAgentConfigurationMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ slug, body }: { slug: string; body: AgentConfigPut }) =>
+      putAgentConfiguration(slug, body),
+    onSuccess: (data: AgentConfigRead) => {
+      // Optimistic replace inside the list cache so the picker updates
+      // without waiting on the refetch.
+      qc.setQueryData(qk.agentConfigurations(), (prev: unknown) => {
+        const list = (prev as { configurations?: AgentConfigRead[] })
+          ?.configurations;
+        if (!Array.isArray(list)) return prev;
+        const next = list.filter(
+          (c) => c.engagement_slug !== data.engagement_slug,
+        );
+        // Empty rows (all three roles null) are dropped from the list.
+        if (data.strategic || data.tactical || data.correlate) {
+          next.push(data);
+          next.sort((a, b) =>
+            a.engagement_slug.localeCompare(b.engagement_slug),
+          );
+        }
+        return { configurations: next };
+      });
+      qc.invalidateQueries({ queryKey: qk.agentConfigurations() });
+    },
+  });
+}
+
+export function useClearAgentConfigurationMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (slug: string) => clearAgentConfiguration(slug),
+    onSuccess: (_data, slug) => {
+      qc.setQueryData(qk.agentConfigurations(), (prev: unknown) => {
+        const list = (prev as { configurations?: AgentConfigRead[] })
+          ?.configurations;
+        if (!Array.isArray(list)) return prev;
+        return {
+          configurations: list.filter((c) => c.engagement_slug !== slug),
+        };
+      });
+      qc.invalidateQueries({ queryKey: qk.agentConfigurations() });
+    },
+  });
+}
+
+export function useDownloadAgentConfigurations() {
+  return useMutation({
+    mutationFn: () => downloadAgentConfigurations(),
+  });
+}
+
+export function useImportAgentConfigurationsMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: AgentConfigExport): Promise<AgentConfigImportResult> =>
+      importAgentConfigurations(payload),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.agentConfigurations() });
+    },
   });
 }
 

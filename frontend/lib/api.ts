@@ -8,6 +8,11 @@ import { API_BASE_URL, DEV_USER, ENTRA_ENABLED } from "@/lib/config";
 import { getAccessToken } from "@/lib/msal";
 import type {
   AcceptSuggestionResponse,
+  AgentConfigExport,
+  AgentConfigImportResult,
+  AgentConfigListResponse,
+  AgentConfigPut,
+  AgentConfigRead,
   AnalyzeFindingResponse,
   TriageFindingResponse,
   Approval,
@@ -1369,4 +1374,56 @@ export function getToolInvocation(
   invocationId: string,
 ): Promise<ToolInvocationRead> {
   return request<ToolInvocationRead>(`/tool-invocations/${invocationId}`);
+}
+
+// ── v1.24.0 Settings > Configurations ─────────────────────────────────────
+
+export function listAgentConfigurations(): Promise<AgentConfigListResponse> {
+  return request<AgentConfigListResponse>("/agent-configurations");
+}
+
+export function putAgentConfiguration(
+  slug: string,
+  body: AgentConfigPut,
+): Promise<AgentConfigRead> {
+  return request<AgentConfigRead>(`/agent-configurations/${slug}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export function clearAgentConfiguration(slug: string): Promise<void> {
+  return request<void>(`/agent-configurations/${slug}`, { method: "DELETE" });
+}
+
+// Browser download — mirrors ``downloadRoadmapMarkdown``.
+export async function downloadAgentConfigurations(): Promise<void> {
+  const response = await fetch(
+    `${API_BASE_URL}/agent-configurations/export`,
+    { headers: await authHeaders() },
+  );
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`${response.status} ${response.statusText}: ${text}`);
+  }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "rtd-agent-configurations.json";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+export function importAgentConfigurations(
+  payload: AgentConfigExport,
+): Promise<AgentConfigImportResult> {
+  return request<AgentConfigImportResult>("/agent-configurations/import", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
 }
