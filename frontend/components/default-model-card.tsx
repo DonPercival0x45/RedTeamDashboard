@@ -59,6 +59,31 @@ export function DefaultModelCard() {
     setProbeError(null);
   }, [matchingKey?.id]);
 
+  // v1.25.2: auto-probe the moment a cached key becomes available for
+  // the selected provider — no more clicking Discover. The stored
+  // models list on the key is a fallback if the probe fails.
+  useEffect(() => {
+    let cancelled = false;
+    if (!matchingKey || probe) return;
+    (async () => {
+      setProbing(true);
+      setProbeError(null);
+      try {
+        const result = await probeSavedProviderKey(matchingKey.id);
+        if (!cancelled) setProbe(result);
+      } catch (err) {
+        if (!cancelled) {
+          setProbeError(err instanceof Error ? err.message : String(err));
+        }
+      } finally {
+        if (!cancelled) setProbing(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [matchingKey, probe]);
+
   const discoveredModels = useMemo(() => {
     const fromProbe = probe?.ok ? probe.models : [];
     const fromKey = matchingKey?.models ?? [];
@@ -156,14 +181,36 @@ export function DefaultModelCard() {
             Model
           </Label>
           <div className="flex items-center gap-2">
-            <Input
-              id="dm-model"
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-              placeholder="e.g. gpt-4o, claude-opus-4-7, llama3.1:8b"
-              className="font-mono text-sm"
-              list="dm-discovered-models"
-            />
+            {discoveredModels.length > 0 ? (
+              // v1.25.2: proper dropdown once models are discovered. The
+              // typed value stays selectable as "<name> (custom)" so an
+              // analyst who wants a specific revision or alias not in
+              // the live catalog isn't forced back to free-text.
+              <select
+                id="dm-model"
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1.5 font-mono text-sm"
+              >
+                <option value="">— use built-in default —</option>
+                {discoveredModels.map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+                {model && !discoveredModels.includes(model) && (
+                  <option value={model}>{model} (custom)</option>
+                )}
+              </select>
+            ) : (
+              <Input
+                id="dm-model"
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                placeholder="e.g. gpt-4o, claude-opus-4-7, llama3.1:8b"
+                className="font-mono text-sm"
+              />
+            )}
             {matchingKey && (
               <Button
                 size="sm"
@@ -178,14 +225,9 @@ export function DefaultModelCard() {
                 ) : (
                   <Wifi className="mr-1 h-3.5 w-3.5" />
                 )}
-                Discover
+                {discoveredModels.length > 0 ? "Refresh" : "Discover"}
               </Button>
             )}
-            <datalist id="dm-discovered-models">
-              {discoveredModels.map((m) => (
-                <option key={m} value={m} />
-              ))}
-            </datalist>
           </div>
           {/* discovery status / guidance */}
           {probe?.ok && (
