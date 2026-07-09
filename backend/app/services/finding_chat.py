@@ -614,6 +614,100 @@ def generate_finding_chat_reply(
         raise
 
 
+_SUMMARY_PROMPT = (
+    "Summarize this finding-scoped AI assistant conversation for the engagement "
+    "record. Capture: what was discussed, which actions were proposed and their "
+    "outcome (accepted/denied/run result), any new findings or scope items "
+    "surfaced, and open questions. 3-6 sentences, plain text, no headers. "
+    "Do not invent details not present in the transcript."
+)
+
+
+def summarize_finding_chat(
+    session: Session,
+    redis_client: Any,
+    *,
+    finding: Finding,
+    conversation: Conversation,
+    acting_user_id: uuid.UUID,
+) -> tuple[str, int]:
+    """LLM-summarize a conversation so closing it leaves a reviewable record.
+
+    Writes an audit_log row (``finding.chat_summarized``) carrying the summary
+    so the activity timeline can surface it as a clickable entry. Returns
+    ``(summary, message_count)``. Falls back to a deterministic digest if the
+    BYO key is missing or the LLM call fails so close still works.
+    """
+    from app.models import ActorType, AuditLog
+
+    messages = get_conversation_messages(session, conversation.id)
+    transcript = "\n".join(
+        f"{m.role.upper()}: {m.content[:800]}" for m in messages if m.content.strip()
+    )
+    message_count = len(messages)
+
+    summary = _fallback_summary(messages)
+    try:
+        provider, model_name = default_provider_model()
+        resolved = resolve_for_user(
+            redis_client, user_id=acting_user_id, provider=provider
+        )
+        llm = _make_chat_model(
+            provider,
+            model_name,
+            api_key=resolved.api_key,
+            endpoint=resolved.endpoint,
+        )
+        raw = llm.invoke(
+            [
+                ("system", _SUMMARY_PROMPT),
+                ("user", f"Transcript:\n{transcript[:20000]}"),
+            ]
+        )
+        text = raw.content if isinstance(raw.content, str) else str(raw.content)
+        if text.strip():
+            summary = text.strip()
+    except Exception:  # noqa: BLE001 — close must still succeed without an LLM
+        pass
+
+    session.add(
+        AuditLog(
+            engagement_id=finding.engagement_id,
+            actor_type=ActorType.user,
+            actor_id=str(acting_user_id),
+            event_type="finding.chat_summarized",
+            payload={
+                "finding_id": str(finding.id),
+                "conversation_id": str(conversation.id),
+                "message_count": message_count,
+                "summary": summary,
+            },
+        )
+    )
+    session.commit()
+    return summary, message_count
+
+
+def _fallback_summary(messages: list[ConversationMessage]) -> str:
+    if not messages:
+        return "AI session closed — no messages were exchanged."
+    proposed = accepted = denied = 0
+    for m in messages:
+        payload = m.action_payload if isinstance(m.action_payload, dict) else {}
+        for a in payload.get("actions", []):
+            status = a.get("status") if isinstance(a, dict) else None
+            if status == "accepted":
+                accepted += 1
+            elif status == "denied":
+                denied += 1
+            else:
+                proposed += 1
+    return (
+        f"AI session with {len(messages)} message(s). "
+        f"Actions: {accepted} approved, {denied} denied, {proposed} left proposed."
+    )
+
+
 def accept_chat_action(
     session: Session,
     *,

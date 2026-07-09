@@ -240,6 +240,15 @@ export function clearFindingChat(findingId: string): Promise<void> {
   return request<void>(`/findings/${findingId}/chat`, { method: "DELETE" });
 }
 
+export function summarizeFindingChat(
+  findingId: string,
+): Promise<{ summary: string; message_count: number }> {
+  return request<{ summary: string; message_count: number }>(
+    `/findings/${findingId}/chat/summarize`,
+    { method: "POST" },
+  );
+}
+
 export function askFindingChat(
   findingId: string,
   body: { message: string; conversation_id?: string | null },

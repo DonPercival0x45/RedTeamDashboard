@@ -35,6 +35,7 @@ import {
   useDenyFindingChatActionMutation,
   useAskFindingChatMutation,
   useClearFindingChatMutation,
+  useSummarizeFindingChatMutation,
   useFinding,
   useFindingActivity,
   useFindings,
@@ -1216,6 +1217,7 @@ function ChatRail({
   const { data: chat, isLoading } = useFindingChat(findingId);
   const ask = useAskFindingChatMutation(findingId);
   const clear = useClearFindingChatMutation(findingId);
+  const summarize = useSummarizeFindingChatMutation(findingId);
   const acceptAction = useAcceptFindingChatActionMutation(findingId);
   const denyAction = useDenyFindingChatActionMutation(findingId);
   const { data: findings } = useFindings(slug ?? "");
@@ -1302,12 +1304,12 @@ function ChatRail({
         </div>
         <button
           type="button"
-          onClick={() => clear.mutate()}
-          disabled={clear.isPending || messages.length === 0}
+          onClick={() => summarize.mutate()}
+          disabled={summarize.isPending || clear.isPending || messages.length === 0}
           className="rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-          title="Clear this AI conversation and generated tool queue"
+          title="Summarize this conversation into the activity log, then clear it"
         >
-          {clear.isPending ? "Clearing…" : "Clear AI"}
+          {summarize.isPending ? "Summarizing…" : "Summarize & close"}
         </button>
       </div>
 
@@ -1528,6 +1530,11 @@ function TimelineRow({ entry }: { entry: FindingActivityEntry }) {
     tint: "text-muted-foreground",
   };
   const Icon = meta.icon;
+  const [expanded, setExpanded] = useState(false);
+  const isSummary = entry.kind === "finding.chat_summarized";
+  const detail = entry.detail ?? "";
+  const long = detail.length > 140;
+  const shown = long && !expanded ? `${detail.slice(0, 140)}…` : detail;
   return (
     <li className="relative">
       <span
@@ -1545,8 +1552,21 @@ function TimelineRow({ entry }: { entry: FindingActivityEntry }) {
           {fmtTs(entry.ts)}
         </span>
       </div>
-      {entry.detail && (
-        <p className="mt-0.5 text-xs text-muted-foreground">{entry.detail}</p>
+      {shown && (
+        <p
+          className={cn(
+            "mt-0.5 whitespace-pre-wrap text-xs text-muted-foreground",
+            isSummary && long && "cursor-pointer hover:text-foreground",
+          )}
+          onClick={isSummary && long ? () => setExpanded((v) => !v) : undefined}
+        >
+          {shown}
+          {isSummary && long && (
+            <span className="ml-1 text-[10px] text-primary">
+              {expanded ? "(less)" : "(more)"}
+            </span>
+          )}
+        </p>
       )}
       {entry.actor && (
         <p className="text-[10px] uppercase tracking-wide text-muted-foreground/70">

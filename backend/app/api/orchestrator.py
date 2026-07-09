@@ -76,6 +76,7 @@ from app.schemas.orchestrator import (
     FindingChatResponse,
     FindingChatState,
     FindingRewriteRequest,
+    FindingChatSummaryResponse,
     SuggestionRead,
     TaskRead,
     TriageFindingResponse,
@@ -250,6 +251,46 @@ def finding_chat_state(
         conversation_id=conv.id,
         messages=[FindingChatMessageRead.model_validate(m) for m in messages],
     )
+
+
+@router.post(
+    "/findings/{finding_id}/chat/summarize",
+    response_model=FindingChatSummaryResponse,
+)
+def summarize_finding_chat_endpoint(
+    finding_id: uuid.UUID,
+    session: DbSession,
+    redis_client: RedisClient,
+    user: CurrentNonGuestUser,
+) -> FindingChatSummaryResponse:
+    """LLM-summarize the current finding conversation into a reviewable record.
+
+    Writes an audit row (``finding.chat_summarized``) so the activity timeline
+    surfaces it as a clickable entry. Pairs with the chat rail's
+    'Summarize & close' button. Best-effort LLM call — falls back to a
+    deterministic digest if the BYO key is missing so close always works.
+    """
+    from app.services.ephemeral_provider_key import NoProviderKeyError  # noqa: F401
+    from app.services.finding_chat import (
+        get_latest_conversation,
+        summarize_finding_chat,
+    )
+
+    finding = session.get(Finding, finding_id)
+    if finding is None:
+        raise HTTPException(status_code=404, detail="finding not found")
+    conv = get_latest_conversation(session, finding_id=finding_id, user_id=user.id)
+    if conv is None:
+        raise HTTPException(status_code=400, detail="no conversation to summarize")
+    summary, message_count = summarize_finding_chat(
+        session,
+        redis_client,
+        finding=finding,
+        conversation=conv,
+        acting_user_id=user.id,
+    )
+    session.commit()
+    return FindingChatSummaryResponse(summary=summary, message_count=message_count)
 
 
 @router.delete(

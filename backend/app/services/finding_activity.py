@@ -60,7 +60,9 @@ _AUDIT_LABELS: dict[str, str] = {
     "finding.summary_recorded": "Summary recorded",
     "finding.chat_asked": "AI assistant asked",
     "finding.chat_action.accepted": "AI action approved",
+    "finding.chat_action.denied": "AI action declined",
     "finding.chat_cleared": "AI conversation cleared",
+    "finding.chat_summarized": "AI session summary",
     "finding.deleted": "Deleted",
 }
 
@@ -167,4 +169,7 @@ def _summarize_audit(event_type: str, payload: dict[str, Any]) -> str | None:
             return f"{d} → {s} chars"
     if event_type == "finding.updated" and payload.get("changes"):
         return str(payload["changes"])
+    if event_type == "finding.chat_summarized":
+        # Full summary text — the frontend truncates + expands on click.
+        return str(payload.get("summary") or "")[:1000]
     return None

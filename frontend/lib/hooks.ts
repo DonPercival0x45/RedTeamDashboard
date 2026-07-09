@@ -25,6 +25,7 @@ import {
   cancelTask,
   clearAgentConfiguration,
   clearFindingChat,
+  summarizeFindingChat,
   createIntegration,
   downloadAgentConfigurations,
   importAgentConfigurations,
@@ -222,6 +223,22 @@ export function useClearFindingChatMutation(findingId: string) {
         messages: [],
       });
       qc.invalidateQueries({ queryKey: qk.findingActivity(findingId) });
+    },
+  });
+}
+
+export function useSummarizeFindingChatMutation(findingId: string) {
+  // Summarize the conversation into a reviewable activity entry, then clear.
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => summarizeFindingChat(findingId),
+    onSuccess: async () => {
+      qc.invalidateQueries({ queryKey: qk.findingActivity(findingId) });
+      await clearFindingChat(findingId);
+      qc.setQueryData<FindingChatState>(qk.findingChat(findingId), {
+        conversation_id: null,
+        messages: [],
+      });
     },
   });
 }
