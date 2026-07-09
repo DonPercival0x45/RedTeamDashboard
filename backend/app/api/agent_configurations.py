@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
@@ -168,7 +168,7 @@ def upsert_agent_configuration(
     slug: str,
     session: DbSession,
     user: CurrentNonGuestUser,
-    body: AgentConfigPut = Body(...),
+    body: AgentConfigPut,
 ) -> AgentConfigRead:
     eng = _engagement_by_slug(session, slug)
 
@@ -275,7 +275,7 @@ def export_agent_configurations(
 def import_agent_configurations(
     session: DbSession,
     user: CurrentNonGuestUser,
-    payload: AgentConfigExport = Body(...),
+    payload: AgentConfigExport,
 ) -> AgentConfigImportResult:
     """Apply an uploaded export. Unknown slugs are skipped, not fatal —
     an export from prod applied against a dev tenant may reference

@@ -25,9 +25,9 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from app.api.admin_users import router as admin_users_router
+from app.api.agent_configurations import router as agent_configurations_router
 from app.api.api_keys import router as api_keys_router
 from app.api.approvals import router as approvals_router
-from app.api.agent_configurations import router as agent_configurations_router
 from app.api.authorizations import router as authorizations_router
 from app.api.contributions import router as contributions_router
 from app.api.deps import AsyncRedisClient, DbSession

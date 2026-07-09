@@ -38,9 +38,9 @@ from app.models import (
 )
 from app.orchestrator.llm import default_provider_model
 from app.orchestrator.tools import get_tool
-from app.services.agent_model_resolver import resolve_agent_model
 from app.runs.events import encode_command
 from app.runs.streams import inbound_stream, store_run_model
+from app.services.agent_model_resolver import resolve_agent_model
 
 logger = structlog.get_logger(__name__)
 

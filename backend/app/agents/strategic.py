@@ -43,8 +43,8 @@ from app.models import (
     TaskKind,
 )
 from app.orchestrator.llm import default_provider_model
-from app.services.agent_model_resolver import resolve_agent_model
 from app.orchestrator.tools import all_tools
+from app.services.agent_model_resolver import resolve_agent_model
 
 logger = structlog.get_logger(__name__)
 
@@ -464,20 +464,19 @@ class StrategicAgent:
             )
         provider = self._provider
         model_name = self._model_name
-        if not (provider and model_name):
-            if session is not None:
-                resolved = resolve_agent_model(
-                    session,
-                    user_id=acting_user_id,
-                    engagement_id=engagement_id,
-                    role=role,
-                )
-                if resolved is not None:
-                    p, m = resolved
-                    if m:
-                        model_name = m
-                    if p:
-                        provider = p
+        if not (provider and model_name) and session is not None:
+            resolved = resolve_agent_model(
+                session,
+                user_id=acting_user_id,
+                engagement_id=engagement_id,
+                role=role,
+            )
+            if resolved is not None:
+                p, m = resolved
+                if m:
+                    model_name = m
+                if p:
+                    provider = p
         if not (provider and model_name):
             provider, model_name = default_provider_model()
         if self._redis is None:

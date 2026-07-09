@@ -192,23 +192,22 @@ class CorrelateAgent:
             )
         provider = self._provider
         model_name = self._model_name
-        if not (provider and model_name):
-            # v1.24.0: honor Settings > Configurations pinning for
-            # (user, engagement, correlate). Falls back to user default then
-            # default_provider_model().
-            if session is not None:
-                resolved = resolve_agent_model(
-                    session,
-                    user_id=acting_user_id,
-                    engagement_id=engagement_id,
-                    role=AgentName.correlate,
-                )
-                if resolved is not None:
-                    p, m = resolved
-                    if m:
-                        model_name = m
-                    if p:
-                        provider = p
+        # v1.24.0: honor Settings > Configurations pinning for
+        # (user, engagement, correlate). Falls back to user default then
+        # default_provider_model().
+        if not (provider and model_name) and session is not None:
+            resolved = resolve_agent_model(
+                session,
+                user_id=acting_user_id,
+                engagement_id=engagement_id,
+                role=AgentName.correlate,
+            )
+            if resolved is not None:
+                p, m = resolved
+                if m:
+                    model_name = m
+                if p:
+                    provider = p
         if not (provider and model_name):
             provider, model_name = default_provider_model()
         if self._redis is None:
