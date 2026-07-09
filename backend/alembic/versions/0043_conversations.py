@@ -4,8 +4,11 @@ Phase 2 of the finding pane adds a finding-scoped chatbot rail. Store the
 conversation and message bubbles so reloads retain context and Phase 3 can hang
 consent-gated action payloads off assistant messages.
 
-Revision ID: 0042
-Revises: 0041
+Revision ID: 0043
+Revises: 0042
+
+Renumbered from 0042 to 0043 during v1.23.0 bundle since v1.21.0's
+0042_agent_execution_cancelled sits ahead of it in the chain.
 """
 
 from __future__ import annotations
@@ -15,8 +18,8 @@ from sqlalchemy.dialects import postgresql
 
 from alembic import op
 
-revision = "0042"
-down_revision = "0041"
+revision = "0043"
+down_revision = "0042"
 branch_labels = None
 depends_on = None
 
