@@ -291,6 +291,17 @@ export interface FindingSummaryEntry {
   created_at: string;
 }
 
+// v0.21.0 (finding pane): one row in the finding's activity timeline.
+export interface FindingActivityEntry {
+  ts: string | null;
+  kind: string;
+  label: string;
+  actor: string | null;
+  detail: string | null;
+  ref_type: string | null;
+  ref_id: string | null;
+}
+
 // Payload for POST /engagements/{slug}/findings/import
 export interface FindingImport {
   title: string;
