@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { ArrowLeft, Boxes, Clipboard, Network, Search, ShieldCheck } from "lucide-react";
+import { ArrowLeft, Boxes, Clipboard, Network, RefreshCcw, ShieldCheck } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import {
   listEntities,
@@ -86,15 +86,35 @@ export function EntityWorkbenchPage() {
   const [findings, setFindings] = useState<Finding[] | null>(null);
   const [scope, setScope] = useState<ScopeItem[] | null>(null);
   const [tasks, setTasks] = useState<Task[] | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [fetchError, setFetchError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!slug) return;
-    listEntities(slug).then(setEntities).catch(() => setEntities([]));
-    listStoredEntities(slug).then(setStored).catch(() => setStored([]));
-    listFindings(slug).then(setFindings).catch(() => setFindings([]));
-    listScope(slug).then(setScope).catch(() => setScope([]));
-    listTasks(slug).then(setTasks).catch(() => setTasks([]));
-  }, [slug]);
+    setFetchError(null);
+    let active = true;
+    Promise.allSettled([
+      listEntities(slug),
+      listStoredEntities(slug),
+      listFindings(slug),
+      listScope(slug),
+      listTasks(slug),
+    ]).then(([e, s, f, sc, t]) => {
+      if (!active) return;
+      const errs: string[] = [];
+      setEntities(pick(e, errs, "entities"));
+      setStored(pick(s, errs, "imports"));
+      setFindings(pick(f, errs, "findings"));
+      setScope(pick(sc, errs, "scope"));
+      setTasks(pick(t, errs, "tasks"));
+      setFetchError(errs.length ? `Failed to load: ${errs.join(", ")}` : null);
+    });
+    return () => {
+      active = false;
+    };
+  }, [slug, refreshKey]);
+
+  const refresh = useCallback(() => setRefreshKey((k) => k + 1), []);
 
   const entity = useMemo(
     () => (entities ?? []).find((e) => e.type === type && e.value === value) ?? null,
@@ -130,7 +150,16 @@ export function EntityWorkbenchPage() {
         <Link href={`/e?slug=${encodeURIComponent(slug)}&view=entities`} className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
           <ArrowLeft className="h-3.5 w-3.5" /> back to entities
         </Link>
-        <span className="font-mono text-[10px] text-muted-foreground">{type}:{value}</span>
+        <div className="flex items-center gap-3">
+          <span className="font-mono text-[10px] text-muted-foreground">{type}:{value}</span>
+          <button
+            type="button"
+            onClick={refresh}
+            className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
+          >
+            <RefreshCcw className="h-3 w-3" /> Refresh
+          </button>
+        </div>
       </div>
 
       <header className="rounded-lg border border-border bg-card p-5">
@@ -159,6 +188,11 @@ export function EntityWorkbenchPage() {
         </div>
 
         <div className="p-4">
+          {fetchError && (
+            <p className="mb-3 rounded-md border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-700 dark:text-rose-200">
+              {fetchError}
+            </p>
+          )}
           {loading ? (
             <p className="text-sm text-muted-foreground">Loading entity context…</p>
           ) : tab === "overview" ? (
@@ -182,8 +216,8 @@ function OverviewPanel({ entity, value, scopeMatches, storedMatches, relatedFind
   const scopeState = scopeMatches.some((s) => s.is_exclusion) ? "excluded" : scopeMatches.some((s) => s.source === "found") ? "found scope" : scopeMatches.length ? "declared scope" : "unknown";
   return (
     <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-      <Metric label="Scope / ROE" value={scopeState} tone={scopeState === "unknown" ? "warn" : scopeState === "excluded" ? "bad" : "good"} />
-      <Metric label="Related findings" value={String(relatedFindings.length || entity?.count || 0)} />
+      <Metric label="Scope / ROE" value={scopeState} tone={scopeState === "unknown" ? "warn" : scopeState === "excluded" ? "bad" : "good"} icon={<ShieldCheck className="h-4 w-4" />} />
+      <Metric label="Related findings" value={String(relatedFindings.length || entity?.count || 0)} icon={<Boxes className="h-4 w-4" />} />
       <Metric label="Tool actions/runs" value={String(relatedTasks.length)} />
       <section className="rounded-lg border border-border bg-background p-4 lg:col-span-3">
         <h2 className="text-sm font-medium">Entity summary</h2>
@@ -230,12 +264,22 @@ function ActivityPanel({ entity, findings, tasks, storedMatches }: { entity: Ent
   return <ol className="space-y-3 border-l border-border pl-4">{rows.map((r, i) => <li key={`${r.ts}-${i}`} className="relative"><span className="absolute -left-[1.4rem] flex h-5 w-5 items-center justify-center rounded-full bg-card"><Network className="h-3.5 w-3.5 text-muted-foreground" /></span><p className="text-sm font-medium">{r.label}</p><p className="text-xs text-muted-foreground">{new Date(r.ts).toLocaleString()} · {r.detail}</p></li>)}</ol>;
 }
 
-function Metric({ label, value, tone }: { label: string; value: string; tone?: "good" | "bad" | "warn" }) {
-  return <div className="rounded-lg border border-border bg-background p-4"><p className="text-xs uppercase tracking-wide text-muted-foreground">{label}</p><p className={cn("mt-2 text-lg font-semibold", tone === "good" && "text-emerald-600", tone === "bad" && "text-rose-600", tone === "warn" && "text-amber-600")}>{value}</p></div>;
+function Metric({ label, value, tone, icon }: { label: string; value: string; tone?: "good" | "bad" | "warn"; icon?: ReactNode }) {
+  return <div className="rounded-lg border border-border bg-background p-4"><div className="flex items-center gap-1.5"><span className="text-muted-foreground">{icon}</span><p className="text-xs uppercase tracking-wide text-muted-foreground">{label}</p></div><p className={cn("mt-2 text-lg font-semibold", tone === "good" && "text-emerald-600", tone === "bad" && "text-rose-600", tone === "warn" && "text-amber-600")}>{value}</p></div>;
 }
 
 function ActionHistory({ tasks }: { tasks: Task[] }) {
   return <section className="rounded-lg border border-border bg-card/40 p-4"><h2 className="text-sm font-medium">Tool action history</h2>{tasks.length === 0 ? <p className="mt-2 text-sm text-muted-foreground">No matching task history.</p> : <ul className="mt-3 space-y-2">{tasks.map((t) => <li key={t.id} className="rounded border border-border bg-background p-3 text-xs"><div className="flex justify-between gap-2"><p className="font-medium">{t.title}</p><span className="rounded-full bg-muted px-2 py-0.5 text-[10px] uppercase text-muted-foreground">{t.status}</span></div><p className="mt-1 font-mono text-muted-foreground">{String(t.payload.tool ?? "?")} → {String(t.payload.target ?? "?")}</p><p className="mt-1 text-muted-foreground">run: {t.run_id ?? "not dispatched"}</p></li>)}</ul>}</section>;
+}
+
+function pick<T>(
+  r: PromiseSettledResult<T[]>,
+  errs: string[],
+  label: string,
+): T[] {
+  if (r.status === "fulfilled") return r.value;
+  errs.push(label);
+  return [];
 }
 
 function relatedForEntity(value: string, entity: Entity | null, findings: Finding[]) {
