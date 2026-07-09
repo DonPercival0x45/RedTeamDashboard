@@ -37,6 +37,7 @@ from app.models import (
     ObservationFindingLink,
     OwnerEligibility,
     ScopeItem,
+    ScopeKind,
     Severity,
     Suggestion,
     SuggestionKind,
@@ -80,8 +81,11 @@ denied — the analyst is still working through them. Only propose genuinely NEW
 actions. When an accepted run has produced findings, reference them in your
 answer instead of re-suggesting the run. If an accepted run FAILED (often
 because the target is not in engagement scope), say so and explain what you
-saw — recommend the analyst add the target to scope before retrying, rather
-than re-dispatching the same run.
+saw — propose an add_scope action for that target (the dashboard marks it
+source='found' so it shows as discovered-during-engagement) rather than
+re-dispatching the same run. Action types you may propose: run_tool (enum/scan
+only) and add_scope. Keep proposals minimal and never duplicate an action
+already in the ledger.
 
 Be concise: maximum 5 bullets or 2 short paragraphs. Put detail in proposed
 action descriptions, not the chat narrative."""
@@ -334,7 +338,7 @@ def _conversation_history_prompt(
     return "\n".join(lines)
 
 
-_ALLOWED_ACTION_TYPES = {"run_tool"}
+_ALLOWED_ACTION_TYPES = {"run_tool", "add_scope"}
 _ALLOWED_TASK_KINDS = {"enum", "scan"}
 _ALLOWED_SEVERITIES = {"info", "low", "medium", "high", "critical"}
 _ALLOWED_PHASES = {"osint", "vuln_scan", "exploit", "phishing", "general"}
@@ -372,7 +376,7 @@ def _parse_assistant_payload(
 
     answer = str(parsed.get("answer") or "").strip() or text
     actions = _normalize_actions(parsed.get("actions"))
-    actions = [a for a in actions if a.get("type") == "run_tool"]
+    actions = [a for a in actions if a.get("type") in _ALLOWED_ACTION_TYPES]
     if not actions and allow_defaults:
         actions = _default_agent_actions(finding)
     return answer, {"actions": actions}
@@ -498,6 +502,13 @@ def _normalize_action_params(typ: str, params: dict[str, Any]) -> dict[str, Any]
             "task_kind": task_kind if task_kind in _ALLOWED_TASK_KINDS else "enum",
             "target": str(params.get("target") or "").strip()[:500] or None,
             "args": tool_args,
+        }
+    if typ == "add_scope":
+        kind = str(params.get("kind") or "domain").strip().lower()
+        return {
+            "value": str(params.get("value") or "").strip()[:500],
+            "kind": kind if kind in {"domain", "ip", "cidr", "url"} else "domain",
+            "note": str(params.get("note") or "").strip()[:500] or None,
         }
     return dict(params)
 
@@ -634,6 +645,8 @@ def accept_chat_action(
         result = _accept_tag_incident(finding, params)
     elif typ == "add_finding":
         result = _accept_add_finding(session, finding, params, acting_user_id)
+    elif typ == "add_scope":
+        result = _accept_add_scope(session, finding, params)
     elif typ == "next_step":
         result = _accept_next_step(session, finding, action, acting_user_id)
     elif typ == "run_tool":
@@ -680,6 +693,40 @@ def deny_chat_action(
     flag_modified(message, "action_payload")
     session.add(message)
     return str(action.get("type") or ""), {"denied": True}
+
+def _accept_add_scope(
+    session: Session,
+    finding: Finding,
+    params: dict[str, Any],
+) -> dict[str, Any]:
+    """Mint a scope item the AI surfaced, marked source='found' so the scope
+    editor highlights it as discovered-during-engagement (#94)."""
+    value = str(params.get("value") or "").strip()
+    if not value:
+        raise ValueError("add_scope action missing value")
+    kind = str(params.get("kind") or "domain")
+    try:
+        scope_kind = ScopeKind(kind)
+    except ValueError:
+        scope_kind = ScopeKind.domain
+    item = ScopeItem(
+        engagement_id=finding.engagement_id,
+        kind=scope_kind,
+        value=value,
+        is_exclusion=False,
+        note=str(params.get("note") or "Added during engagement via AI assistant"),
+        source="found",
+    )
+    session.add(item)
+    session.flush()
+    return {
+        "scope_item_id": str(item.id),
+        "kind": scope_kind.value,
+        "value": value,
+        "source": "found",
+    }
+
+
 
 def _accept_tag_incident(finding: Finding, params: dict[str, Any]) -> dict[str, Any]:
     tags = params.get("tags") if isinstance(params.get("tags"), list) else []
