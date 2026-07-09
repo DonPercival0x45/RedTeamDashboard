@@ -567,7 +567,9 @@ function ChatRail({ findingId }: { findingId: string }) {
   const proposedActions = messages.flatMap((m) =>
     (m.action_payload?.actions ?? [])
       .map((action, index) => ({ messageId: m.id, action, index }))
-      .filter(({ action }) => action.status !== "accepted"),
+      .filter(
+        ({ action }) => action.status !== "accepted" && action.type === "run_tool",
+      ),
   );
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
@@ -596,13 +598,13 @@ function ChatRail({ findingId }: { findingId: string }) {
           )}
         </div>
         <p className="mt-2 text-xs text-muted-foreground">
-          AI-generated proposals live here separately from the chat. Nothing
-          changes until you click Approve.
+          Agent-executable enum/scan tool runs live here separately from the
+          chat. Nothing dispatches until you click Approve.
         </p>
         {proposedActions.length === 0 ? (
           <p className="mt-3 rounded-md border border-dashed border-amber-500/30 p-3 text-xs text-muted-foreground">
-            No proposed actions yet. Ask “suggest some actions” to generate
-            approval cards.
+            No executable tool actions yet. Ask “suggest agent actions” to
+            generate approval cards.
           </p>
         ) : (
           <div className="mt-3 max-h-72 space-y-2 overflow-y-auto pr-1">

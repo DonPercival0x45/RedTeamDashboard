@@ -23,6 +23,7 @@ from app.models import (
     FindingPhase,
     FindingStatus,
     Severity,
+    Task,
 )
 from app.services.finding_chat import build_finding_dossier
 
@@ -75,10 +76,15 @@ class _FakeResponse:
       "answer": "Review scope, confirm exposure, and capture evidence before reporting.",
       "actions": [
         {
-          "type": "tag_incident",
-          "title": "Tag as external exposure",
-          "description": "Makes the finding easier to filter during reporting.",
-          "params": {"tags": ["external-exposure", "needs-evidence"]}
+          "type": "run_tool",
+          "title": "Fingerprint admin portal",
+          "description": "Run built-in service detection against the target.",
+          "params": {
+            "tool": "service_detect",
+            "target": "admin.example.test",
+            "task_kind": "enum",
+            "args": {}
+          }
         }
       ]
     }"""
@@ -174,7 +180,7 @@ def test_ask_finding_chat_persists_bubbles_execution_and_audit(
     assert body["assistant_message"]["role"] == "assistant"
     assert "Review scope" in body["assistant_message"]["content"]
     actions = body["assistant_message"]["action_payload"]["actions"]
-    assert actions[0]["type"] == "tag_incident"
+    assert actions[0]["type"] == "run_tool"
     assert actions[0]["status"] == "proposed"
     assert "Finding dossier JSON" in fake.messages[1][1]
     assert "Exposed admin portal" in fake.messages[1][1]
@@ -208,7 +214,7 @@ def test_ask_finding_chat_persists_bubbles_execution_and_audit(
     assert [m["role"] for m in state.json()["messages"]] == ["user", "assistant"]
 
 
-def test_plain_prose_chat_response_gets_safe_next_step_action(
+def test_plain_prose_chat_response_gets_safe_agent_action(
     monkeypatch: pytest.MonkeyPatch,
     client: TestClient,
     finding: Finding,
@@ -225,12 +231,12 @@ def test_plain_prose_chat_response_gets_safe_next_step_action(
     assistant = resp.json()["assistant_message"]
     assert assistant["content"] == "Plain prose recommendation with no JSON."
     actions = assistant["action_payload"]["actions"]
-    assert actions[0]["type"] == "next_step"
+    assert actions[0]["type"] == "run_tool"
     assert actions[0]["status"] == "proposed"
-    assert "Plain prose" in actions[0]["description"]
+    assert actions[0]["params"]["tool"] == "service_detect"
 
 
-def test_accept_finding_chat_tag_action_updates_finding_and_bubble(
+def test_accept_finding_chat_run_tool_action_dispatches_task(
     monkeypatch: pytest.MonkeyPatch,
     client: TestClient,
     db: Session,
@@ -252,19 +258,24 @@ def test_accept_finding_chat_tag_action_updates_finding_and_bubble(
 
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["action_type"] == "tag_incident"
-    assert body["result"]["tags"] == ["external-exposure", "needs-evidence"]
+    assert body["action_type"] == "run_tool"
+    assert body["result"]["tool"] == "service_detect"
+    assert body["result"]["target"] == "admin.example.test"
+    assert body["result"]["dispatched"] is True
+    assert body["result"]["task_id"]
     assert body["message"]["action_payload"]["actions"][0]["status"] == "accepted"
 
-    db.refresh(finding)
-    assert finding.tags == ["external-exposure", "needs-evidence"]
+    task = db.get(Task, uuid.UUID(body["result"]["task_id"]))
+    assert task is not None
+    assert task.status.value == "dispatched"
+    assert task.payload["tool"] == "service_detect"
     audit = db.execute(
         select(AuditLog).where(
             AuditLog.engagement_id == finding.engagement_id,
             AuditLog.event_type == "finding.chat_action.accepted",
         )
     ).scalar_one()
-    assert audit.payload["action_type"] == "tag_incident"
+    assert audit.payload["action_type"] == "run_tool"
 
 
 def test_finding_chat_reuses_latest_conversation(
