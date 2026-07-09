@@ -19,6 +19,7 @@ import {
   approveTool,
   archiveEngagement,
   acceptFindingChatAction,
+  denyFindingChatAction,
   askFindingChat,
   cancelAgentExecution,
   cancelTask,
@@ -239,6 +240,23 @@ export function useAcceptFindingChatActionMutation(findingId: string) {
       }));
       qc.invalidateQueries({ queryKey: qk.finding(findingId) });
       qc.invalidateQueries({ queryKey: qk.findingActivity(findingId) });
+      qc.invalidateQueries({ queryKey: qk.findingChat(findingId) });
+    },
+  });
+}
+
+export function useDenyFindingChatActionMutation(findingId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { messageId: string; actionIndex: number }) =>
+      denyFindingChatAction(findingId, body.messageId, body.actionIndex),
+    onSuccess: (resp: FindingChatActionResponse) => {
+      qc.setQueryData<FindingChatState>(qk.findingChat(findingId), (prev) => ({
+        conversation_id: prev?.conversation_id ?? resp.message.conversation_id,
+        messages: (prev?.messages ?? []).map((m) =>
+          m.id === resp.message.id ? resp.message : m,
+        ),
+      }));
       qc.invalidateQueries({ queryKey: qk.findingChat(findingId) });
     },
   });

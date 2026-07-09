@@ -467,6 +467,67 @@ def accept_finding_chat_action(
 
 
 @router.post(
+    "/findings/{finding_id}/chat/messages/{message_id}/actions/deny",
+    response_model=FindingChatActionResponse,
+)
+def deny_finding_chat_action(
+    finding_id: uuid.UUID,
+    message_id: uuid.UUID,
+    body: FindingChatActionRequest,
+    session: DbSession,
+    user: CurrentNonGuestUser,
+) -> FindingChatActionResponse:
+    """Decline one proposed action bubble. Keeps it in the ledger as denied
+    so the assistant sees the analyst declined it and won't re-propose."""
+    from app.services.finding_chat import deny_chat_action
+
+    finding = session.get(Finding, finding_id)
+    if finding is None:
+        raise HTTPException(status_code=404, detail="finding not found")
+    message = session.get(ConversationMessage, message_id)
+    if message is None:
+        raise HTTPException(status_code=404, detail="message not found")
+    conv = session.get(Conversation, message.conversation_id)
+    if conv is None or conv.finding_id != finding.id:
+        raise HTTPException(status_code=404, detail="message not found for this finding")
+    if conv.created_by_user_id is not None and conv.created_by_user_id != user.id:
+        raise HTTPException(status_code=403, detail="conversation belongs to another user")
+
+    try:
+        action_type, result = deny_chat_action(
+            session, message=message, action_index=body.action_index
+        )
+    except ValueError as exc:
+        session.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    session.add(
+        AuditLog(
+            engagement_id=finding.engagement_id,
+            actor_type=ActorType.user,
+            actor_id=str(user.id),
+            event_type="finding.chat_action.denied",
+            payload={
+                "finding_id": str(finding.id),
+                "conversation_id": str(conv.id),
+                "message_id": str(message.id),
+                "action_index": body.action_index,
+                "action_type": action_type,
+            },
+        )
+    )
+    session.commit()
+    session.refresh(message)
+    return FindingChatActionResponse(
+        message=FindingChatMessageRead.model_validate(message),
+        action_index=body.action_index,
+        action_type=action_type,
+        status="denied",
+        result=result,
+    )
+
+
+@router.post(
     "/findings/{finding_id}/triage",
     response_model=TriageFindingResponse,
 )

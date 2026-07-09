@@ -31,6 +31,7 @@ import {
 } from "@/lib/api";
 import {
   useAcceptFindingChatActionMutation,
+  useDenyFindingChatActionMutation,
   useAskFindingChatMutation,
   useClearFindingChatMutation,
   useFinding,
@@ -1015,7 +1016,9 @@ function openToolActions(messages: FindingChatMessage[]) {
     (m.action_payload?.actions ?? [])
       .map((action, index) => ({ messageId: m.id, action, index }))
       .filter(
-        ({ action }) => action.status !== "accepted" && action.type === "run_tool",
+        ({ action }) =>
+          (action.status ?? "proposed") === "proposed" &&
+          action.type === "run_tool",
       ),
   );
 }
@@ -1023,6 +1026,8 @@ function openToolActions(messages: FindingChatMessage[]) {
 function AgentToolsPanel({ findingId, slug }: { findingId: string; slug: string | null }) {
   const { data: chat } = useFindingChat(findingId);
   const acceptAction = useAcceptFindingChatActionMutation(findingId);
+  const denyAction = useDenyFindingChatActionMutation(findingId);
+  const cancelTask = useCancelTaskMutation(slug);
   const proposedActions = openToolActions(chat?.messages ?? []);
   const [tasks, setTasks] = useState<Task[] | null>(null);
 
@@ -1075,6 +1080,10 @@ function AgentToolsPanel({ findingId, slug }: { findingId: string; slug: string 
                 )
               }
               accepting={acceptAction.isPending}
+              onDeny={() =>
+                denyAction.mutate({ messageId, actionIndex: index })
+              }
+              denying={denyAction.isPending}
             />
           ))}
         </div>
@@ -1267,12 +1276,17 @@ function ActionCard({
   action,
   onAccept,
   accepting,
+  onDeny,
+  denying,
 }: {
   action: FindingChatAction;
   onAccept: () => void;
   accepting: boolean;
+  onDeny: () => void;
+  denying: boolean;
 }) {
   const accepted = action.status === "accepted";
+  const denied = action.status === "denied";
   const isContext = action.type === "context";
   return (
     <div className="rounded-md border border-amber-400/30 bg-amber-400/10 p-2">
@@ -1291,16 +1305,32 @@ function ActionCard({
               Approved: {summarizeResult(action.result)}
             </p>
           )}
+          {denied && (
+            <p className="mt-1 text-[10px] text-muted-foreground">
+              Declined
+            </p>
+          )}
         </div>
-        {!accepted && !isContext && (
-          <button
-            type="button"
-            onClick={onAccept}
-            disabled={accepting}
-            className="shrink-0 rounded border border-amber-500/40 px-2 py-1 text-[11px] font-medium hover:bg-amber-500/10 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            Approve
-          </button>
+        {!accepted && !denied && !isContext && (
+          <div className="flex shrink-0 items-center gap-1">
+            <button
+              type="button"
+              onClick={onAccept}
+              disabled={accepting || denying}
+              className="rounded border border-amber-500/40 px-2 py-1 text-[11px] font-medium hover:bg-amber-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Approve
+            </button>
+            <button
+              type="button"
+              onClick={onDeny}
+              disabled={accepting || denying}
+              className="rounded border border-border px-2 py-1 text-[11px] text-muted-foreground hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50"
+              title="Decline this action so the assistant won't re-suggest it"
+            >
+              Deny
+            </button>
+          </div>
         )}
       </div>
     </div>
