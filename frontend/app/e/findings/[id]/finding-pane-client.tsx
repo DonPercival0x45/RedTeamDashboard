@@ -313,9 +313,11 @@ function ChatBubble({
           {fmtTs(message.created_at)}
         </span>
       </div>
-      <p className="whitespace-pre-wrap leading-relaxed">{message.content}</p>
       {actions.length > 0 && (
-        <div className="mt-3 space-y-2">
+        <div className="mb-3 space-y-2">
+          <p className="text-[10px] uppercase tracking-wide text-amber-600 dark:text-amber-300">
+            Proposed actions ({actions.length})
+          </p>
           {actions.map((action, index) => (
             <ActionCard
               key={`${action.type}-${index}`}
@@ -326,6 +328,7 @@ function ChatBubble({
           ))}
         </div>
       )}
+      <p className="whitespace-pre-wrap leading-relaxed">{message.content}</p>
     </div>
   );
 }
