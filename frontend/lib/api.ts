@@ -259,6 +259,20 @@ export function acceptFindingChatAction(
   );
 }
 
+export function denyFindingChatAction(
+  findingId: string,
+  messageId: string,
+  actionIndex: number,
+): Promise<FindingChatActionResponse> {
+  return request<FindingChatActionResponse>(
+    `/findings/${findingId}/chat/messages/${messageId}/actions/deny`,
+    {
+      method: "POST",
+      body: JSON.stringify({ action_index: actionIndex }),
+    },
+  );
+}
+
 // POST /engagements/{slug}/findings/import/burp — Burp Pro Issue Export XML.
 //
 // Uses FormData directly instead of the JSON `request()` helper because the
