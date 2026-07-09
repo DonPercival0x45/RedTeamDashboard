@@ -1,5 +1,6 @@
 "use client";
 
+import { useState, type FormEvent } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import {
@@ -13,10 +14,16 @@ import {
   Sparkles,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import { useFinding, useFindingActivity } from "@/lib/hooks";
+import {
+  useAskFindingChatMutation,
+  useFinding,
+  useFindingActivity,
+  useFindingChat,
+} from "@/lib/hooks";
 import { cn } from "@/lib/utils";
 import type {
   FindingActivityEntry,
+  FindingChatMessage,
   FindingPhase,
   FindingValidationStatus,
   Severity,
@@ -179,24 +186,109 @@ function FindingPane({ id, slug }: { id: string; slug: string | null }) {
           </div>
         </div>
 
-        {/* right rail: chatbot placeholder (Phase 2) */}
+        {/* right rail: finding-scoped chatbot (Phase 2) */}
         <div>
-          <div className="sticky top-6 rounded-lg border border-dashed border-border bg-card/40 p-4">
-            <h2 className="flex items-center gap-2 text-sm font-medium">
-              <Sparkles className="h-4 w-4 text-amber-500" />
-              AI assistant
-            </h2>
-            <p className="mt-2 text-xs text-muted-foreground">
-              The finding-scoped chatbot lands here — ask it to suggest next
-              steps, run a tool, surface a new finding, or tag the incident.
-              Actions appear as bubbles you approve before they run.
-            </p>
-            <p className="mt-2 text-[10px] uppercase tracking-wide text-muted-foreground/70">
-              Phase 2 — not wired yet
-            </p>
-          </div>
+          <ChatRail findingId={id} />
         </div>
       </div>
+    </div>
+  );
+}
+
+function ChatRail({ findingId }: { findingId: string }) {
+  const [message, setMessage] = useState("");
+  const { data: chat, isLoading } = useFindingChat(findingId);
+  const ask = useAskFindingChatMutation(findingId);
+  const messages = chat?.messages ?? [];
+
+  function onSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const text = message.trim();
+    if (!text || ask.isPending) return;
+    setMessage("");
+    ask.mutate(
+      { message: text, conversation_id: chat?.conversation_id ?? null },
+      {
+        onError: () => setMessage(text),
+      },
+    );
+  }
+
+  return (
+    <div className="sticky top-6 rounded-lg border border-border bg-card/40 p-4">
+      <h2 className="flex items-center gap-2 text-sm font-medium">
+        <Sparkles className="h-4 w-4 text-amber-500" />
+        AI assistant
+      </h2>
+      <p className="mt-2 text-xs text-muted-foreground">
+        Ask for context or next steps. Phase 2 is read-only: the assistant can
+        recommend actions, but nothing runs until future approval bubbles land.
+      </p>
+
+      <div className="mt-4 max-h-[30rem] space-y-3 overflow-y-auto pr-1">
+        {isLoading ? (
+          <p className="text-xs text-muted-foreground">Loading chat…</p>
+        ) : messages.length === 0 ? (
+          <div className="rounded-md border border-dashed border-border p-3 text-xs text-muted-foreground">
+            Try “what should I do next?” or “summarize the evidence and gaps.”
+          </div>
+        ) : (
+          messages.map((m) => <ChatBubble key={m.id} message={m} />)
+        )}
+        {ask.isPending && (
+          <div className="rounded-md bg-muted/60 p-3 text-xs text-muted-foreground">
+            Thinking over the finding dossier…
+          </div>
+        )}
+      </div>
+
+      {ask.error && (
+        <p className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 p-2 text-xs text-destructive">
+          {ask.error instanceof Error ? ask.error.message : "Chat failed"}
+        </p>
+      )}
+
+      <form onSubmit={onSubmit} className="mt-4 space-y-2">
+        <textarea
+          value={message}
+          onChange={(event) => setMessage(event.target.value)}
+          placeholder="Ask about this finding…"
+          className="min-h-24 w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none ring-offset-background placeholder:text-muted-foreground focus:ring-2 focus:ring-ring focus:ring-offset-2"
+          disabled={ask.isPending}
+          maxLength={4000}
+        />
+        <button
+          type="submit"
+          disabled={!message.trim() || ask.isPending}
+          className="w-full rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {ask.isPending ? "Asking…" : "Ask AI"}
+        </button>
+      </form>
+    </div>
+  );
+}
+
+function ChatBubble({ message }: { message: FindingChatMessage }) {
+  const mine = message.role === "user";
+  return (
+    <div
+      className={cn(
+        "rounded-lg border p-3 text-sm",
+        mine
+          ? "ml-6 border-primary/30 bg-primary/10"
+          : "mr-6 border-border bg-background",
+      )}
+    >
+      <div className="mb-1 flex items-center justify-between gap-2">
+        <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+          {mine ? "Analyst" : "Assistant"}
+        </span>
+        <span className="text-[10px] text-muted-foreground">
+          {fmtTs(message.created_at)}
+        </span>
+      </div>
+      <p className="whitespace-pre-wrap leading-relaxed">{message.content}</p>
     </div>
   );
 }

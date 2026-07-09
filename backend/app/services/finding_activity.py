@@ -58,6 +58,7 @@ _AUDIT_LABELS: dict[str, str] = {
     "finding.triaged": "AI Triage ran",
     "finding.summary_rewritten": "Summary rewritten (AI)",
     "finding.summary_recorded": "Summary recorded",
+    "finding.chat_asked": "AI assistant asked",
     "finding.deleted": "Deleted",
 }
 
