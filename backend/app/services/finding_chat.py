@@ -281,11 +281,30 @@ def _parse_assistant_payload(raw: Any) -> tuple[str, dict[str, Any] | None]:
         except json.JSONDecodeError:
             continue
     if not isinstance(parsed, dict):
-        return text, None
+        return text, {"actions": [_fallback_next_step(text)]}
 
     answer = str(parsed.get("answer") or "").strip() or text
     actions = _normalize_actions(parsed.get("actions"))
-    return answer, ({"actions": actions} if actions else None)
+    if not actions:
+        actions = [_fallback_next_step(answer)]
+    return answer, {"actions": actions}
+
+
+def _fallback_next_step(answer: str) -> dict[str, Any]:
+    """Safe action bubble when the model answers in prose instead of JSON.
+
+    Providers sometimes ignore the structured-output instruction. Rather than
+    hiding Phase-3 entirely, surface one consent-gated note action that captures
+    the assistant's recommendation as an open Suggestion if the analyst approves.
+    """
+    excerpt = answer.strip().replace("\n", " ")[:700]
+    return {
+        "type": "next_step",
+        "title": "Capture assistant recommendation",
+        "description": excerpt or "Record this assistant recommendation as a next step.",
+        "params": {"source": "fallback_prose_response"},
+        "status": "proposed",
+    }
 
 
 def _normalize_actions(raw: Any) -> list[dict[str, Any]]:

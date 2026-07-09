@@ -85,6 +85,11 @@ class _FakeResponse:
     response_metadata = {"usage": {"input_tokens": 10, "output_tokens": 6}}
 
 
+class _FakePlainResponse:
+    content = "Plain prose recommendation with no JSON."
+    response_metadata = {"usage": {"input_tokens": 3, "output_tokens": 4}}
+
+
 class _FakeLLM:
     def __init__(self) -> None:
         self.messages: Any = None
@@ -94,10 +99,30 @@ class _FakeLLM:
         return _FakeResponse()
 
 
+class _FakePlainLLM(_FakeLLM):
+    def invoke(self, messages: Any) -> _FakePlainResponse:
+        self.messages = messages
+        return _FakePlainResponse()
+
+
 def _patch_llm(monkeypatch: pytest.MonkeyPatch) -> _FakeLLM:
     import app.services.finding_chat as chat
 
     fake = _FakeLLM()
+    monkeypatch.setattr(chat, "default_provider_model", lambda: ("anthropic", "fake-1"))
+    monkeypatch.setattr(
+        chat,
+        "resolve_for_user",
+        lambda *_args, **_kwargs: SimpleNamespace(api_key="sk-test", endpoint=None),
+    )
+    monkeypatch.setattr(chat, "_make_chat_model", lambda *_args, **_kwargs: fake)
+    return fake
+
+
+def _patch_plain_llm(monkeypatch: pytest.MonkeyPatch) -> _FakePlainLLM:
+    import app.services.finding_chat as chat
+
+    fake = _FakePlainLLM()
     monkeypatch.setattr(chat, "default_provider_model", lambda: ("anthropic", "fake-1"))
     monkeypatch.setattr(
         chat,
@@ -181,6 +206,28 @@ def test_ask_finding_chat_persists_bubbles_execution_and_audit(
     state = client.get(f"/findings/{finding.id}/chat", headers=HDR)
     assert state.status_code == 200
     assert [m["role"] for m in state.json()["messages"]] == ["user", "assistant"]
+
+
+def test_plain_prose_chat_response_gets_safe_next_step_action(
+    monkeypatch: pytest.MonkeyPatch,
+    client: TestClient,
+    finding: Finding,
+) -> None:
+    _patch_plain_llm(monkeypatch)
+
+    resp = client.post(
+        f"/findings/{finding.id}/chat",
+        headers=HDR,
+        json={"message": "What next?"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    assistant = resp.json()["assistant_message"]
+    assert assistant["content"] == "Plain prose recommendation with no JSON."
+    actions = assistant["action_payload"]["actions"]
+    assert actions[0]["type"] == "next_step"
+    assert actions[0]["status"] == "proposed"
+    assert "Plain prose" in actions[0]["description"]
 
 
 def test_accept_finding_chat_tag_action_updates_finding_and_bubble(
