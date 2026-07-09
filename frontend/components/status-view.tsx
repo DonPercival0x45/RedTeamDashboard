@@ -33,6 +33,8 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
+  useCancelAgentExecutionMutation,
+  useCancelTaskMutation,
   useEngagementStatus,
   useRetryAgentExecutionMutation,
   useRetryTaskMutation,
@@ -186,6 +188,8 @@ export function StatusView({
   } = useEngagementStatus(slug);
   const retryTaskMutation = useRetryTaskMutation(slug);
   const retryAgentMutation = useRetryAgentExecutionMutation(slug);
+  const cancelTaskMutation = useCancelTaskMutation(slug);
+  const cancelAgentMutation = useCancelAgentExecutionMutation(slug);
 
   const [localError, setLocalError] = useState<string | null>(null);
   const error = localError ?? (queryError instanceof Error ? queryError.message : queryError ? String(queryError) : null);
@@ -196,6 +200,8 @@ export function StatusView({
   const [colorFilter, setColorFilter] = useState<StatusColor | "all">("all");
   const [expanded, setExpanded] = useState<StatusEntity | null>(null);
   const [retryingId, setRetryingId] = useState<string | null>(null);
+  const [cancellingId, setCancellingId] = useState<string | null>(null);
+  const [bulkCancelling, setBulkCancelling] = useState(false);
   // v1.2.0 — typed search over title / subtitle / synopsis / run_slug,
   // plus a date-range chip over started_at.
   const [search, setSearch] = useState("");
@@ -233,6 +239,27 @@ export function StatusView({
       }
     },
     [retryTaskMutation, retryAgentMutation],
+  );
+
+  const onCancel = useCallback(
+    async (entity: StatusEntity) => {
+      setCancellingId(entity.id);
+      setLocalError(null);
+      try {
+        if (entity.kind === "task") {
+          await cancelTaskMutation.mutateAsync(entity.id);
+        } else if (entity.kind === "agent" && entity.raw_status === "running") {
+          await cancelAgentMutation.mutateAsync(entity.id);
+        } else {
+          return;
+        }
+      } catch (err) {
+        setLocalError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setCancellingId(null);
+      }
+    },
+    [cancelTaskMutation, cancelAgentMutation],
   );
 
   const all: StatusEntity[] = data
@@ -299,6 +326,42 @@ export function StatusView({
     completed: all.filter((e) => e.color === "completed").length,
     failed: all.filter((e) => e.color === "failed").length,
   };
+
+  // Bulk-cancel targets: every in-flight task + every running agent.
+  const activeForBulkCancel = all.filter(
+    (e) =>
+      (e.kind === "task" &&
+        ["pending", "dispatched", "running"].includes(e.raw_status)) ||
+      (e.kind === "agent" && e.raw_status === "running"),
+  );
+
+  const onBulkCancel = useCallback(async () => {
+    if (activeForBulkCancel.length === 0) return;
+    setBulkCancelling(true);
+    setLocalError(null);
+    const failures: string[] = [];
+    await Promise.allSettled(
+      activeForBulkCancel.map((entity) =>
+        entity.kind === "task"
+          ? cancelTaskMutation.mutateAsync(entity.id)
+          : cancelAgentMutation.mutateAsync(entity.id),
+      ),
+    ).then((results) => {
+      results.forEach((r, i) => {
+        if (r.status === "rejected") {
+          failures.push(
+            `${activeForBulkCancel[i].title}: ${
+              r.reason instanceof Error ? r.reason.message : String(r.reason)
+            }`,
+          );
+        }
+      });
+    });
+    if (failures.length) {
+      setLocalError(`Some runs could not be cancelled: ${failures.join("; ")}`);
+    }
+    setBulkCancelling(false);
+  }, [activeForBulkCancel, cancelTaskMutation, cancelAgentMutation]);
 
   return (
     <div className="space-y-6">
@@ -370,6 +433,18 @@ export function StatusView({
         <Button
           size="sm"
           variant="outline"
+          onClick={() => void onBulkCancel()}
+          disabled={bulkCancelling || activeForBulkCancel.length === 0}
+          className="ml-2"
+        >
+          <CircleSlash className="mr-1.5 h-3.5 w-3.5" />
+          {bulkCancelling
+            ? "Cancelling…"
+            : `Cancel all active (${activeForBulkCancel.length})`}
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
           onClick={() => void refetch()}
           className="ml-auto"
         >
@@ -409,7 +484,9 @@ export function StatusView({
               entity={entity}
               onExpand={() => setExpanded(entity)}
               onRetry={() => onRetry(entity)}
+              onCancel={() => onCancel(entity)}
               retrying={retryingId === entity.id}
+              cancelling={cancellingId === entity.id}
             />
           ))}
         </div>
@@ -549,15 +626,23 @@ function StatusBox({
   entity,
   onExpand,
   onRetry,
+  onCancel,
   retrying,
+  cancelling,
 }: {
   entity: StatusEntity;
   onExpand: () => void;
   onRetry: () => void;
+  onCancel: () => void;
   retrying: boolean;
+  cancelling: boolean;
 }) {
   const Icon = COLOR_ICON[entity.color];
   const OutcomeIcon = entity.outcome ? OUTCOME_ICON[entity.outcome] : null;
+  const cancellable =
+    (entity.kind === "task" &&
+      ["pending", "dispatched", "running"].includes(entity.raw_status)) ||
+    (entity.kind === "agent" && entity.raw_status === "running");
   return (
     <div
       className={cn(
@@ -621,6 +706,17 @@ function StatusBox({
         </span>
       </div>
       <div className="flex justify-end gap-2">
+        {cancellable && (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={onCancel}
+            disabled={cancelling}
+          >
+            <CircleSlash className="mr-1.5 h-3.5 w-3.5" />
+            {cancelling ? "Cancelling…" : "Cancel"}
+          </Button>
+        )}
         {entity.retryable && (
           <Button
             size="sm"

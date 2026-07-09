@@ -30,18 +30,22 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import CurrentNonGuestUser, CurrentUser, DbSession, RedisClient
 from app.models import (
+    ActorType,
     AgentExecution,
     AgentExecutionStatus,
     AgentName,
     Approval,
     ApprovalStatus,
+    AuditLog,
     Engagement,
     Finding,
+    MCPLease,
+    MCPLeaseStatus,
     Task,
     TaskStatus,
 )
 from app.runs.events import decode_envelope
-from app.runs.streams import outbound_stream
+from app.runs.streams import inbound_stream, outbound_stream
 from app.schemas.status import (
     EngagementStatusResponse,
     StatusColor,
@@ -98,7 +102,7 @@ def _run_slug(source: str | uuid.UUID) -> str:
 def _agent_outcome(row: AgentExecution) -> StatusOutcome | None:
     if row.status == AgentExecutionStatus.running:
         return None
-    if row.status == AgentExecutionStatus.failed or row.error:
+    if row.status in (AgentExecutionStatus.failed, AgentExecutionStatus.cancelled) or row.error:
         return "errored"
     # completed. Look at the shape of ``output`` per-agent-kind for the
     # empty/partial/success split. Errors mid-run that still produced
@@ -151,6 +155,8 @@ def _approval_outcome(row: Approval) -> StatusOutcome | None:
 def _agent_synopsis(row: AgentExecution, outcome: StatusOutcome | None) -> str:
     """One-line "here's what I tried / what happened / why I failed"."""
     if outcome == "errored":
+        if row.status == AgentExecutionStatus.cancelled:
+            return "Cancelled by user."
         err = (row.error or "unknown error")[:120]
         return f"Failed: {err}"
     output = row.output or {}
@@ -213,7 +219,7 @@ def _agent_color(s: AgentExecutionStatus) -> StatusColor:
         return "active"
     if s == AgentExecutionStatus.completed:
         return "completed"
-    return "failed"  # AgentExecutionStatus only has running/completed/failed
+    return "failed"  # failed or cancelled
 
 
 def _task_color(s: TaskStatus) -> StatusColor:
@@ -1247,6 +1253,173 @@ def retry_agent_execution(
     session.commit()
     session.refresh(execution)
     return _agent_to_entity(execution)
+
+
+def _remove_queued_thread_start(
+    redis_client: Any,
+    engagement_id: uuid.UUID,
+    thread_id: str,
+) -> int:
+    """Best-effort removal of a queued run.start command for a thread.
+
+    If the worker already consumed the stream entry, XDEL returns 0; callers
+    still mark the DB row cancelled so the UI stops presenting it as active.
+    """
+    stream = inbound_stream(engagement_id)
+    removed = 0
+    try:
+        rows = redis_client.xrange(stream, min="-", max="+", count=500)
+    except Exception:
+        return 0
+    for entry_id, fields in rows:
+        if not isinstance(fields, dict):
+            continue
+        try:
+            payload = decode_envelope(fields)
+        except Exception:
+            continue
+        if payload.get("type") == "run.start" and str(payload.get("thread_id")) == thread_id:
+            removed += int(redis_client.xdel(stream, entry_id) or 0)
+    redis_client.delete(f"run:model:{thread_id}")
+    return removed
+
+
+def _remove_queued_run_start(redis_client: Any, task: Task) -> int:
+    """Best-effort removal of a queued run.start command for this task."""
+    if task.run_id is None:
+        return 0
+    return _remove_queued_thread_start(
+        redis_client,
+        task.engagement_id,
+        str(task.run_id),
+    )
+
+
+@router.post(
+    "/agent-executions/{execution_id}/cancel",
+    response_model=StatusEntity,
+)
+def cancel_agent_execution(
+    execution_id: uuid.UUID,
+    session: DbSession,
+    redis_client: RedisClient,
+    user: CurrentNonGuestUser,
+) -> StatusEntity:
+    """Cancel a running AgentExecution row.
+
+    For stream-backed executions with ``input.thread_id`` and an engagement,
+    this also removes a queued run.start command if it has not been consumed
+    yet. For synchronous LLM calls already in flight, cancellation is
+    cooperative/best-effort: the DB row is marked cancelled immediately so the
+    app no longer shows it as active.
+    """
+    row = session.get(AgentExecution, execution_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="agent execution not found")
+    if row.status != AgentExecutionStatus.running:
+        raise HTTPException(
+            status_code=400,
+            detail="only running agent executions can be cancelled",
+        )
+
+    input_payload = row.input or {}
+    thread_id = (
+        input_payload.get("thread_id")
+        if isinstance(input_payload, dict)
+        else None
+    )
+    removed = 0
+    if row.engagement_id is not None and thread_id:
+        removed = _remove_queued_thread_start(
+            redis_client,
+            row.engagement_id,
+            str(thread_id),
+        )
+
+    row.status = AgentExecutionStatus.cancelled
+    row.completed_at = datetime.now(tz=UTC)
+    row.error = "Cancelled by user"
+    session.add(
+        AuditLog(
+            engagement_id=row.engagement_id,
+            actor_type=ActorType.user,
+            actor_id=str(user.id),
+            event_type="agent_execution.cancelled",
+            payload={
+                "execution_id": str(row.id),
+                "agent": row.agent.value,
+                "thread_id": str(thread_id) if thread_id else None,
+                "queued_commands_removed": removed,
+            },
+        )
+    )
+    session.commit()
+    session.refresh(row)
+    return _agent_to_entity(row)
+
+
+def _release_task_leases(session: Session, task: Task) -> int:
+    leases = list(
+        session.execute(
+            select(MCPLease).where(
+                MCPLease.task_id == task.id,
+                MCPLease.status == MCPLeaseStatus.active.value,
+            )
+        ).scalars()
+    )
+    now = datetime.now(tz=UTC)
+    for lease in leases:
+        lease.status = MCPLeaseStatus.released.value
+        lease.released_at = now
+    return len(leases)
+
+
+@router.post(
+    "/tasks/{task_id}/cancel",
+    response_model=StatusEntity,
+)
+def cancel_task(
+    task_id: uuid.UUID,
+    session: DbSession,
+    redis_client: RedisClient,
+    user: CurrentNonGuestUser,
+) -> StatusEntity:
+    """Cancel a pending/dispatched/running task and any queued worker command.
+
+    This is best-effort for work already consumed by the worker, but it always
+    marks the task cancelled, releases active MCP leases, and removes any queued
+    run.start envelope that has not yet been consumed.
+    """
+    row = session.get(Task, task_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="task not found")
+    if row.status not in (TaskStatus.pending, TaskStatus.dispatched, TaskStatus.running):
+        raise HTTPException(
+            status_code=400,
+            detail="only pending, dispatched, or running tasks can be cancelled",
+        )
+
+    removed = _remove_queued_run_start(redis_client, row)
+    released = _release_task_leases(session, row)
+    row.status = TaskStatus.cancelled
+    row.completed_at = datetime.now(tz=UTC)
+    session.add(
+        AuditLog(
+            engagement_id=row.engagement_id,
+            actor_type=ActorType.user,
+            actor_id=str(user.id),
+            event_type="task.cancelled",
+            payload={
+                "task_id": str(row.id),
+                "run_id": str(row.run_id) if row.run_id else None,
+                "queued_commands_removed": removed,
+                "leases_released": released,
+            },
+        )
+    )
+    session.commit()
+    session.refresh(row)
+    return _task_to_entity(row)
 
 
 @router.post(

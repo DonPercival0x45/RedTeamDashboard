@@ -31,6 +31,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
+  useCancelAgentExecutionMutation,
   useGlobalAgentRunSteps,
   useGlobalAgentRuns,
 } from "@/lib/hooks";
@@ -105,8 +106,11 @@ function fmtDate(value: string | null): string {
 export default function AgentRunsPage() {
   const params = useSearchParams();
   const { data, error, refetch } = useGlobalAgentRuns();
+  const cancelAgentRun = useCancelAgentExecutionMutation();
   const [search, setSearch] = useState("");
   const [expanded, setExpanded] = useState<StatusEntity | null>(null);
+  const [cancellingId, setCancellingId] = useState<string | null>(null);
+  const [localError, setLocalError] = useState<string | null>(null);
 
   const agents = data?.agents ?? [];
 
@@ -130,7 +134,22 @@ export default function AgentRunsPage() {
     return hay.includes(term);
   });
 
-  const errMsg = error instanceof Error ? error.message : error ? String(error) : null;
+  const onCancel = useCallback(
+    async (entity: StatusEntity) => {
+      setCancellingId(entity.id);
+      setLocalError(null);
+      try {
+        await cancelAgentRun.mutateAsync(entity.id);
+      } catch (err) {
+        setLocalError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setCancellingId(null);
+      }
+    },
+    [cancelAgentRun],
+  );
+
+  const errMsg = localError ?? (error instanceof Error ? error.message : error ? String(error) : null);
 
   return (
     <div className="mx-auto max-w-5xl space-y-6 px-4 py-6">
@@ -187,6 +206,8 @@ export default function AgentRunsPage() {
               key={entity.id}
               entity={entity}
               onExpand={() => setExpanded(entity)}
+              onCancel={() => onCancel(entity)}
+              cancelling={cancellingId === entity.id}
             />
           ))}
         </div>
@@ -205,12 +226,17 @@ export default function AgentRunsPage() {
 function StatusBox({
   entity,
   onExpand,
+  onCancel,
+  cancelling,
 }: {
   entity: StatusEntity;
   onExpand: () => void;
+  onCancel: () => void;
+  cancelling: boolean;
 }) {
   const Icon = COLOR_ICON[entity.color];
   const OutcomeIcon = entity.outcome ? OUTCOME_ICON[entity.outcome] : null;
+  const cancellable = entity.raw_status === "running";
   return (
     <div
       className={cn(
@@ -266,7 +292,18 @@ function StatusBox({
           )}
         </span>
       </div>
-      <div className="flex justify-end">
+      <div className="flex justify-end gap-2">
+        {cancellable && (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={onCancel}
+            disabled={cancelling}
+          >
+            <CircleSlash className="mr-1.5 h-3.5 w-3.5" />
+            {cancelling ? "Cancelling…" : "Cancel"}
+          </Button>
+        )}
         <Button size="sm" variant="ghost" onClick={onExpand}>
           Expand
         </Button>
