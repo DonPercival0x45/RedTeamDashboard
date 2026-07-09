@@ -1,6 +1,6 @@
 """agent execution cancelled status
 
-Revision ID: 0042_agent_execution_cancelled
+Revision ID: 0042
 Revises: 0041
 Create Date: 2026-07-09
 """
@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "0042_agent_execution_cancelled"
+revision = "0042"
 down_revision = "0041"
 branch_labels = None
 depends_on = None
