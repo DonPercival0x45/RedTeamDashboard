@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { useQueryClient } from "@tanstack/react-query";
 import { Check, Search, Upload, X, Zap } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -307,6 +308,7 @@ export function EntitiesView({
       {selected && (
         <EntitySlideOver
           entity={selected}
+          slug={slug}
           onClose={() => setSelected(null)}
           onQuickAction={onQuickAction}
           doneTools={toolsByValue.get(selected.value) ?? new Set<string>()}
@@ -529,11 +531,13 @@ function ImportedEntitiesSection({ slug }: { slug: string }) {
 
 function EntitySlideOver({
   entity,
+  slug,
   onClose,
   onQuickAction,
   doneTools,
 }: {
   entity: Entity;
+  slug: string;
   onClose: () => void;
   onQuickAction?: (prompt: string) => void;
   doneTools: Set<string>;
@@ -574,6 +578,14 @@ function EntitySlideOver({
           <span className="text-xs text-muted-foreground">
             seen in {entity.count} finding{entity.count === 1 ? "" : "s"}
           </span>
+        </div>
+        <div className="mt-2 flex justify-end">
+          <Link
+            href={`/e/entities?slug=${encodeURIComponent(slug)}&type=${encodeURIComponent(entity.type)}&value=${encodeURIComponent(entity.value)}`}
+            className="text-[11px] text-muted-foreground hover:text-foreground"
+          >
+            Open full entity view →
+          </Link>
         </div>
 
         {onQuickAction && chain.length > 0 && (
