@@ -337,3 +337,91 @@
     background: hsl(var(--critical) / 0.3);
   }
 }
+
+/* v1.25.0 accessibility — reduced motion. When the analyst opts in
+   (Settings > Accessibility), suppress non-essential motion so
+   dashboards + panels feel calmer. We use 0.01ms rather than 0ms so
+   downstream transition-end listeners still fire. */
+:root[data-reduced-motion="true"] *,
+:root[data-reduced-motion="true"] *::before,
+:root[data-reduced-motion="true"] *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
+}
+
+/* v1.25.0 accessibility — colorblind-safe severity palette (Okabe-Ito).
+   Overrides the default rose/pink/yellow/emerald/sky mix on severity
+   badges when the analyst opts in. Deuteranopia + protanopia share a
+   palette (red/green ambiguous); tritanopia gets a distinct one
+   (blue/yellow ambiguous). Selectors match by Tailwind color-class
+   substrings so we don't have to touch every badge site — the existing
+   `text-rose-*` / `bg-pink-*` / `text-yellow-*` / `bg-emerald-*` /
+   `text-sky-*` classes tell us which severity is being rendered.
+   ``!important`` is required because Tailwind utilities have the same
+   or higher specificity. */
+
+/* --- deuteranopia + protanopia (Okabe-Ito) ---------------------- */
+/* critical (was rose) → vermillion */
+:root[data-cb-severity="deuteranopia"] [class*="rose-500"],
+:root[data-cb-severity="protanopia"] [class*="rose-500"] {
+  border-color: hsl(15 85% 45% / 0.6) !important;
+  background-color: hsl(15 85% 45% / 0.15) !important;
+  color: hsl(15 85% 30%) !important;
+}
+/* high (was pink) → reddish-purple */
+:root[data-cb-severity="deuteranopia"] [class*="pink-400"],
+:root[data-cb-severity="protanopia"] [class*="pink-400"] {
+  border-color: hsl(320 40% 55% / 0.6) !important;
+  background-color: hsl(320 40% 55% / 0.15) !important;
+  color: hsl(320 40% 35%) !important;
+}
+/* medium (was yellow) → orange */
+:root[data-cb-severity="deuteranopia"] [class*="yellow-400"],
+:root[data-cb-severity="protanopia"] [class*="yellow-400"] {
+  border-color: hsl(35 90% 50% / 0.6) !important;
+  background-color: hsl(35 90% 50% / 0.15) !important;
+  color: hsl(35 90% 30%) !important;
+}
+/* low (was emerald) → bluish-green */
+:root[data-cb-severity="deuteranopia"] [class*="emerald-500"],
+:root[data-cb-severity="protanopia"] [class*="emerald-500"] {
+  border-color: hsl(160 75% 35% / 0.6) !important;
+  background-color: hsl(160 75% 35% / 0.15) !important;
+  color: hsl(160 75% 22%) !important;
+}
+/* info (was sky) → deeper sky */
+:root[data-cb-severity="deuteranopia"] [class*="sky-500"],
+:root[data-cb-severity="protanopia"] [class*="sky-500"] {
+  border-color: hsl(200 80% 45% / 0.6) !important;
+  background-color: hsl(200 80% 45% / 0.15) !important;
+  color: hsl(200 80% 30%) !important;
+}
+
+/* --- tritanopia (yellow/blue ambiguous) — red/purple/teal --------- */
+:root[data-cb-severity="tritanopia"] [class*="rose-500"] {
+  border-color: hsl(0 85% 45% / 0.6) !important;
+  background-color: hsl(0 85% 45% / 0.15) !important;
+  color: hsl(0 85% 30%) !important;
+}
+:root[data-cb-severity="tritanopia"] [class*="pink-400"] {
+  border-color: hsl(280 55% 50% / 0.6) !important;
+  background-color: hsl(280 55% 50% / 0.15) !important;
+  color: hsl(280 55% 32%) !important;
+}
+:root[data-cb-severity="tritanopia"] [class*="yellow-400"] {
+  border-color: hsl(180 55% 40% / 0.6) !important;
+  background-color: hsl(180 55% 40% / 0.15) !important;
+  color: hsl(180 55% 25%) !important;
+}
+:root[data-cb-severity="tritanopia"] [class*="emerald-500"] {
+  border-color: hsl(120 55% 35% / 0.6) !important;
+  background-color: hsl(120 55% 35% / 0.15) !important;
+  color: hsl(120 55% 22%) !important;
+}
+:root[data-cb-severity="tritanopia"] [class*="sky-500"] {
+  border-color: hsl(220 15% 55% / 0.6) !important;
+  background-color: hsl(220 15% 55% / 0.15) !important;
+  color: hsl(220 15% 35%) !important;
+}

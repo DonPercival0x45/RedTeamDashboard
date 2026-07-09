@@ -1,111 +1,62 @@
 "use client";
 
-import Link from "next/link";
-import { type ReactNode } from "react";
-import {
-  AlertCircle,
-  Globe,
-  HelpCircle,
-  Key,
-  MessageSquare,
-  Palette,
-  SlidersHorizontal,
-  UserCog,
-  Wrench,
-} from "lucide-react";
+// v1.25.0: header-right identity strip trimmed to
+//   [name]  [version pill]  [gear]  [Sign out]
+// Every /settings/* entry lives inside the gear-opened modal;
+// "What's new" is behind the version pill. The routed pages still
+// work as deep-links for bookmarks.
+import { Settings } from "lucide-react";
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
+import { SettingsModal } from "@/components/settings/settings-modal";
+import { WhatsNewModal } from "@/components/settings/whats-new-modal";
 import { useAuth } from "@/lib/auth";
-import { useMe } from "@/lib/hooks";
+import { useReleases } from "@/lib/hooks";
+import { currentVersion } from "@/lib/release-notes";
 
-// Hover tooltip for the icon-only menu entries. Pure CSS via group-hover
-// so it works without JS state; appears below the icon with a small
-// pointer arrow. focus-within also reveals it so keyboard nav surfaces
-// the label.
-function IconLink({
-  href,
-  label,
-  children,
-}: {
-  href: string;
-  label: string;
-  children: ReactNode;
-}) {
-  return (
-    <div className="group relative">
-      <Link
-        href={href}
-        aria-label={label}
-        className="inline-flex items-center text-muted-foreground transition-colors hover:text-foreground"
-      >
-        {children}
-      </Link>
-      <span
-        role="tooltip"
-        className="pointer-events-none invisible absolute left-1/2 top-full z-50 mt-2 -translate-x-1/2 whitespace-nowrap rounded-md border border-border bg-popover px-2 py-1 text-xs text-foreground opacity-0 shadow-md transition-opacity duration-100 group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100"
-      >
-        {label}
-      </span>
-    </div>
-  );
-}
-
-// Header-right identity slot. Settings entries are icon-only with a
-// styled hover-tooltip that names each one — keeps the chrome tight
-// without forcing the analyst to learn the icons cold.
 export function IdentityMenu() {
   const { enabled, identity, signOut } = useAuth();
-  // v1.0.0: shared useMe cache. Every other settings page hits this too;
-  // once loaded, the /me round-trip happens at most once per stale window
-  // (5 min).
-  const { data: me } = useMe();
-  const isAdmin = Boolean(me?.is_admin);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [whatsNewOpen, setWhatsNewOpen] = useState(false);
+  const { data: releases } = useReleases();
+
+  // Best-effort version label. Falls back to a compact placeholder if
+  // /releases.json hasn't returned yet so the pill still occupies its
+  // slot instead of shifting layout on load.
+  const versionLabel = releases ? currentVersion(releases) ?? "v?" : "v…";
 
   if (!identity) return null;
   return (
-    <div className="flex items-center gap-3 text-sm">
+    <div className="flex items-center gap-2.5 text-sm">
       <span className="text-muted-foreground">
         {identity.name}
         {!enabled && (
           <span className="ml-1 text-xs text-muted-foreground/60">(dev)</span>
         )}
       </span>
-      <IconLink href="/settings/keys" label="Provider keys">
-        <Key className="h-4 w-4" />
-      </IconLink>
-      <IconLink
-        href="/settings/configurations"
-        label="Configurations (agent models per engagement)"
+      <button
+        type="button"
+        onClick={() => setWhatsNewOpen(true)}
+        aria-label={`Current version ${versionLabel}. Click to see what's new.`}
+        className="rounded border border-border px-2 py-0.5 text-xs font-mono text-muted-foreground transition-colors hover:border-foreground/40 hover:text-foreground"
       >
-        <SlidersHorizontal className="h-4 w-4" />
-      </IconLink>
-      <IconLink href="/settings/appearance" label="Appearance (theme)">
-        <Palette className="h-4 w-4" />
-      </IconLink>
-      <IconLink href="/settings/feedback" label="Feedback">
-        <MessageSquare className="h-4 w-4" />
-      </IconLink>
-      <IconLink href="/settings/whats-new" label="What's new">
-        <AlertCircle className="h-4 w-4" />
-        <HelpCircle className="-ml-1.5 h-4 w-4" />
-      </IconLink>
-      {isAdmin && (
-        <>
-          <IconLink href="/settings/integrations" label="Integrations (admin)">
-            <Globe className="h-4 w-4" />
-          </IconLink>
-          <IconLink href="/settings/tools" label="Tools (admin)">
-            <Wrench className="h-4 w-4" />
-          </IconLink>
-          <IconLink href="/settings/management" label="Management (admin)">
-            <UserCog className="h-4 w-4" />
-          </IconLink>
-        </>
-      )}
+        {versionLabel}
+      </button>
+      <button
+        type="button"
+        onClick={() => setSettingsOpen(true)}
+        aria-label="Open settings"
+        className="rounded border border-border p-1.5 text-muted-foreground transition-colors hover:border-foreground/40 hover:text-foreground"
+      >
+        <Settings className="h-4 w-4" />
+      </button>
       {enabled && (
         <Button variant="outline" size="sm" onClick={signOut}>
           Sign out
         </Button>
       )}
+      <SettingsModal open={settingsOpen} onOpenChange={setSettingsOpen} />
+      <WhatsNewModal open={whatsNewOpen} onOpenChange={setWhatsNewOpen} />
     </div>
   );
 }
