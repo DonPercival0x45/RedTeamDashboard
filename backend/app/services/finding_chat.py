@@ -8,6 +8,7 @@ that route approvals through existing suggestion/task/finding APIs.
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -16,6 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
+from app.agents import TacticalAgent, TacticalRefusedExploit
 from app.agents.strategic import _extract_usage, _make_chat_model
 from app.core import pricing
 from app.models import (
@@ -33,15 +35,18 @@ from app.models import (
     FindingSummary,
     Observation,
     ObservationFindingLink,
+    OwnerEligibility,
     ScopeItem,
     Severity,
     Suggestion,
     SuggestionKind,
     SuggestionStatus,
-    Tool,
-    ToolStatus,
+    Task,
+    TaskKind,
+    TaskStatus,
 )
 from app.orchestrator.llm import default_provider_model
+from app.orchestrator.tools import all_tools, get_tool
 from app.services.ephemeral_provider_key import resolve_for_user
 from app.services.finding_activity import build_finding_activity
 
@@ -55,7 +60,7 @@ Return a JSON object only, with this shape:
   "answer": "the narrative response to show the analyst",
   "actions": [
     {
-      "type": "next_step|tag_incident|add_finding|run_tool|context",
+      "type": "run_tool",
       "title": "short button/card title",
       "description": "why this action is useful",
       "params": {}
@@ -63,9 +68,10 @@ Return a JSON object only, with this shape:
   ]
 }
 
-Actions are proposals only. Do not claim they have run. For run_tool, propose
-only enum/scan style actions, never exploit. If no useful action exists, return
-an empty actions array."""
+Actions are proposals only. Do not claim they have run. Actions must be
+agent-executable tool runs using one of the built-in tools from the dossier's
+agent_tools list. Never propose exploit actions. If no useful tool action exists,
+return an empty actions array and the dashboard will create safe defaults."""
 
 
 def get_latest_conversation(
@@ -244,6 +250,17 @@ def build_finding_dossier(session: Session, finding: Finding) -> dict[str, Any]:
             }
             for a in attachments
         ],
+        "agent_tools": [
+            {
+                "name": t.name,
+                "risk": t.risk.value,
+                "target_arg": t.target_arg,
+                "kind": t.kind.value,
+                "description": t.description,
+                "extra_properties": dict(t.extra_properties),
+            }
+            for t in all_tools()
+        ],
     }
 
 
@@ -254,17 +271,18 @@ def _conversation_history_prompt(messages: list[ConversationMessage]) -> str:
     )
 
 
-_ALLOWED_ACTION_TYPES = {"next_step", "tag_incident", "add_finding", "run_tool", "context"}
+_ALLOWED_ACTION_TYPES = {"run_tool"}
 _ALLOWED_TASK_KINDS = {"enum", "scan"}
 _ALLOWED_SEVERITIES = {"info", "low", "medium", "high", "critical"}
 _ALLOWED_PHASES = {"osint", "vuln_scan", "exploit", "phishing", "general"}
 
 
-def _parse_assistant_payload(raw: Any) -> tuple[str, dict[str, Any] | None]:
-    """Extract narrative text + inert action proposals from the LLM response.
+def _parse_assistant_payload(raw: Any, finding: Finding) -> tuple[str, dict[str, Any]]:
+    """Extract narrative text + executable agent action proposals.
 
     The prompt asks for JSON, but providers occasionally wrap it in prose or
-    fences. Treat parse failure as a safe narrative-only response.
+    fences. Parse failure falls back to deterministic built-in tool actions
+    derived from the finding target/summary.
     """
     text = (raw if isinstance(raw, str) else str(raw)).strip()
     parsed: Any | None = None
@@ -281,30 +299,81 @@ def _parse_assistant_payload(raw: Any) -> tuple[str, dict[str, Any] | None]:
         except json.JSONDecodeError:
             continue
     if not isinstance(parsed, dict):
-        return text, {"actions": [_fallback_next_step(text)]}
+        return text, {"actions": _default_agent_actions(finding)}
 
     answer = str(parsed.get("answer") or "").strip() or text
     actions = _normalize_actions(parsed.get("actions"))
+    actions = [a for a in actions if a.get("type") == "run_tool"]
     if not actions:
-        actions = [_fallback_next_step(answer)]
+        actions = _default_agent_actions(finding)
     return answer, {"actions": actions}
 
 
-def _fallback_next_step(answer: str) -> dict[str, Any]:
-    """Safe action bubble when the model answers in prose instead of JSON.
+def _default_agent_actions(finding: Finding) -> list[dict[str, Any]]:
+    """Deterministic executable tool actions for thin/prose LLM responses."""
+    text = " ".join(
+        str(part or "")
+        for part in [finding.title, finding.target, finding.summary, finding.details]
+    )
+    ips = list(dict.fromkeys(re.findall(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", text)))
+    host_candidates = re.findall(
+        r"\b(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}\b",
+        text,
+    )
+    hosts = [h for h in dict.fromkeys(host_candidates) if not re.match(r"^\d+\.", h)]
+    targets = ips or hosts[:3]
+    if not targets and finding.target:
+        targets = [finding.target]
 
-    Providers sometimes ignore the structured-output instruction. Rather than
-    hiding Phase-3 entirely, surface one consent-gated note action that captures
-    the assistant's recommendation as an open Suggestion if the analyst approves.
-    """
-    excerpt = answer.strip().replace("\n", " ")[:700]
-    return {
-        "type": "next_step",
-        "title": "Capture assistant recommendation",
-        "description": excerpt or "Record this assistant recommendation as a next step.",
-        "params": {"source": "fallback_prose_response"},
-        "status": "proposed",
-    }
+    ports = _extract_ports(text)
+    actions: list[dict[str, Any]] = []
+    for target in targets[:3]:
+        params: dict[str, Any] = {
+            "tool": "service_detect",
+            "task_kind": "enum",
+            "target": target,
+            "args": ({"ports": ports} if ports else {}),
+        }
+        actions.append(
+            {
+                "type": "run_tool",
+                "title": f"Fingerprint services on {target}",
+                "description": (
+                    "Dispatch the built-in service_detect agent tool to grab "
+                    "banners/TLS/HTTP fingerprints for this target. Active "
+                    "tools still stop at the approval gate before execution."
+                ),
+                "params": params,
+                "status": "proposed",
+            }
+        )
+    if actions:
+        return actions
+    return [
+        {
+            "type": "run_tool",
+            "title": "Probe HTTP surface",
+            "description": (
+                "Dispatch the built-in httpx_probe agent tool against the "
+                "finding target."
+            ),
+            "params": {
+                "tool": "httpx_probe",
+                "task_kind": "enum",
+                "target": finding.target or "",
+                "args": {},
+            },
+            "status": "proposed",
+        }
+    ]
+
+
+def _extract_ports(text: str) -> str | None:
+    common = {"22", "25", "80", "443", "993", "2082", "2083", "2086", "2087", "2095", "2096"}
+    found = set(re.findall(r"(?<!\d)(\d{2,5})(?!\d)", text)) & common
+    if not found:
+        return None
+    return ",".join(sorted(found, key=lambda p: int(p)))
 
 
 def _normalize_actions(raw: Any) -> list[dict[str, Any]]:
@@ -319,6 +388,11 @@ def _normalize_actions(raw: Any) -> list[dict[str, Any]]:
             continue
         params = item.get("params") if isinstance(item.get("params"), dict) else {}
         params = _normalize_action_params(typ, params)
+        if typ == "run_tool":
+            tool_name = str(params.get("tool") or "")
+            target = str(params.get("target") or "")
+            if not tool_name or not target or get_tool(tool_name) is None:
+                continue
         title = str(item.get("title") or typ.replace("_", " ").title()).strip()[:120]
         description = str(item.get("description") or "").strip()[:1000]
         out.append(
@@ -419,7 +493,7 @@ def generate_finding_chat_reply(
 
     try:
         response = llm.invoke([("system", _SYSTEM_PROMPT), ("user", prompt)])
-        content, action_payload = _parse_assistant_payload(response.content)
+        content, action_payload = _parse_assistant_payload(response.content, finding)
         tokens_in, tokens_out = _extract_usage(response)
         execution.status = AgentExecutionStatus.completed
         execution.completed_at = datetime.now(tz=UTC)
@@ -457,12 +531,13 @@ def accept_chat_action(
     message: ConversationMessage,
     action_index: int,
     acting_user_id: uuid.UUID,
+    redis_client: Any | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Apply one consent-gated action bubble.
 
     The LLM only writes inert JSON. This function is the narrow allow-list that
-    turns an approved bubble into a dashboard mutation. Destructive/exploit
-    dispatch remains out of scope.
+    turns an approved bubble into a dashboard mutation or an agent task
+    dispatch. Destructive/exploit dispatch remains out of scope.
     """
     payload = message.action_payload if isinstance(message.action_payload, dict) else {}
     actions = payload.get("actions") if isinstance(payload.get("actions"), list) else []
@@ -483,7 +558,11 @@ def accept_chat_action(
     elif typ == "next_step":
         result = _accept_next_step(session, finding, action, acting_user_id)
     elif typ == "run_tool":
-        result = _accept_run_tool(session, finding, action, acting_user_id)
+        if redis_client is None:
+            raise ValueError("run_tool action requires redis dispatch context")
+        result = _accept_run_tool(
+            session, finding, action, acting_user_id, redis_client
+        )
     elif typ == "context":
         result = {"noop": True, "message": "Context acknowledged."}
     else:
@@ -571,45 +650,68 @@ def _accept_run_tool(
     finding: Finding,
     action: dict[str, Any],
     acting_user_id: uuid.UUID,
+    redis_client: Any,
 ) -> dict[str, Any]:
     params = action.get("params") if isinstance(action.get("params"), dict) else {}
     tool_name = str(params.get("tool") or "").strip()
     if not tool_name:
         raise ValueError("run_tool action missing tool")
-    tool = session.execute(
-        select(Tool)
-        .where(Tool.name == tool_name, Tool.status == ToolStatus.approved)
-        .order_by(Tool.version.desc())
-        .limit(1)
-    ).scalar_one_or_none()
-    if tool is None:
-        raise ValueError(f"approved tool not found: {tool_name}")
+    spec = get_tool(tool_name)
+    if spec is None:
+        raise ValueError(f"unknown built-in agent tool: {tool_name}")
     task_kind = str(params.get("task_kind") or "enum")
     if task_kind not in _ALLOWED_TASK_KINDS:
         raise ValueError("run_tool action must be enum or scan")
-    suggestion = Suggestion(
+    target = str(params.get("target") or finding.target or "").strip()
+    if not target:
+        raise ValueError("run_tool action missing target")
+    args = params.get("args") if isinstance(params.get("args"), dict) else {}
+    payload = {
+        "source": "finding_chat_action",
+        "approved_by": str(acting_user_id),
+        "tool": tool_name,
+        "target": target,
+        "args": args,
+        "task_kind": task_kind,
+        "owner_eligibility": "agent",
+    }
+    # Tactical's deterministic dispatcher reads payload['tool'] and
+    # payload['target']; keep extra args for trace/future prompt expansion.
+    task = Task(
         engagement_id=finding.engagement_id,
         finding_id=finding.id,
-        title=str(action.get("title") or f"Run {tool_name}")[:300],
-        body=str(action.get("description") or "") or None,
-        kind=SuggestionKind.task,
-        payload={
-            "source": "finding_chat_action",
-            "approved_by": str(acting_user_id),
-            "tool": tool_name,
-            "tool_version": tool.version,
-            "target": params.get("target") or finding.target,
-            "args": params.get("args") if isinstance(params.get("args"), dict) else {},
-            "task_kind": task_kind,
-            "owner_eligibility": "agent",
-        },
-        status=SuggestionStatus.open,
-        created_by_agent=AgentName.strategic,
+        title=str(action.get("title") or f"Run {tool_name} on {target}")[:300],
+        kind=TaskKind(task_kind),
+        owner_eligibility=OwnerEligibility.agent,
+        status=TaskStatus.pending,
+        payload=payload,
     )
-    session.add(suggestion)
+    session.add(task)
     session.flush()
+    dispatched = False
+    run_id: str | None = None
+    try:
+        thread_id = TacticalAgent(redis_client).dispatch(
+            session,
+            task=task,
+            trigger=AgentTrigger.manual,
+            acting_user_id=acting_user_id,
+        )
+        dispatched = True
+        run_id = str(thread_id)
+    except TacticalRefusedExploit:
+        dispatched = False
     return {
-        "suggestion_id": str(suggestion.id),
-        "kind": suggestion.kind.value,
-        "note": "Created an open suggestion; accept it to dispatch through the existing gate.",
+        "task_id": str(task.id),
+        "tool": tool_name,
+        "target": target,
+        "risk": spec.risk.value,
+        "dispatched": dispatched,
+        "run_id": run_id,
+        "note": (
+            "Dispatched to the existing agent run path. Active tools still "
+            "pause at the approval gate before execution."
+            if dispatched
+            else "Task created but not dispatched."
+        ),
     }

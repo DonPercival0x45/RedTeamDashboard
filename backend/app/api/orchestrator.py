@@ -358,13 +358,14 @@ def accept_finding_chat_action(
     message_id: uuid.UUID,
     body: FindingChatActionRequest,
     session: DbSession,
+    redis_client: RedisClient,
     user: CurrentNonGuestUser,
 ) -> FindingChatActionResponse:
     """Approve one inert assistant action bubble.
 
     This is the Phase-3 consent gate: LLM output is just JSON on a chat bubble
-    until the analyst clicks approve, then this allow-listed endpoint performs
-    the mutation (tag, add finding, next-step suggestion, or tool suggestion).
+    until the analyst clicks approve, then this allow-listed endpoint dispatches
+    executable enum/scan tool actions through the existing Tactical path.
     """
     from app.services.finding_chat import accept_chat_action
 
@@ -387,6 +388,7 @@ def accept_finding_chat_action(
             message=message,
             action_index=body.action_index,
             acting_user_id=user.id,
+            redis_client=redis_client,
         )
     except ValueError as exc:
         session.rollback()
