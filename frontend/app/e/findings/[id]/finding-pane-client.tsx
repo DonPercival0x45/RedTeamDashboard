@@ -27,6 +27,7 @@ import {
   listTasks,
   updateFinding,
   uploadAttachment,
+  loadAttachmentBlob,
   validateFinding,
 } from "@/lib/api";
 import {
@@ -816,16 +817,69 @@ function AttachmentsPanel({ finding }: { finding: Finding }) {
       ) : rows.length === 0 ? (
         <p className="mt-3 text-xs text-muted-foreground">No attachments yet.</p>
       ) : (
-        <ul className="mt-3 space-y-2">
+        <ul className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
           {rows.map((row) => (
-            <li key={row.id} className="rounded-md border border-border bg-background p-2 text-xs">
-              <span className="font-medium">{row.filename}</span>
-              <span className="ml-2 text-muted-foreground">{Math.ceil(row.size_bytes / 1024)} KB · {fmtTs(row.created_at)}</span>
+            <li
+              key={row.id}
+              className="overflow-hidden rounded-md border border-border bg-background p-2 text-xs"
+            >
+              <AttachmentPreview attachment={row} />
+              <div className="mt-1 flex items-center justify-between gap-2">
+                <span className="truncate font-medium">{row.filename}</span>
+                <span className="shrink-0 text-muted-foreground">
+                  {Math.ceil(row.size_bytes / 1024)} KB
+                </span>
+              </div>
+              <div className="text-[10px] text-muted-foreground">
+                {fmtTs(row.created_at)}
+              </div>
             </li>
           ))}
         </ul>
       )}
     </section>
+  );
+}
+
+function AttachmentPreview({ attachment }: { attachment: Attachment }) {
+  const [src, setSrc] = useState<string | null>(null);
+  const isImage = attachment.content_type.startsWith("image/");
+  useEffect(() => {
+    if (!isImage) return;
+    let objectUrl: string | null = null;
+    loadAttachmentBlob(attachment.id)
+      .then((url) => {
+        objectUrl = url;
+        setSrc(url);
+      })
+      .catch(() => setSrc(null));
+    return () => {
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [attachment.id, isImage]);
+  if (!isImage) {
+    return (
+      <div className="flex h-16 items-center justify-center rounded bg-muted/40 font-mono text-[10px] text-muted-foreground">
+        {attachment.filename.split(".").pop()?.toUpperCase() || "FILE"}
+      </div>
+    );
+  }
+  if (!src) {
+    return (
+      <div className="flex h-24 items-center justify-center rounded bg-muted/40 text-[10px] text-muted-foreground">
+        Loading preview…
+      </div>
+    );
+  }
+  return (
+    <a href={src} target="_blank" rel="noopener noreferrer" title="Open full size">
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={src}
+        alt={attachment.filename}
+        className="h-32 w-full rounded object-cover"
+      />
+    </a>
   );
 }
 
