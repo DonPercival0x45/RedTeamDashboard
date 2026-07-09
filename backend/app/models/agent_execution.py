@@ -32,6 +32,7 @@ class AgentExecutionStatus(enum.StrEnum):
     running = "running"
     completed = "completed"
     failed = "failed"
+    cancelled = "cancelled"
 
 
 class AgentExecution(Base):
