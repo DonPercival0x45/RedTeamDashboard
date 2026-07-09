@@ -39,8 +39,20 @@ export default function RootLayout({
   // theme flash. `.dark` stays on <html> too so any lingering `dark:`
   // Tailwind utility variants still resolve (harmless when data-theme
   // switches to light or high-contrast; the CSS variables win).
+  //
+  // v1.25.3: `suppressHydrationWarning` on <html> so React 19 doesn't
+  // reconcile the pre-hydration script's attribute mutations. Without
+  // it, refreshing the page reverts to the SSR-hard-coded dark theme
+  // even though localStorage says otherwise. The a11y attrs
+  // (data-reduced-motion, data-cb-severity, data-sr-hints) benefit
+  // from the same suppression.
   return (
-    <html lang="en" className="dark" data-theme="dark">
+    <html
+      lang="en"
+      className="dark"
+      data-theme="dark"
+      suppressHydrationWarning
+    >
       <head>
         <script
           // eslint-disable-next-line react/no-danger
