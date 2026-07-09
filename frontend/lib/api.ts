@@ -1131,6 +1131,12 @@ export function cancelTask(taskId: string): Promise<StatusEntity> {
   return request<StatusEntity>(`/tasks/${taskId}/cancel`, { method: "POST" });
 }
 
+export function cancelAgentExecution(executionId: string): Promise<StatusEntity> {
+  return request<StatusEntity>(`/agent-executions/${executionId}/cancel`, {
+    method: "POST",
+  });
+}
+
 export function retryAgentExecution(
   executionId: string,
 ): Promise<StatusEntity> {

@@ -18,6 +18,7 @@ import {
 import {
   approveTool,
   archiveEngagement,
+  cancelAgentExecution,
   cancelTask,
   createIntegration,
   createObservation,
@@ -780,6 +781,20 @@ export function useCancelTaskMutation(slug: string) {
     mutationFn: cancelTask,
     onSuccess: () =>
       qc.invalidateQueries({ queryKey: qk.engagementStatus(slug) }),
+  });
+}
+
+export function useCancelAgentExecutionMutation(slug?: string | null) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: cancelAgentExecution,
+    onSuccess: () => {
+      if (slug) {
+        qc.invalidateQueries({ queryKey: qk.engagementStatus(slug) });
+      } else {
+        qc.invalidateQueries({ queryKey: qk.globalAgentRuns() });
+      }
+    },
   });
 }
 
