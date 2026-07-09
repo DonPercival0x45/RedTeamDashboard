@@ -278,6 +278,36 @@ def test_accept_finding_chat_run_tool_action_dispatches_task(
     assert audit.payload["action_type"] == "run_tool"
 
 
+def test_clear_finding_chat_deletes_current_user_conversation(
+    monkeypatch: pytest.MonkeyPatch,
+    client: TestClient,
+    db: Session,
+    finding: Finding,
+) -> None:
+    _patch_llm(monkeypatch)
+    created = client.post(
+        f"/findings/{finding.id}/chat",
+        headers=HDR,
+        json={"message": "Start"},
+    )
+    assert created.status_code == 200
+    conversation_id = uuid.UUID(created.json()["conversation_id"])
+
+    resp = client.delete(f"/findings/{finding.id}/chat", headers=HDR)
+
+    assert resp.status_code == 204
+    assert db.get(Conversation, conversation_id) is None
+    state = client.get(f"/findings/{finding.id}/chat", headers=HDR)
+    assert state.json() == {"conversation_id": None, "messages": []}
+    audit = db.execute(
+        select(AuditLog).where(
+            AuditLog.engagement_id == finding.engagement_id,
+            AuditLog.event_type == "finding.chat_cleared",
+        )
+    ).scalar_one()
+    assert audit.payload["conversation_count"] == 1
+
+
 def test_finding_chat_reuses_latest_conversation(
     monkeypatch: pytest.MonkeyPatch,
     client: TestClient,

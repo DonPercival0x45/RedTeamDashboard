@@ -60,6 +60,7 @@ _AUDIT_LABELS: dict[str, str] = {
     "finding.summary_recorded": "Summary recorded",
     "finding.chat_asked": "AI assistant asked",
     "finding.chat_action.accepted": "AI action approved",
+    "finding.chat_cleared": "AI conversation cleared",
     "finding.deleted": "Deleted",
 }
 
