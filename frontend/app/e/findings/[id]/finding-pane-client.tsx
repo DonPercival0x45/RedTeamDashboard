@@ -223,32 +223,28 @@ function ChatRail({ findingId }: { findingId: string }) {
   }
 
   return (
-    <div className="sticky top-6 rounded-lg border border-border bg-card/40 p-4">
-      <h2 className="flex items-center gap-2 text-sm font-medium">
-        <Sparkles className="h-4 w-4 text-amber-500" />
-        AI assistant
-      </h2>
-      <p className="mt-2 text-xs text-muted-foreground">
-        Ask for context or next steps. AI actions are proposals only until you
-        approve one of the cards below.
-      </p>
-
-      <div className="mt-4 rounded-md border border-amber-400/40 bg-amber-400/10 p-3">
+    <div className="sticky top-6 space-y-4">
+      <div className="rounded-lg border border-amber-400/40 bg-amber-400/10 p-4">
         <div className="flex items-center justify-between gap-2">
-          <p className="text-xs font-semibold text-foreground">
+          <h2 className="flex items-center gap-2 text-sm font-medium">
+            <Sparkles className="h-4 w-4 text-amber-500" />
             Suggested actions ({proposedActions.length})
-          </p>
+          </h2>
           {acceptAction.isPending && (
             <span className="text-[10px] text-muted-foreground">Approving…</span>
           )}
         </div>
+        <p className="mt-2 text-xs text-muted-foreground">
+          AI-generated proposals live here separately from the chat. Nothing
+          changes until you click Approve.
+        </p>
         {proposedActions.length === 0 ? (
-          <p className="mt-2 text-xs text-muted-foreground">
+          <p className="mt-3 rounded-md border border-dashed border-amber-500/30 p-3 text-xs text-muted-foreground">
             No proposed actions yet. Ask “suggest some actions” to generate
             approval cards.
           </p>
         ) : (
-          <div className="mt-2 space-y-2">
+          <div className="mt-3 max-h-72 space-y-2 overflow-y-auto pr-1">
             {proposedActions.map(({ messageId, action, index }) => (
               <ActionCard
                 key={`${messageId}-${index}`}
@@ -263,6 +259,16 @@ function ChatRail({ findingId }: { findingId: string }) {
         )}
       </div>
 
+      <div className="rounded-lg border border-border bg-card/40 p-4">
+        <h2 className="flex items-center gap-2 text-sm font-medium">
+          <MessageSquare className="h-4 w-4 text-muted-foreground" />
+          AI conversation
+        </h2>
+        <p className="mt-2 text-xs text-muted-foreground">
+          Ask for context, gaps, or next steps. Action cards appear in the
+          separate queue above.
+        </p>
+
       <div className="mt-4 max-h-[30rem] space-y-3 overflow-y-auto pr-1">
         {isLoading ? (
           <p className="text-xs text-muted-foreground">Loading chat…</p>
@@ -271,16 +277,7 @@ function ChatRail({ findingId }: { findingId: string }) {
             Try “what should I do next?” or “summarize the evidence and gaps.”
           </div>
         ) : (
-          messages.map((m) => (
-            <ChatBubble
-              key={m.id}
-              message={m}
-              onAcceptAction={(actionIndex) =>
-                acceptAction.mutate({ messageId: m.id, actionIndex })
-              }
-              accepting={acceptAction.isPending}
-            />
-          ))
+          messages.map((m) => <ChatBubble key={m.id} message={m} />)
         )}
         {ask.isPending && (
           <div className="rounded-md bg-muted/60 p-3 text-xs text-muted-foreground">
@@ -316,21 +313,13 @@ function ChatRail({ findingId }: { findingId: string }) {
           {ask.isPending ? "Asking…" : "Ask AI"}
         </button>
       </form>
+      </div>
     </div>
   );
 }
 
-function ChatBubble({
-  message,
-  onAcceptAction,
-  accepting,
-}: {
-  message: FindingChatMessage;
-  onAcceptAction: (actionIndex: number) => void;
-  accepting: boolean;
-}) {
+function ChatBubble({ message }: { message: FindingChatMessage }) {
   const mine = message.role === "user";
-  const actions = message.action_payload?.actions ?? [];
   return (
     <div
       className={cn(
@@ -348,21 +337,6 @@ function ChatBubble({
           {fmtTs(message.created_at)}
         </span>
       </div>
-      {actions.length > 0 && (
-        <div className="mb-3 space-y-2">
-          <p className="text-[10px] uppercase tracking-wide text-amber-600 dark:text-amber-300">
-            Proposed actions ({actions.length})
-          </p>
-          {actions.map((action, index) => (
-            <ActionCard
-              key={`${action.type}-${index}`}
-              action={action}
-              onAccept={() => onAcceptAction(index)}
-              accepting={accepting}
-            />
-          ))}
-        </div>
-      )}
       <p className="whitespace-pre-wrap leading-relaxed">{message.content}</p>
     </div>
   );
