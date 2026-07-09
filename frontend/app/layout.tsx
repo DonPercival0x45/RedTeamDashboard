@@ -8,6 +8,7 @@ import { RunToastProvider } from "@/components/run-toast-provider";
 import { AuthProvider } from "@/lib/auth";
 import { readServerConfig, RUNTIME_CONFIG_WINDOW_KEY } from "@/lib/config";
 import { themePreHydrationScript } from "@/lib/theme-preflight";
+import { A11Y_PRE_HYDRATION_SCRIPT } from "@/lib/accessibility";
 import "./globals.css";
 
 // Force per-request rendering so the runtime env is read fresh on every load
@@ -44,6 +45,14 @@ export default function RootLayout({
         <script
           // eslint-disable-next-line react/no-danger
           dangerouslySetInnerHTML={{ __html: themePreHydrationScript() }}
+        />
+        <script
+          // v1.25.0: stamp accessibility root attrs synchronously so
+          // reduced-motion + colorblind + SR-hints preferences take
+          // effect before React mounts (avoids a flash of animated
+          // content or the default palette).
+          // eslint-disable-next-line react/no-danger
+          dangerouslySetInnerHTML={{ __html: A11Y_PRE_HYDRATION_SCRIPT }}
         />
         <script
           // eslint-disable-next-line react/no-danger

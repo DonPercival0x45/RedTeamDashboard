@@ -53,7 +53,7 @@ export default function SettingsKeysPage() {
           ← engagements
         </Link>
         <h1 className="mt-2 text-2xl font-semibold tracking-tight">
-          Provider keys
+          Models
         </h1>
         <p className="mt-1 text-sm text-muted-foreground">
           API credentials this tool uses on your behalf. Keys never leave
@@ -63,11 +63,10 @@ export default function SettingsKeysPage() {
         </p>
         <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-200">
           <span className="font-semibold uppercase tracking-wide">Session-only.</span>{" "}
-          Your keys are held briefly in this session — they expire after
-          30 minutes of inactivity, on sign-out, or if the backend
-          restarts. Re-upload whenever you come back. Only you can use
-          your own keys; no other analyst (and no future you) can see
-          them once they expire.
+          v1.25.0: keys are held for the entire session — no more 30-min
+          re-uploads. They&apos;re cleared only when you delete them here
+          or the backend restarts. Only you can use your own keys; no
+          other analyst can see them.
         </div>
       </div>
 

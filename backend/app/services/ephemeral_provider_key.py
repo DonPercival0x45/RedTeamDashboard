@@ -97,8 +97,19 @@ def _ttl() -> int:
 
 def _touch_ttl(redis: redis_lib.Redis, user_id: uuid.UUID) -> None:
     """Refresh the sliding TTL on the per-user hash. Safe no-op if the
-    hash doesn't exist (EXPIRE on a missing key just returns 0)."""
-    redis.expire(_key(user_id), _ttl())
+    hash doesn't exist (EXPIRE on a missing key just returns 0).
+
+    v1.25.0: when the configured TTL is <= 0, this becomes a no-op and
+    the key persists until an explicit delete / rotate. Also strips any
+    residual TTL on the hash so a redeploy that flips the config takes
+    effect immediately for keys already cached under the old regime.
+    """
+    ttl = _ttl()
+    if ttl > 0:
+        redis.expire(_key(user_id), ttl)
+    else:
+        # PERSIST removes any existing TTL; no-op if none was set.
+        redis.persist(_key(user_id))
 
 
 def _now_iso() -> str:

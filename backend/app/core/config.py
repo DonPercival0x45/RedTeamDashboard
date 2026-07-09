@@ -165,12 +165,14 @@ class Settings(BaseSettings):
     # the next release deletes it. New TTL knob controls how long an
     # uploaded key survives idle.
     provider_key_master: str = "ZmVybmV0LWRldi1ub3QtZm9yLXByb2QtMzJieXRlc18="
-    # Sliding TTL on the per-user Redis hash holding the analyst's BYO
-    # keys. Refreshed on every read or write. 30 min default — short
-    # enough that an unattended browser doesn't leave keys reachable;
-    # long enough that an active analyst session doesn't constantly
-    # re-prompt for a re-upload.
-    provider_key_ttl_seconds: int = 1800
+    # TTL on the per-user Redis hash holding the analyst's BYO keys.
+    # v1.25.0: default 0 = never auto-expire. Keys are cleared only when
+    # the analyst explicitly deletes them (DELETE /provider-keys/{id}) or
+    # rotates the whole cache. This matches the "keys live for the entire
+    # session" ask from operators tired of the 30-min re-upload prompt.
+    # Set to a positive value (seconds) to restore sliding-TTL behaviour;
+    # ``_touch_ttl`` becomes a no-op when this is <= 0.
+    provider_key_ttl_seconds: int = 0
 
 
 settings = Settings()
