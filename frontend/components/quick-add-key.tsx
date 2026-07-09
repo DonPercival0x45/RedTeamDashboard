@@ -128,7 +128,30 @@ export function QuickAddKey({
     }
     // v0.8.4: a fresh probe catalog wins over the preset's defaults when
     // both are available — the analyst just confirmed the live list.
-    const liveModels = probeResult?.ok ? probeResult.models : null;
+    // v1.25.1: if the analyst didn't hit Test first, auto-probe now so
+    // the full model catalog gets stored instead of the 2-model preset
+    // default. Failures degrade to the preset default (existing
+    // behaviour) — never blocks the save.
+    let liveModels = probeResult?.ok ? probeResult.models : null;
+    if (liveModels === null) {
+      try {
+        const auto = await probeUnsavedProviderKey({
+          name: (name.trim() || defaultName).trim() || "probe",
+          provider: effectiveProvider,
+          kind,
+          is_local: preset?.isLocal ?? false,
+          endpoint: endpoint.trim() || null,
+          api_key: apiKey || null,
+        });
+        if (auto.ok && auto.models.length > 0) {
+          liveModels = auto.models;
+        }
+      } catch {
+        // Probe blew up — fall through to the preset default. The
+        // Discover button on the /settings/keys card remains available
+        // so the analyst can rehydrate the catalog later.
+      }
+    }
     setSubmitting(true);
     try {
       const created = await createProviderKey({

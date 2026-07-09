@@ -1,6 +1,6 @@
 [project]
 name = "redteam-dashboard-backend"
-version = "1.25.0"
+version = "1.25.1"
 description = "Red Team Dashboard backend: FastAPI control plane + LangGraph worker."
 requires-python = ">=3.12"
 dependencies = [
