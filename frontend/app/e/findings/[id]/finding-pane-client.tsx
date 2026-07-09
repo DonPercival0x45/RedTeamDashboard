@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import {
@@ -828,12 +828,20 @@ function AttachmentsPanel({ finding }: { finding: Finding }) {
 
 function ScopeStatusPanel({ finding, slug }: { finding: Finding; slug: string | null }) {
   const [scope, setScope] = useState<ScopeItem[] | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   useEffect(() => {
     if (!slug) {
       setScope([]);
+      setLoadError(null);
       return;
     }
-    listScope(slug).then(setScope).catch(() => setScope([]));
+    setLoadError(null);
+    listScope(slug)
+      .then(setScope)
+      .catch(() => {
+        setScope([]);
+        setLoadError("Couldn’t load engagement scope.");
+      });
   }, [slug]);
   const indicators = scopeIndicators(finding, scope ?? []);
   const exclusions = indicators.filter((i) => i.item.is_exclusion);
@@ -858,7 +866,11 @@ function ScopeStatusPanel({ finding, slug }: { finding: Finding; slug: string | 
         Compares extracted IP/domain/URL indicators from this finding against
         engagement scope and exclusions.
       </p>
-      {scope === null ? (
+      {loadError ? (
+        <p className="mt-3 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-200">
+          {loadError} Confirm ROE manually before approving active agent actions.
+        </p>
+      ) : scope === null ? (
         <p className="mt-3 text-xs text-muted-foreground">Loading scope…</p>
       ) : indicators.length === 0 ? (
         <p className="mt-3 rounded-md border border-dashed border-border p-3 text-xs text-muted-foreground">
@@ -883,12 +895,20 @@ function ScopeStatusPanel({ finding, slug }: { finding: Finding; slug: string | 
 
 function RelatedPanel({ finding, slug }: { finding: Finding; slug: string | null }) {
   const [rows, setRows] = useState<Finding[] | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   useEffect(() => {
     if (!slug) {
       setRows([]);
+      setLoadError(null);
       return;
     }
-    listFindings(slug).then(setRows).catch(() => setRows([]));
+    setLoadError(null);
+    listFindings(slug)
+      .then(setRows)
+      .catch(() => {
+        setRows([]);
+        setLoadError("Couldn’t load engagement findings.");
+      });
   }, [slug]);
   const indicators = extractedIndicators(finding);
   const related = (rows ?? [])
@@ -913,7 +933,9 @@ function RelatedPanel({ finding, slug }: { finding: Finding; slug: string | null
           ))
         )}
       </div>
-      {rows === null ? (
+      {loadError ? (
+        <p className="mt-3 text-xs text-amber-600 dark:text-amber-300">{loadError}</p>
+      ) : rows === null ? (
         <p className="mt-3 text-xs text-muted-foreground">Loading…</p>
       ) : related.length === 0 ? (
         <p className="mt-3 text-xs text-muted-foreground">No related findings found.</p>
@@ -1004,18 +1026,17 @@ function AgentToolsPanel({ findingId, slug }: { findingId: string; slug: string 
   const proposedActions = openToolActions(chat?.messages ?? []);
   const [tasks, setTasks] = useState<Task[] | null>(null);
 
-  const refreshTasks = () => {
+  const refreshTasks = useCallback(() => {
     if (!slug) {
       setTasks([]);
       return;
     }
     listTasks(slug).then(setTasks).catch(() => setTasks([]));
-  };
+  }, [slug]);
 
   useEffect(() => {
     refreshTasks();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [slug, findingId]);
+  }, [refreshTasks, findingId]);
 
   const findingTasks = (tasks ?? []).filter((task) => task.finding_id === findingId);
 
@@ -1122,6 +1143,15 @@ function ChatRail({ findingId }: { findingId: string }) {
   const ask = useAskFindingChatMutation(findingId);
   const clear = useClearFindingChatMutation(findingId);
   const messages = chat?.messages ?? [];
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+
+  // Auto-scroll to the latest message whenever the conversation grows or
+  // the "Thinking…" indicator appears. Keeps new AI responses in view
+  // without the analyst reaching for the scroll bar.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [messages.length, ask.isPending]);
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1160,7 +1190,7 @@ function ChatRail({ findingId }: { findingId: string }) {
         </button>
       </div>
 
-      <div className="mt-4 max-h-[30rem] space-y-3 overflow-y-auto pr-1">
+      <div ref={scrollRef} className="mt-4 max-h-[30rem] space-y-3 overflow-y-auto pr-1">
         {isLoading ? (
           <p className="text-xs text-muted-foreground">Loading chat…</p>
         ) : messages.length === 0 ? (
