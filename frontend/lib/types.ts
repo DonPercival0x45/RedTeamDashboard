@@ -1076,3 +1076,48 @@ export interface ToolInvocationRead {
   started_at: string;
   completed_at: string | null;
 }
+
+// ─── v1.24.0 Settings > Configurations ────────────────────────────────────
+
+// The three engagement-scoped agent roles this bundle covers. Adding
+// planner/triage/etc later widens this union without a migration.
+export type ConfigurableAgentRole = "strategic" | "tactical" | "correlate";
+
+export interface AgentConfigRead {
+  engagement_id: string;
+  engagement_slug: string;
+  strategic: string | null;
+  tactical: string | null;
+  correlate: string | null;
+  updated_at: string | null;
+}
+
+export interface AgentConfigListResponse {
+  configurations: AgentConfigRead[];
+}
+
+// Body for PUT /agent-configurations/{slug}. Missing keys are left
+// unchanged; explicit ``null`` clears that specific role.
+export interface AgentConfigPut {
+  strategic?: string | null;
+  tactical?: string | null;
+  correlate?: string | null;
+}
+
+export interface AgentConfigRolePayload {
+  strategic?: string | null;
+  tactical?: string | null;
+  correlate?: string | null;
+}
+
+export interface AgentConfigExport {
+  version: number;
+  exported_at: string;
+  exported_by_user_id: string;
+  configurations: Record<string, AgentConfigRolePayload>;
+}
+
+export interface AgentConfigImportResult {
+  applied_slugs: string[];
+  skipped_unknown_slugs: string[];
+}

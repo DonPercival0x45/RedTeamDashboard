@@ -9,6 +9,7 @@ import {
   Key,
   MessageSquare,
   Palette,
+  SlidersHorizontal,
   UserCog,
   Wrench,
 } from "lucide-react";
@@ -70,6 +71,12 @@ export function IdentityMenu() {
       </span>
       <IconLink href="/settings/keys" label="Provider keys">
         <Key className="h-4 w-4" />
+      </IconLink>
+      <IconLink
+        href="/settings/configurations"
+        label="Configurations (agent models per engagement)"
+      >
+        <SlidersHorizontal className="h-4 w-4" />
       </IconLink>
       <IconLink href="/settings/appearance" label="Appearance (theme)">
         <Palette className="h-4 w-4" />

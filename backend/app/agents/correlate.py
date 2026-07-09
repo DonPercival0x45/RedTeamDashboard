@@ -36,6 +36,7 @@ from app.models import (
     Finding,
 )
 from app.orchestrator.llm import default_provider_model
+from app.services.agent_model_resolver import resolve_agent_model
 
 logger = structlog.get_logger(__name__)
 
@@ -180,6 +181,8 @@ class CorrelateAgent:
         self,
         *,
         acting_user_id: uuid.UUID,
+        session: Session | None = None,
+        engagement_id: uuid.UUID | None = None,
     ) -> tuple[Any, str, str]:
         if self._llm is not None:
             return (
@@ -189,6 +192,22 @@ class CorrelateAgent:
             )
         provider = self._provider
         model_name = self._model_name
+        # v1.24.0: honor Settings > Configurations pinning for
+        # (user, engagement, correlate). Falls back to user default then
+        # default_provider_model().
+        if not (provider and model_name) and session is not None:
+            resolved = resolve_agent_model(
+                session,
+                user_id=acting_user_id,
+                engagement_id=engagement_id,
+                role=AgentName.correlate,
+            )
+            if resolved is not None:
+                p, m = resolved
+                if m:
+                    model_name = m
+                if p:
+                    provider = p
         if not (provider and model_name):
             provider, model_name = default_provider_model()
         if self._redis is None:
@@ -245,7 +264,9 @@ class CorrelateAgent:
 
         try:
             llm, provider, model_name = self._resolve_llm(
-                acting_user_id=acting_user_id
+                acting_user_id=acting_user_id,
+                session=session,
+                engagement_id=engagement.id,
             )
             execution.model_provider = provider
             execution.model_name = model_name
