@@ -304,12 +304,32 @@ export interface FindingActivityEntry {
 
 export type FindingChatRole = "user" | "assistant" | "system";
 
+export type FindingChatActionType =
+  | "next_step"
+  | "tag_incident"
+  | "add_finding"
+  | "run_tool"
+  | "context";
+
+export interface FindingChatAction {
+  type: FindingChatActionType;
+  title: string;
+  description?: string;
+  params?: Record<string, unknown>;
+  status?: "proposed" | "accepted" | "dismissed";
+  result?: Record<string, unknown>;
+}
+
+export interface FindingChatActionPayload {
+  actions?: FindingChatAction[];
+}
+
 export interface FindingChatMessage {
   id: string;
   conversation_id: string;
   role: FindingChatRole;
   content: string;
-  action_payload: Record<string, unknown> | null;
+  action_payload: FindingChatActionPayload | null;
   execution_id: string | null;
   created_at: string;
 }
@@ -324,6 +344,14 @@ export interface FindingChatResponse {
   user_message: FindingChatMessage;
   assistant_message: FindingChatMessage;
   execution_id: string | null;
+}
+
+export interface FindingChatActionResponse {
+  message: FindingChatMessage;
+  action_index: number;
+  action_type: FindingChatActionType;
+  status: "accepted" | "dismissed";
+  result: Record<string, unknown>;
 }
 
 // Payload for POST /engagements/{slug}/findings/import

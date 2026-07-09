@@ -18,6 +18,7 @@ import {
 import {
   approveTool,
   archiveEngagement,
+  acceptFindingChatAction,
   askFindingChat,
   cancelAgentExecution,
   cancelTask,
@@ -72,6 +73,7 @@ import { loadReleases } from "@/lib/release-notes";
 import type {
   ContributionSource,
   Finding,
+  FindingChatActionResponse,
   FindingChatResponse,
   FindingChatState,
   Integration,
@@ -194,6 +196,25 @@ export function useAskFindingChatMutation(findingId: string) {
       }));
       qc.invalidateQueries({ queryKey: qk.findingChat(findingId) });
       qc.invalidateQueries({ queryKey: qk.findingActivity(findingId) });
+    },
+  });
+}
+
+export function useAcceptFindingChatActionMutation(findingId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { messageId: string; actionIndex: number }) =>
+      acceptFindingChatAction(findingId, body.messageId, body.actionIndex),
+    onSuccess: (resp: FindingChatActionResponse) => {
+      qc.setQueryData<FindingChatState>(qk.findingChat(findingId), (prev) => ({
+        conversation_id: prev?.conversation_id ?? resp.message.conversation_id,
+        messages: (prev?.messages ?? []).map((m) =>
+          m.id === resp.message.id ? resp.message : m,
+        ),
+      }));
+      qc.invalidateQueries({ queryKey: qk.finding(findingId) });
+      qc.invalidateQueries({ queryKey: qk.findingActivity(findingId) });
+      qc.invalidateQueries({ queryKey: qk.findingChat(findingId) });
     },
   });
 }

@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import {
+  useAcceptFindingChatActionMutation,
   useAskFindingChatMutation,
   useFinding,
   useFindingActivity,
@@ -23,6 +24,7 @@ import {
 import { cn } from "@/lib/utils";
 import type {
   FindingActivityEntry,
+  FindingChatAction,
   FindingChatMessage,
   FindingPhase,
   FindingValidationStatus,
@@ -199,6 +201,7 @@ function ChatRail({ findingId }: { findingId: string }) {
   const [message, setMessage] = useState("");
   const { data: chat, isLoading } = useFindingChat(findingId);
   const ask = useAskFindingChatMutation(findingId);
+  const acceptAction = useAcceptFindingChatActionMutation(findingId);
   const messages = chat?.messages ?? [];
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
@@ -233,7 +236,16 @@ function ChatRail({ findingId }: { findingId: string }) {
             Try “what should I do next?” or “summarize the evidence and gaps.”
           </div>
         ) : (
-          messages.map((m) => <ChatBubble key={m.id} message={m} />)
+          messages.map((m) => (
+            <ChatBubble
+              key={m.id}
+              message={m}
+              onAcceptAction={(actionIndex) =>
+                acceptAction.mutate({ messageId: m.id, actionIndex })
+              }
+              accepting={acceptAction.isPending}
+            />
+          ))
         )}
         {ask.isPending && (
           <div className="rounded-md bg-muted/60 p-3 text-xs text-muted-foreground">
@@ -242,9 +254,13 @@ function ChatRail({ findingId }: { findingId: string }) {
         )}
       </div>
 
-      {ask.error && (
+      {(ask.error || acceptAction.error) && (
         <p className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 p-2 text-xs text-destructive">
-          {ask.error instanceof Error ? ask.error.message : "Chat failed"}
+          {ask.error instanceof Error
+            ? ask.error.message
+            : acceptAction.error instanceof Error
+              ? acceptAction.error.message
+              : "Chat action failed"}
         </p>
       )}
 
@@ -269,8 +285,17 @@ function ChatRail({ findingId }: { findingId: string }) {
   );
 }
 
-function ChatBubble({ message }: { message: FindingChatMessage }) {
+function ChatBubble({
+  message,
+  onAcceptAction,
+  accepting,
+}: {
+  message: FindingChatMessage;
+  onAcceptAction: (actionIndex: number) => void;
+  accepting: boolean;
+}) {
   const mine = message.role === "user";
+  const actions = message.action_payload?.actions ?? [];
   return (
     <div
       className={cn(
@@ -289,8 +314,88 @@ function ChatBubble({ message }: { message: FindingChatMessage }) {
         </span>
       </div>
       <p className="whitespace-pre-wrap leading-relaxed">{message.content}</p>
+      {actions.length > 0 && (
+        <div className="mt-3 space-y-2">
+          {actions.map((action, index) => (
+            <ActionCard
+              key={`${action.type}-${index}`}
+              action={action}
+              onAccept={() => onAcceptAction(index)}
+              accepting={accepting}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
+}
+
+function ActionCard({
+  action,
+  onAccept,
+  accepting,
+}: {
+  action: FindingChatAction;
+  onAccept: () => void;
+  accepting: boolean;
+}) {
+  const accepted = action.status === "accepted";
+  const isContext = action.type === "context";
+  return (
+    <div className="rounded-md border border-amber-400/30 bg-amber-400/10 p-2">
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <div className="text-xs font-medium text-foreground">
+            {actionLabel(action.type)} · {action.title}
+          </div>
+          {action.description && (
+            <p className="mt-1 text-xs text-muted-foreground">
+              {action.description}
+            </p>
+          )}
+          {accepted && action.result && (
+            <p className="mt-1 text-[10px] text-emerald-600 dark:text-emerald-300">
+              Approved: {summarizeResult(action.result)}
+            </p>
+          )}
+        </div>
+        {!accepted && !isContext && (
+          <button
+            type="button"
+            onClick={onAccept}
+            disabled={accepting}
+            className="shrink-0 rounded border border-amber-500/40 px-2 py-1 text-[11px] font-medium hover:bg-amber-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Approve
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function actionLabel(type: FindingChatAction["type"]): string {
+  switch (type) {
+    case "next_step":
+      return "Next step";
+    case "tag_incident":
+      return "Tag";
+    case "add_finding":
+      return "Add finding";
+    case "run_tool":
+      return "Run tool";
+    case "context":
+      return "Context";
+  }
+}
+
+function summarizeResult(result: Record<string, unknown>): string {
+  if (Array.isArray(result.tags)) return `tags: ${result.tags.join(", ")}`;
+  if (typeof result.finding_id === "string") return `finding ${result.finding_id}`;
+  if (typeof result.suggestion_id === "string") {
+    return `suggestion ${result.suggestion_id}`;
+  }
+  return "done";
 }
 
 function TimelineRow({ entry }: { entry: FindingActivityEntry }) {
