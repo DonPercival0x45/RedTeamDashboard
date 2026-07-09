@@ -203,6 +203,11 @@ function ChatRail({ findingId }: { findingId: string }) {
   const ask = useAskFindingChatMutation(findingId);
   const acceptAction = useAcceptFindingChatActionMutation(findingId);
   const messages = chat?.messages ?? [];
+  const proposedActions = messages.flatMap((m) =>
+    (m.action_payload?.actions ?? [])
+      .map((action, index) => ({ messageId: m.id, action, index }))
+      .filter(({ action }) => action.status !== "accepted"),
+  );
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -224,9 +229,39 @@ function ChatRail({ findingId }: { findingId: string }) {
         AI assistant
       </h2>
       <p className="mt-2 text-xs text-muted-foreground">
-        Ask for context or next steps. Phase 2 is read-only: the assistant can
-        recommend actions, but nothing runs until future approval bubbles land.
+        Ask for context or next steps. AI actions are proposals only until you
+        approve one of the cards below.
       </p>
+
+      <div className="mt-4 rounded-md border border-amber-400/40 bg-amber-400/10 p-3">
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-xs font-semibold text-foreground">
+            Suggested actions ({proposedActions.length})
+          </p>
+          {acceptAction.isPending && (
+            <span className="text-[10px] text-muted-foreground">Approving…</span>
+          )}
+        </div>
+        {proposedActions.length === 0 ? (
+          <p className="mt-2 text-xs text-muted-foreground">
+            No proposed actions yet. Ask “suggest some actions” to generate
+            approval cards.
+          </p>
+        ) : (
+          <div className="mt-2 space-y-2">
+            {proposedActions.map(({ messageId, action, index }) => (
+              <ActionCard
+                key={`${messageId}-${index}`}
+                action={action}
+                onAccept={() =>
+                  acceptAction.mutate({ messageId, actionIndex: index })
+                }
+                accepting={acceptAction.isPending}
+              />
+            ))}
+          </div>
+        )}
+      </div>
 
       <div className="mt-4 max-h-[30rem] space-y-3 overflow-y-auto pr-1">
         {isLoading ? (
