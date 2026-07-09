@@ -42,6 +42,8 @@ from app.models import (
     AgentName,
     AgentTrigger,
     AuditLog,
+    Conversation,
+    ConversationMessage,
     Engagement,
     Finding,
     OwnerEligibility,
@@ -67,6 +69,12 @@ from app.schemas.orchestrator import (
     AcceptSuggestionResponse,
     AnalyzeFindingResponse,
     FindingActivityEntry,
+    FindingChatActionRequest,
+    FindingChatActionResponse,
+    FindingChatMessageRead,
+    FindingChatRequest,
+    FindingChatResponse,
+    FindingChatState,
     FindingRewriteRequest,
     SuggestionRead,
     TaskRead,
@@ -209,6 +217,253 @@ def finding_activity(
         raise HTTPException(status_code=404, detail="finding not found")
     rows = build_finding_activity(session, finding_id)
     return [FindingActivityEntry(**r) for r in rows]
+
+
+@router.get(
+    "/findings/{finding_id}/chat",
+    response_model=FindingChatState,
+)
+def finding_chat_state(
+    finding_id: uuid.UUID,
+    session: DbSession,
+    user: CurrentUser,
+) -> FindingChatState:
+    """Return the current analyst's persisted chat bubbles for a finding.
+
+    Read-only and non-mutating: if the analyst has not started a conversation
+    yet, the pane receives an empty message list and no conversation id.
+    """
+    from app.services.finding_chat import (
+        get_conversation_messages,
+        get_latest_conversation,
+    )
+
+    finding = session.get(Finding, finding_id)
+    if finding is None:
+        raise HTTPException(status_code=404, detail="finding not found")
+
+    conv = get_latest_conversation(session, finding_id=finding_id, user_id=user.id)
+    if conv is None:
+        return FindingChatState(conversation_id=None, messages=[])
+    messages = get_conversation_messages(session, conv.id)
+    return FindingChatState(
+        conversation_id=conv.id,
+        messages=[FindingChatMessageRead.model_validate(m) for m in messages],
+    )
+
+
+@router.delete(
+    "/findings/{finding_id}/chat",
+    status_code=204,
+)
+def clear_finding_chat(
+    finding_id: uuid.UUID,
+    session: DbSession,
+    user: CurrentNonGuestUser,
+) -> None:
+    """Clear the current analyst's finding-scoped AI conversation.
+
+    This deletes persisted chat bubbles/action proposals for this analyst and
+    finding so the AI workspace can start fresh. The audit log remains
+    append-only and records that a reset happened.
+    """
+    finding = session.get(Finding, finding_id)
+    if finding is None:
+        raise HTTPException(status_code=404, detail="finding not found")
+    conversations = list(
+        session.execute(
+            select(Conversation).where(
+                Conversation.finding_id == finding_id,
+                Conversation.created_by_user_id == user.id,
+            )
+        ).scalars()
+    )
+    for conv in conversations:
+        session.delete(conv)
+    session.add(
+        AuditLog(
+            engagement_id=finding.engagement_id,
+            actor_type=ActorType.user,
+            actor_id=str(user.id),
+            event_type="finding.chat_cleared",
+            payload={
+                "finding_id": str(finding.id),
+                "conversation_count": len(conversations),
+            },
+        )
+    )
+    session.commit()
+    return None
+
+
+@router.post(
+    "/findings/{finding_id}/chat",
+    response_model=FindingChatResponse,
+)
+def ask_finding_chat(
+    finding_id: uuid.UUID,
+    body: FindingChatRequest,
+    session: DbSession,
+    redis_client: RedisClient,
+    user: CurrentNonGuestUser,
+) -> FindingChatResponse:
+    """Ask the finding-scoped AI assistant one question.
+
+    Phase 2 is deliberately narrative-only: the assistant can suggest actions,
+    but the endpoint does not run tools, add findings, or mutate tags. The
+    user's prompt and assistant response are persisted as chat bubbles.
+    """
+    from app.services.ephemeral_provider_key import NoProviderKeyError
+    from app.services.finding_chat import (
+        generate_finding_chat_reply,
+        get_or_create_conversation,
+    )
+
+    finding = session.get(Finding, finding_id)
+    if finding is None:
+        raise HTTPException(status_code=404, detail="finding not found")
+
+    text = body.message.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="message is empty")
+
+    try:
+        conv = get_or_create_conversation(
+            session,
+            finding=finding,
+            user_id=user.id,
+            conversation_id=body.conversation_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if conv.created_by_user_id is not None and conv.created_by_user_id != user.id:
+        raise HTTPException(status_code=403, detail="conversation belongs to another user")
+
+    user_message = ConversationMessage(
+        conversation_id=conv.id,
+        role="user",
+        content=text,
+    )
+    conv.updated_at = datetime.now(tz=UTC)
+    session.add(user_message)
+    session.commit()
+    session.refresh(user_message)
+
+    try:
+        execution, assistant_message = generate_finding_chat_reply(
+            session,
+            redis_client,
+            finding=finding,
+            conversation=conv,
+            acting_user_id=user.id,
+        )
+    except NoProviderKeyError as exc:
+        session.rollback()
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"No provider key configured for the LLM call ({exc}). "
+                "Add one under /settings/keys."
+            ),
+        ) from exc
+    except Exception as exc:
+        session.rollback()
+        raise HTTPException(status_code=502, detail=f"chat failed: {exc}") from exc
+
+    session.add(
+        AuditLog(
+            engagement_id=finding.engagement_id,
+            actor_type=ActorType.user,
+            actor_id=str(user.id),
+            event_type="finding.chat_asked",
+            payload={
+                "finding_id": str(finding.id),
+                "conversation_id": str(conv.id),
+                "message_id": str(assistant_message.id),
+                "execution_id": str(execution.id),
+            },
+        )
+    )
+    session.commit()
+
+    return FindingChatResponse(
+        conversation_id=conv.id,
+        user_message=FindingChatMessageRead.model_validate(user_message),
+        assistant_message=FindingChatMessageRead.model_validate(assistant_message),
+        execution_id=execution.id,
+    )
+
+
+@router.post(
+    "/findings/{finding_id}/chat/messages/{message_id}/actions/accept",
+    response_model=FindingChatActionResponse,
+)
+def accept_finding_chat_action(
+    finding_id: uuid.UUID,
+    message_id: uuid.UUID,
+    body: FindingChatActionRequest,
+    session: DbSession,
+    redis_client: RedisClient,
+    user: CurrentNonGuestUser,
+) -> FindingChatActionResponse:
+    """Approve one inert assistant action bubble.
+
+    This is the Phase-3 consent gate: LLM output is just JSON on a chat bubble
+    until the analyst clicks approve, then this allow-listed endpoint dispatches
+    executable enum/scan tool actions through the existing Tactical path.
+    """
+    from app.services.finding_chat import accept_chat_action
+
+    finding = session.get(Finding, finding_id)
+    if finding is None:
+        raise HTTPException(status_code=404, detail="finding not found")
+    message = session.get(ConversationMessage, message_id)
+    if message is None:
+        raise HTTPException(status_code=404, detail="message not found")
+    conv = session.get(Conversation, message.conversation_id)
+    if conv is None or conv.finding_id != finding.id:
+        raise HTTPException(status_code=404, detail="message not found for this finding")
+    if conv.created_by_user_id is not None and conv.created_by_user_id != user.id:
+        raise HTTPException(status_code=403, detail="conversation belongs to another user")
+
+    try:
+        action_type, result = accept_chat_action(
+            session,
+            finding=finding,
+            message=message,
+            action_index=body.action_index,
+            acting_user_id=user.id,
+            redis_client=redis_client,
+        )
+    except ValueError as exc:
+        session.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    session.add(
+        AuditLog(
+            engagement_id=finding.engagement_id,
+            actor_type=ActorType.user,
+            actor_id=str(user.id),
+            event_type="finding.chat_action.accepted",
+            payload={
+                "finding_id": str(finding.id),
+                "conversation_id": str(conv.id),
+                "message_id": str(message.id),
+                "action_index": body.action_index,
+                "action_type": action_type,
+                "result": result,
+            },
+        )
+    )
+    session.commit()
+    session.refresh(message)
+    return FindingChatActionResponse(
+        message=FindingChatMessageRead.model_validate(message),
+        action_index=body.action_index,
+        action_type=action_type,
+        status="accepted",
+        result=result,
+    )
 
 
 @router.post(
