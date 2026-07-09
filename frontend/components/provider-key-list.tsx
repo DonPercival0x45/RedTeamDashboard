@@ -1,9 +1,10 @@
 "use client";
 
 import { useState } from "react";
-import { Check, Loader2, Trash2, Wifi } from "lucide-react";
+import { Check, ListChecks, Loader2, Trash2, Wifi } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { SelectModelsModal } from "@/components/settings/select-models-modal";
 import { deleteProviderKey, probeSavedProviderKey } from "@/lib/api";
 import type { ProviderKey, ProviderKeyProbeResult } from "@/lib/types";
 
@@ -24,6 +25,8 @@ export function ProviderKeyList({
     {},
   );
   const [probeErrors, setProbeErrors] = useState<Record<string, string>>({});
+  // v1.26.0: per-key model selection modal. Only one open at a time.
+  const [selectingKey, setSelectingKey] = useState<ProviderKey | null>(null);
 
   const onTest = async (k: ProviderKey) => {
     setProbingId(k.id);
@@ -153,20 +156,31 @@ export function ProviderKeyList({
             </div>
             <div className="flex items-center gap-1">
               {k.kind !== "mcp_server" && (
-                <Button
-                  size="icon"
-                  variant="ghost"
-                  disabled={probingId === k.id}
-                  onClick={() => onTest(k)}
-                  aria-label={`Test ${k.name}`}
-                  title="Test this key + endpoint and list available models"
-                >
-                  {probingId === k.id ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Wifi className="h-4 w-4" />
-                  )}
-                </Button>
+                <>
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    disabled={probingId === k.id}
+                    onClick={() => onTest(k)}
+                    aria-label={`Test ${k.name}`}
+                    title="Test this key + endpoint and list available models"
+                  >
+                    {probingId === k.id ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Wifi className="h-4 w-4" />
+                    )}
+                  </Button>
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    onClick={() => setSelectingKey(k)}
+                    aria-label={`Select models for ${k.name}`}
+                    title="Pick which of this key's models show up in Configurations dropdowns"
+                  >
+                    <ListChecks className="h-4 w-4" />
+                  </Button>
+                </>
               )}
               <Button
                 size="icon"
@@ -181,6 +195,14 @@ export function ProviderKeyList({
           </li>
         ))}
       </ul>
+      <SelectModelsModal
+        keyRow={selectingKey}
+        open={selectingKey !== null}
+        onOpenChange={(next) => {
+          if (!next) setSelectingKey(null);
+        }}
+        onSaved={onChanged}
+      />
     </div>
   );
 }

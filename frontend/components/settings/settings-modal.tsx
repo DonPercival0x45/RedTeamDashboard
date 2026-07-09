@@ -94,7 +94,7 @@ interface PanelEntry {
 }
 
 const PANELS: PanelEntry[] = [
-  { key: "models", label: "Models", icon: Key, Component: ModelsPanel },
+  { key: "models", label: "Keys", icon: Key, Component: ModelsPanel },
   {
     key: "configurations",
     label: "Configurations",
