@@ -39,3 +39,10 @@ def test_entity_source_can_list_multiple_types() -> None:
         _BASE.format(name="reputation") + "  entity_source: [ip, host]\n"
     )
     assert m.spec.entity_source == ["ip", "host"]
+
+
+def test_analyze_findings_round_trips_and_defaults_false() -> None:
+    m = parse_manifest(_BASE.format(name="enum") + "  analyze_findings: true\n")
+    assert m.spec.analyze_findings is True
+    # defaults to False when omitted (opt-in — no surprise token cost)
+    assert parse_manifest(_BASE.format(name="plain")).spec.analyze_findings is False

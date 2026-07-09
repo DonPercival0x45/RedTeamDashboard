@@ -18,7 +18,7 @@ from typing import Annotated
 from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import select
 
-from app.api.deps import CurrentNonGuestUser, CurrentUser, DbSession
+from app.api.deps import CurrentNonGuestUser, CurrentUser, DbSession, RedisClient
 from app.models import (
     Engagement,
     Tool,
@@ -72,6 +72,7 @@ async def create_tool_invocation(
     body: ToolInvokeRequest,
     session: DbSession,
     user: CurrentNonGuestUser,
+    redis: RedisClient,
 ) -> ToolInvocationRead:
     """Kick a tool invocation and block until it exits (or times out).
 
@@ -86,7 +87,9 @@ async def create_tool_invocation(
         raise HTTPException(status_code=404, detail="tool not found")
 
     try:
-        row = await invoke_tool(session, eng, tool, body.args, user)
+        row = await invoke_tool(
+            session, eng, tool, body.args, user, redis_client=redis
+        )
     except ToolInvocationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

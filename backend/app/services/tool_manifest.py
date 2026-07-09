@@ -96,6 +96,12 @@ class ToolSpec(BaseModel):
     # Advisory — the tool's source is the source of truth; this is a hint
     # so the analyst knows what they're about to run against.
     entity_source: list[str] = Field(default_factory=list)
+    # v0.18.0: when true, a successful invocation's captured stdout is
+    # analyzed by an LLM and findings auto-created from it — closing the
+    # gap with built-in tools, which already persist findings. Opt-in so
+    # it only costs tokens for tools that want it. Uses the invoker's
+    # resolved LLM key; skips silently if they have none.
+    analyze_findings: bool = False
 
     @field_validator("risk_level")
     @classmethod
