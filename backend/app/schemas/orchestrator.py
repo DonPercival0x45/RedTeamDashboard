@@ -149,3 +149,15 @@ class FindingChatResponse(BaseModel):
     user_message: FindingChatMessageRead
     assistant_message: FindingChatMessageRead
     execution_id: UUID | None = None
+
+
+class FindingChatActionRequest(BaseModel):
+    action_index: int = Field(default=0, ge=0, le=10)
+
+
+class FindingChatActionResponse(BaseModel):
+    message: FindingChatMessageRead
+    action_index: int
+    action_type: str
+    status: Literal["accepted", "dismissed"]
+    result: dict[str, Any] = Field(default_factory=dict)

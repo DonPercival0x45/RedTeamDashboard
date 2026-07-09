@@ -42,6 +42,7 @@ from app.models import (
     AgentName,
     AgentTrigger,
     AuditLog,
+    Conversation,
     ConversationMessage,
     Engagement,
     Finding,
@@ -68,6 +69,8 @@ from app.schemas.orchestrator import (
     AcceptSuggestionResponse,
     AnalyzeFindingResponse,
     FindingActivityEntry,
+    FindingChatActionRequest,
+    FindingChatActionResponse,
     FindingChatMessageRead,
     FindingChatRequest,
     FindingChatResponse,
@@ -343,6 +346,76 @@ def ask_finding_chat(
         user_message=FindingChatMessageRead.model_validate(user_message),
         assistant_message=FindingChatMessageRead.model_validate(assistant_message),
         execution_id=execution.id,
+    )
+
+
+@router.post(
+    "/findings/{finding_id}/chat/messages/{message_id}/actions/accept",
+    response_model=FindingChatActionResponse,
+)
+def accept_finding_chat_action(
+    finding_id: uuid.UUID,
+    message_id: uuid.UUID,
+    body: FindingChatActionRequest,
+    session: DbSession,
+    user: CurrentNonGuestUser,
+) -> FindingChatActionResponse:
+    """Approve one inert assistant action bubble.
+
+    This is the Phase-3 consent gate: LLM output is just JSON on a chat bubble
+    until the analyst clicks approve, then this allow-listed endpoint performs
+    the mutation (tag, add finding, next-step suggestion, or tool suggestion).
+    """
+    from app.services.finding_chat import accept_chat_action
+
+    finding = session.get(Finding, finding_id)
+    if finding is None:
+        raise HTTPException(status_code=404, detail="finding not found")
+    message = session.get(ConversationMessage, message_id)
+    if message is None:
+        raise HTTPException(status_code=404, detail="message not found")
+    conv = session.get(Conversation, message.conversation_id)
+    if conv is None or conv.finding_id != finding.id:
+        raise HTTPException(status_code=404, detail="message not found for this finding")
+    if conv.created_by_user_id is not None and conv.created_by_user_id != user.id:
+        raise HTTPException(status_code=403, detail="conversation belongs to another user")
+
+    try:
+        action_type, result = accept_chat_action(
+            session,
+            finding=finding,
+            message=message,
+            action_index=body.action_index,
+            acting_user_id=user.id,
+        )
+    except ValueError as exc:
+        session.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    session.add(
+        AuditLog(
+            engagement_id=finding.engagement_id,
+            actor_type=ActorType.user,
+            actor_id=str(user.id),
+            event_type="finding.chat_action.accepted",
+            payload={
+                "finding_id": str(finding.id),
+                "conversation_id": str(conv.id),
+                "message_id": str(message.id),
+                "action_index": body.action_index,
+                "action_type": action_type,
+                "result": result,
+            },
+        )
+    )
+    session.commit()
+    session.refresh(message)
+    return FindingChatActionResponse(
+        message=FindingChatMessageRead.model_validate(message),
+        action_index=body.action_index,
+        action_type=action_type,
+        status="accepted",
+        result=result,
     )
 
 

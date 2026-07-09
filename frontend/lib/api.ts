@@ -28,6 +28,7 @@ import type {
   FindingSort,
   FindingSummaryEntry,
   FindingActivityEntry,
+  FindingChatActionResponse,
   FindingChatResponse,
   FindingChatState,
   FindingValidationStatus,
@@ -238,6 +239,20 @@ export function askFindingChat(
     method: "POST",
     body: JSON.stringify(body),
   });
+}
+
+export function acceptFindingChatAction(
+  findingId: string,
+  messageId: string,
+  actionIndex: number,
+): Promise<FindingChatActionResponse> {
+  return request<FindingChatActionResponse>(
+    `/findings/${findingId}/chat/messages/${messageId}/actions/accept`,
+    {
+      method: "POST",
+      body: JSON.stringify({ action_index: actionIndex }),
+    },
+  );
 }
 
 // POST /engagements/{slug}/findings/import/burp — Burp Pro Issue Export XML.

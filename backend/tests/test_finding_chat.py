@@ -71,7 +71,17 @@ def finding(db: Session, engagement: Engagement) -> Finding:
 
 
 class _FakeResponse:
-    content = "Review scope, confirm exposure, and capture evidence before reporting."
+    content = """{
+      "answer": "Review scope, confirm exposure, and capture evidence before reporting.",
+      "actions": [
+        {
+          "type": "tag_incident",
+          "title": "Tag as external exposure",
+          "description": "Makes the finding easier to filter during reporting.",
+          "params": {"tags": ["external-exposure", "needs-evidence"]}
+        }
+      ]
+    }"""
     response_metadata = {"usage": {"input_tokens": 10, "output_tokens": 6}}
 
 
@@ -138,6 +148,9 @@ def test_ask_finding_chat_persists_bubbles_execution_and_audit(
     assert body["user_message"]["role"] == "user"
     assert body["assistant_message"]["role"] == "assistant"
     assert "Review scope" in body["assistant_message"]["content"]
+    actions = body["assistant_message"]["action_payload"]["actions"]
+    assert actions[0]["type"] == "tag_incident"
+    assert actions[0]["status"] == "proposed"
     assert "Finding dossier JSON" in fake.messages[1][1]
     assert "Exposed admin portal" in fake.messages[1][1]
 
@@ -158,13 +171,53 @@ def test_ask_finding_chat_persists_bubbles_execution_and_audit(
     assert execution.status.value == "completed"
 
     audit = db.execute(
-        select(AuditLog).where(AuditLog.event_type == "finding.chat_asked")
+        select(AuditLog).where(
+            AuditLog.engagement_id == finding.engagement_id,
+            AuditLog.event_type == "finding.chat_asked",
+        )
     ).scalar_one()
     assert audit.payload["conversation_id"] == str(conversation_id)
 
     state = client.get(f"/findings/{finding.id}/chat", headers=HDR)
     assert state.status_code == 200
     assert [m["role"] for m in state.json()["messages"]] == ["user", "assistant"]
+
+
+def test_accept_finding_chat_tag_action_updates_finding_and_bubble(
+    monkeypatch: pytest.MonkeyPatch,
+    client: TestClient,
+    db: Session,
+    finding: Finding,
+) -> None:
+    _patch_llm(monkeypatch)
+    chat = client.post(
+        f"/findings/{finding.id}/chat",
+        headers=HDR,
+        json={"message": "Suggest tags"},
+    ).json()
+    message_id = chat["assistant_message"]["id"]
+
+    resp = client.post(
+        f"/findings/{finding.id}/chat/messages/{message_id}/actions/accept",
+        headers=HDR,
+        json={"action_index": 0},
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["action_type"] == "tag_incident"
+    assert body["result"]["tags"] == ["external-exposure", "needs-evidence"]
+    assert body["message"]["action_payload"]["actions"][0]["status"] == "accepted"
+
+    db.refresh(finding)
+    assert finding.tags == ["external-exposure", "needs-evidence"]
+    audit = db.execute(
+        select(AuditLog).where(
+            AuditLog.engagement_id == finding.engagement_id,
+            AuditLog.event_type == "finding.chat_action.accepted",
+        )
+    ).scalar_one()
+    assert audit.payload["action_type"] == "tag_incident"
 
 
 def test_finding_chat_reuses_latest_conversation(
