@@ -62,9 +62,11 @@ from app.schemas.cost import (
     ToolCost,
     ToolCostSummary,
 )
+from app.schemas.finding import FindingRead
 from app.schemas.orchestrator import (
     AcceptSuggestionResponse,
     AnalyzeFindingResponse,
+    FindingActivityEntry,
     SuggestionRead,
     TaskRead,
     TriageFindingResponse,
@@ -158,6 +160,52 @@ def analyze_finding(
 # ---------------------------------------------------------------------------
 # Triage a finding (LLM-written summary for the slide-over textarea)
 # ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/findings/{finding_id}",
+    response_model=FindingRead,
+)
+def get_finding(
+    finding_id: uuid.UUID,
+    session: DbSession,
+    _user: CurrentUser,
+) -> FindingRead:
+    """Single-finding read for the finding pane (deep-linkable full page).
+
+    The engagement-scoped list stays the source of truth for the table;
+    this is the cross-engagement fetch the pane needs so it can render
+    from just the finding id in the URL.
+    """
+    finding = session.get(Finding, finding_id)
+    if finding is None:
+        raise HTTPException(status_code=404, detail="finding not found")
+    return FindingRead.model_validate(finding)
+
+
+@router.get(
+    "/findings/{finding_id}/activity",
+    response_model=list[FindingActivityEntry],
+)
+def finding_activity(
+    finding_id: uuid.UUID,
+    session: DbSession,
+    _user: CurrentUser,
+) -> list[FindingActivityEntry]:
+    """Activity timeline for the finding pane of glass (Phase 1).
+
+    Merges creation origin, finding-scoped Tasks, agent executions that
+    reference the finding, and audit-log events into one chronological
+    feed. Read-only — the pane renders it as the "what's happened here"
+    log alongside the summary/observations/evidence sections.
+    """
+    from app.services.finding_activity import build_finding_activity
+
+    finding = session.get(Finding, finding_id)
+    if finding is None:
+        raise HTTPException(status_code=404, detail="finding not found")
+    rows = build_finding_activity(session, finding_id)
+    return [FindingActivityEntry(**r) for r in rows]
 
 
 @router.post(

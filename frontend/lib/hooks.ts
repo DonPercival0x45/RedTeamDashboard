@@ -44,6 +44,8 @@ import {
   listEngagements,
   listEntities,
   listFindings,
+  getFinding,
+  getFindingActivity,
   listIntegrations,
   listObservations,
   listProviderKeys,
@@ -89,6 +91,8 @@ export const qk = {
   engagements: () => ["engagements"] as const,
   engagement: (slug: string) => ["engagement", slug] as const,
   findings: (slug: string) => ["findings", slug] as const,
+  finding: (id: string) => ["finding", id] as const,
+  findingActivity: (id: string) => ["finding-activity", id] as const,
   observations: (slug: string) => ["observations", slug] as const,
   scope: (slug: string) => ["scope", slug] as const,
   entities: (slug: string) => ["entities", slug] as const,
@@ -142,6 +146,21 @@ export function useFindings(slug: string) {
   return useQuery({
     queryKey: qk.findings(slug),
     queryFn: () => listFindings(slug),
+  });
+}
+
+// v0.21.0 (finding pane): single-finding + activity timeline.
+export function useFinding(findingId: string) {
+  return useQuery({
+    queryKey: qk.finding(findingId),
+    queryFn: () => getFinding(findingId),
+  });
+}
+
+export function useFindingActivity(findingId: string) {
+  return useQuery({
+    queryKey: qk.findingActivity(findingId),
+    queryFn: () => getFindingActivity(findingId),
   });
 }
 

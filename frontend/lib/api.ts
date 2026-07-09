@@ -27,6 +27,7 @@ import type {
   FindingPhase,
   FindingSort,
   FindingSummaryEntry,
+  FindingActivityEntry,
   FindingValidationStatus,
   StatusEntity,
   StatusKind,
@@ -210,6 +211,17 @@ export function listFindings(
   if (filters?.sort) q.set("sort", filters.sort);
   const suffix = q.toString() ? `?${q.toString()}` : "";
   return request<Finding[]>(`/engagements/${slug}/findings${suffix}`);
+}
+
+// v0.21.0 (finding pane): single-finding + activity timeline fetches.
+export function getFinding(findingId: string): Promise<Finding> {
+  return request<Finding>(`/findings/${findingId}`);
+}
+
+export function getFindingActivity(
+  findingId: string,
+): Promise<FindingActivityEntry[]> {
+  return request<FindingActivityEntry[]>(`/findings/${findingId}/activity`);
 }
 
 // POST /engagements/{slug}/findings/import/burp — Burp Pro Issue Export XML.

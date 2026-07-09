@@ -103,3 +103,20 @@ class AgentExecutionRead(BaseModel):
     error: str | None
     started_at: datetime
     completed_at: datetime | None
+
+
+class FindingActivityEntry(BaseModel):
+    """One row in the finding's activity timeline (pane of glass, Phase 1).
+
+    A flat ``(ts, kind, label, actor, detail, ref)`` row merged from Tasks,
+    agent executions, and the audit log so the frontend renders the
+    timeline uniformly without knowing the source model.
+    """
+
+    ts: str | None = None
+    kind: str
+    label: str
+    actor: str | None = None
+    detail: str | None = None
+    ref_type: str | None = None
+    ref_id: str | None = None
