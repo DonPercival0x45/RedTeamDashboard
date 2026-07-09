@@ -258,6 +258,8 @@ function FindingWorkbench({
   slug: string | null;
 }) {
   const [tab, setTab] = useState<WorkbenchTab>("notes");
+  const { data: chat } = useFindingChat(finding.id);
+  const toolActionCount = openToolActions(chat?.messages ?? []).length;
   const active = WORKBENCH_TABS.find((t) => t.id === tab) ?? WORKBENCH_TABS[0];
 
   return (
@@ -283,7 +285,14 @@ function FindingWorkbench({
                     : "text-muted-foreground hover:text-foreground",
                 )}
               >
-                {item.label}
+                <span className="inline-flex items-center gap-1.5">
+                  {item.label}
+                  {item.id === "tools" && toolActionCount > 0 && (
+                    <span className="rounded-full bg-amber-500 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-black">
+                      {toolActionCount}
+                    </span>
+                  )}
+                </span>
               </button>
             ))}
           </div>
@@ -631,17 +640,20 @@ function InfoTile({ label, value }: { label: string; value: string }) {
   );
 }
 
-function AgentToolsPanel({ findingId }: { findingId: string }) {
-  const { data: chat } = useFindingChat(findingId);
-  const acceptAction = useAcceptFindingChatActionMutation(findingId);
-  const messages = chat?.messages ?? [];
-  const proposedActions = messages.flatMap((m) =>
+function openToolActions(messages: FindingChatMessage[]) {
+  return messages.flatMap((m) =>
     (m.action_payload?.actions ?? [])
       .map((action, index) => ({ messageId: m.id, action, index }))
       .filter(
         ({ action }) => action.status !== "accepted" && action.type === "run_tool",
       ),
   );
+}
+
+function AgentToolsPanel({ findingId }: { findingId: string }) {
+  const { data: chat } = useFindingChat(findingId);
+  const acceptAction = useAcceptFindingChatActionMutation(findingId);
+  const proposedActions = openToolActions(chat?.messages ?? []);
 
   return (
     <section className="rounded-lg border border-amber-400/40 bg-amber-400/10 p-4">
