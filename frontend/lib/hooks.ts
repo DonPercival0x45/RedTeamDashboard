@@ -18,6 +18,7 @@ import {
 import {
   approveTool,
   archiveEngagement,
+  cancelTask,
   createIntegration,
   createObservation,
   deleteIntegration,
@@ -768,6 +769,15 @@ export function useRetryTaskMutation(slug: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: retryTask,
+    onSuccess: () =>
+      qc.invalidateQueries({ queryKey: qk.engagementStatus(slug) }),
+  });
+}
+
+export function useCancelTaskMutation(slug: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: cancelTask,
     onSuccess: () =>
       qc.invalidateQueries({ queryKey: qk.engagementStatus(slug) }),
   });
