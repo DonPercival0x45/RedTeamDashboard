@@ -36,6 +36,7 @@ import {
   useClearFindingChatMutation,
   useFinding,
   useFindingActivity,
+  useFindings,
   qk,
   useFindingChat,
 } from "@/lib/hooks";
@@ -308,7 +309,7 @@ function FindingWorkbench({
       </div>
 
       <div className="p-4">
-        {tab === "ai" && <ChatRail findingId={finding.id} />}
+        {tab === "ai" && <ChatRail findingId={finding.id} slug={slug} />}
         {tab === "notes" && (
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
             <DecisionPanel finding={finding} />
@@ -1146,11 +1147,25 @@ function ActionHistoryPanel({
   );
 }
 
-function ChatRail({ findingId }: { findingId: string }) {
+function isCancellableTask(task: Task): boolean {
+  return ["pending", "dispatched", "running"].includes(task.status);
+}
+
+function ChatRail({
+  findingId,
+  slug,
+}: {
+  findingId: string;
+  slug: string | null;
+}) {
   const [message, setMessage] = useState("");
   const { data: chat, isLoading } = useFindingChat(findingId);
   const ask = useAskFindingChatMutation(findingId);
   const clear = useClearFindingChatMutation(findingId);
+  const acceptAction = useAcceptFindingChatActionMutation(findingId);
+  const denyAction = useDenyFindingChatActionMutation(findingId);
+  const { data: findings } = useFindings(slug ?? "");
+  const [tasks, setTasks] = useState<Task[] | null>(null);
   const messages = chat?.messages ?? [];
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -1161,6 +1176,49 @@ function ChatRail({ findingId }: { findingId: string }) {
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages.length, ask.isPending]);
+
+  // Live run status for accepted run_tool action bubbles: resolves the
+  // dispatched Task + counts findings its run produced, so the chat shows
+  // the outcome without navigating to Status/Findings.
+  const runOutcome = (action: FindingChatAction): string | null => {
+    if (action.type !== "run_tool" || action.status !== "accepted") return null;
+    const r = (action.result ?? {}) as Record<string, unknown>;
+    const taskId = typeof r.task_id === "string" ? r.task_id : null;
+    const runId = typeof r.run_id === "string" ? r.run_id : null;
+    const task = (tasks ?? []).find((t) => t.id === taskId);
+    if (!task) {
+      return r.dispatched ? "dispatched" : null;
+    }
+    let s = `run ${task.status}`;
+    if (task.status === "completed" && runId) {
+      const n = (findings ?? []).filter(
+        (f) => (f.thread_id ?? null) === runId,
+      ).length;
+      s += ` · ${n} finding${n === 1 ? "" : "s"}`;
+    } else if (task.status === "failed") {
+      s += " · likely out of scope or blocked at approval";
+    } else if (task.status === "running" || task.status === "dispatched") {
+      s += "…";
+    }
+    return s;
+  };
+
+  useEffect(() => {
+    if (!slug) {
+      setTasks([]);
+      return;
+    }
+    listTasks(slug)
+      .then(setTasks)
+      .catch(() => setTasks([]));
+    const id = window.setInterval(() => {
+      listTasks(slug)
+        .then(setTasks)
+        .catch(() => undefined);
+    }, 4000);
+    return () => window.clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [slug]);
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1208,7 +1266,21 @@ function ChatRail({ findingId }: { findingId: string }) {
             or ask for a concise summary of gaps.
           </div>
         ) : (
-          messages.map((m) => <ChatBubble key={m.id} message={m} />)
+          messages.map((m) => (
+            <ChatBubble
+              key={m.id}
+              message={m}
+              onAccept={(messageId, actionIndex) =>
+                acceptAction.mutate({ messageId, actionIndex })
+              }
+              onDeny={(messageId, actionIndex) =>
+                denyAction.mutate({ messageId, actionIndex })
+              }
+              accepting={acceptAction.isPending}
+              denying={denyAction.isPending}
+              runOutcome={runOutcome}
+            />
+          ))
         )}
         {ask.isPending && (
           <div className="rounded-md bg-muted/60 p-3 text-xs text-muted-foreground">
@@ -1248,8 +1320,26 @@ function ChatRail({ findingId }: { findingId: string }) {
   );
 }
 
-function ChatBubble({ message }: { message: FindingChatMessage }) {
+function ChatBubble({
+  message,
+  onAccept,
+  onDeny,
+  accepting,
+  denying,
+  runOutcome,
+}: {
+  message: FindingChatMessage;
+  onAccept: (messageId: string, actionIndex: number) => void;
+  onDeny: (messageId: string, actionIndex: number) => void;
+  accepting: boolean;
+  denying: boolean;
+  runOutcome: (action: FindingChatAction) => string | null;
+}) {
   const mine = message.role === "user";
+  const actions =
+    (message.action_payload?.actions ?? []).filter(
+      (a) => a.type !== "context",
+    );
   return (
     <div
       className={cn(
@@ -1268,6 +1358,21 @@ function ChatBubble({ message }: { message: FindingChatMessage }) {
         </span>
       </div>
       <p className="whitespace-pre-wrap leading-relaxed">{message.content}</p>
+      {actions.length > 0 && (
+        <div className="mt-2 space-y-2">
+          {actions.map((action, index) => (
+            <ActionCard
+              key={`${message.id}-${index}`}
+              action={action}
+              onAccept={() => onAccept(message.id, index)}
+              accepting={accepting}
+              onDeny={() => onDeny(message.id, index)}
+              denying={denying}
+              runOutcome={runOutcome(action)}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -1278,12 +1383,14 @@ function ActionCard({
   accepting,
   onDeny,
   denying,
+  runOutcome,
 }: {
   action: FindingChatAction;
   onAccept: () => void;
   accepting: boolean;
   onDeny: () => void;
   denying: boolean;
+  runOutcome?: string | null;
 }) {
   const accepted = action.status === "accepted";
   const denied = action.status === "denied";
@@ -1300,9 +1407,9 @@ function ActionCard({
               {action.description}
             </p>
           )}
-          {accepted && action.result && (
+          {accepted && (
             <p className="mt-1 text-[10px] text-emerald-600 dark:text-emerald-300">
-              Approved: {summarizeResult(action.result)}
+              Approved{runOutcome ? ` · ${runOutcome}` : action.result ? `: ${summarizeResult(action.result)}` : ""}
             </p>
           )}
           {denied && (
