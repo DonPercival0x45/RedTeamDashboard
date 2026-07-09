@@ -53,7 +53,7 @@ export default function SettingsKeysPage() {
           ← engagements
         </Link>
         <h1 className="mt-2 text-2xl font-semibold tracking-tight">
-          Models
+          Keys
         </h1>
         <p className="mt-1 text-sm text-muted-foreground">
           API credentials this tool uses on your behalf. Keys never leave
