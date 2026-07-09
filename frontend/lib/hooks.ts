@@ -18,6 +18,7 @@ import {
 import {
   approveTool,
   archiveEngagement,
+  askFindingChat,
   createIntegration,
   createObservation,
   deleteIntegration,
@@ -46,6 +47,7 @@ import {
   listFindings,
   getFinding,
   getFindingActivity,
+  getFindingChat,
   listIntegrations,
   listObservations,
   listProviderKeys,
@@ -68,6 +70,8 @@ import { loadReleases } from "@/lib/release-notes";
 import type {
   ContributionSource,
   Finding,
+  FindingChatResponse,
+  FindingChatState,
   Integration,
   Observation,
   RoadmapListFilters,
@@ -93,6 +97,7 @@ export const qk = {
   findings: (slug: string) => ["findings", slug] as const,
   finding: (id: string) => ["finding", id] as const,
   findingActivity: (id: string) => ["finding-activity", id] as const,
+  findingChat: (id: string) => ["finding-chat", id] as const,
   observations: (slug: string) => ["observations", slug] as const,
   scope: (slug: string) => ["scope", slug] as const,
   entities: (slug: string) => ["entities", slug] as const,
@@ -161,6 +166,33 @@ export function useFindingActivity(findingId: string) {
   return useQuery({
     queryKey: qk.findingActivity(findingId),
     queryFn: () => getFindingActivity(findingId),
+  });
+}
+
+export function useFindingChat(findingId: string) {
+  return useQuery({
+    queryKey: qk.findingChat(findingId),
+    queryFn: () => getFindingChat(findingId),
+  });
+}
+
+export function useAskFindingChatMutation(findingId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { message: string; conversation_id?: string | null }) =>
+      askFindingChat(findingId, body),
+    onSuccess: (resp: FindingChatResponse) => {
+      qc.setQueryData<FindingChatState>(qk.findingChat(findingId), (prev) => ({
+        conversation_id: resp.conversation_id,
+        messages: [
+          ...(prev?.messages ?? []),
+          resp.user_message,
+          resp.assistant_message,
+        ],
+      }));
+      qc.invalidateQueries({ queryKey: qk.findingChat(findingId) });
+      qc.invalidateQueries({ queryKey: qk.findingActivity(findingId) });
+    },
   });
 }
 

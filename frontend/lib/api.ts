@@ -28,6 +28,8 @@ import type {
   FindingSort,
   FindingSummaryEntry,
   FindingActivityEntry,
+  FindingChatResponse,
+  FindingChatState,
   FindingValidationStatus,
   StatusEntity,
   StatusKind,
@@ -222,6 +224,20 @@ export function getFindingActivity(
   findingId: string,
 ): Promise<FindingActivityEntry[]> {
   return request<FindingActivityEntry[]>(`/findings/${findingId}/activity`);
+}
+
+export function getFindingChat(findingId: string): Promise<FindingChatState> {
+  return request<FindingChatState>(`/findings/${findingId}/chat`);
+}
+
+export function askFindingChat(
+  findingId: string,
+  body: { message: string; conversation_id?: string | null },
+): Promise<FindingChatResponse> {
+  return request<FindingChatResponse>(`/findings/${findingId}/chat`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
 }
 
 // POST /engagements/{slug}/findings/import/burp — Burp Pro Issue Export XML.

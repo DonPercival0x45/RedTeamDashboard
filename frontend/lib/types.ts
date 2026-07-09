@@ -302,6 +302,30 @@ export interface FindingActivityEntry {
   ref_id: string | null;
 }
 
+export type FindingChatRole = "user" | "assistant" | "system";
+
+export interface FindingChatMessage {
+  id: string;
+  conversation_id: string;
+  role: FindingChatRole;
+  content: string;
+  action_payload: Record<string, unknown> | null;
+  execution_id: string | null;
+  created_at: string;
+}
+
+export interface FindingChatState {
+  conversation_id: string | null;
+  messages: FindingChatMessage[];
+}
+
+export interface FindingChatResponse {
+  conversation_id: string;
+  user_message: FindingChatMessage;
+  assistant_message: FindingChatMessage;
+  execution_id: string | null;
+}
+
 // Payload for POST /engagements/{slug}/findings/import
 export interface FindingImport {
   title: string;

@@ -7,7 +7,7 @@ over surface shows suggestions + the tasks they spawned).
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -120,3 +120,32 @@ class FindingActivityEntry(BaseModel):
     detail: str | None = None
     ref_type: str | None = None
     ref_id: str | None = None
+
+
+class FindingChatMessageRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    conversation_id: UUID
+    role: Literal["user", "assistant", "system"]
+    content: str
+    action_payload: dict[str, Any] | None = None
+    execution_id: UUID | None = None
+    created_at: datetime
+
+
+class FindingChatState(BaseModel):
+    conversation_id: UUID | None = None
+    messages: list[FindingChatMessageRead]
+
+
+class FindingChatRequest(BaseModel):
+    conversation_id: UUID | None = None
+    message: str = Field(..., min_length=1, max_length=4000)
+
+
+class FindingChatResponse(BaseModel):
+    conversation_id: UUID
+    user_message: FindingChatMessageRead
+    assistant_message: FindingChatMessageRead
+    execution_id: UUID | None = None
