@@ -244,18 +244,19 @@ function TimelineRow({ entry }: { entry: FindingActivityEntry }) {
   );
 }
 
-export default function FindingPanePage({
+export default async function FindingPanePage({
   params,
 }: {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }) {
+  const { id } = await params;
   return (
     <Suspense
       fallback={
         <p className="px-6 py-10 text-sm text-muted-foreground">Loading…</p>
       }
     >
-      <FindingPaneWithSlug id={params.id} />
+      <FindingPaneWithSlug id={id} />
     </Suspense>
   );
 }

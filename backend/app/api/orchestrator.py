@@ -180,7 +180,9 @@ def get_finding(
     finding = session.get(Finding, finding_id)
     if finding is None:
         raise HTTPException(status_code=404, detail="finding not found")
-    return FindingRead.model_validate(finding)
+    # Return the ORM row; FastAPI's response_model validates with
+    # from_attributes=True (FindingRead has no explicit model_config).
+    return finding
 
 
 @router.get(

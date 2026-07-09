@@ -1,9 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { useQueryClient } from "@tanstack/react-query";
 import { qk, useMe } from "@/lib/hooks";
-import { Ban, Layers, Link2, Plus, Search, Sparkles, Trash2, Upload, Wand2, Wrench, X } from "lucide-react";
+import { Ban, Layers, Link2, Maximize2, Plus, Search, Sparkles, Trash2, Upload, Wand2, Wrench, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -769,6 +770,7 @@ export function FindingsView({
       {selected && (
         <FindingSlideOver
           finding={selected}
+          slug={slug}
           onClose={() => setSelected(null)}
           onUpdated={handleUpdated}
           onDeleted={(id) => {
@@ -1071,11 +1073,13 @@ function AttachmentThumb({
 
 function FindingSlideOver({
   finding,
+  slug,
   onClose,
   onUpdated,
   onDeleted,
 }: {
   finding: Finding;
+  slug: string;
   onClose: () => void;
   onUpdated: (f: Finding) => void;
   onDeleted: (findingId: string) => void;
@@ -1337,6 +1341,15 @@ function FindingSlideOver({
           >
             <X className="h-5 w-5" />
           </button>
+        </div>
+        <div className="mt-1 flex justify-end">
+          <Link
+            href={`/e/findings/${finding.id}?slug=${encodeURIComponent(slug)}`}
+            className="inline-flex items-center gap-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+            title="Open the full finding pane — activity timeline, context, and (soon) the AI assistant"
+          >
+            <Maximize2 className="h-3 w-3" /> Open full view
+          </Link>
         </div>
 
         <div className="mt-3 flex items-center gap-2">
