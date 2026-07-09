@@ -159,5 +159,14 @@ class FindingChatActionResponse(BaseModel):
     message: FindingChatMessageRead
     action_index: int
     action_type: str
-    status: Literal["accepted", "dismissed"]
+    status: Literal["accepted", "denied"]
     result: dict[str, Any] = Field(default_factory=dict)
+
+
+class FindingChatSummaryResponse(BaseModel):
+    """Returned by ``POST /findings/{id}/chat/summarize`` (roadmap: pane of
+    glass). The LLM digest of the conversation before it's closed, persisted
+    as an audit row so the activity timeline can surface it as reviewable."""
+
+    summary: str
+    message_count: int
