@@ -172,9 +172,10 @@ def upsert_agent_configuration(
 ) -> AgentConfigRead:
     eng = _engagement_by_slug(session, slug)
 
-    # Only the three engagement-scoped roles are configurable this bundle.
-    # Body shape already restricts to them, but guard here in case a role
-    # sneaks in via widened schema later.
+    # Missing keys leave the existing row untouched; explicit ``null``
+    # clears that role. Distinguish the two via ``model_fields_set``
+    # (pydantic v2) — a key that was never sent is not in the set.
+    sent = body.model_fields_set
     mapping = {
         AgentName.strategic: body.strategic,
         AgentName.tactical: body.tactical,
@@ -182,6 +183,10 @@ def upsert_agent_configuration(
     }
     for role, model in mapping.items():
         if not is_configurable_role(role.value):
+            continue
+        if role.value not in sent:
+            # Field was omitted — leave any existing row for this role
+            # untouched.
             continue
         # ``None`` clears; a present-but-empty string also clears.
         _upsert_one(

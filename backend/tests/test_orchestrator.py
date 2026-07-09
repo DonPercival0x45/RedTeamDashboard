@@ -441,7 +441,7 @@ def test_analyze_endpoint_returns_suggestions(
     # having a Redis-cached key. The endpoint constructs the agent
     # internally with no llm= override; patching the method at class
     # level reaches that instance.
-    def _stub_resolve_llm(self: StrategicAgent, *, acting_user_id: Any) -> Any:
+    def _stub_resolve_llm(self: StrategicAgent, *, acting_user_id: Any, **_kw: Any) -> Any:
         return (fake, "test", "fake-1")
 
     monkeypatch.setattr(StrategicAgent, "_resolve_llm", _stub_resolve_llm)
