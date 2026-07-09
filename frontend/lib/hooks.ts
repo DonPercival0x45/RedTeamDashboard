@@ -22,6 +22,7 @@ import {
   askFindingChat,
   cancelAgentExecution,
   cancelTask,
+  clearFindingChat,
   createIntegration,
   createObservation,
   deleteIntegration,
@@ -195,6 +196,20 @@ export function useAskFindingChatMutation(findingId: string) {
         ],
       }));
       qc.invalidateQueries({ queryKey: qk.findingChat(findingId) });
+      qc.invalidateQueries({ queryKey: qk.findingActivity(findingId) });
+    },
+  });
+}
+
+export function useClearFindingChatMutation(findingId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => clearFindingChat(findingId),
+    onSuccess: () => {
+      qc.setQueryData<FindingChatState>(qk.findingChat(findingId), {
+        conversation_id: null,
+        messages: [],
+      });
       qc.invalidateQueries({ queryKey: qk.findingActivity(findingId) });
     },
   });

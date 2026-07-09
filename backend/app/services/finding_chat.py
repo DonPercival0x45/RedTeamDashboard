@@ -71,7 +71,10 @@ Return a JSON object only, with this shape:
 Actions are proposals only. Do not claim they have run. Actions must be
 agent-executable tool runs using one of the built-in tools from the dossier's
 agent_tools list. Never propose exploit actions. If no useful tool action exists,
-return an empty actions array and the dashboard will create safe defaults."""
+return an empty actions array and the dashboard will create safe defaults.
+
+Be concise: maximum 5 bullets or 2 short paragraphs. Put detail in proposed
+action descriptions, not the chat narrative."""
 
 
 def get_latest_conversation(

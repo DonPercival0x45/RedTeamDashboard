@@ -231,6 +231,10 @@ export function getFindingChat(findingId: string): Promise<FindingChatState> {
   return request<FindingChatState>(`/findings/${findingId}/chat`);
 }
 
+export function clearFindingChat(findingId: string): Promise<void> {
+  return request<void>(`/findings/${findingId}/chat`, { method: "DELETE" });
+}
+
 export function askFindingChat(
   findingId: string,
   body: { message: string; conversation_id?: string | null },

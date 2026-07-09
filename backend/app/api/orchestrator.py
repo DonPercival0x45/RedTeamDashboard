@@ -252,6 +252,50 @@ def finding_chat_state(
     )
 
 
+@router.delete(
+    "/findings/{finding_id}/chat",
+    status_code=204,
+)
+def clear_finding_chat(
+    finding_id: uuid.UUID,
+    session: DbSession,
+    user: CurrentNonGuestUser,
+) -> None:
+    """Clear the current analyst's finding-scoped AI conversation.
+
+    This deletes persisted chat bubbles/action proposals for this analyst and
+    finding so the AI workspace can start fresh. The audit log remains
+    append-only and records that a reset happened.
+    """
+    finding = session.get(Finding, finding_id)
+    if finding is None:
+        raise HTTPException(status_code=404, detail="finding not found")
+    conversations = list(
+        session.execute(
+            select(Conversation).where(
+                Conversation.finding_id == finding_id,
+                Conversation.created_by_user_id == user.id,
+            )
+        ).scalars()
+    )
+    for conv in conversations:
+        session.delete(conv)
+    session.add(
+        AuditLog(
+            engagement_id=finding.engagement_id,
+            actor_type=ActorType.user,
+            actor_id=str(user.id),
+            event_type="finding.chat_cleared",
+            payload={
+                "finding_id": str(finding.id),
+                "conversation_count": len(conversations),
+            },
+        )
+    )
+    session.commit()
+    return None
+
+
 @router.post(
     "/findings/{finding_id}/chat",
     response_model=FindingChatResponse,

@@ -28,6 +28,7 @@ import {
 import {
   useAcceptFindingChatActionMutation,
   useAskFindingChatMutation,
+  useClearFindingChatMutation,
   useFinding,
   useFindingActivity,
   qk,
@@ -215,7 +216,7 @@ function ActivityRail({ entries }: { entries: FindingActivityEntry[] }) {
   );
 }
 
-type WorkbenchTab = "ai" | "notes" | "evidence" | "details";
+type WorkbenchTab = "notes" | "ai" | "evidence" | "details" | "tools";
 
 const WORKBENCH_TABS: Array<{
   id: WorkbenchTab;
@@ -223,14 +224,14 @@ const WORKBENCH_TABS: Array<{
   description: string;
 }> = [
   {
-    id: "ai",
-    label: "AI & Actions",
-    description: "Agent-executable tool runs and the finding-scoped assistant.",
-  },
-  {
     id: "notes",
     label: "Notes",
     description: "Summary history, comments, tags, and reportability.",
+  },
+  {
+    id: "ai",
+    label: "AI",
+    description: "Finding-scoped assistant for concise context and planning.",
   },
   {
     id: "evidence",
@@ -242,6 +243,11 @@ const WORKBENCH_TABS: Array<{
     label: "Details",
     description: "Raw payload, timestamps, and normalized finding metadata.",
   },
+  {
+    id: "tools",
+    label: "Tools",
+    description: "Agent-executable enum/scan actions you can approve and dispatch.",
+  },
 ];
 
 function FindingWorkbench({
@@ -251,7 +257,7 @@ function FindingWorkbench({
   finding: Finding;
   slug: string | null;
 }) {
-  const [tab, setTab] = useState<WorkbenchTab>("ai");
+  const [tab, setTab] = useState<WorkbenchTab>("notes");
   const active = WORKBENCH_TABS.find((t) => t.id === tab) ?? WORKBENCH_TABS[0];
 
   return (
@@ -295,6 +301,7 @@ function FindingWorkbench({
         )}
         {tab === "evidence" && <AttachmentsPanel finding={finding} />}
         {tab === "details" && <DetailsPanel finding={finding} />}
+        {tab === "tools" && <AgentToolsPanel findingId={finding.id} />}
       </div>
     </section>
   );
@@ -624,10 +631,8 @@ function InfoTile({ label, value }: { label: string; value: string }) {
   );
 }
 
-function ChatRail({ findingId }: { findingId: string }) {
-  const [message, setMessage] = useState("");
-  const { data: chat, isLoading } = useFindingChat(findingId);
-  const ask = useAskFindingChatMutation(findingId);
+function AgentToolsPanel({ findingId }: { findingId: string }) {
+  const { data: chat } = useFindingChat(findingId);
   const acceptAction = useAcceptFindingChatActionMutation(findingId);
   const messages = chat?.messages ?? [];
   const proposedActions = messages.flatMap((m) =>
@@ -637,6 +642,59 @@ function ChatRail({ findingId }: { findingId: string }) {
         ({ action }) => action.status !== "accepted" && action.type === "run_tool",
       ),
   );
+
+  return (
+    <section className="rounded-lg border border-amber-400/40 bg-amber-400/10 p-4">
+      <div className="flex items-center justify-between gap-2">
+        <h2 className="flex items-center gap-2 text-sm font-medium">
+          <Sparkles className="h-4 w-4 text-amber-500" />
+          Agent tool queue ({proposedActions.length})
+        </h2>
+        {acceptAction.isPending && (
+          <span className="text-[10px] text-muted-foreground">Approving…</span>
+        )}
+      </div>
+      <p className="mt-2 text-xs text-muted-foreground">
+        Executable enum/scan tool runs proposed by the AI. Approve one to create
+        and dispatch a Tactical task; active tools still stop at the approval
+        gate.
+      </p>
+      {proposedActions.length === 0 ? (
+        <p className="mt-3 rounded-md border border-dashed border-amber-500/30 p-3 text-xs text-muted-foreground">
+          No executable tool actions yet. Ask the AI tab for “agent actions” to
+          generate approval cards.
+        </p>
+      ) : (
+        <div className="mt-3 max-h-[32rem] space-y-2 overflow-y-auto pr-1">
+          {proposedActions.map(({ messageId, action, index }) => (
+            <ActionCard
+              key={`${messageId}-${index}`}
+              action={action}
+              onAccept={() =>
+                acceptAction.mutate({ messageId, actionIndex: index })
+              }
+              accepting={acceptAction.isPending}
+            />
+          ))}
+        </div>
+      )}
+      {acceptAction.error && (
+        <p className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 p-2 text-xs text-destructive">
+          {acceptAction.error instanceof Error
+            ? acceptAction.error.message
+            : "Tool dispatch failed"}
+        </p>
+      )}
+    </section>
+  );
+}
+
+function ChatRail({ findingId }: { findingId: string }) {
+  const [message, setMessage] = useState("");
+  const { data: chat, isLoading } = useFindingChat(findingId);
+  const ask = useAskFindingChatMutation(findingId);
+  const clear = useClearFindingChatMutation(findingId);
+  const messages = chat?.messages ?? [];
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -652,58 +710,36 @@ function ChatRail({ findingId }: { findingId: string }) {
   }
 
   return (
-    <div className="space-y-4">
-      <div className="rounded-lg border border-amber-400/40 bg-amber-400/10 p-4">
-        <div className="flex items-center justify-between gap-2">
+    <div className="rounded-lg border border-border bg-card/40 p-4">
+      <div className="flex items-center justify-between gap-3">
+        <div>
           <h2 className="flex items-center gap-2 text-sm font-medium">
-            <Sparkles className="h-4 w-4 text-amber-500" />
-            Suggested actions ({proposedActions.length})
+            <MessageSquare className="h-4 w-4 text-muted-foreground" />
+            AI conversation
           </h2>
-          {acceptAction.isPending && (
-            <span className="text-[10px] text-muted-foreground">Approving…</span>
-          )}
-        </div>
-        <p className="mt-2 text-xs text-muted-foreground">
-          Agent-executable enum/scan tool runs live here separately from the
-          chat. Nothing dispatches until you click Approve.
-        </p>
-        {proposedActions.length === 0 ? (
-          <p className="mt-3 rounded-md border border-dashed border-amber-500/30 p-3 text-xs text-muted-foreground">
-            No executable tool actions yet. Ask “suggest agent actions” to
-            generate approval cards.
+          <p className="mt-1 text-xs text-muted-foreground">
+            Concise finding context and planning. Executable actions appear in
+            the Tools tab.
           </p>
-        ) : (
-          <div className="mt-3 max-h-72 space-y-2 overflow-y-auto pr-1">
-            {proposedActions.map(({ messageId, action, index }) => (
-              <ActionCard
-                key={`${messageId}-${index}`}
-                action={action}
-                onAccept={() =>
-                  acceptAction.mutate({ messageId, actionIndex: index })
-                }
-                accepting={acceptAction.isPending}
-              />
-            ))}
-          </div>
-        )}
+        </div>
+        <button
+          type="button"
+          onClick={() => clear.mutate()}
+          disabled={clear.isPending || messages.length === 0}
+          className="rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+          title="Clear this AI conversation and generated tool queue"
+        >
+          {clear.isPending ? "Clearing…" : "Clear AI"}
+        </button>
       </div>
-
-      <div className="rounded-lg border border-border bg-card/40 p-4">
-        <h2 className="flex items-center gap-2 text-sm font-medium">
-          <MessageSquare className="h-4 w-4 text-muted-foreground" />
-          AI conversation
-        </h2>
-        <p className="mt-2 text-xs text-muted-foreground">
-          Ask for context, gaps, or next steps. Action cards appear in the
-          separate queue above.
-        </p>
 
       <div className="mt-4 max-h-[30rem] space-y-3 overflow-y-auto pr-1">
         {isLoading ? (
           <p className="text-xs text-muted-foreground">Loading chat…</p>
         ) : messages.length === 0 ? (
           <div className="rounded-md border border-dashed border-border p-3 text-xs text-muted-foreground">
-            Try “what should I do next?” or “summarize the evidence and gaps.”
+            Start fresh. Ask “suggest agent actions” to populate the Tools tab,
+            or ask for a concise summary of gaps.
           </div>
         ) : (
           messages.map((m) => <ChatBubble key={m.id} message={m} />)
@@ -715,13 +751,13 @@ function ChatRail({ findingId }: { findingId: string }) {
         )}
       </div>
 
-      {(ask.error || acceptAction.error) && (
+      {(ask.error || clear.error) && (
         <p className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 p-2 text-xs text-destructive">
           {ask.error instanceof Error
             ? ask.error.message
-            : acceptAction.error instanceof Error
-              ? acceptAction.error.message
-              : "Chat action failed"}
+            : clear.error instanceof Error
+              ? clear.error.message
+              : "Chat failed"}
         </p>
       )}
 
@@ -731,18 +767,17 @@ function ChatRail({ findingId }: { findingId: string }) {
           onChange={(event) => setMessage(event.target.value)}
           placeholder="Ask about this finding…"
           className="min-h-24 w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none ring-offset-background placeholder:text-muted-foreground focus:ring-2 focus:ring-ring focus:ring-offset-2"
-          disabled={ask.isPending}
+          disabled={ask.isPending || clear.isPending}
           maxLength={4000}
         />
         <button
           type="submit"
-          disabled={!message.trim() || ask.isPending}
+          disabled={!message.trim() || ask.isPending || clear.isPending}
           className="w-full rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
         >
           {ask.isPending ? "Asking…" : "Ask AI"}
         </button>
       </form>
-      </div>
     </div>
   );
 }
