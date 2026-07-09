@@ -19,6 +19,7 @@ import {
   approveTool,
   archiveEngagement,
   askFindingChat,
+  cancelTask,
   acceptFindingChatAction,
   clearFindingChat,
   createIntegration,
@@ -838,6 +839,19 @@ export function useRetryTaskMutation(slug: string) {
     mutationFn: retryTask,
     onSuccess: () =>
       qc.invalidateQueries({ queryKey: qk.engagementStatus(slug) }),
+  });
+}
+
+export function useCancelTaskMutation(slug?: string | null) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: cancelTask,
+    onSuccess: () => {
+      if (slug) {
+        qc.invalidateQueries({ queryKey: qk.engagementStatus(slug) });
+        qc.invalidateQueries({ queryKey: qk.engagementCosts(slug) });
+      }
+    },
   });
 }
 

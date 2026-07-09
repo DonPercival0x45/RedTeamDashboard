@@ -32,6 +32,7 @@ import {
 import {
   useAcceptFindingChatActionMutation,
   useAskFindingChatMutation,
+  useCancelTaskMutation,
   useClearFindingChatMutation,
   useFinding,
   useFindingActivity,
@@ -1001,6 +1002,7 @@ function openToolActions(messages: FindingChatMessage[]) {
 function AgentToolsPanel({ findingId, slug }: { findingId: string; slug: string | null }) {
   const { data: chat } = useFindingChat(findingId);
   const acceptAction = useAcceptFindingChatActionMutation(findingId);
+  const cancelTask = useCancelTaskMutation(slug);
   const proposedActions = openToolActions(chat?.messages ?? []);
   const [tasks, setTasks] = useState<Task[] | null>(null);
 
@@ -1066,7 +1068,14 @@ function AgentToolsPanel({ findingId, slug }: { findingId: string; slug: string 
           </p>
         )}
       </div>
-      <ActionHistoryPanel tasks={findingTasks} loading={tasks === null} />
+      <ActionHistoryPanel
+        tasks={findingTasks}
+        loading={tasks === null}
+        cancelling={cancelTask.isPending}
+        onCancel={(taskId) =>
+          cancelTask.mutate(taskId, { onSuccess: refreshTasks })
+        }
+      />
     </section>
   );
 }
@@ -1074,9 +1083,13 @@ function AgentToolsPanel({ findingId, slug }: { findingId: string; slug: string 
 function ActionHistoryPanel({
   tasks,
   loading,
+  cancelling,
+  onCancel,
 }: {
   tasks: Task[];
   loading: boolean;
+  cancelling: boolean;
+  onCancel: (taskId: string) => void;
 }) {
   return (
     <section className="rounded-lg border border-border bg-card/40 p-4">
@@ -1096,9 +1109,21 @@ function ActionHistoryPanel({
             <li key={task.id} className="rounded-md border border-border bg-background p-3 text-xs">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <p className="font-medium">{task.title}</p>
-                <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
-                  {task.status}
-                </span>
+                <div className="flex items-center gap-2">
+                  {isCancellableTask(task) && (
+                    <button
+                      type="button"
+                      onClick={() => onCancel(task.id)}
+                      disabled={cancelling}
+                      className="rounded border border-rose-500/40 px-2 py-0.5 text-[10px] text-rose-600 hover:bg-rose-500/10 disabled:opacity-50"
+                    >
+                      {cancelling ? "Cancelling…" : "Cancel"}
+                    </button>
+                  )}
+                  <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
+                    {task.status}
+                  </span>
+                </div>
               </div>
               <p className="mt-1 font-mono text-[10px] text-muted-foreground">
                 {String(task.payload.tool ?? "?")} → {String(task.payload.target ?? "?")}
@@ -1114,6 +1139,10 @@ function ActionHistoryPanel({
       )}
     </section>
   );
+}
+
+function isCancellableTask(task: Task): boolean {
+  return ["pending", "dispatched", "running"].includes(task.status);
 }
 
 function ChatRail({ findingId }: { findingId: string }) {

@@ -33,6 +33,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
+  useCancelTaskMutation,
   useEngagementStatus,
   useRetryAgentExecutionMutation,
   useRetryTaskMutation,
@@ -186,6 +187,7 @@ export function StatusView({
   } = useEngagementStatus(slug);
   const retryTaskMutation = useRetryTaskMutation(slug);
   const retryAgentMutation = useRetryAgentExecutionMutation(slug);
+  const cancelTaskMutation = useCancelTaskMutation(slug);
 
   const [localError, setLocalError] = useState<string | null>(null);
   const error = localError ?? (queryError instanceof Error ? queryError.message : queryError ? String(queryError) : null);
@@ -196,6 +198,7 @@ export function StatusView({
   const [colorFilter, setColorFilter] = useState<StatusColor | "all">("all");
   const [expanded, setExpanded] = useState<StatusEntity | null>(null);
   const [retryingId, setRetryingId] = useState<string | null>(null);
+  const [cancellingId, setCancellingId] = useState<string | null>(null);
   // v1.2.0 — typed search over title / subtitle / synopsis / run_slug,
   // plus a date-range chip over started_at.
   const [search, setSearch] = useState("");
@@ -233,6 +236,22 @@ export function StatusView({
       }
     },
     [retryTaskMutation, retryAgentMutation],
+  );
+
+  const onCancel = useCallback(
+    async (entity: StatusEntity) => {
+      if (entity.kind !== "task") return;
+      setCancellingId(entity.id);
+      setLocalError(null);
+      try {
+        await cancelTaskMutation.mutateAsync(entity.id);
+      } catch (err) {
+        setLocalError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setCancellingId(null);
+      }
+    },
+    [cancelTaskMutation],
   );
 
   const all: StatusEntity[] = data
@@ -409,7 +428,9 @@ export function StatusView({
               entity={entity}
               onExpand={() => setExpanded(entity)}
               onRetry={() => onRetry(entity)}
+              onCancel={() => onCancel(entity)}
               retrying={retryingId === entity.id}
+              cancelling={cancellingId === entity.id}
             />
           ))}
         </div>
@@ -549,15 +570,22 @@ function StatusBox({
   entity,
   onExpand,
   onRetry,
+  onCancel,
   retrying,
+  cancelling,
 }: {
   entity: StatusEntity;
   onExpand: () => void;
   onRetry: () => void;
+  onCancel: () => void;
   retrying: boolean;
+  cancelling: boolean;
 }) {
   const Icon = COLOR_ICON[entity.color];
   const OutcomeIcon = entity.outcome ? OUTCOME_ICON[entity.outcome] : null;
+  const cancellable =
+    entity.kind === "task" &&
+    ["pending", "dispatched", "running"].includes(entity.raw_status);
   return (
     <div
       className={cn(
@@ -621,6 +649,17 @@ function StatusBox({
         </span>
       </div>
       <div className="flex justify-end gap-2">
+        {cancellable && (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={onCancel}
+            disabled={cancelling}
+          >
+            <CircleSlash className="mr-1.5 h-3.5 w-3.5" />
+            {cancelling ? "Cancelling…" : "Cancel"}
+          </Button>
+        )}
         {entity.retryable && (
           <Button
             size="sm"
