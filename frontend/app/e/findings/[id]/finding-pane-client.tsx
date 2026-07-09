@@ -179,9 +179,8 @@ function FindingPane({ id, slug }: { id: string; slug: string | null }) {
 
       {/* two-column body: workbench left, activity rail right */}
       <div className="mt-5 grid grid-cols-1 gap-5 xl:grid-cols-4">
-        <div className="space-y-5 xl:col-span-3">
-          <ChatRail findingId={id} />
-          <FindingDetailsWorkspace finding={finding} slug={slug} />
+        <div className="xl:col-span-3">
+          <FindingWorkbench finding={finding} slug={slug} />
         </div>
 
         <div className="xl:col-span-1">
@@ -216,21 +215,88 @@ function ActivityRail({ entries }: { entries: FindingActivityEntry[] }) {
   );
 }
 
-function FindingDetailsWorkspace({
+type WorkbenchTab = "ai" | "notes" | "evidence" | "details";
+
+const WORKBENCH_TABS: Array<{
+  id: WorkbenchTab;
+  label: string;
+  description: string;
+}> = [
+  {
+    id: "ai",
+    label: "AI & Actions",
+    description: "Agent-executable tool runs and the finding-scoped assistant.",
+  },
+  {
+    id: "notes",
+    label: "Notes",
+    description: "Summary history, comments, tags, and reportability.",
+  },
+  {
+    id: "evidence",
+    label: "Evidence",
+    description: "Attachments and artifacts supporting the finding.",
+  },
+  {
+    id: "details",
+    label: "Details",
+    description: "Raw payload, timestamps, and normalized finding metadata.",
+  },
+];
+
+function FindingWorkbench({
   finding,
   slug,
 }: {
   finding: Finding;
   slug: string | null;
 }) {
+  const [tab, setTab] = useState<WorkbenchTab>("ai");
+  const active = WORKBENCH_TABS.find((t) => t.id === tab) ?? WORKBENCH_TABS[0];
+
   return (
-    <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
-      <SummaryPanel finding={finding} />
-      <TagsPanel finding={finding} />
-      <CommentsPanel finding={finding} slug={slug} />
-      <AttachmentsPanel finding={finding} />
-      <DetailsPanel finding={finding} />
-    </div>
+    <section className="overflow-hidden rounded-lg border border-border bg-card/40">
+      <div className="border-b border-border bg-background/60 px-4 py-3">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <h2 className="text-sm font-semibold">Finding workbench</h2>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {active.description}
+            </p>
+          </div>
+          <div className="grid grid-cols-2 gap-1 rounded-lg bg-muted/50 p-1 text-xs sm:flex">
+            {WORKBENCH_TABS.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => setTab(item.id)}
+                className={cn(
+                  "rounded-md px-3 py-1.5 text-left font-medium transition-colors sm:text-center",
+                  tab === item.id
+                    ? "bg-background text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="p-4">
+        {tab === "ai" && <ChatRail findingId={finding.id} />}
+        {tab === "notes" && (
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+            <SummaryPanel finding={finding} />
+            <TagsPanel finding={finding} />
+            <CommentsPanel finding={finding} slug={slug} />
+          </div>
+        )}
+        {tab === "evidence" && <AttachmentsPanel finding={finding} />}
+        {tab === "details" && <DetailsPanel finding={finding} />}
+      </div>
+    </section>
   );
 }
 
