@@ -200,7 +200,10 @@ export function SettingsModal({
                 })}
               </nav>
             </aside>
-            <section className="min-h-0 flex-1 overflow-auto p-4">
+            <section
+              className="min-h-0 flex-1 overflow-auto p-4"
+              data-in-settings-modal="true"
+            >
               {Body && <Body />}
             </section>
           </div>

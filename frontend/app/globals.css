@@ -338,6 +338,17 @@
   }
 }
 
+/* v1.25.1: hide the routed pages' "← engagements" back-links when a
+   settings page is rendered inside the Settings or What's New modal.
+   The modal already provides an X to close, and clicking a "/" link
+   from inside the modal navigates the whole app off the current
+   engagement. Selector is scoped to the modal wrapper via
+   [data-in-settings-modal] so the routed pages still show the link
+   as a normal page. */
+[data-in-settings-modal] a[href="/"] {
+  display: none !important;
+}
+
 /* v1.25.0 accessibility — reduced motion. When the analyst opts in
    (Settings > Accessibility), suppress non-essential motion so
    dashboards + panels feel calmer. We use 0.01ms rather than 0ms so

@@ -51,7 +51,10 @@ export function WhatsNewModal({
               <X className="h-4 w-4" />
             </DialogPrimitive.Close>
           </header>
-          <div className="min-h-0 flex-1 overflow-auto">
+          <div
+            className="min-h-0 flex-1 overflow-auto"
+            data-in-settings-modal="true"
+          >
             <WhatsNewBody />
           </div>
         </DialogPrimitive.Content>
