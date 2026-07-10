@@ -1083,7 +1083,6 @@ function AgentToolsPanel({ findingId, slug }: { findingId: string; slug: string 
   const { data: chat } = useFindingChat(findingId);
   const acceptAction = useAcceptFindingChatActionMutation(findingId);
   const denyAction = useDenyFindingChatActionMutation(findingId);
-  const cancelTask = useCancelTaskMutation(slug);
   const proposedActions = openToolActions(chat?.messages ?? []);
   const [tasks, setTasks] = useState<Task[] | null>(null);
 

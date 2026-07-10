@@ -385,6 +385,7 @@ def test_deny_chat_action_marks_denied_and_is_idempotent(
     )
     typ, result = deny_chat_action(db, message=msg, action_index=0)
     assert typ == "run_tool" and result == {"denied": True}
+    db.commit()
     db.refresh(msg)
     assert msg.action_payload["actions"][0]["status"] == "denied"
     # denying again is rejected (already terminal)
@@ -417,6 +418,7 @@ def test_accept_add_scope_creates_found_scope_item(
     assert item is not None
     assert item.value == "mail.outside.test"
     assert item.source == "found"  # highlights as discovered-during-engagement (#94)
+    db.commit()
     db.refresh(msg)
     assert msg.action_payload["actions"][0]["status"] == "accepted"
 
