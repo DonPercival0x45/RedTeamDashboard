@@ -42,6 +42,8 @@ separate endpoint so it can't fire from a stray HTTP verb.
 """
 from __future__ import annotations
 
+import contextlib
+import json
 import re
 import uuid
 from datetime import UTC, datetime
@@ -811,22 +813,64 @@ def list_findings(
 def list_entities(
     slug: str,
     session: DbSession,
+    redis: RedisClient,
     type: Annotated[str | None, Query(description="Filter by entity type.")] = None,
     q: Annotated[str | None, Query(description="Substring match on the value.")] = None,
 ) -> list[dict[str, Any]]:
-    """Entities correlated across this engagement's findings (CHARTER Idea 4)."""
+    """Entities correlated across this engagement's findings (CHARTER Idea 4).
+
+    v0.30.0: derived entities are expensive to compute (regex over every
+    finding's content) and this endpoint is polled by the Entities tab.
+    Cache the full extraction keyed on a findings fingerprint
+    (count + max updated_at) so it auto-invalidates the instant a finding
+    changes — no invalidation hooks. ``type``/``q`` filter the cached set
+    in-memory (cheap).
+    """
     eng = _get_engagement_or_404(session, slug)
+    full = _cached_derived_entities(session, redis, eng.id)
+    result = full
+    if type:
+        result = [e for e in result if e.get("type") == type]
+    if q:
+        needle = q.lower()
+        result = [
+            e for e in result if needle in str(e.get("value") or "").lower()
+        ]
+    return result
+
+
+def _cached_derived_entities(
+    session: DbSession, redis: RedisClient, engagement_id: uuid.UUID
+) -> list[dict[str, Any]]:
+    """Full derived-entity list for an engagement, cached on a findings fingerprint."""
+    count, max_updated = session.execute(
+        select(func.count(Finding.id), func.max(Finding.updated_at)).where(
+            Finding.engagement_id == engagement_id,
+            Finding.deleted_at.is_(None),
+        )
+    ).one()
+    fingerprint = f"{count or 0}:{max_updated.isoformat() if max_updated else 'none'}"
+    key = f"entities:{engagement_id}:{fingerprint}"
+    cached = redis.get(key)
+    if cached:
+        try:
+            return json.loads(cached)
+        except (TypeError, ValueError):
+            pass  # corrupt entry — recompute below
     findings = list(
         session.execute(
             select(Finding)
             .where(
-                Finding.engagement_id == eng.id,
+                Finding.engagement_id == engagement_id,
                 Finding.deleted_at.is_(None),
             )
             .order_by(Finding.created_at)
         ).scalars()
     )
-    return extract_entities(findings, type_filter=type, query=q)
+    full = extract_entities(findings)
+    with contextlib.suppress(Exception):
+        redis.set(key, json.dumps(full, default=str), ex=300)
+    return full
 
 
 @router.post(
