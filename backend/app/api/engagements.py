@@ -774,6 +774,20 @@ def list_findings(
             ),
         ),
     ] = "newest",
+    limit: Annotated[
+        int | None,
+        Query(
+            ge=1,
+            le=500,
+            description=(
+                "Optional page size. Omit to preserve the current full-list UI behavior."
+            ),
+        ),
+    ] = None,
+    offset: Annotated[
+        int,
+        Query(ge=0, description="Rows to skip when limit is provided."),
+    ] = 0,
 ) -> list[dict[str, Any]]:
     if sort not in _FINDING_SORTS:
         raise HTTPException(
@@ -801,6 +815,11 @@ def list_findings(
         )
     else:  # newest
         stmt = stmt.order_by(Finding.created_at.desc())
+
+    # Backend pagination groundwork for large engagements. The current UI still
+    # omits limit so behavior is unchanged; API clients can opt in now.
+    if limit is not None:
+        stmt = stmt.offset(offset).limit(limit)
 
     rows = session.execute(stmt).scalars()
     return [_finding_to_read(f) for f in rows]
