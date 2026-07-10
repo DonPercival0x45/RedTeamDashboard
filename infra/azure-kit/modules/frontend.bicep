@@ -5,11 +5,17 @@
 // Key Vault secrets — every runtime value is either public (API base URL,
 // Entra tenant/client IDs) or resolved on the client (MSAL access token).
 //
-// v1.28.0: IP allowlist moved off the ingress and onto an NSG at the
-// container-apps subnet (see modules/vnet.bicep). One control plane
-// covers frontend + backend + MCP. `ipSecurityRestrictions` is no
-// longer set here — install.sh's post-deploy step actively clears any
-// residue left over from pre-v1.28 installs.
+// v1.28.1: IP allowlist is back on per-app ingress `ipSecurityRestrictions`.
+// v1.28.0 tried to move it to a subnet-level NSG, but on Container Apps
+// external envs the shared load balancer SNATs incoming traffic before
+// it hits the workload subnet — the NSG sees `AzureLoadBalancer` as the
+// source, not the real client IP, so the analyst-CIDR rule never
+// matches. Only Envoy at the ingress preserves the real client IP (via
+// X-Forwarded-For), which is what `ipSecurityRestrictions` gates on.
+// v1.28.0's Bicep also stripped ipSecurityRestrictions from this file —
+// so 5qprod ran with the NSG allowlist NOT enforcing AND no ingress
+// allowlist for a few hours. v1.28.1 restores enforcement here and
+// extends the same pattern to backend + MCP.
 
 targetScope = 'resourceGroup'
 
@@ -30,6 +36,19 @@ param entraTenantId string = ''
 param entraClientId string = ''
 param entraApiScope string = ''
 
+@description('Comma-separated IPv4 CIDRs allowed inbound HTTPS to this frontend Container App via Envoy ingress. Empty → no restriction (wide open). install.sh reads the resolved value back from ingress on the next install.')
+param allowedIps string = ''
+
+// Two vars — Bicep can\'t nest a for-expression inside a ternary (BCP138),
+// so we build the split list separately and consume it in the rules.
+var trimmedAllowedIps = trim(allowedIps)
+var ipCidrList = empty(trimmedAllowedIps) ? [] : split(trimmedAllowedIps, ',')
+var ipRules = [for (cidr, i) in ipCidrList: {
+  name: 'AllowedIp-${i + 1}'
+  ipAddressRange: trim(cidr)
+  action: 'Allow'
+}]
+
 resource app 'Microsoft.App/containerApps@2024-03-01' = {
   name: '${namePrefix}-frontend'
   location: location
@@ -43,6 +62,7 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
         targetPort: 3000
         transport: 'auto'
         allowInsecure: false
+        ipSecurityRestrictions: ipRules
       }
     }
     template: {

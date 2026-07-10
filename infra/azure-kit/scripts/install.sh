@@ -45,18 +45,24 @@ OPENAI_KEY="${OPENAI_API_KEY:-}"
 # restriction (wide open).
 # Resolution precedence (highest first), all evaluated pre-Bicep:
 #   1. --allowed-ips flag (explicit; empty value clears the lock)
-#   2. Live NSG rule `Allow-Analysts-Https` on rtd-<env>-nsg
-#      (sourceAddressPrefixes; excludes the '*' sentinel used when unlocked)
+#   2. Live ipSecurityRestrictions on the frontend Container App ingress
+#      (ipAddressRange values joined with commas)
 #   3. RTD_VIEWER_ALLOWED_IPS shell env
-# The Bicep deploy stamps the resolved value straight into the NSG rule —
-# no separate write-back step. The next install reads it back from the
-# live NSG. Set once, install many times.
+# The Bicep deploy stamps the resolved value straight into ingress
+# `ipSecurityRestrictions` on frontend + backend + MCP. The next install
+# reads it back from the live frontend ingress. Set once, install many
+# times.
 #
-# v1.28.0: enforcement moved from ingress ipSecurityRestrictions on the
-# frontend Container App to a subnet-level NSG covering the entire env
-# (rtd-<env>-nsg on the container-apps subnet). One control plane means
-# CLI/MCP clients now need to be in the allowlist too — this is a
-# behavior change from the pre-v1.28 frontend-only restriction.
+# v1.28.1: enforcement REVERTED to per-app ingress ipSecurityRestrictions
+# on frontend + backend + MCP. v1.28.0 tried moving it to a subnet NSG,
+# but Container Apps external envs put a shared load balancer in front
+# that SNATs the client IP — the subnet NSG only ever sees
+# `AzureLoadBalancer` as source and the analyst-CIDR rule never
+# matches, effectively allowing everything through. Only Envoy at the
+# ingress layer preserves the real client IP (X-Forwarded-For), which
+# is what ipSecurityRestrictions gates on. Scope stays env-wide (CLI +
+# MCP + browser all filtered by the same list) — the v1.28.0 behavior
+# change from v1.27 is preserved.
 #
 # v1.10.0: SWA (rtd-<env>-viewer) has been decommissioned. Prior source
 # of truth was the SWA's Environment Variables blade; that path is gone.
@@ -100,11 +106,12 @@ Options:
   --allowed-ips CSV       Comma-separated IPv4 CIDRs allowed inbound HTTPS to
                           the whole Container Apps environment — frontend AND
                           backend AND MCP (e.g. '1.2.3.4/32,5.6.7.8/32').
-                          Empty → no IP restriction. v1.28.0: persists to the
-                          NSG rule `Allow-Analysts-Https` on rtd-<env>-nsg
-                          via Bicep for the next install. Falls back to: live
-                          NSG rule (if already set), then shell
-                          RTD_VIEWER_ALLOWED_IPS. Note: CLI + MCP clients now
+                          Empty → no IP restriction. v1.28.1: persists to
+                          per-app ingress `ipSecurityRestrictions` on all
+                          three Container Apps via Bicep for the next
+                          install. Falls back to: live frontend Container App
+                          ingress rules (if already set), then shell
+                          RTD_VIEWER_ALLOWED_IPS. Note: CLI + MCP clients
                           need to be in the allowlist too.
   --yes                   Skip the confirmation prompt; useful in CI/automation.
   -h, --help              Show this help.
@@ -208,25 +215,26 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Pre-Bicep: resolve Entra IDs (from the LIVE frontend Container App) +
-# IP allowlist (from the LIVE NSG) if no CLI flag was passed. Both are
-# stamped by Bicep on every deploy, so live state IS the source of truth
-# for what a prior install established.
+# Pre-Bicep: resolve Entra IDs and IP allowlist from the LIVE frontend
+# Container App if no CLI flag was passed. Both are stamped by Bicep on
+# every deploy, so live state IS the source of truth for what a prior
+# install established.
 #
-# The Bicep deploy below then stamps whatever we resolved back into both
-# the backend Container App (Entra IDs gate ``settings.entra_enabled``
+# The Bicep deploy below then stamps whatever we resolved back onto the
+# frontend Container App (Entra IDs gate ``settings.entra_enabled``
 # server-side — empty values silently drop every Bearer token to a
-# "header required" 401, the v0.7.1 prod bug) and the NSG (Allow-Analysts-Https
-# rule on rtd-<env>-nsg).
+# "header required" 401, the v0.7.1 prod bug) and onto per-app ingress
+# ipSecurityRestrictions on frontend + backend + MCP.
 #
 # On a first install neither resource exists yet, the queries 404, and we
 # fall through to whatever the CLI flags / shell env provided. No-op.
 #
 # v1.10.0: Entra source moved from SWA app settings → frontend Container
 # App env after SWA decommission.
-# v1.28.0: IP allowlist source moved from frontend ingress
-# ipSecurityRestrictions → NSG rule on the container-apps subnet. Covers
-# the whole env (backend + MCP + frontend), not just the browser path.
+# v1.28.1: IP allowlist source reverted from NSG rule → frontend
+# ingress ipSecurityRestrictions (see the ALLOWED_IPS comment block
+# above for the full v1.28.0 postmortem). Coverage stays env-wide via
+# ipSecurityRestrictions on frontend + backend + MCP.
 FRONTEND_APP_PREDICTED_NAME="rtd-${ENV_NAME}-frontend"
 if [[ "$ENTRA_TENANT_ID_FROM_FLAG" != "true" ]]; then
     PRE_STORED_TENANT="$(az containerapp show \
@@ -249,21 +257,21 @@ if [[ "$ENTRA_CLIENT_ID_FROM_FLAG" != "true" ]]; then
     fi
 fi
 
-# IP allowlist source of truth is the LIVE NSG rule `Allow-Analysts-Https`
-# on rtd-<env>-nsg — read the CIDRs back and re-flatten to CSV so the
-# Bicep param below re-stamps them onto the rule. The rule uses
-# sourceAddressPrefixes (plural) when there's a real allowlist and the
-# single-element ['*'] sentinel when unlocked. We filter '*' out so an
-# unlocked NSG doesn't get treated as an explicit allowlist entry.
-NSG_NAME="rtd-${ENV_NAME}-nsg"
+# IP allowlist source of truth is the LIVE ingress ipSecurityRestrictions
+# on the frontend Container App — read the ipAddressRange values back and
+# re-flatten to CSV so the Bicep param below re-stamps them onto all
+# three apps (frontend + backend + MCP). Only Allow rules are used; a
+# fully-locked env has [{action: Allow, ...}, {action: Allow, ...}] for
+# each analyst CIDR. An unlocked env has no rules, so the query returns
+# empty and we leave ALLOWED_IPS as whatever the CLI/env provided.
 if [[ "$ALLOWED_IPS_FROM_FLAG" != "true" ]]; then
-    PRE_STORED_IPS="$(az network nsg rule show \
-        -g "$RG_NAME" --nsg-name "$NSG_NAME" -n "Allow-Analysts-Https" \
-        --query "sourceAddressPrefixes[?@!='*'] | join(',', @)" \
+    PRE_STORED_IPS="$(az containerapp show \
+        -n "$FRONTEND_APP_PREDICTED_NAME" -g "$RG_NAME" \
+        --query "properties.configuration.ingress.ipSecurityRestrictions[?action=='Allow'].ipAddressRange | join(',', @)" \
         -o tsv 2>/dev/null || true)"
     if [[ -n "$PRE_STORED_IPS" && "$PRE_STORED_IPS" != "None" ]]; then
         ALLOWED_IPS="$PRE_STORED_IPS"
-        blue "    IP allowlist pre-resolved from NSG rule Allow-Analysts-Https"
+        blue "    IP allowlist pre-resolved from frontend ingress ipSecurityRestrictions"
     fi
 fi
 
@@ -313,23 +321,23 @@ echo "    app FQDN:        https://$APP_FQDN"
 echo "    key vault:       $KV_NAME"
 echo "    viewer:          $FRONTEND_URL"
 
-# v1.28.0: strip any residual ingress ipSecurityRestrictions rules left
-# on the frontend Container App from pre-v1.28 installs. Container Apps
-# Bicep updates don't reliably null out this property when it's omitted,
-# so a pre-v1.28 install would leave the old rules in place — the NSG
-# would allowlist a wider range and the ingress a narrower one, and the
-# intersection would win. Enumerate and remove each one.
-RESIDUAL_RULES="$(az containerapp ingress access-restriction list \
-    -n "$FRONTEND_APP_NAME" -g "$RG_OUT" \
-    --query "[].name" -o tsv 2>/dev/null || true)"
-if [[ -n "$RESIDUAL_RULES" ]]; then
-    while IFS= read -r rule_name; do
-        [[ -z "$rule_name" ]] && continue
-        az containerapp ingress access-restriction remove \
-            -n "$FRONTEND_APP_NAME" -g "$RG_OUT" \
-            --rule-name "$rule_name" --only-show-errors -o none 2>/dev/null || true
-        blue "    cleared legacy ingress restriction '$rule_name' — NSG owns the allowlist now"
-    done <<< "$RESIDUAL_RULES"
+# v1.28.1: defensive cleanup of the rtd-<env>-nsg left behind by v1.28.0.
+# The NSG was ineffective (Container Apps' shared LB SNATs external
+# traffic, so subnet NSG rules can't filter by real client IP) and
+# v1.28.1's Bicep no longer declares it or attaches it to the subnet —
+# but Bicep is upsert, not full desired-state, so the existing NSG isn't
+# auto-deleted. Detach from the subnet first (idempotent no-op if
+# Bicep already cleared it), then delete the NSG. Both silent when
+# nothing to do.
+LEGACY_NSG_NAME="rtd-${ENV_NAME}-nsg"
+if az network nsg show -g "$RG_OUT" -n "$LEGACY_NSG_NAME" --only-show-errors -o none 2>/dev/null; then
+    az network vnet subnet update -g "$RG_OUT" \
+        --vnet-name "rtd-${ENV_NAME}-vnet" -n container-apps \
+        --network-security-group "" --only-show-errors -o none 2>/dev/null || true
+    if az network nsg delete -g "$RG_OUT" -n "$LEGACY_NSG_NAME" \
+        --only-show-errors -o none 2>/dev/null; then
+        blue "    v1.28.1 cleanup: removed legacy $LEGACY_NSG_NAME (NSG couldn't filter external client IPs on Container Apps envs)"
+    fi
 fi
 
 # ---------------------------------------------------------------------------
