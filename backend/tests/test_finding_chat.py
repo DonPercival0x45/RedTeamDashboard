@@ -22,10 +22,16 @@ from app.models import (
     Finding,
     FindingPhase,
     FindingStatus,
+    ScopeItem,
     Severity,
     Task,
 )
-from app.services.finding_chat import build_finding_dossier
+from app.services.finding_chat import (
+    accept_chat_action,
+    build_finding_dossier,
+    deny_chat_action,
+    summarize_finding_chat,
+)
 
 HDR = {"X-User-Id": "finding-chat@example.com"}
 
@@ -334,3 +340,120 @@ def test_finding_chat_reuses_latest_conversation(
         .where(Conversation.finding_id == finding.id)
     )
     assert count == 1
+
+
+def _message_with_action(
+    db: Session, conversation: Conversation, action: dict
+) -> ConversationMessage:
+    m = ConversationMessage(
+        conversation_id=conversation.id,
+        role="assistant",
+        content="proposing an action",
+        action_payload={"actions": [action]},
+    )
+    db.add(m)
+    db.commit()
+    db.refresh(m)
+    return m
+
+
+def _conversation(db: Session, finding: Finding) -> Conversation:
+    c = Conversation(
+        engagement_id=finding.engagement_id,
+        finding_id=finding.id,
+        created_by_user_id=None,
+    )
+    db.add(c)
+    db.commit()
+    db.refresh(c)
+    return c
+
+
+def test_deny_chat_action_marks_denied_and_is_idempotent(
+    db: Session, finding: Finding
+) -> None:
+    conv = _conversation(db, finding)
+    msg = _message_with_action(
+        db,
+        conv,
+        {
+            "type": "run_tool",
+            "title": "probe",
+            "params": {"tool": "httpx_probe", "target": "x.test", "task_kind": "enum"},
+            "status": "proposed",
+        },
+    )
+    typ, result = deny_chat_action(db, message=msg, action_index=0)
+    assert typ == "run_tool" and result == {"denied": True}
+    db.commit()
+    db.refresh(msg)
+    assert msg.action_payload["actions"][0]["status"] == "denied"
+    # denying again is rejected (already terminal)
+    import pytest as _pytest
+
+    with _pytest.raises(ValueError):
+        deny_chat_action(db, message=msg, action_index=0)
+
+
+def test_accept_add_scope_creates_found_scope_item(
+    db: Session, finding: Finding
+) -> None:
+    conv = _conversation(db, finding)
+    msg = _message_with_action(
+        db,
+        conv,
+        {
+            "type": "add_scope",
+            "title": "Add out-of-scope host",
+            "params": {"value": "mail.outside.test", "kind": "domain"},
+            "status": "proposed",
+        },
+    )
+    typ, result = accept_chat_action(
+        db, finding=finding, message=msg, action_index=0, acting_user_id=None
+    )
+    assert typ == "add_scope"
+    assert result["source"] == "found"
+    item = db.get(ScopeItem, uuid.UUID(result["scope_item_id"]))
+    assert item is not None
+    assert item.value == "mail.outside.test"
+    assert item.source == "found"  # highlights as discovered-during-engagement (#94)
+    db.commit()
+    db.refresh(msg)
+    assert msg.action_payload["actions"][0]["status"] == "accepted"
+
+
+class _RaisingLLM:
+    """LLM stub whose invoke always fails — exercises the summarize fallback."""
+
+    def invoke(self, *_a, **_kw):  # noqa: ANN001
+        raise RuntimeError("no key configured")
+
+
+def test_summarize_finding_chat_falls_back_and_audits_without_llm(
+    monkeypatch: pytest.MonkeyPatch, db: Session, finding: Finding
+) -> None:
+    conv = _conversation(db, finding)
+    for role, body in (("user", "what next"), ("assistant", "try a port scan")):
+        db.add(
+            ConversationMessage(conversation_id=conv.id, role=role, content=body)
+        )
+    db.commit()
+
+    monkeypatch.setattr(
+        "app.services.finding_chat._make_chat_model", lambda *a, **k: _RaisingLLM()
+    )
+    summary, n = summarize_finding_chat(
+        db,
+        redis_client=None,
+        finding=finding,
+        conversation=conv,
+        acting_user_id=None,
+    )
+    assert n == 2
+    assert "2 message" in summary  # deterministic fallback digest
+    audit = db.execute(
+        select(AuditLog).where(AuditLog.event_type == "finding.chat_summarized")
+    ).scalar_one()
+    assert audit.payload["summary"] == summary
+    assert audit.payload["finding_id"] == str(finding.id)

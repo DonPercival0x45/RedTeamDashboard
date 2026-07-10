@@ -240,6 +240,15 @@ export function clearFindingChat(findingId: string): Promise<void> {
   return request<void>(`/findings/${findingId}/chat`, { method: "DELETE" });
 }
 
+export function summarizeFindingChat(
+  findingId: string,
+): Promise<{ summary: string; message_count: number }> {
+  return request<{ summary: string; message_count: number }>(
+    `/findings/${findingId}/chat/summarize`,
+    { method: "POST" },
+  );
+}
+
 export function askFindingChat(
   findingId: string,
   body: { message: string; conversation_id?: string | null },
@@ -257,6 +266,20 @@ export function acceptFindingChatAction(
 ): Promise<FindingChatActionResponse> {
   return request<FindingChatActionResponse>(
     `/findings/${findingId}/chat/messages/${messageId}/actions/accept`,
+    {
+      method: "POST",
+      body: JSON.stringify({ action_index: actionIndex }),
+    },
+  );
+}
+
+export function denyFindingChatAction(
+  findingId: string,
+  messageId: string,
+  actionIndex: number,
+): Promise<FindingChatActionResponse> {
+  return request<FindingChatActionResponse>(
+    `/findings/${findingId}/chat/messages/${messageId}/actions/deny`,
     {
       method: "POST",
       body: JSON.stringify({ action_index: actionIndex }),
