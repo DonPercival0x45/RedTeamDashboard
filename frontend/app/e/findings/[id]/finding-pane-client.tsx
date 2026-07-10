@@ -27,14 +27,18 @@ import {
   listTasks,
   updateFinding,
   uploadAttachment,
+  loadAttachmentBlob,
   validateFinding,
 } from "@/lib/api";
 import {
   useAcceptFindingChatActionMutation,
+  useDenyFindingChatActionMutation,
   useAskFindingChatMutation,
   useClearFindingChatMutation,
+  useSummarizeFindingChatMutation,
   useFinding,
   useFindingActivity,
+  useFindings,
   qk,
   useFindingChat,
 } from "@/lib/hooks";
@@ -307,7 +311,7 @@ function FindingWorkbench({
       </div>
 
       <div className="p-4">
-        {tab === "ai" && <ChatRail findingId={finding.id} />}
+        {tab === "ai" && <ChatRail findingId={finding.id} slug={slug} />}
         {tab === "notes" && (
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
             <DecisionPanel finding={finding} />
@@ -813,16 +817,69 @@ function AttachmentsPanel({ finding }: { finding: Finding }) {
       ) : rows.length === 0 ? (
         <p className="mt-3 text-xs text-muted-foreground">No attachments yet.</p>
       ) : (
-        <ul className="mt-3 space-y-2">
+        <ul className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
           {rows.map((row) => (
-            <li key={row.id} className="rounded-md border border-border bg-background p-2 text-xs">
-              <span className="font-medium">{row.filename}</span>
-              <span className="ml-2 text-muted-foreground">{Math.ceil(row.size_bytes / 1024)} KB · {fmtTs(row.created_at)}</span>
+            <li
+              key={row.id}
+              className="overflow-hidden rounded-md border border-border bg-background p-2 text-xs"
+            >
+              <AttachmentPreview attachment={row} />
+              <div className="mt-1 flex items-center justify-between gap-2">
+                <span className="truncate font-medium">{row.filename}</span>
+                <span className="shrink-0 text-muted-foreground">
+                  {Math.ceil(row.size_bytes / 1024)} KB
+                </span>
+              </div>
+              <div className="text-[10px] text-muted-foreground">
+                {fmtTs(row.created_at)}
+              </div>
             </li>
           ))}
         </ul>
       )}
     </section>
+  );
+}
+
+function AttachmentPreview({ attachment }: { attachment: Attachment }) {
+  const [src, setSrc] = useState<string | null>(null);
+  const isImage = attachment.content_type.startsWith("image/");
+  useEffect(() => {
+    if (!isImage) return;
+    let objectUrl: string | null = null;
+    loadAttachmentBlob(attachment.id)
+      .then((url) => {
+        objectUrl = url;
+        setSrc(url);
+      })
+      .catch(() => setSrc(null));
+    return () => {
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [attachment.id, isImage]);
+  if (!isImage) {
+    return (
+      <div className="flex h-16 items-center justify-center rounded bg-muted/40 font-mono text-[10px] text-muted-foreground">
+        {attachment.filename.split(".").pop()?.toUpperCase() || "FILE"}
+      </div>
+    );
+  }
+  if (!src) {
+    return (
+      <div className="flex h-24 items-center justify-center rounded bg-muted/40 text-[10px] text-muted-foreground">
+        Loading preview…
+      </div>
+    );
+  }
+  return (
+    <a href={src} target="_blank" rel="noopener noreferrer" title="Open full size">
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={src}
+        alt={attachment.filename}
+        className="h-32 w-full rounded object-cover"
+      />
+    </a>
   );
 }
 
@@ -1015,7 +1072,9 @@ function openToolActions(messages: FindingChatMessage[]) {
     (m.action_payload?.actions ?? [])
       .map((action, index) => ({ messageId: m.id, action, index }))
       .filter(
-        ({ action }) => action.status !== "accepted" && action.type === "run_tool",
+        ({ action }) =>
+          (action.status ?? "proposed") === "proposed" &&
+          action.type === "run_tool",
       ),
   );
 }
@@ -1023,6 +1082,7 @@ function openToolActions(messages: FindingChatMessage[]) {
 function AgentToolsPanel({ findingId, slug }: { findingId: string; slug: string | null }) {
   const { data: chat } = useFindingChat(findingId);
   const acceptAction = useAcceptFindingChatActionMutation(findingId);
+  const denyAction = useDenyFindingChatActionMutation(findingId);
   const proposedActions = openToolActions(chat?.messages ?? []);
   const [tasks, setTasks] = useState<Task[] | null>(null);
 
@@ -1075,6 +1135,10 @@ function AgentToolsPanel({ findingId, slug }: { findingId: string; slug: string 
                 )
               }
               accepting={acceptAction.isPending}
+              onDeny={() =>
+                denyAction.mutate({ messageId, actionIndex: index })
+              }
+              denying={denyAction.isPending}
             />
           ))}
         </div>
@@ -1137,11 +1201,26 @@ function ActionHistoryPanel({
   );
 }
 
-function ChatRail({ findingId }: { findingId: string }) {
+function isCancellableTask(task: Task): boolean {
+  return ["pending", "dispatched", "running"].includes(task.status);
+}
+
+function ChatRail({
+  findingId,
+  slug,
+}: {
+  findingId: string;
+  slug: string | null;
+}) {
   const [message, setMessage] = useState("");
   const { data: chat, isLoading } = useFindingChat(findingId);
   const ask = useAskFindingChatMutation(findingId);
   const clear = useClearFindingChatMutation(findingId);
+  const summarize = useSummarizeFindingChatMutation(findingId);
+  const acceptAction = useAcceptFindingChatActionMutation(findingId);
+  const denyAction = useDenyFindingChatActionMutation(findingId);
+  const { data: findings } = useFindings(slug ?? "");
+  const [tasks, setTasks] = useState<Task[] | null>(null);
   const messages = chat?.messages ?? [];
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -1152,6 +1231,49 @@ function ChatRail({ findingId }: { findingId: string }) {
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages.length, ask.isPending]);
+
+  // Live run status for accepted run_tool action bubbles: resolves the
+  // dispatched Task + counts findings its run produced, so the chat shows
+  // the outcome without navigating to Status/Findings.
+  const runOutcome = (action: FindingChatAction): string | null => {
+    if (action.type !== "run_tool" || action.status !== "accepted") return null;
+    const r = (action.result ?? {}) as Record<string, unknown>;
+    const taskId = typeof r.task_id === "string" ? r.task_id : null;
+    const runId = typeof r.run_id === "string" ? r.run_id : null;
+    const task = (tasks ?? []).find((t) => t.id === taskId);
+    if (!task) {
+      return r.dispatched ? "dispatched" : null;
+    }
+    let s = `run ${task.status}`;
+    if (task.status === "completed" && runId) {
+      const n = (findings ?? []).filter(
+        (f) => (f.thread_id ?? null) === runId,
+      ).length;
+      s += ` · ${n} finding${n === 1 ? "" : "s"}`;
+    } else if (task.status === "failed") {
+      s += " · likely out of scope or blocked at approval";
+    } else if (task.status === "running" || task.status === "dispatched") {
+      s += "…";
+    }
+    return s;
+  };
+
+  useEffect(() => {
+    if (!slug) {
+      setTasks([]);
+      return;
+    }
+    listTasks(slug)
+      .then(setTasks)
+      .catch(() => setTasks([]));
+    const id = window.setInterval(() => {
+      listTasks(slug)
+        .then(setTasks)
+        .catch(() => undefined);
+    }, 4000);
+    return () => window.clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [slug]);
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1181,12 +1303,12 @@ function ChatRail({ findingId }: { findingId: string }) {
         </div>
         <button
           type="button"
-          onClick={() => clear.mutate()}
-          disabled={clear.isPending || messages.length === 0}
+          onClick={() => summarize.mutate()}
+          disabled={summarize.isPending || clear.isPending || messages.length === 0}
           className="rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-          title="Clear this AI conversation and generated tool queue"
+          title="Summarize this conversation into the activity log, then clear it"
         >
-          {clear.isPending ? "Clearing…" : "Clear AI"}
+          {summarize.isPending ? "Summarizing…" : "Summarize & close"}
         </button>
       </div>
 
@@ -1199,7 +1321,21 @@ function ChatRail({ findingId }: { findingId: string }) {
             or ask for a concise summary of gaps.
           </div>
         ) : (
-          messages.map((m) => <ChatBubble key={m.id} message={m} />)
+          messages.map((m) => (
+            <ChatBubble
+              key={m.id}
+              message={m}
+              onAccept={(messageId, actionIndex) =>
+                acceptAction.mutate({ messageId, actionIndex })
+              }
+              onDeny={(messageId, actionIndex) =>
+                denyAction.mutate({ messageId, actionIndex })
+              }
+              accepting={acceptAction.isPending}
+              denying={denyAction.isPending}
+              runOutcome={runOutcome}
+            />
+          ))
         )}
         {ask.isPending && (
           <div className="rounded-md bg-muted/60 p-3 text-xs text-muted-foreground">
@@ -1239,8 +1375,26 @@ function ChatRail({ findingId }: { findingId: string }) {
   );
 }
 
-function ChatBubble({ message }: { message: FindingChatMessage }) {
+function ChatBubble({
+  message,
+  onAccept,
+  onDeny,
+  accepting,
+  denying,
+  runOutcome,
+}: {
+  message: FindingChatMessage;
+  onAccept: (messageId: string, actionIndex: number) => void;
+  onDeny: (messageId: string, actionIndex: number) => void;
+  accepting: boolean;
+  denying: boolean;
+  runOutcome: (action: FindingChatAction) => string | null;
+}) {
   const mine = message.role === "user";
+  const actions =
+    (message.action_payload?.actions ?? []).filter(
+      (a) => a.type !== "context",
+    );
   return (
     <div
       className={cn(
@@ -1259,6 +1413,21 @@ function ChatBubble({ message }: { message: FindingChatMessage }) {
         </span>
       </div>
       <p className="whitespace-pre-wrap leading-relaxed">{message.content}</p>
+      {actions.length > 0 && (
+        <div className="mt-2 space-y-2">
+          {actions.map((action, index) => (
+            <ActionCard
+              key={`${message.id}-${index}`}
+              action={action}
+              onAccept={() => onAccept(message.id, index)}
+              accepting={accepting}
+              onDeny={() => onDeny(message.id, index)}
+              denying={denying}
+              runOutcome={runOutcome(action)}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -1267,12 +1436,19 @@ function ActionCard({
   action,
   onAccept,
   accepting,
+  onDeny,
+  denying,
+  runOutcome,
 }: {
   action: FindingChatAction;
   onAccept: () => void;
   accepting: boolean;
+  onDeny: () => void;
+  denying: boolean;
+  runOutcome?: string | null;
 }) {
   const accepted = action.status === "accepted";
+  const denied = action.status === "denied";
   const isContext = action.type === "context";
   return (
     <div className="rounded-md border border-amber-400/30 bg-amber-400/10 p-2">
@@ -1286,21 +1462,37 @@ function ActionCard({
               {action.description}
             </p>
           )}
-          {accepted && action.result && (
+          {accepted && (
             <p className="mt-1 text-[10px] text-emerald-600 dark:text-emerald-300">
-              Approved: {summarizeResult(action.result)}
+              Approved{runOutcome ? ` · ${runOutcome}` : action.result ? `: ${summarizeResult(action.result)}` : ""}
+            </p>
+          )}
+          {denied && (
+            <p className="mt-1 text-[10px] text-muted-foreground">
+              Declined
             </p>
           )}
         </div>
-        {!accepted && !isContext && (
-          <button
-            type="button"
-            onClick={onAccept}
-            disabled={accepting}
-            className="shrink-0 rounded border border-amber-500/40 px-2 py-1 text-[11px] font-medium hover:bg-amber-500/10 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            Approve
-          </button>
+        {!accepted && !denied && !isContext && (
+          <div className="flex shrink-0 items-center gap-1">
+            <button
+              type="button"
+              onClick={onAccept}
+              disabled={accepting || denying}
+              className="rounded border border-amber-500/40 px-2 py-1 text-[11px] font-medium hover:bg-amber-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Approve
+            </button>
+            <button
+              type="button"
+              onClick={onDeny}
+              disabled={accepting || denying}
+              className="rounded border border-border px-2 py-1 text-[11px] text-muted-foreground hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50"
+              title="Decline this action so the assistant won't re-suggest it"
+            >
+              Deny
+            </button>
+          </div>
         )}
       </div>
     </div>
@@ -1337,6 +1529,11 @@ function TimelineRow({ entry }: { entry: FindingActivityEntry }) {
     tint: "text-muted-foreground",
   };
   const Icon = meta.icon;
+  const [expanded, setExpanded] = useState(false);
+  const isSummary = entry.kind === "finding.chat_summarized";
+  const detail = entry.detail ?? "";
+  const long = detail.length > 140;
+  const shown = long && !expanded ? `${detail.slice(0, 140)}…` : detail;
   return (
     <li className="relative">
       <span
@@ -1354,8 +1551,21 @@ function TimelineRow({ entry }: { entry: FindingActivityEntry }) {
           {fmtTs(entry.ts)}
         </span>
       </div>
-      {entry.detail && (
-        <p className="mt-0.5 text-xs text-muted-foreground">{entry.detail}</p>
+      {shown && (
+        <p
+          className={cn(
+            "mt-0.5 whitespace-pre-wrap text-xs text-muted-foreground",
+            isSummary && long && "cursor-pointer hover:text-foreground",
+          )}
+          onClick={isSummary && long ? () => setExpanded((v) => !v) : undefined}
+        >
+          {shown}
+          {isSummary && long && (
+            <span className="ml-1 text-[10px] text-primary">
+              {expanded ? "(less)" : "(more)"}
+            </span>
+          )}
+        </p>
       )}
       {entry.actor && (
         <p className="text-[10px] uppercase tracking-wide text-muted-foreground/70">

@@ -316,7 +316,7 @@ export interface FindingChatAction {
   title: string;
   description?: string;
   params?: Record<string, unknown>;
-  status?: "proposed" | "accepted" | "dismissed";
+  status?: "proposed" | "accepted" | "denied";
   result?: Record<string, unknown>;
 }
 
@@ -350,7 +350,7 @@ export interface FindingChatActionResponse {
   message: FindingChatMessage;
   action_index: number;
   action_type: FindingChatActionType;
-  status: "accepted" | "dismissed";
+  status: "accepted" | "denied";
   result: Record<string, unknown>;
 }
 

@@ -13,7 +13,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -37,6 +37,7 @@ from app.models import (
     ObservationFindingLink,
     OwnerEligibility,
     ScopeItem,
+    ScopeKind,
     Severity,
     Suggestion,
     SuggestionKind,
@@ -72,6 +73,19 @@ Actions are proposals only. Do not claim they have run. Actions must be
 agent-executable tool runs using one of the built-in tools from the dossier's
 agent_tools list. Never propose exploit actions. If no useful tool action exists,
 return an empty actions array and the dashboard will create safe defaults.
+
+The conversation history lists every action you already proposed with its
+lifecycle: [proposed], [accepted, run <status>, produced N finding(s)], or
+[denied]. DO NOT re-propose an action that is already proposed, accepted, or
+denied — the analyst is still working through them. Only propose genuinely NEW
+actions. When an accepted run has produced findings, reference them in your
+answer instead of re-suggesting the run. If an accepted run FAILED (often
+because the target is not in engagement scope), say so and explain what you
+saw — propose an add_scope action for that target (the dashboard marks it
+source='found' so it shows as discovered-during-engagement) rather than
+re-dispatching the same run. Action types you may propose: run_tool (enum/scan
+only) and add_scope. Keep proposals minimal and never duplicate an action
+already in the ledger.
 
 Be concise: maximum 5 bullets or 2 short paragraphs. Put detail in proposed
 action descriptions, not the chat narrative."""
@@ -267,27 +281,102 @@ def build_finding_dossier(session: Session, finding: Finding) -> dict[str, Any]:
     }
 
 
-def _conversation_history_prompt(messages: list[ConversationMessage]) -> str:
+def _action_ledger_line(session: Session, action: dict[str, Any]) -> str:
+    """One compact ledger line so the AI can see an action's lifecycle.
+
+    Prevents the re-suggestion loop: without the status + outcome fed back
+    into history, the model re-derives the same proposals every turn.
+    """
+    title = str(action.get("title") or action.get("type") or "action")
+    status = str(action.get("status") or "proposed")
+    typ = str(action.get("type") or "")
+    result = action.get("result") if isinstance(action.get("result"), dict) else {}
+    outcome = ""
+    if typ == "run_tool" and result.get("task_id"):
+        try:
+            task = session.get(Task, uuid.UUID(str(result["task_id"])))
+        except (ValueError, TypeError):
+            task = None
+        if task is not None:
+            outcome = f", run {task.status.value}"
+            run_id = result.get("run_id")
+            if task.status == TaskStatus.completed and run_id:
+                n = (
+                    session.execute(
+                        select(func.count(Finding.id)).where(
+                            Finding.engagement_id == task.engagement_id,
+                            Finding.details["thread_id"].astext == str(run_id),
+                        )
+                    ).scalar()
+                    or 0
+                )
+                outcome += f", produced {n} finding(s)"
+            if task.status == TaskStatus.failed:
+                outcome += " (failed — likely out-of-scope or approval gate)"
+    elif result:
+        outcome = f", result: {json.dumps(result, default=str)[:140]}"
+    return f"  • [{status}{outcome}] {typ}: {title}"
+
+
+def _conversation_history_prompt(
+    session: Session, messages: list[ConversationMessage]
+) -> str:
     clipped = messages[-12:]
-    return "\n".join(
-        f"{m.role.upper()}: {m.content[:2000]}" for m in clipped if m.content.strip()
-    )
+    lines: list[str] = []
+    for m in clipped:
+        if m.content.strip():
+            lines.append(f"{m.role.upper()}: {m.content[:1500]}")
+        payload = m.action_payload if isinstance(m.action_payload, dict) else {}
+        actions = (
+            payload.get("actions")
+            if isinstance(payload.get("actions"), list)
+            else []
+        )
+        for a in actions:
+            if isinstance(a, dict):
+                lines.append(_action_ledger_line(session, a))
+    return "\n".join(lines)
 
 
-_ALLOWED_ACTION_TYPES = {"run_tool"}
+_ALLOWED_ACTION_TYPES = {"run_tool", "add_scope"}
 _ALLOWED_TASK_KINDS = {"enum", "scan"}
 _ALLOWED_SEVERITIES = {"info", "low", "medium", "high", "critical"}
 _ALLOWED_PHASES = {"osint", "vuln_scan", "exploit", "phishing", "general"}
 
 
-def _parse_assistant_payload(raw: Any, finding: Finding) -> tuple[str, dict[str, Any]]:
+def _coerce_llm_content(raw: Any) -> str:
+    """Normalize an LLM response body to a string.
+
+    LangChain chat models return ``content`` as either a string or a list of
+    content blocks (Anthropic: ``[{"type":"text","text":"..."}]``). An empty
+    block list was being stringified to ``"[]"`` and stored verbatim as the
+    assistant message — the "only response is []" bug. This extracts the text.
+    """
+    if isinstance(raw, str):
+        return raw
+    if isinstance(raw, list):
+        parts: list[str] = []
+        for block in raw:
+            if isinstance(block, dict):
+                parts.append(str(block.get("text") or block.get("content") or ""))
+            else:
+                parts.append(str(block))
+        return "".join(parts)
+    return str(raw)
+
+
+def _parse_assistant_payload(
+    raw: Any, finding: Finding, *, allow_defaults: bool = True
+) -> tuple[str, dict[str, Any]]:
     """Extract narrative text + executable agent action proposals.
 
     The prompt asks for JSON, but providers occasionally wrap it in prose or
     fences. Parse failure falls back to deterministic built-in tool actions
-    derived from the finding target/summary.
+    derived from the finding target/summary — but ONLY on the first turn
+    (``allow_defaults``). On later turns an empty actions array is respected
+    so the assistant can legitimately propose nothing new (no re-suggestion).
     """
-    text = (raw if isinstance(raw, str) else str(raw)).strip()
+    text = _coerce_llm_content(raw).strip()
     parsed: Any | None = None
     candidates = [text]
     if "```" in text:
@@ -302,12 +391,21 @@ def _parse_assistant_payload(raw: Any, finding: Finding) -> tuple[str, dict[str,
         except json.JSONDecodeError:
             continue
     if not isinstance(parsed, dict):
-        return text, {"actions": _default_agent_actions(finding)}
+        # Model returned non-JSON (or an empty/array response like "[]").
+        # Don't store a bare "[]"/empty string as the bubble — surface a
+        # graceful note + still offer default actions on the first turn.
+        body = text if text and text not in ("[]", "{}") else (
+            "I couldn't generate a structured response that turn. "
+            "Try rephrasing, or ask me to suggest agent actions for this finding."
+        )
+        return body, {
+            "actions": _default_agent_actions(finding) if allow_defaults else []
+        }
 
     answer = str(parsed.get("answer") or "").strip() or text
     actions = _normalize_actions(parsed.get("actions"))
-    actions = [a for a in actions if a.get("type") == "run_tool"]
-    if not actions:
+    actions = [a for a in actions if a.get("type") in _ALLOWED_ACTION_TYPES]
+    if not actions and allow_defaults:
         actions = _default_agent_actions(finding)
     return answer, {"actions": actions}
 
@@ -433,6 +531,13 @@ def _normalize_action_params(typ: str, params: dict[str, Any]) -> dict[str, Any]
             "target": str(params.get("target") or "").strip()[:500] or None,
             "args": tool_args,
         }
+    if typ == "add_scope":
+        kind = str(params.get("kind") or "domain").strip().lower()
+        return {
+            "value": str(params.get("value") or "").strip()[:500],
+            "kind": kind if kind in {"domain", "ip", "cidr", "url"} else "domain",
+            "note": str(params.get("note") or "").strip()[:500] or None,
+        }
     return dict(params)
 
 
@@ -472,7 +577,7 @@ def generate_finding_chat_reply(
         "Finding dossier JSON:\n"
         f"{json.dumps(dossier, default=str, indent=2)[:30000]}\n\n"
         "Conversation so far:\n"
-        f"{_conversation_history_prompt(messages) or '(first turn)'}\n\n"
+        f"{_conversation_history_prompt(session, messages) or '(first turn)'}\n\n"
         "Respond to the analyst's latest message."
     )
 
@@ -496,7 +601,25 @@ def generate_finding_chat_reply(
 
     try:
         response = llm.invoke([("system", _SYSTEM_PROMPT), ("user", prompt)])
-        content, action_payload = _parse_assistant_payload(response.content, finding)
+        # Some providers intermittently stop after ~1 token (no usable
+        # output). Detect via near-zero output tokens and retry once — the
+        # next call almost always returns the full answer.
+        _tin, _tout = _extract_usage(response)
+        if (_tout or 0) < 8:
+            response = llm.invoke(
+                [("system", _SYSTEM_PROMPT), ("user", prompt)]
+            )
+        # Defaults (deterministic tool proposals) only on the first turn;
+        # once any action exists in the thread, respect an empty array so
+        # the assistant isn't forced to re-propose.
+        allow_defaults = not any(
+            isinstance(m.action_payload, dict)
+            and m.action_payload.get("actions")
+            for m in messages
+        )
+        content, action_payload = _parse_assistant_payload(
+            response.content, finding, allow_defaults=allow_defaults
+        )
         tokens_in, tokens_out = _extract_usage(response)
         execution.status = AgentExecutionStatus.completed
         execution.completed_at = datetime.now(tz=UTC)
@@ -525,6 +648,100 @@ def generate_finding_chat_reply(
         execution.error = str(exc)[:1000]
         session.commit()
         raise
+
+
+_SUMMARY_PROMPT = (
+    "Summarize this finding-scoped AI assistant conversation for the engagement "
+    "record. Capture: what was discussed, which actions were proposed and their "
+    "outcome (accepted/denied/run result), any new findings or scope items "
+    "surfaced, and open questions. 3-6 sentences, plain text, no headers. "
+    "Do not invent details not present in the transcript."
+)
+
+
+def summarize_finding_chat(
+    session: Session,
+    redis_client: Any,
+    *,
+    finding: Finding,
+    conversation: Conversation,
+    acting_user_id: uuid.UUID,
+) -> tuple[str, int]:
+    """LLM-summarize a conversation so closing it leaves a reviewable record.
+
+    Writes an audit_log row (``finding.chat_summarized``) carrying the summary
+    so the activity timeline can surface it as a clickable entry. Returns
+    ``(summary, message_count)``. Falls back to a deterministic digest if the
+    BYO key is missing or the LLM call fails so close still works.
+    """
+    from app.models import ActorType, AuditLog
+
+    messages = get_conversation_messages(session, conversation.id)
+    transcript = "\n".join(
+        f"{m.role.upper()}: {m.content[:800]}" for m in messages if m.content.strip()
+    )
+    message_count = len(messages)
+
+    summary = _fallback_summary(messages)
+    try:
+        provider, model_name = default_provider_model()
+        resolved = resolve_for_user(
+            redis_client, user_id=acting_user_id, provider=provider
+        )
+        llm = _make_chat_model(
+            provider,
+            model_name,
+            api_key=resolved.api_key,
+            endpoint=resolved.endpoint,
+        )
+        raw = llm.invoke(
+            [
+                ("system", _SUMMARY_PROMPT),
+                ("user", f"Transcript:\n{transcript[:20000]}"),
+            ]
+        )
+        text = _coerce_llm_content(raw.content)
+        if text.strip():
+            summary = text.strip()
+    except Exception:  # noqa: BLE001 — close must still succeed without an LLM
+        pass
+
+    session.add(
+        AuditLog(
+            engagement_id=finding.engagement_id,
+            actor_type=ActorType.user,
+            actor_id=str(acting_user_id),
+            event_type="finding.chat_summarized",
+            payload={
+                "finding_id": str(finding.id),
+                "conversation_id": str(conversation.id),
+                "message_count": message_count,
+                "summary": summary,
+            },
+        )
+    )
+    session.commit()
+    return summary, message_count
+
+
+def _fallback_summary(messages: list[ConversationMessage]) -> str:
+    if not messages:
+        return "AI session closed — no messages were exchanged."
+    proposed = accepted = denied = 0
+    for m in messages:
+        payload = m.action_payload if isinstance(m.action_payload, dict) else {}
+        for a in payload.get("actions", []):
+            status = a.get("status") if isinstance(a, dict) else None
+            if status == "accepted":
+                accepted += 1
+            elif status == "denied":
+                denied += 1
+            else:
+                proposed += 1
+    return (
+        f"AI session with {len(messages)} message(s). "
+        f"Actions: {accepted} approved, {denied} denied, {proposed} left proposed."
+    )
 
 
 def accept_chat_action(
@@ -558,6 +775,8 @@ def accept_chat_action(
         result = _accept_tag_incident(finding, params)
     elif typ == "add_finding":
         result = _accept_add_finding(session, finding, params, acting_user_id)
+    elif typ == "add_scope":
+        result = _accept_add_scope(session, finding, params)
     elif typ == "next_step":
         result = _accept_next_step(session, finding, action, acting_user_id)
     elif typ == "run_tool":
@@ -578,6 +797,65 @@ def accept_chat_action(
     flag_modified(message, "action_payload")
     session.add(message)
     return typ, result
+
+
+def deny_chat_action(
+    session: Session,
+    *,
+    message: ConversationMessage,
+    action_index: int,
+) -> tuple[str, dict[str, Any]]:
+    """Mark one proposed action bubble as denied (no dispatch).
+
+    Denied actions stay in the ledger so the assistant sees the analyst
+    declined them and doesn't re-propose.
+    """
+    payload = message.action_payload if isinstance(message.action_payload, dict) else {}
+    actions = payload.get("actions") if isinstance(payload.get("actions"), list) else []
+    if action_index >= len(actions) or not isinstance(actions[action_index], dict):
+        raise ValueError("action not found")
+    action = dict(actions[action_index])
+    if action.get("status") not in ("proposed", None):
+        raise ValueError(f"action is {action.get('status')}; cannot deny")
+    action["status"] = "denied"
+    actions[action_index] = action
+    message.action_payload = {"actions": actions}
+    flag_modified(message, "action_payload")
+    session.add(message)
+    return str(action.get("type") or ""), {"denied": True}
+
+def _accept_add_scope(
+    session: Session,
+    finding: Finding,
+    params: dict[str, Any],
+) -> dict[str, Any]:
+    """Mint a scope item the AI surfaced, marked source='found' so the scope
+    editor highlights it as discovered-during-engagement (#94)."""
+    value = str(params.get("value") or "").strip()
+    if not value:
+        raise ValueError("add_scope action missing value")
+    kind = str(params.get("kind") or "domain")
+    try:
+        scope_kind = ScopeKind(kind)
+    except ValueError:
+        scope_kind = ScopeKind.domain
+    item = ScopeItem(
+        engagement_id=finding.engagement_id,
+        kind=scope_kind,
+        value=value,
+        is_exclusion=False,
+        note=str(params.get("note") or "Added during engagement via AI assistant"),
+        source="found",
+    )
+    session.add(item)
+    session.flush()
+    return {
+        "scope_item_id": str(item.id),
+        "kind": scope_kind.value,
+        "value": value,
+        "source": "found",
+    }
+
 
 
 def _accept_tag_incident(finding: Finding, params: dict[str, Any]) -> dict[str, Any]:
