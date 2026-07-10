@@ -62,8 +62,8 @@ param extraCorsAllowOrigins string = 'http://localhost:3001,http://127.0.0.1:300
 param entraTenantId string = ''
 param entraClientId string = ''
 
-@description('Comma-separated IPv4 CIDRs the frontend Container App will accept. Empty → no restriction. install.sh resolves + persists via the ingress ipSecurityRestrictions array (RTD_VIEWER_ALLOWED_IPS in the shell env / help text).')
-param frontendAllowedIps string = ''
+@description('Comma-separated IPv4 CIDRs allowed inbound HTTPS across the entire Container Apps environment (frontend + backend + MCP). Empty → no restriction. v1.28.0: enforced by an NSG on the container-apps subnet, not per-app ingress. install.sh resolves + persists via the NSG rule `Allow-Analysts-Https` (RTD_VIEWER_ALLOWED_IPS in the shell env / help text).')
+param allowedIps string = ''
 
 var namePrefix = 'rtd-${env}'
 var tags = {
@@ -89,6 +89,7 @@ module vnet 'modules/vnet.bicep' = {
     namePrefix: namePrefix
     location: location
     tags: tags
+    allowedIps: allowedIps
   }
 }
 
@@ -233,7 +234,6 @@ module frontend 'modules/frontend.bicep' = {
     // Backend expects `api://<clientId>/access_as_user` — build here so
     // install.sh doesn't have to.
     entraApiScope: empty(entraClientId) ? '' : 'api://${entraClientId}/access_as_user'
-    allowedIps: frontendAllowedIps
   }
 }
 
@@ -305,3 +305,7 @@ output storageAccountName string = storage.outputs.storageAccountName
 output mcpAppName string = mcpApp.outputs.appName
 output mcpAppFqdn string = mcpApp.outputs.appFqdn
 output mcpAppUrl string = mcpApp.outputs.appUrl
+// v1.28.0: NSG on the container-apps subnet enforces the analyst IP
+// allowlist for the whole env. install.sh reads/writes the Allow-Analysts-Https
+// rule to preserve the allowlist across runs.
+output nsgName string = vnet.outputs.nsgName
