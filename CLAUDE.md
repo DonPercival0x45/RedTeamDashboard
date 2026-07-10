@@ -98,39 +98,46 @@ Recent additions on `phase-11-costs` (June 2026):
 runs exclusively as `rtd-<env>-frontend` (Azure Container App, Node
 runtime).
 
-**v1.28.0:** the IP allowlist moved from per-app ingress
-`ipSecurityRestrictions` to a subnet-level Network Security Group
-(`rtd-<env>-nsg`) attached to the `container-apps` workload subnet. One
-control plane covers the entire environment — frontend + backend +
-MCP — since Container Apps share one env IP and NSG works at L4 (source
-IP + destination port), not by hostname. **This means CLI / MCP clients
-now need to be in the allowlist too**; pre-v1.28 they hit the backend
-publicly.
+**v1.28.1:** the IP allowlist is enforced by per-app ingress
+`ipSecurityRestrictions` on all three Container Apps (`rtd-<env>-frontend`,
+`rtd-<env>-app`, `rtd-<env>-mcp`). One list, three apps — CLI + MCP +
+browser all filtered by the same CIDRs. **CLI / MCP clients need to be
+in the allowlist**; pre-v1.28 (before the env-wide scope) they hit the
+backend publicly.
 
-NSG rules (all inbound, on `rtd-<env>-nsg`):
+**v1.28.0 postmortem (do not re-attempt):** v1.28.0 tried to move the
+allowlist to a subnet-level NSG (`rtd-<env>-nsg` on the `container-apps`
+subnet). That doesn't work on Container Apps external environments:
+the shared Envoy load balancer SNATs incoming traffic before it hits the
+workload subnet, so the NSG only sees `AzureLoadBalancer` as the source
+IP and any `sourceAddressPrefixes = [analyst CIDR]` rule never matches.
+The env was effectively wide open for a few hours until check-host.net
+probes from 5 non-allowlisted countries all returned HTTP 200. Only
+Envoy at the ingress (via `X-Forwarded-For`) sees the real client IP —
+which is what `ipSecurityRestrictions` gates on. Subnet NSGs on
+Container Apps external envs are useful for internal segmentation only.
 
-- `Allow-AzureLoadBalancer-Inbound` (priority 100) — mandatory: Container
-  Apps ingress health probes come from the `AzureLoadBalancer` service
-  tag; deleting this rule takes the whole env unhealthy.
-- `Allow-Analysts-Https` (priority 200) — analyst allowlist. TCP/443,
-  `sourceAddressPrefixes` = the CIDR list (or the single-element
-  sentinel `['*']` when unlocked).
-- Everything else falls through to the default `DenyAllInBound` at 65500.
+`ipSecurityRestrictions` structure on each app's ingress (identical
+across all three):
 
-**IP allowlist source of truth: the live NSG rule
-`Allow-Analysts-Https`**. install.sh resolves the value with this
-precedence on every run:
+- One `{ name: AllowedIp-N, ipAddressRange: <CIDR>, action: Allow }`
+  per analyst CIDR. Any non-listed IP gets 403.
+- Empty array → no restrictions (Container Apps default: allow all).
+
+**IP allowlist source of truth: the live frontend Container App's
+ingress `ipSecurityRestrictions`**. install.sh resolves the value with
+this precedence on every run:
 
 1. `--allowed-ips` CLI flag — explicit override; empty value clears the lock
-2. Live NSG rule `Allow-Analysts-Https` on `rtd-<env>-nsg`
-   (`sourceAddressPrefixes[?@!='*']`, so the unlocked sentinel doesn't
-   contaminate the resolved list)
+2. Live `ipSecurityRestrictions[?action=='Allow'].ipAddressRange` on
+   `rtd-<env>-frontend` (joined with commas)
 3. Shell env var `RTD_VIEWER_ALLOWED_IPS`
 
-Whatever resolves is passed to Bicep, which stamps it onto the NSG rule
-— so "set once, install many times" works for anyone with az access.
-Operators can also edit directly in the Portal (Network security groups
-→ `rtd-<env>-nsg` → Inbound rules → `Allow-Analysts-Https`); install.sh
+Whatever resolves is passed to Bicep, which stamps it onto ingress
+`ipSecurityRestrictions` on frontend + backend + MCP in one go — so
+"set once, install many times" works for anyone with az access.
+Operators can also edit directly in the Portal (Container Apps →
+`rtd-<env>-frontend` → Networking → Ingress → Restrictions); install.sh
 picks up the change on the next run.
 
 The same precedence applies to `RTD_ENTRA_TENANT_ID` +
@@ -143,22 +150,22 @@ vars (`properties.template.containers[0].env[?name==...]`).
     --allowed-ips '1.2.3.4/32,5.6.7.8/32' \
     [other args]
 
-# Later installs — IPs auto-resolve from the live NSG, no flag needed:
+# Later installs — IPs auto-resolve from the live frontend ingress:
 ./scripts/install.sh --env 5qprod [other args]
 ```
 
-Empty resolved value → NSG rule uses `sourceAddressPrefixes = ['*']`,
-which permits all inbound HTTPS (effectively unlocked). MSAL.js in the
-browser is still the only auth layer for the frontend; the backend
-still requires an API key / Entra bearer regardless of source IP.
+Empty resolved value → ingress `ipSecurityRestrictions: []`, which
+permits all inbound HTTPS (effectively unlocked). MSAL.js in the browser
+is still the only auth layer for the frontend; the backend still
+requires an API key / Entra bearer regardless of source IP.
 
-**Migration behavior on the first v1.28 install of a pre-v1.28 env:**
-Bicep provisions the NSG and attaches it to the subnet. install.sh then
-enumerates any residual `ipSecurityRestrictions` on `rtd-<env>-frontend`
-and clears them via `az containerapp ingress access-restriction remove`
-— Container Apps Bicep doesn't reliably null the property when it's
-omitted, so this defensive scrub prevents the old ingress allowlist and
-the new NSG allowlist from both applying (their intersection would win).
+**Migration behavior on the first v1.28.1 install of a v1.28.0 env:**
+Bicep provisions ipSecurityRestrictions on all three apps. install.sh
+then detects the orphaned `rtd-<env>-nsg` (v1.28.0 attached it to the
+subnet), detaches it via `az network vnet subnet update
+--network-security-group ""`, and deletes it — idempotent no-op if
+Bicep already cleared the attachment or the NSG is already gone. On a
+pre-v1.28 env this whole block silently skips.
 
 ## Planner context sync
 

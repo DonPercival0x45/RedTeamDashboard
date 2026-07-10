@@ -36,6 +36,18 @@ param backendImage string
 @description('Application Insights connection string. Same DSN as the main App so traces stitch.')
 param appInsightsConnectionString string = ''
 
+@description('v1.28.1: Comma-separated IPv4 CIDRs allowed inbound HTTPS to the MCP Container App via Envoy ingress. Empty → no restriction. Same allowlist stamped onto frontend and backend so CLI + browser + MCP clients all use one list.')
+param allowedIps string = ''
+
+// Bicep can\'t nest for-expressions in ternaries (BCP138), so split into two vars.
+var trimmedAllowedIps = trim(allowedIps)
+var ipCidrList = empty(trimmedAllowedIps) ? [] : split(trimmedAllowedIps, ',')
+var ipRules = [for (cidr, i) in ipCidrList: {
+  name: 'AllowedIp-${i + 1}'
+  ipAddressRange: trim(cidr)
+  action: 'Allow'
+}]
+
 // ---------------------------------------------------------------------------
 // Role assignment IDs
 // ---------------------------------------------------------------------------
@@ -83,6 +95,7 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
         targetPort: 8000
         transport: 'auto'
         allowInsecure: false
+        ipSecurityRestrictions: ipRules
       }
       secrets: secretsFromKeyVault
     }
