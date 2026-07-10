@@ -344,6 +344,27 @@ _ALLOWED_SEVERITIES = {"info", "low", "medium", "high", "critical"}
 _ALLOWED_PHASES = {"osint", "vuln_scan", "exploit", "phishing", "general"}
 
 
+def _coerce_llm_content(raw: Any) -> str:
+    """Normalize an LLM response body to a string.
+
+    LangChain chat models return ``content`` as either a string or a list of
+    content blocks (Anthropic: ``[{"type":"text","text":"..."}]``). An empty
+    block list was being stringified to ``"[]"`` and stored verbatim as the
+    assistant message — the "only response is []" bug. This extracts the text.
+    """
+    if isinstance(raw, str):
+        return raw
+    if isinstance(raw, list):
+        parts: list[str] = []
+        for block in raw:
+            if isinstance(block, dict):
+                parts.append(str(block.get("text") or block.get("content") or ""))
+            else:
+                parts.append(str(block))
+        return "".join(parts)
+    return str(raw)
+
+
 def _parse_assistant_payload(
     raw: Any, finding: Finding, *, allow_defaults: bool = True
 ) -> tuple[str, dict[str, Any]]:
@@ -355,7 +376,7 @@ def _parse_assistant_payload(
     (``allow_defaults``). On later turns an empty actions array is respected
     so the assistant can legitimately propose nothing new (no re-suggestion).
     """
-    text = (raw if isinstance(raw, str) else str(raw)).strip()
+    text = _coerce_llm_content(raw).strip()
     parsed: Any | None = None
     candidates = [text]
     if "```" in text:
@@ -370,7 +391,14 @@ def _parse_assistant_payload(
         except json.JSONDecodeError:
             continue
     if not isinstance(parsed, dict):
-        return text, {
+        # Model returned non-JSON (or an empty/array response like "[]").
+        # Don't store a bare "[]"/empty string as the bubble — surface a
+        # graceful note + still offer default actions on the first turn.
+        body = text if text and text not in ("[]", "{}") else (
+            "I couldn't generate a structured response that turn. "
+            "Try rephrasing, or ask me to suggest agent actions for this finding."
+        )
+        return body, {
             "actions": _default_agent_actions(finding) if allow_defaults else []
         }
 
@@ -664,7 +692,7 @@ def summarize_finding_chat(
                 ("user", f"Transcript:\n{transcript[:20000]}"),
             ]
         )
-        text = raw.content if isinstance(raw.content, str) else str(raw.content)
+        text = _coerce_llm_content(raw.content)
         if text.strip():
             summary = text.strip()
     except Exception:  # noqa: BLE001 — close must still succeed without an LLM
