@@ -601,6 +601,14 @@ def generate_finding_chat_reply(
 
     try:
         response = llm.invoke([("system", _SYSTEM_PROMPT), ("user", prompt)])
+        # Some providers intermittently stop after ~1 token (no usable
+        # output). Detect via near-zero output tokens and retry once — the
+        # next call almost always returns the full answer.
+        _tin, _tout = _extract_usage(response)
+        if (_tout or 0) < 8:
+            response = llm.invoke(
+                [("system", _SYSTEM_PROMPT), ("user", prompt)]
+            )
         # Defaults (deterministic tool proposals) only on the first turn;
         # once any action exists in the thread, respect an empty array so
         # the assistant isn't forced to re-propose.
