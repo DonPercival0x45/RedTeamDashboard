@@ -34,6 +34,7 @@ import {
   updateFinding,
   uploadAttachment,
   validateFinding,
+  ApiError,
 } from "@/lib/api";
 import {
   useAcceptFindingChatActionMutation,
@@ -1655,13 +1656,7 @@ function ChatRail({
       </div>
 
       {(ask.error || clear.error) && (
-        <p className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 p-2 text-xs text-destructive">
-          {ask.error instanceof Error
-            ? ask.error.message
-            : clear.error instanceof Error
-              ? clear.error.message
-              : "Chat failed"}
-        </p>
+        <ChatErrorNotice error={ask.error ?? clear.error} />
       )}
 
       <form onSubmit={onSubmit} className="mt-4 space-y-2">
@@ -1682,6 +1677,30 @@ function ChatRail({
         </button>
       </form>
     </div>
+  );
+}
+
+function ChatErrorNotice({ error }: { error: unknown }) {
+  if (error instanceof ApiError && error.code === "missing_provider_key") {
+    return (
+      <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-800 dark:text-amber-200">
+        <p className="font-medium">Provider key needed</p>
+        <p className="mt-1">{error.message.replace(/^\d+\s+[^:]+:\s*/, "")}</p>
+        {error.actionUrl && (
+          <a
+            href={error.actionUrl}
+            className="mt-2 inline-flex rounded border border-amber-500/40 px-2 py-1 font-medium hover:bg-amber-500/10"
+          >
+            {error.actionLabel ?? "Open settings"}
+          </a>
+        )}
+      </div>
+    );
+  }
+  return (
+    <p className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 p-2 text-xs text-destructive">
+      {error instanceof Error ? error.message : "Chat failed"}
+    </p>
   );
 }
 
