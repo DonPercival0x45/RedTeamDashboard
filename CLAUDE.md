@@ -96,28 +96,46 @@ Recent additions on `phase-11-costs` (June 2026):
 
 **v1.10.0:** the viewer SWA was decommissioned. The Next.js viewer now
 runs exclusively as `rtd-<env>-frontend` (Azure Container App, Node
-runtime). IP restrictions are enforced at the Container App ingress via
-`properties.configuration.ingress.ipSecurityRestrictions`.
+runtime).
 
-**IP allowlist source of truth: the frontend Container App's live
-ingress config**. install.sh resolves the value with this precedence on
-every run:
+**v1.28.0:** the IP allowlist moved from per-app ingress
+`ipSecurityRestrictions` to a subnet-level Network Security Group
+(`rtd-<env>-nsg`) attached to the `container-apps` workload subnet. One
+control plane covers the entire environment — frontend + backend +
+MCP — since Container Apps share one env IP and NSG works at L4 (source
+IP + destination port), not by hostname. **This means CLI / MCP clients
+now need to be in the allowlist too**; pre-v1.28 they hit the backend
+publicly.
+
+NSG rules (all inbound, on `rtd-<env>-nsg`):
+
+- `Allow-AzureLoadBalancer-Inbound` (priority 100) — mandatory: Container
+  Apps ingress health probes come from the `AzureLoadBalancer` service
+  tag; deleting this rule takes the whole env unhealthy.
+- `Allow-Analysts-Https` (priority 200) — analyst allowlist. TCP/443,
+  `sourceAddressPrefixes` = the CIDR list (or the single-element
+  sentinel `['*']` when unlocked).
+- Everything else falls through to the default `DenyAllInBound` at 65500.
+
+**IP allowlist source of truth: the live NSG rule
+`Allow-Analysts-Https`**. install.sh resolves the value with this
+precedence on every run:
 
 1. `--allowed-ips` CLI flag — explicit override; empty value clears the lock
-2. Live ingress on `rtd-<env>-frontend`
-   (`properties.configuration.ingress.ipSecurityRestrictions[].ipAddressRange`)
+2. Live NSG rule `Allow-Analysts-Https` on `rtd-<env>-nsg`
+   (`sourceAddressPrefixes[?@!='*']`, so the unlocked sentinel doesn't
+   contaminate the resolved list)
 3. Shell env var `RTD_VIEWER_ALLOWED_IPS`
 
-Whatever resolves is passed to Bicep, which stamps it onto the ingress
+Whatever resolves is passed to Bicep, which stamps it onto the NSG rule
 — so "set once, install many times" works for anyone with az access.
-Operators can also edit directly in the Portal (rtd-<env>-frontend →
-Ingress → IP security restrictions); install.sh picks up the change on
-the next run.
+Operators can also edit directly in the Portal (Network security groups
+→ `rtd-<env>-nsg` → Inbound rules → `Allow-Analysts-Https`); install.sh
+picks up the change on the next run.
 
 The same precedence applies to `RTD_ENTRA_TENANT_ID` +
 `RTD_ENTRA_CLIENT_ID`, resolved from the frontend Container App's env
-vars (`properties.template.containers[0].env[?name==...]`) instead of
-the ingress.
+vars (`properties.template.containers[0].env[?name==...]`).
 
 ```bash
 # First install on an env — seed the IPs:
@@ -125,13 +143,22 @@ the ingress.
     --allowed-ips '1.2.3.4/32,5.6.7.8/32' \
     [other args]
 
-# Later installs — IPs auto-resolve from live ingress, no flag needed:
+# Later installs — IPs auto-resolve from the live NSG, no flag needed:
 ./scripts/install.sh --env 5qprod [other args]
 ```
 
-Empty resolved value → `ipSecurityRestrictions` is null (Container Apps
-treats absent as no restriction). MSAL.js in the browser is the only
-auth layer.
+Empty resolved value → NSG rule uses `sourceAddressPrefixes = ['*']`,
+which permits all inbound HTTPS (effectively unlocked). MSAL.js in the
+browser is still the only auth layer for the frontend; the backend
+still requires an API key / Entra bearer regardless of source IP.
+
+**Migration behavior on the first v1.28 install of a pre-v1.28 env:**
+Bicep provisions the NSG and attaches it to the subnet. install.sh then
+enumerates any residual `ipSecurityRestrictions` on `rtd-<env>-frontend`
+and clears them via `az containerapp ingress access-restriction remove`
+— Container Apps Bicep doesn't reliably null the property when it's
+omitted, so this defensive scrub prevents the old ingress allowlist and
+the new NSG allowlist from both applying (their intersection would win).
 
 ## Planner context sync
 
