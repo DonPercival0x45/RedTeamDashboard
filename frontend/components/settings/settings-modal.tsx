@@ -16,6 +16,7 @@ import dynamic from "next/dynamic";
 import { useMemo, useState, type ComponentType } from "react";
 import {
   Accessibility,
+  BookOpen,
   Globe,
   Key,
   MessageSquare,
@@ -32,6 +33,10 @@ import { cn } from "@/lib/utils";
 // Lazy-import each panel body. next/dynamic with ssr:false is fine —
 // the modal is client-only. Loading fallback is a lightweight
 // centered spinner via the shared skeleton pattern.
+const GettingStartedPanel = dynamic(
+  () => import("@/app/settings/getting-started/page").then((m) => m.default),
+  { ssr: false, loading: () => <PanelSkeleton /> },
+);
 const ModelsPanel = dynamic(
   () => import("@/app/settings/keys/page").then((m) => m.default),
   { ssr: false, loading: () => <PanelSkeleton /> },
@@ -76,6 +81,7 @@ function PanelSkeleton() {
 }
 
 type PanelKey =
+  | "getting-started"
   | "models"
   | "configurations"
   | "appearance"
@@ -94,6 +100,12 @@ interface PanelEntry {
 }
 
 const PANELS: PanelEntry[] = [
+  {
+    key: "getting-started",
+    label: "Quick Start",
+    icon: BookOpen,
+    Component: GettingStartedPanel,
+  },
   { key: "models", label: "Keys", icon: Key, Component: ModelsPanel },
   {
     key: "configurations",
@@ -149,7 +161,7 @@ export function SettingsModal({
     () => PANELS.filter((p) => !p.adminOnly || isAdmin),
     [isAdmin],
   );
-  const [active, setActive] = useState<PanelKey>("models");
+  const [active, setActive] = useState<PanelKey>("getting-started");
 
   const activePanel = visible.find((p) => p.key === active) ?? visible[0];
   const Body = activePanel?.Component;

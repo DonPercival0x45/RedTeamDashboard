@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { useQueryClient } from "@tanstack/react-query";
 import { Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -198,8 +199,11 @@ export function ScopeEditor({
         {items && items.length === 0 && (
           <p className="rounded border border-amber-500/40 bg-amber-50 px-3 py-2 text-sm text-amber-900">
             No scope yet — runs will be silently denied until you add at least
-            one include. Try <code>kind: domain · value: acme.com</code> for the
-            stub tools.
+            one include. Try <code>kind: domain · value: acme.com</code> or review{" "}
+            <Link href="/settings/getting-started" className="font-medium underline">
+              Quick Start
+            </Link>
+            .
           </p>
         )}
 
