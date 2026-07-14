@@ -14,8 +14,8 @@
 // colour. The old standalone Event log moved here as a collapsible
 // "Live events" panel below the boxes.
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   Activity,
   CheckCircle2,
@@ -23,6 +23,8 @@ import {
   ChevronRight,
   CircleSlash,
   Clock,
+  LayoutGrid,
+  List,
   RefreshCcw,
   Search,
   Slash,
@@ -119,6 +121,7 @@ const OUTCOME_CLASS: Record<StatusOutcome, string> = {
 
 // v1.2.0 date-range chips over started_at. "all" is the default.
 type DateRange = "all" | "24h" | "7d" | "14d" | "30d";
+type ViewMode = "cards" | "table";
 const DATE_RANGE_MS: Record<Exclude<DateRange, "all">, number> = {
   "24h": 24 * 60 * 60 * 1000,
   "7d": 7 * 24 * 60 * 60 * 1000,
@@ -195,17 +198,45 @@ export function StatusView({
   const error = localError ?? (queryError instanceof Error ? queryError.message : queryError ? String(queryError) : null);
 
   const searchParams = useSearchParams();
+  const pathname = usePathname();
+  const router = useRouter();
   const runParam = searchParams?.get("run") ?? null;
-  const [filter, setFilter] = useState<StatusKind | "all">("all");
-  const [colorFilter, setColorFilter] = useState<StatusColor | "all">("all");
+  const initialKind = searchParams?.get("statusKind");
+  const initialColor = searchParams?.get("statusColor");
+  const initialOutcome = searchParams?.get("statusOutcome");
+  const initialAgent = searchParams?.get("statusAgent") ?? "all";
+  const initialRange = searchParams?.get("statusRange");
+  const initialSearch = searchParams?.get("statusSearch") ?? "";
+  const initialView = searchParams?.get("statusView");
+  const [filter, setFilter] = useState<StatusKind | "all">(
+    initialKind && ["agent", "task", "approval"].includes(initialKind)
+      ? (initialKind as StatusKind)
+      : "all",
+  );
+  const [colorFilter, setColorFilter] = useState<StatusColor | "all">(
+    initialColor && ["active", "pending", "completed", "failed"].includes(initialColor)
+      ? (initialColor as StatusColor)
+      : "all",
+  );
+  const [outcomeFilter, setOutcomeFilter] = useState<StatusOutcome | "all">(
+    initialOutcome && ["success", "empty", "partial", "errored"].includes(initialOutcome)
+      ? (initialOutcome as StatusOutcome)
+      : "all",
+  );
+  const [agentFilter, setAgentFilter] = useState(initialAgent);
+  const [viewMode, setViewMode] = useState<ViewMode>(initialView === "table" ? "table" : "cards");
   const [expanded, setExpanded] = useState<StatusEntity | null>(null);
   const [retryingId, setRetryingId] = useState<string | null>(null);
   const [cancellingId, setCancellingId] = useState<string | null>(null);
   const [bulkCancelling, setBulkCancelling] = useState(false);
   // v1.2.0 — typed search over title / subtitle / synopsis / run_slug,
   // plus a date-range chip over started_at.
-  const [search, setSearch] = useState("");
-  const [dateRange, setDateRange] = useState<DateRange>("all");
+  const [search, setSearch] = useState(initialSearch);
+  const [dateRange, setDateRange] = useState<DateRange>(
+    initialRange && ["24h", "7d", "14d", "30d"].includes(initialRange)
+      ? (initialRange as DateRange)
+      : "all",
+  );
   // v0.8.2: Live events panel (folded in from the standalone Event log).
   // Default collapsed so the box grid stays the focus.
   const [liveEventsOpen, setLiveEventsOpen] = useState(false);
@@ -262,13 +293,53 @@ export function StatusView({
     [cancelTaskMutation, cancelAgentMutation],
   );
 
-  const all: StatusEntity[] = data
-    ? [...data.agents, ...data.tasks, ...data.approvals].sort((a, b) => {
-        const ta = (a.started_at || a.completed_at || "").toString();
-        const tb = (b.started_at || b.completed_at || "").toString();
-        return tb.localeCompare(ta);
-      })
-    : [];
+  const all = useMemo<StatusEntity[]>(
+    () => data
+      ? [...data.agents, ...data.tasks, ...data.approvals].sort((a, b) => {
+          const ta = (a.started_at || a.completed_at || "").toString();
+          const tb = (b.started_at || b.completed_at || "").toString();
+          return tb.localeCompare(ta);
+        })
+      : [],
+    [data],
+  );
+
+  const agentRoles = useMemo(
+    () => Array.from(new Set(
+      all
+        .filter((entity) => entity.kind === "agent")
+        .map((entity) => String(entity.log.agent ?? "unknown")),
+    )).sort(),
+    [all],
+  );
+
+  useEffect(() => {
+    const params = new URLSearchParams(searchParams?.toString() ?? "");
+    const write = (key: string, value: string, fallback: string) => {
+      if (value === fallback) params.delete(key); else params.set(key, value);
+    };
+    write("statusKind", filter, "all");
+    write("statusColor", colorFilter, "all");
+    write("statusOutcome", outcomeFilter, "all");
+    write("statusAgent", agentFilter, "all");
+    write("statusRange", dateRange, "all");
+    write("statusSearch", search, "");
+    write("statusView", viewMode, "cards");
+    const query = params.toString();
+    if (query === (searchParams?.toString() ?? "")) return;
+    router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
+  }, [
+    agentFilter,
+    colorFilter,
+    dateRange,
+    filter,
+    outcomeFilter,
+    pathname,
+    router,
+    search,
+    searchParams,
+    viewMode,
+  ]);
 
   // v1.2.0: deep-link. When the URL carries ``?run=<id>`` (from a
   // kickoff toast anywhere in the app), auto-open Expand on the
@@ -294,13 +365,17 @@ export function StatusView({
     if (match) setExpanded(match);
   }, [runParam, expanded, all]);
 
-  // v1.2.0 filter pipeline: kind → color → date range → search.
+  // Filter pipeline: kind → color → outcome → agent role → date range → search.
   const searchTerm = search.trim().toLowerCase();
   const dateCutoff =
     dateRange === "all" ? null : Date.now() - DATE_RANGE_MS[dateRange];
   const visible = all
     .filter((e) => filter === "all" || e.kind === filter)
     .filter((e) => colorFilter === "all" || e.color === colorFilter)
+    .filter((e) => outcomeFilter === "all" || e.outcome === outcomeFilter)
+    .filter((e) => agentFilter === "all" || (
+      e.kind === "agent" && String(e.log.agent ?? "unknown") === agentFilter
+    ))
     .filter((e) => {
       if (dateCutoff === null) return true;
       const ts = e.started_at ? new Date(e.started_at).getTime() : 0;
@@ -409,6 +484,39 @@ export function StatusView({
             </button>
           ))}
         </div>
+        <div className="flex flex-wrap items-center gap-1">
+          <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+            Outcome:
+          </span>
+          {(["all", "success", "empty", "partial", "errored"] as const).map((opt) => (
+            <button
+              key={opt}
+              type="button"
+              onClick={() => setOutcomeFilter(opt)}
+              className={cn(
+                "rounded-full border px-2 py-0.5 text-[11px] transition-colors",
+                outcomeFilter === opt
+                  ? "border-foreground bg-foreground text-background"
+                  : "border-border text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {opt === "all" ? "All" : OUTCOME_LABEL[opt]}
+            </button>
+          ))}
+        </div>
+        <label className="flex items-center gap-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+          Agent:
+          <select
+            value={agentFilter}
+            onChange={(event) => setAgentFilter(event.target.value)}
+            className="h-7 rounded-full border border-border bg-background px-2 text-[11px] normal-case text-foreground"
+          >
+            <option value="all">All roles</option>
+            {agentRoles.map((role) => (
+              <option key={role} value={role}>{role}</option>
+            ))}
+          </select>
+        </label>
         {/* v1.2.0 date-range chips */}
         <div className="flex flex-wrap items-center gap-1">
           <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
@@ -442,11 +550,30 @@ export function StatusView({
             ? "Cancelling…"
             : `Cancel all active (${activeForBulkCancel.length})`}
         </Button>
+        <div className="ml-auto flex rounded-md border border-border p-0.5">
+          <button
+            type="button"
+            onClick={() => setViewMode("cards")}
+            className={cn("rounded p-1.5", viewMode === "cards" ? "bg-muted text-foreground" : "text-muted-foreground")}
+            aria-label="Card view"
+            title="Card view"
+          >
+            <LayoutGrid className="h-3.5 w-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={() => setViewMode("table")}
+            className={cn("rounded p-1.5", viewMode === "table" ? "bg-muted text-foreground" : "text-muted-foreground")}
+            aria-label="Table view"
+            title="Table view"
+          >
+            <List className="h-3.5 w-3.5" />
+          </button>
+        </div>
         <Button
           size="sm"
           variant="outline"
           onClick={() => void refetch()}
-          className="ml-auto"
         >
           <RefreshCcw className="mr-1.5 h-3.5 w-3.5" />
           Refresh
@@ -472,11 +599,11 @@ export function StatusView({
         <p className="text-sm text-muted-foreground">Loading…</p>
       ) : visible.length === 0 ? (
         <p className="text-sm text-muted-foreground">
-          Nothing to show. {filter !== "all" || colorFilter !== "all"
+          Nothing to show. {filter !== "all" || colorFilter !== "all" || outcomeFilter !== "all" || agentFilter !== "all"
             ? "Try clearing filters."
             : "Run an agent or kick off a task to populate the timeline."}
         </p>
-      ) : (
+      ) : viewMode === "cards" ? (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           {visible.map((entity) => (
             <StatusBox
@@ -489,6 +616,52 @@ export function StatusView({
               cancelling={cancellingId === entity.id}
             />
           ))}
+        </div>
+      ) : (
+        <div className="overflow-x-auto rounded-lg border border-border bg-card/40">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-border text-left text-[10px] uppercase tracking-wide text-muted-foreground">
+                <th className="px-3 py-2">Run</th>
+                <th className="px-3 py-2">Kind / role</th>
+                <th className="px-3 py-2">Status</th>
+                <th className="px-3 py-2">Outcome</th>
+                <th className="px-3 py-2">Started</th>
+                <th className="px-3 py-2">Synopsis</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visible.map((entity) => (
+                <tr
+                  key={`${entity.kind}-${entity.id}`}
+                  onClick={() => setExpanded(entity)}
+                  className="cursor-pointer border-b border-border/50 last:border-0 hover:bg-muted/30"
+                >
+                  <td className="px-3 py-2">
+                    <p className="font-medium">{entity.title}</p>
+                    <p className="font-mono text-[10px] text-muted-foreground">{entity.run_slug}</p>
+                  </td>
+                  <td className="px-3 py-2 text-xs text-muted-foreground">
+                    {entity.kind === "agent" ? String(entity.log.agent ?? "agent") : entity.kind}
+                  </td>
+                  <td className="px-3 py-2">
+                    <Badge variant="outline" className={COLOR_BADGE[entity.color]}>
+                      {COLOR_LABEL[entity.color]}
+                    </Badge>
+                  </td>
+                  <td className="px-3 py-2">
+                    {entity.outcome ? (
+                      <Badge variant="outline" className={OUTCOME_CLASS[entity.outcome]}>
+                        {OUTCOME_LABEL[entity.outcome]}
+                      </Badge>
+                    ) : "—"}
+                  </td>
+                  <td className="whitespace-nowrap px-3 py-2 text-xs text-muted-foreground">{fmtDate(entity.started_at)}</td>
+                  <td className="max-w-md px-3 py-2 text-xs text-muted-foreground">{entity.synopsis ?? entity.subtitle ?? "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
 
