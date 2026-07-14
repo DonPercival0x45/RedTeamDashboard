@@ -27,6 +27,8 @@ Endpoints::
     POST   /engagements/{slug}/findings/import           -> bulk import findings (JSON/CSV)
     POST   /engagements/{slug}/findings/import/nessus    -> import Nessus .nessus v2 XML
     POST   /engagements/{slug}/findings/import/nmap      -> import Nmap -oX XML
+    POST   /engagements/{slug}/findings/import/{source}/preview -> parse without writes
+    POST   /engagements/{slug}/findings/import/{source}/commit  -> persist selected groups
     PATCH  /findings/{finding_id}                        -> update title/summary/severity/phase
     GET    /engagements/{slug}/export                    -> full JSON snapshot
 
@@ -48,9 +50,19 @@ import json
 import re
 import uuid
 from datetime import UTC, datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Response,
+    UploadFile,
+    status,
+)
 from pydantic import BaseModel, Field
 from sqlalchemy import case, func, select, text
 
@@ -1203,6 +1215,48 @@ class BurpImportResult(BaseModel):
     export_time: datetime | None = None
 
 
+class ScannerScopeReasonRead(BaseModel):
+    code: str
+    count: int
+    message: str
+
+
+class ScannerPreviewGroupRead(BaseModel):
+    selection_key: str
+    title: str
+    severity: Severity
+    phase: FindingPhase
+    item_count: int
+    targets: list[str]
+    scope_decision: str
+    scope_reasons: list[ScannerScopeReasonRead]
+    in_scope_item_count: int
+    out_of_scope_item_count: int
+    duplicate_state: Literal["new", "partial", "existing"]
+    duplicate_item_count: int
+    default_selected: bool
+
+
+class ScannerImportPreviewRead(BaseModel):
+    source: Literal["nessus", "burp", "nmap"]
+    file_sha256: str
+    total_source_rows: int
+    groups: list[ScannerPreviewGroupRead]
+    counts: dict[str, int]
+    parser_counts: dict[str, int]
+
+
+class ScannerImportCommitResult(BaseModel):
+    source: Literal["nessus", "burp", "nmap"]
+    file_sha256: str
+    selected_group_count: int
+    selected_item_count: int
+    skipped_out_of_scope: int
+    skipped_duplicate: int
+    imported: list[FindingRead]
+    parser_counts: dict[str, int]
+
+
 def _create_findings_from_imports(
     session: Any,
     eng: Engagement,
@@ -1525,6 +1579,205 @@ def import_burp(
         "skipped_duplicate": skipped_duplicate,
         "total_items": result.total_items,
         "export_time": result.export_time,
+    }
+
+
+ScannerSourceParam = Literal["nessus", "burp", "nmap"]
+
+
+def _read_scanner_upload(file: UploadFile) -> bytes:
+    from app.services.scanner_import import MAX_SCANNER_EXPORT_BYTES
+
+    raw = file.file.read(MAX_SCANNER_EXPORT_BYTES + 1)
+    if len(raw) > MAX_SCANNER_EXPORT_BYTES:
+        raise HTTPException(status_code=413, detail="scanner export exceeds the 20 MB limit")
+    return raw
+
+
+def _scanner_duplicate_index(
+    session: Any,
+    engagement_id: uuid.UUID,
+    source: ScannerSourceParam,
+) -> Any:
+    from app.services.scanner_import import DuplicateIndex
+
+    rows = session.execute(
+        select(Finding.group_key, Finding.details, Finding.burp_serial_number).where(
+            Finding.engagement_id == engagement_id,
+            Finding.source_tool == f"{source}_import",
+            Finding.deleted_at.is_(None),
+        )
+    ).all()
+    group_targets: dict[str, set[str]] = {}
+    burp_serials: set[str] = set()
+    for group_key, details, serial in rows:
+        if serial:
+            burp_serials.add(serial)
+        if not group_key:
+            continue
+        targets = group_targets.setdefault(group_key, set())
+        payload = details if isinstance(details, dict) else {}
+        for item in payload.get("items") or []:
+            if isinstance(item, dict) and item.get("target"):
+                targets.add(str(item["target"]))
+    return DuplicateIndex(
+        group_targets={key: frozenset(values) for key, values in group_targets.items()},
+        burp_serials=frozenset(burp_serials),
+    )
+
+
+def _scanner_preview_to_dict(preview: Any) -> dict[str, Any]:
+    return {
+        "source": preview.source,
+        "file_sha256": preview.file_sha256,
+        "total_source_rows": preview.total_source_rows,
+        "groups": [
+            {
+                "selection_key": group.selection_key,
+                "title": group.title,
+                "severity": group.severity,
+                "phase": group.phase,
+                "item_count": group.item_count,
+                "targets": list(group.targets),
+                "scope_decision": group.scope_decision,
+                "scope_reasons": [
+                    {"code": reason.code, "count": reason.count, "message": reason.message}
+                    for reason in group.scope_reasons
+                ],
+                "in_scope_item_count": group.in_scope_item_count,
+                "out_of_scope_item_count": group.out_of_scope_item_count,
+                "duplicate_state": group.duplicate_state,
+                "duplicate_item_count": group.duplicate_item_count,
+                "default_selected": group.default_selected,
+            }
+            for group in preview.groups
+        ],
+        "counts": dict(preview.counts),
+        "parser_counts": dict(preview.parser_counts),
+    }
+
+
+@router.post(
+    "/engagements/{slug}/findings/import/{source}/preview",
+    response_model=ScannerImportPreviewRead,
+)
+def preview_scanner_import(
+    slug: str,
+    source: ScannerSourceParam,
+    session: DbSession,
+    user: CurrentNonGuestUser,
+    file: Annotated[UploadFile, File(..., description="Scanner XML export to preview.")],
+    include_info: Annotated[
+        bool,
+        Query(description="Select informational groups by default."),
+    ] = False,
+) -> dict[str, Any]:
+    """Safely parse a scanner export and return selectable groups without writes."""
+    from app.services.scanner_import import build_scanner_preview
+
+    eng = _get_engagement_or_404(session, slug)
+    _reject_flushed(eng)
+    raw = _read_scanner_upload(file)
+    scope_items = list(
+        session.execute(
+            select(ScopeItem).where(ScopeItem.engagement_id == eng.id)
+        ).scalars()
+    )
+    duplicate_index = _scanner_duplicate_index(session, eng.id, source)
+    try:
+        preview = build_scanner_preview(
+            source,
+            raw,
+            scope_items=scope_items,
+            duplicate_index=duplicate_index,
+            include_info_by_default=include_info,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _scanner_preview_to_dict(preview)
+
+
+@router.post(
+    "/engagements/{slug}/findings/import/{source}/commit",
+    response_model=ScannerImportCommitResult,
+    status_code=status.HTTP_201_CREATED,
+)
+def commit_scanner_import(
+    slug: str,
+    source: ScannerSourceParam,
+    session: DbSession,
+    user: CurrentNonGuestUser,
+    file: Annotated[UploadFile, File(..., description="Same scanner XML export used for preview.")],
+    file_sha256: Annotated[str, Form(..., description="SHA-256 returned by preview.")],
+    selected_group_keys: Annotated[
+        str,
+        Form(..., description="JSON array of preview selection keys."),
+    ],
+) -> dict[str, Any]:
+    """Reparse a previewed file and persist only explicitly selected groups."""
+    from app.services.scanner_import import prepare_scanner_commit
+
+    eng = _get_engagement_or_404(session, slug)
+    _reject_flushed(eng)
+    raw = _read_scanner_upload(file)
+    try:
+        decoded_keys = json.loads(selected_group_keys)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="selected_group_keys must be a JSON array",
+        ) from exc
+    if not isinstance(decoded_keys, list) or any(
+        not isinstance(key, str) for key in decoded_keys
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="selected_group_keys must be a JSON array of strings",
+        )
+    selected_keys = set(decoded_keys)
+    if len(selected_keys) != len(decoded_keys):
+        raise HTTPException(
+            status_code=400,
+            detail="selected_group_keys must not contain duplicates",
+        )
+
+    scope_items = list(
+        session.execute(
+            select(ScopeItem).where(ScopeItem.engagement_id == eng.id)
+        ).scalars()
+    )
+    duplicate_index = _scanner_duplicate_index(session, eng.id, source)
+    try:
+        prepared = prepare_scanner_commit(
+            source,
+            raw,
+            expected_sha256=file_sha256,
+            selected_group_keys=selected_keys,
+            scope_items=scope_items,
+            duplicate_index=duplicate_index,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    created, race_duplicates = _create_findings_from_imports(
+        session,
+        eng,
+        list(prepared.items),
+        user,
+        source=f"{source}_import",
+    )
+    session.commit()
+    for finding in created:
+        session.refresh(finding)
+    return {
+        "source": source,
+        "file_sha256": prepared.file_sha256,
+        "selected_group_count": prepared.selected_group_count,
+        "selected_item_count": prepared.selected_item_count,
+        "skipped_out_of_scope": prepared.skipped_out_of_scope,
+        "skipped_duplicate": prepared.skipped_duplicate + race_duplicates,
+        "imported": [_finding_to_read(finding) for finding in created],
+        "parser_counts": dict(prepared.parser_counts),
     }
 
 
