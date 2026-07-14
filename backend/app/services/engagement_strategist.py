@@ -461,6 +461,20 @@ def _validate_proposals(
             raise ValueError(
                 f"strategist referenced a {ref.type} record not supplied in the dossier"
             )
+
+    dossier_revision_ids = allowed_refs.get("strategy_revision", set())
+    expected_revision_id = (
+        uuid.UUID(next(iter(dossier_revision_ids))) if dossier_revision_ids else None
+    )
+    current_revision_id = session.execute(
+        select(EngagementStrategyRevision.id).where(
+            EngagementStrategyRevision.engagement_id == engagement.id,
+            EngagementStrategyRevision.state == StrategyRevisionState.current,
+        )
+    ).scalar_one_or_none()
+    if current_revision_id != expected_revision_id:
+        raise ValueError("strategy changed while the strategist was running")
+
     refs_by_type: dict[str, set[uuid.UUID]] = {}
     for ref in refs:
         refs_by_type.setdefault(ref.type, set()).add(ref.id)
@@ -510,16 +524,10 @@ def _validate_proposals(
 
     revision = output.strategy_revision_proposal
     if revision is not None:
-        current_revision_id = session.execute(
-            select(EngagementStrategyRevision.id).where(
-                EngagementStrategyRevision.engagement_id == engagement.id,
-                EngagementStrategyRevision.state == StrategyRevisionState.current,
-            )
-        ).scalar_one_or_none()
         if revision.based_on_revision_id is None:
-            revision.based_on_revision_id = current_revision_id
-        elif revision.based_on_revision_id != current_revision_id:
-            raise ValueError("strategy revision proposal is not based on the current revision")
+            revision.based_on_revision_id = expected_revision_id
+        elif revision.based_on_revision_id != expected_revision_id:
+            raise ValueError("strategy revision proposal is not based on the dossier revision")
 
     objective_ids = {row.objective_id for row in output.work_item_proposals if row.objective_id}
     if {str(item) for item in objective_ids} - allowed_refs.get("objective", set()):
@@ -732,7 +740,6 @@ def run_engagement_strategist(
             ]
         )
         output = _parse_output(response)
-        _validate_proposals(session, engagement, output, dossier)
 
         # The LLM call can outlive an archive/completion action in another
         # session. Re-lock and refresh lifecycle state before any proposal or
@@ -750,6 +757,11 @@ def run_engagement_strategist(
             raise RuntimeError("engagement was archived while strategist was running")
         if current_engagement.work_state == EngagementWorkState.completed:
             raise RuntimeError("engagement completed while strategist was running")
+
+        # Validate the exact dossier strategy revision while holding the
+        # Engagement lock. An X→Y change never silently rebases output that
+        # reasoned over X.
+        _validate_proposals(session, current_engagement, output, dossier)
 
         suggestions = (
             _persist_suggestions(

@@ -22,6 +22,8 @@ from app.models import (
     ConversationMessage,
     Engagement,
     EngagementStatus,
+    EngagementStrategyRevision,
+    StrategyRevisionState,
     Suggestion,
     SuggestionKind,
     SuggestionStatus,
@@ -178,6 +180,100 @@ def test_inflight_run_discards_proposals_if_engagement_is_archived(
     monkeypatch.setattr(service, "_make_chat_model", lambda *_args, **_kwargs: ArchivingLLM())
 
     with pytest.raises(RuntimeError, match="archived while strategist was running"):
+        run_engagement_strategist(
+            db,
+            object(),
+            engagement=engagement,
+            acting_user_id=user.id,
+            mode="recommend",
+        )
+
+    db.expire_all()
+    assert (
+        db.execute(
+            select(Suggestion).where(Suggestion.engagement_id == engagement.id)
+        ).scalar_one_or_none()
+        is None
+    )
+    execution = db.execute(
+        select(AgentExecution).where(AgentExecution.engagement_id == engagement.id)
+    ).scalar_one()
+    assert execution.status == AgentExecutionStatus.failed
+
+
+def test_inflight_run_rejects_output_when_strategy_revision_changes(
+    db: Session,
+    engagement: Engagement,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user = User(email=f"revision-race-{uuid.uuid4().hex[:6]}@example.test")
+    revision_x = EngagementStrategyRevision(
+        engagement_id=engagement.id,
+        version=1,
+        state=StrategyRevisionState.current,
+        body="Strategy X",
+        structured={},
+        created_by_user_id=None,
+    )
+    db.add_all([user, revision_x])
+    db.commit()
+    db.refresh(user)
+    db.refresh(revision_x)
+
+    class RevisingLLM:
+        def invoke(self, _messages: object) -> SimpleNamespace:
+            from app.db.session import SessionLocal
+
+            with SessionLocal() as other:
+                old = other.get(EngagementStrategyRevision, revision_x.id)
+                assert old is not None
+                old.state = StrategyRevisionState.superseded
+                other.add(
+                    EngagementStrategyRevision(
+                        engagement_id=engagement.id,
+                        version=2,
+                        state=StrategyRevisionState.current,
+                        based_on_revision_id=old.id,
+                        body="Strategy Y",
+                        structured={},
+                    )
+                )
+                other.commit()
+            return SimpleNamespace(
+                content=json.dumps(
+                    {
+                        "situation_summary": "Reasoned over stale Strategy X.",
+                        "facts": [],
+                        "inferences": [],
+                        "hypotheses": [],
+                        "work_item_proposals": [
+                            {
+                                "proposal_key": "stale-x-proposal",
+                                "title": "Must be discarded",
+                                "priority": "medium",
+                                "executor_type": "analyst",
+                                "finding_links": [],
+                            }
+                        ],
+                        "strategy_revision_proposal": None,
+                        "coverage_gaps": [],
+                        "warnings": [],
+                    }
+                ),
+                response_metadata={},
+            )
+
+    from app.services import engagement_strategist as service
+
+    monkeypatch.setattr(service, "_resolve_model", lambda *_args: ("test", "fake"))
+    monkeypatch.setattr(
+        service,
+        "resolve_for_user",
+        lambda *_args, **_kwargs: SimpleNamespace(api_key="ephemeral", endpoint=None),
+    )
+    monkeypatch.setattr(service, "_make_chat_model", lambda *_args, **_kwargs: RevisingLLM())
+
+    with pytest.raises(ValueError, match="strategy changed while"):
         run_engagement_strategist(
             db,
             object(),
