@@ -31,6 +31,7 @@ behavior.
 """
 from __future__ import annotations
 
+import hashlib
 import uuid
 from collections.abc import Mapping
 from datetime import UTC, datetime
@@ -578,6 +579,7 @@ def upsert_grouped_import_item(
     phase: FindingPhase,
     status: FindingStatus,
     validated_by: uuid.UUID | None = None,
+    burp_serial_number: str | None = None,
 ) -> tuple[Finding, bool]:
     """Importer-side twin of :func:`upsert_grouped_finding`.
 
@@ -588,9 +590,9 @@ def upsert_grouped_import_item(
 
     ``item`` shape written to ``details['items']``: the item's ``target``
     plus every key from ``item_details``, filtered to the fields worth
-    surfacing to the analyst. Dedup key = ``{target}:{port}`` for
-    Nessus-shaped data, ``{target}`` for Burp/generic, so re-importing
-    the same export is a no-op for already-present rows.
+    surfacing to the analyst. Burp uses its durable serial number as the
+    de-duplication identity; Nessus, Nmap, and generic imports use target.
+    Re-importing the same observation is therefore a no-op.
 
     Returns ``(row, added)`` where ``added`` is True if the item was
     new to the group, False if it deduped against an existing entry.
@@ -599,15 +601,19 @@ def upsert_grouped_import_item(
     now = datetime.now(tz=UTC).isoformat()
 
     row = session.execute(
-        select(Finding).where(
+        select(Finding)
+        .where(
             Finding.engagement_id == engagement_id,
             Finding.group_key == group_key,
             Finding.deleted_at.is_(None),
         )
+        .with_for_update()
     ).scalar_one_or_none()
 
     # Build the item record — target + selected detail fields.
     item_record: dict[str, Any] = {"target": item_target, "first_seen_at": now}
+    if burp_serial_number:
+        item_record["burp_serial_number"] = burp_serial_number
     for k, v in item_details.items():
         # Skip huge blobs (raw HTML bodies, full stack traces) inside
         # items[] — they'd blow up the row's JSONB size on a 500-row
@@ -617,7 +623,7 @@ def upsert_grouped_import_item(
             continue
         item_record[k] = v
 
-    dedup_key = _import_item_dedup_key(source_tool, item_record)
+    dedup_key = import_item_dedup_key(source_tool, item_record)
 
     if row is None:
         details: dict[str, Any] = {
@@ -657,7 +663,7 @@ def upsert_grouped_import_item(
     details = dict(row.details or {})
     existing_items = list(details.get("items") or [])
     existing_keys = {
-        _import_item_dedup_key(source_tool, it)
+        import_item_dedup_key(source_tool, it)
         for it in existing_items
         if isinstance(it, dict)
     }
@@ -687,16 +693,25 @@ def upsert_grouped_import_item(
     return row, True
 
 
-def _import_item_dedup_key(source_tool: str, item: Mapping[str, Any]) -> str:
-    """Dedup key for the importer path. Different from the live-tool
-    :func:`item_dedup_key` because import items carry more variance in
-    their key structure — port may or may not be set."""
-    if source_tool == "nessus":
-        return f"{item.get('target')}:{item.get('port')}"
-    if source_tool == "burp":
-        # Burp's target = host + path so it's already unique per
-        # observation site.
-        return str(item.get("target") or "")
+def canonical_import_group_key(source_tool: str, raw_key: str) -> str:
+    """Fit an importer-provided grouping key into ``Finding.group_key`` safely."""
+    if len(raw_key) <= 200:
+        return raw_key
+    source = source_tool.removesuffix("_import")
+    digest = hashlib.sha256(raw_key.encode()).hexdigest()
+    return f"{source}:group:{digest}"
+
+
+def import_item_dedup_key(source_tool: str, item: Mapping[str, Any]) -> str:
+    """Return the durable de-duplication identity for one imported hit.
+
+    Burp serials are stable even when a URL changes between exports. Other
+    grouped scanner rows use their already-normalized target, which includes
+    the service port where applicable.
+    """
+    serial = item.get("burp_serial_number")
+    if source_tool in {"burp", "burp_import"} and serial:
+        return f"burp-serial:{serial}"
     return str(item.get("target") or "")
 
 

@@ -184,6 +184,7 @@ def parse_nessus_xml(
                     "cvss_base_score": _child_text(report_item, "cvss_base_score"),
                     "cve": _child_text(report_item, "cve"),
                     "risk_factor": _child_text(report_item, "risk_factor"),
+                    "host_name": report_host.attrib.get("name", ""),
                     "host_properties": {
                         k: v
                         for k, v in host_props.items()
