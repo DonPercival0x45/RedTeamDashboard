@@ -232,15 +232,24 @@ def test_pdf_export_defaults_client_safe_and_internal_is_explicit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _seed_export_profile_findings(db, engagement.id)
-    rendered_html: list[str] = []
+    rendered_titles: list[list[str]] = []
+
+    class FakeTemplate:
+        def render(self, **context: object) -> str:
+            findings = context["findings"]
+            rendered_titles.append([row.title for row in findings])  # type: ignore[attr-defined]
+            return "<html></html>"
 
     class FakeHTML:
         def __init__(self, *, string: str) -> None:
-            rendered_html.append(string)
+            assert string == "<html></html>"
 
         def write_pdf(self) -> bytes:
             return b"%PDF-fake"
 
+    from app.api import reports as reports_api
+
+    monkeypatch.setattr(reports_api._env, "get_template", lambda _name: FakeTemplate())
     monkeypatch.setitem(sys.modules, "weasyprint", SimpleNamespace(HTML=FakeHTML))
     headers = {"X-User-Id": "report-test@example.com"}
 
@@ -249,8 +258,7 @@ def test_pdf_export_defaults_client_safe_and_internal_is_explicit(
     )
     assert client_report.status_code == 200, client_report.text
     assert "client-report" in client_report.headers["content-disposition"]
-    assert "Client-safe finding" in rendered_html[-1]
-    assert "Internal-only excluded finding" not in rendered_html[-1]
+    assert rendered_titles[-1] == ["Client-safe finding"]
 
     internal_report = client.get(
         f"/engagements/{engagement.slug}/report?omit_excluded=false",
@@ -258,7 +266,10 @@ def test_pdf_export_defaults_client_safe_and_internal_is_explicit(
     )
     assert internal_report.status_code == 200, internal_report.text
     assert "internal-report" in internal_report.headers["content-disposition"]
-    assert "Internal-only excluded finding" in rendered_html[-1]
+    assert set(rendered_titles[-1]) == {
+        "Client-safe finding",
+        "Internal-only excluded finding",
+    }
 
 
 def test_report_404_for_unknown_engagement(client: TestClient) -> None:
