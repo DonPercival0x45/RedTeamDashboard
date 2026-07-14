@@ -31,8 +31,11 @@ from app.models import (
     Entity,
     EntityFindingLink,
     Finding,
+    FindingPhase,
+    FindingStatus,
     ScopeItem,
     ScopeKind,
+    Severity,
 )
 from app.services import darkweb_import, entity_store
 from app.services.entities import extract_finding_context
@@ -50,9 +53,9 @@ class StoredEntityFindingRef(BaseModel):
     id: uuid.UUID
     title: str
     tool: str | None = None
-    severity: str
-    phase: str
-    status: str
+    severity: Severity
+    phase: FindingPhase
+    status: FindingStatus
 
 
 class StoredEntityRead(BaseModel):
@@ -212,9 +215,9 @@ def _entities_to_read(session, entities: list[Entity]) -> list[StoredEntityRead]
                 id=finding_id,
                 title=title,
                 tool=tool,
-                severity=severity.value,
-                phase=phase.value,
-                status=finding_status.value,
+                severity=severity,
+                phase=phase,
+                status=finding_status,
             )
         )
     return [

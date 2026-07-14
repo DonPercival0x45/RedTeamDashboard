@@ -1412,6 +1412,8 @@ function RegroupModal({
                             {g.absorbs_into_existing_parent_id && (
                               <Link
                                 href={`/e/findings/${g.absorbs_into_existing_parent_id}?slug=${encodeURIComponent(slug)}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
                                 className="rounded border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-amber-800 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:text-amber-100"
                               >
                                 absorbs existing
@@ -1429,6 +1431,8 @@ function RegroupModal({
                                 {memberIndex > 0 && ", "}
                                 <Link
                                   href={`/e/findings/${finding.id}?slug=${encodeURIComponent(slug)}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
                                   className="font-mono hover:underline"
                                 >
                                   {shortId(finding.id)}
@@ -1917,6 +1921,8 @@ function CorrelateModal({
                                 </Badge>
                                 <Link
                                   href={`/e/findings/${f.id}?slug=${encodeURIComponent(slug)}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
                                   className="truncate rounded-sm text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                                 >
                                   {f.title}
@@ -1943,6 +1949,8 @@ function CorrelateModal({
                             Merged into{" "}
                             <Link
                               href={`/e/findings/${g.parentId}?slug=${encodeURIComponent(slug)}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
                               className="font-mono hover:underline"
                             >
                               {shortId(g.parentId)}
@@ -2110,6 +2118,8 @@ function ManualMergeModal({
                     </Badge>
                     <Link
                       href={`/e/findings/${f.id}?slug=${encodeURIComponent(slug)}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
                       className="truncate rounded-sm text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     >
                       {f.title}

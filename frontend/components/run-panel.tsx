@@ -243,6 +243,7 @@ export function RunPanel({
               {entry.event.type === "finding.created" ? (
                 <Link
                   href={`/e/findings/${entry.event.finding_id}?slug=${encodeURIComponent(run.slug)}`}
+                  onClick={onClose}
                   className="break-all rounded-sm text-muted-foreground hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   {summarizeEvent(entry.event)}
@@ -270,6 +271,7 @@ export function RunPanel({
                 <Sparkles className="h-3.5 w-3.5" />
                 <Link
                   href={`/e?slug=${encodeURIComponent(run.slug)}&view=findings`}
+                  onClick={onClose}
                   className="rounded-sm font-medium hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   {findingsCount} new finding{findingsCount === 1 ? "" : "s"} added

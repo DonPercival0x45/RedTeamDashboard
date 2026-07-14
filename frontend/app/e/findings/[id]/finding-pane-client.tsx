@@ -1348,7 +1348,7 @@ function RelatedPanel({ finding, slug }: { finding: Finding; slug: string | null
         ) : (
           indicators.map((value) => {
             const candidate = (contextCandidates ?? []).find(
-              (row) => row.value === value,
+              (row) => row.value === value && row.entity_id,
             );
             return candidate && slug ? (
               <Link
