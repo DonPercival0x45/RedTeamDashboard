@@ -513,10 +513,30 @@ function ImportedEntitiesSection({ slug }: { slug: string }) {
                     {typeLabel(e.type)}
                   </td>
                   <td className="break-all px-3 py-2.5 font-mono text-xs">
-                    {e.value}
+                    <Link
+                      href={`/e/entities?slug=${encodeURIComponent(slug)}&type=${encodeURIComponent(e.type)}&value=${encodeURIComponent(e.value)}`}
+                      className="rounded-sm hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      {e.value}
+                    </Link>
                   </td>
                   <td className="px-3 py-2.5 text-xs text-muted-foreground">
-                    {e.source_attribution ?? e.source_tool}
+                    {e.finding_refs.length > 0 ? (
+                      <span className="flex flex-col gap-0.5">
+                        {e.finding_refs.map((finding) => (
+                          <Link
+                            key={finding.id}
+                            href={`/e/findings/${finding.id}?slug=${encodeURIComponent(slug)}`}
+                            className="max-w-48 truncate rounded-sm hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                            title={`Promoted from ${finding.title}`}
+                          >
+                            {finding.title}
+                          </Link>
+                        ))}
+                      </span>
+                    ) : (
+                      e.source_attribution ?? e.source_tool
+                    )}
                   </td>
                 </tr>
               ))}
@@ -633,14 +653,16 @@ function EntitySlideOver({
         <h3 className="mt-6 text-sm font-medium">Disclosed by</h3>
         <ul className="mt-2 space-y-2">
           {entity.findings.map((f) => (
-            <li
-              key={f.id}
-              className="rounded-md border border-border px-3 py-2 text-sm"
-            >
-              <div className="font-medium leading-tight">{f.title}</div>
-              <div className="mt-0.5 text-xs text-muted-foreground">
-                {f.tool ?? "—"} · {f.phase} · {f.severity}
-              </div>
+            <li key={f.id}>
+              <Link
+                href={`/e/findings/${f.id}?slug=${encodeURIComponent(slug)}`}
+                className="block rounded-md border border-border px-3 py-2 text-sm transition-colors hover:border-foreground/30 hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <div className="font-medium leading-tight">{f.title}</div>
+                <div className="mt-0.5 text-xs text-muted-foreground">
+                  {f.tool ?? "—"} · {f.phase} · {f.severity}
+                </div>
+              </Link>
             </li>
           ))}
         </ul>

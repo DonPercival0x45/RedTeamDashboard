@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { CheckCircle2, Search, UploadCloud } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -319,14 +320,21 @@ export function ScannerImportWizard({
           {result.imported.length > 0 && (
             <ul className="space-y-1 rounded border border-border p-2 text-xs">
               {result.imported.slice(0, 10).map((finding) => (
-                <li key={finding.id}>{finding.title}</li>
+                <li key={finding.id}>
+                  <Link
+                    href={`/e/findings/${finding.id}?slug=${encodeURIComponent(slug)}`}
+                    className="rounded-sm hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    {finding.title}
+                  </Link>
+                </li>
               ))}
               {result.imported.length > 10 && <li className="text-muted-foreground">+ {result.imported.length - 10} more</li>}
             </ul>
           )}
           <div className="flex justify-between gap-2">
             <Button type="button" size="sm" variant="outline" onClick={() => reset()}>Import another</Button>
-            <Button asChild size="sm"><a href={`/e?slug=${encodeURIComponent(slug)}&view=findings`}>Review all findings</a></Button>
+            <Button asChild size="sm"><Link href={`/e?slug=${encodeURIComponent(slug)}&view=findings`}>Review all findings</Link></Button>
           </div>
         </section>
       )}

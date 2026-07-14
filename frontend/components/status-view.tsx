@@ -15,6 +15,7 @@
 // "Live events" panel below the boxes.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   Activity,
@@ -707,9 +708,18 @@ export function StatusView({
                       >
                         {entry.event.type}
                       </Badge>
-                      <span className="break-all text-muted-foreground">
-                        {summarizeEvent(entry.event)}
-                      </span>
+                      {entry.event.type === "finding.created" ? (
+                        <Link
+                          href={`/e/findings/${entry.event.finding_id}?slug=${encodeURIComponent(slug)}`}
+                          className="break-all rounded-sm text-muted-foreground hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        >
+                          {summarizeEvent(entry.event)}
+                        </Link>
+                      ) : (
+                        <span className="break-all text-muted-foreground">
+                          {summarizeEvent(entry.event)}
+                        </span>
+                      )}
                     </li>
                   ))}
               </ul>

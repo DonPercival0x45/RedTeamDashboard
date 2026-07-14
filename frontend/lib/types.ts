@@ -448,6 +448,15 @@ export interface ScannerImportCommitResult {
 
 // Phase 10 — stored entities (Maltego import target + future sources).
 // Complements the existing derived-from-findings Entity (above).
+export interface StoredEntityFindingRef {
+  id: string;
+  title: string;
+  tool: string | null;
+  severity: Severity;
+  phase: FindingPhase;
+  status: FindingValidationStatus;
+}
+
 export interface StoredEntity {
   id: string;
   type: string;
@@ -455,6 +464,7 @@ export interface StoredEntity {
   properties: Record<string, unknown>;
   source_tool: string;
   source_attribution: string | null;
+  finding_refs: StoredEntityFindingRef[];
   created_at: string;
   updated_at: string;
 }

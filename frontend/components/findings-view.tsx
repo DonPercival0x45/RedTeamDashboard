@@ -801,6 +801,7 @@ export function FindingsView({
       {showManualMergeModal && (
         <ManualMergeModal
           findings={findings.filter((f) => checkedIds.has(f.id))}
+          slug={slug}
           onClose={() => setShowManualMergeModal(false)}
           onMerged={(parent, absorbedIds) => {
             onUpdated(parent);
@@ -1409,9 +1410,12 @@ function RegroupModal({
                               × {g.projected_item_count} items
                             </span>
                             {g.absorbs_into_existing_parent_id && (
-                              <span className="rounded border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-amber-800 dark:text-amber-100">
+                              <Link
+                                href={`/e/findings/${g.absorbs_into_existing_parent_id}?slug=${encodeURIComponent(slug)}`}
+                                className="rounded border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-amber-800 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:text-amber-100"
+                              >
                                 absorbs existing
-                              </span>
+                              </Link>
                             )}
                           </p>
                           <p className="mt-1 font-mono text-[10px] text-muted-foreground">
@@ -1420,10 +1424,17 @@ function RegroupModal({
                           <p className="mt-1.5 text-xs text-muted-foreground">
                             {members.length} row
                             {members.length === 1 ? "" : "s"} to absorb:{" "}
-                            {members
-                              .slice(0, 4)
-                              .map((f) => shortId(f.id))
-                              .join(", ")}
+                            {members.slice(0, 4).map((finding, memberIndex) => (
+                              <span key={finding.id}>
+                                {memberIndex > 0 && ", "}
+                                <Link
+                                  href={`/e/findings/${finding.id}?slug=${encodeURIComponent(slug)}`}
+                                  className="font-mono hover:underline"
+                                >
+                                  {shortId(finding.id)}
+                                </Link>
+                              </span>
+                            ))}
                             {members.length > 4 && ` +${members.length - 4} more`}
                           </p>
                         </div>
@@ -1904,9 +1915,12 @@ function CorrelateModal({
                                 >
                                   {f.severity}
                                 </Badge>
-                                <span className="truncate text-foreground">
+                                <Link
+                                  href={`/e/findings/${f.id}?slug=${encodeURIComponent(slug)}`}
+                                  className="truncate rounded-sm text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                                >
                                   {f.title}
-                                </span>
+                                </Link>
                               </div>
                               {f.target && (
                                 <p className="mt-0.5 font-mono text-[11px] text-muted-foreground">
@@ -1926,7 +1940,13 @@ function CorrelateModal({
                         {g.status === "merged" ? (
                           <span className="text-xs text-muted-foreground">
                             <Layers className="mr-1 inline h-3.5 w-3.5" />
-                            Merged into {shortId(g.parentId)}
+                            Merged into{" "}
+                            <Link
+                              href={`/e/findings/${g.parentId}?slug=${encodeURIComponent(slug)}`}
+                              className="font-mono hover:underline"
+                            >
+                              {shortId(g.parentId)}
+                            </Link>
                           </span>
                         ) : (
                           <>
@@ -1978,10 +1998,12 @@ function CorrelateModal({
 
 function ManualMergeModal({
   findings,
+  slug,
   onClose,
   onMerged,
 }: {
   findings: Finding[];
+  slug: string;
   onClose: () => void;
   onMerged: (parent: Finding, absorbedIds: string[]) => void;
 }) {
@@ -2086,7 +2108,12 @@ function ManualMergeModal({
                     >
                       {f.severity}
                     </Badge>
-                    <span className="truncate text-foreground">{f.title}</span>
+                    <Link
+                      href={`/e/findings/${f.id}?slug=${encodeURIComponent(slug)}`}
+                      className="truncate rounded-sm text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      {f.title}
+                    </Link>
                     {typeof f.item_count === "number" && f.item_count > 0 && (
                       <span className="text-[10px] text-muted-foreground">
                         · {f.item_count} item{f.item_count === 1 ? "" : "s"}
