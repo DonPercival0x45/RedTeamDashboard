@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { Link as LinkIcon, Trash2, X } from "lucide-react";
+import { DateTime } from "@/components/date-time";
 import { Button } from "@/components/ui/button";
 import {
   useCreateObservationMutation,
@@ -174,7 +175,7 @@ export function ObservationsView({ slug }: { slug: string }) {
                   />
                 </div>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  {obs.created_at.slice(0, 16).replace("T", " ")} UTC
+                  <DateTime value={obs.created_at} />
                 </p>
               </div>
               <button

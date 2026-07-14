@@ -30,6 +30,7 @@ import {
   XCircle,
   type LucideIcon,
 } from "lucide-react";
+import { DateTime } from "@/components/date-time";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -126,18 +127,6 @@ const DATE_RANGE_MS: Record<Exclude<DateRange, "all">, number> = {
   "30d": 30 * 24 * 60 * 60 * 1000,
 };
 const DATE_RANGE_FILTERS: DateRange[] = ["all", "24h", "7d", "14d", "30d"];
-
-function fmtDate(value: string | null): string {
-  if (!value) return "—";
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
 
 // v0.8.2: Live events log helpers — used to lifted from event-log.tsx.
 
@@ -698,10 +687,10 @@ function StatusBox({
         </span>
         <span>
           {entity.started_at && (
-            <>started {fmtDate(entity.started_at)}</>
+            <>started <DateTime value={entity.started_at} /></>
           )}
           {entity.completed_at && (
-            <> · ended {fmtDate(entity.completed_at)}</>
+            <> · ended <DateTime value={entity.completed_at} /></>
           )}
         </span>
       </div>
@@ -775,9 +764,9 @@ function ExpandedDetail({
             </h3>
             <p className="mt-0.5 text-xs text-muted-foreground">
               {KIND_LABEL[entity.kind]} · {entity.raw_status}
-              {entity.started_at && <> · started {fmtDate(entity.started_at)}</>}
+              {entity.started_at && <> · started <DateTime value={entity.started_at} /></>}
               {entity.completed_at && (
-                <> · ended {fmtDate(entity.completed_at)}</>
+                <> · ended <DateTime value={entity.completed_at} /></>
               )}
             </p>
             {entity.synopsis && (

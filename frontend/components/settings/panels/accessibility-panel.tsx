@@ -43,7 +43,8 @@ export function AccessibilityPanel({ inModal = false }: { inModal?: boolean }) {
   const changed =
     prefs.reducedMotion !== DEFAULT_A11Y.reducedMotion ||
     prefs.colorblindSeverity !== DEFAULT_A11Y.colorblindSeverity ||
-    prefs.screenReaderHints !== DEFAULT_A11Y.screenReaderHints;
+    prefs.screenReaderHints !== DEFAULT_A11Y.screenReaderHints ||
+    prefs.timeDisplay !== DEFAULT_A11Y.timeDisplay;
 
   return (
     <div className={cn("space-y-6", inModal ? "" : "")}>
@@ -128,6 +129,36 @@ export function AccessibilityPanel({ inModal = false }: { inModal?: boolean }) {
               </button>
             );
           })}
+        </div>
+      </section>
+
+      <section className="space-y-3">
+        <div>
+          <h2 className="text-base font-semibold text-foreground">Timestamp display</h2>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            Database timestamps remain canonical UTC. Choose whether the browser renders them in your local time zone or explicitly in UTC.
+          </p>
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          {(["local", "utc"] as const).map((mode) => (
+            <button
+              key={mode}
+              type="button"
+              aria-pressed={prefs.timeDisplay === mode}
+              onClick={() => set({ timeDisplay: mode })}
+              className={cn(
+                "rounded border px-3 py-2 text-left text-sm transition-colors",
+                prefs.timeDisplay === mode
+                  ? "border-primary bg-primary/10 text-foreground"
+                  : "border-border hover:border-foreground/40",
+              )}
+            >
+              <span className="font-medium">{mode === "local" ? "Local time" : "UTC"}</span>
+              <span className="mt-0.5 block text-xs text-muted-foreground">
+                {mode === "local" ? "Use this device’s time zone." : "Show a UTC suffix everywhere."}
+              </span>
+            </button>
+          ))}
         </div>
       </section>
 

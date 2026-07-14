@@ -28,6 +28,7 @@ import {
   XCircle,
   type LucideIcon,
 } from "lucide-react";
+import { DateTime } from "@/components/date-time";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -90,18 +91,6 @@ const OUTCOME_CLASS: Record<StatusOutcome, string> = {
   partial: "border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-200",
   errored: "border-rose-500/50 bg-rose-500/10 text-rose-700 dark:text-rose-200",
 };
-
-function fmtDate(value: string | null): string {
-  if (!value) return "—";
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
 
 export default function AgentRunsPage() {
   const params = useSearchParams();
@@ -286,9 +275,9 @@ function StatusBox({
       <div className="flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
         <span className="font-mono">{entity.run_slug}</span>
         <span>
-          {entity.started_at && <>started {fmtDate(entity.started_at)}</>}
+          {entity.started_at && <>started <DateTime value={entity.started_at} /></>}
           {entity.completed_at && (
-            <> · ended {fmtDate(entity.completed_at)}</>
+            <> · ended <DateTime value={entity.completed_at} /></>
           )}
         </span>
       </div>
@@ -356,9 +345,9 @@ function ExpandedDetail({
             </h3>
             <p className="mt-0.5 text-xs text-muted-foreground">
               {entity.raw_status}
-              {entity.started_at && <> · started {fmtDate(entity.started_at)}</>}
+              {entity.started_at && <> · started <DateTime value={entity.started_at} /></>}
               {entity.completed_at && (
-                <> · ended {fmtDate(entity.completed_at)}</>
+                <> · ended <DateTime value={entity.completed_at} /></>
               )}
             </p>
             {entity.synopsis && (

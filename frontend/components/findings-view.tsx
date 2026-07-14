@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useQueryClient } from "@tanstack/react-query";
 import { qk, useMe } from "@/lib/hooks";
 import { Ban, Layers, Link2, Maximize2, Plus, Search, Sparkles, Trash2, Upload, Wand2, Wrench, X } from "lucide-react";
+import { DateTime } from "@/components/date-time";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -116,17 +117,6 @@ const SORT_LABEL: Record<FindingSort, string> = {
 
 function shortId(id: string): string {
   return id.replace(/-/g, "").slice(0, 6).toUpperCase();
-}
-
-function formatShortDate(value: string | null): string {
-  if (!value) return "—";
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleDateString(undefined, {
-    year: "2-digit",
-    month: "short",
-    day: "numeric",
-  });
 }
 
 // ── component ────────────────────────────────────────────────────────────
@@ -721,17 +711,14 @@ export function FindingsView({
                     {f.target ?? "—"}
                   </td>
                   <td className="px-3 py-2.5 text-xs text-muted-foreground">
-                    <div title={`Created ${new Date(f.created_at).toLocaleString()}`}>
+                    <div>
                       <span className="text-muted-foreground/60">+</span>{" "}
-                      {formatShortDate(f.created_at)}
+                      <DateTime value={f.created_at} />
                     </div>
                     {f.observed_at && (
-                      <div
-                        title={`Observed ${new Date(f.observed_at).toLocaleString()}`}
-                        className="text-muted-foreground/80"
-                      >
+                      <div className="text-muted-foreground/80">
                         <span className="text-muted-foreground/60">○</span>{" "}
-                        {formatShortDate(f.observed_at)}
+                        <DateTime value={f.observed_at} />
                       </div>
                     )}
                   </td>

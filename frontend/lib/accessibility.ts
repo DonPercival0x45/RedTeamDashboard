@@ -26,16 +26,20 @@ export type ColorblindPreset =
   | "protanopia"
   | "tritanopia";
 
+export type TimeDisplay = "local" | "utc";
+
 export interface A11yPreferences {
   reducedMotion: boolean;
   colorblindSeverity: ColorblindPreset;
   screenReaderHints: boolean;
+  timeDisplay: TimeDisplay;
 }
 
 export const DEFAULT_A11Y: A11yPreferences = {
   reducedMotion: false,
   colorblindSeverity: "none",
   screenReaderHints: false,
+  timeDisplay: "local",
 };
 
 function isColorblindPreset(v: unknown): v is ColorblindPreset {
@@ -59,6 +63,7 @@ function readStored(): A11yPreferences {
         ? parsed.colorblindSeverity
         : "none",
       screenReaderHints: parsed.screenReaderHints === true,
+      timeDisplay: parsed.timeDisplay === "utc" ? "utc" : "local",
     };
   } catch {
     return DEFAULT_A11Y;
@@ -74,6 +79,7 @@ function applyToRoot(prefs: A11yPreferences): void {
     root.removeAttribute("data-reduced-motion");
   }
   root.setAttribute("data-cb-severity", prefs.colorblindSeverity);
+  root.setAttribute("data-time-display", prefs.timeDisplay);
   if (prefs.screenReaderHints) {
     root.setAttribute("data-sr-hints", "true");
   } else {
@@ -130,6 +136,8 @@ export const A11Y_PRE_HYDRATION_SCRIPT = `
     var cb = (p && typeof p.colorblindSeverity === "string") ? p.colorblindSeverity : "none";
     el.setAttribute("data-cb-severity", cb);
     if (p && p.screenReaderHints === true) el.setAttribute("data-sr-hints", "true");
+    var td = (p && p.timeDisplay === "utc") ? "utc" : "local";
+    el.setAttribute("data-time-display", td);
   } catch (_e) {}
 })();
 `;

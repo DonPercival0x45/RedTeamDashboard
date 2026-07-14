@@ -436,3 +436,15 @@
   background-color: hsl(220 15% 55% / 0.15) !important;
   color: hsl(220 15% 35%) !important;
 }
+
+/* Timestamp rendering: both representations are present, the root preference
+   swaps them instantly without rewriting canonical UTC values. */
+.rtd-time-utc {
+  display: none;
+}
+:root[data-time-display="utc"] .rtd-time-local {
+  display: none;
+}
+:root[data-time-display="utc"] .rtd-time-utc {
+  display: inline;
+}
