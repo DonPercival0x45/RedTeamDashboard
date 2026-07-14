@@ -8,6 +8,7 @@
 //   - database-url                 (full SQLAlchemy URL with sslmode=require)
 //   - anthropic-api-key            (placeholder; rotate post-deploy)
 //   - openai-api-key               (placeholder; rotate post-deploy)
+//   - planner-api-key              (Suggestion Box platform evaluator)
 //   - azure-openai-api-key         (placeholder; AOAI is optional)
 //   - azure-openai-endpoint        (placeholder)
 //   - azure-openai-deployment      (placeholder)
@@ -69,6 +70,12 @@ resource sAnthropicKey 'Microsoft.KeyVault/vaults/secrets@2024-04-01-preview' = 
 resource sOpenAiKey 'Microsoft.KeyVault/vaults/secrets@2024-04-01-preview' = {
   parent: kv
   name: 'openai-api-key'
+  properties: { value: 'PLACEHOLDER-set-after-deploy' }
+}
+
+resource sPlannerApiKey 'Microsoft.KeyVault/vaults/secrets@2024-04-01-preview' = {
+  parent: kv
+  name: 'planner-api-key'
   properties: { value: 'PLACEHOLDER-set-after-deploy' }
 }
 

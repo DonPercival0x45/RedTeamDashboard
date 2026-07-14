@@ -8,6 +8,7 @@ duplicate the API's transaction shape.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from typing import Any
 
 import structlog
@@ -15,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.agents.planner import PlanningAgent, render_approved_roadmap
+from app.core.config import settings
 from app.models import (
     AgentExecution,
     IntegrationPurpose,
@@ -25,6 +27,52 @@ from app.services import discord as discord_svc
 from app.services import integrations as integration_svc
 
 logger = structlog.get_logger(__name__)
+
+
+class PlannerRateLimitExceeded(RuntimeError):
+    """The analyst exhausted the platform-funded daily evaluation budget."""
+
+
+def _is_real_key(value: str) -> bool:
+    return bool(value and not value.startswith("PLACEHOLDER-"))
+
+
+def _platform_planner_enabled() -> bool:
+    if _is_real_key(settings.planner_api_key):
+        return True
+    if settings.planner_provider == "openai":
+        return _is_real_key(settings.openai_api_key)
+    if settings.planner_provider == "anthropic":
+        return _is_real_key(settings.anthropic_api_key)
+    if settings.planner_provider == "azure":
+        return _is_real_key(settings.azure_openai_api_key)
+    return False
+
+
+def enforce_planner_rate_limit(redis_client: Any, *, user_id: uuid.UUID) -> None:
+    """Cap platform-funded Planner calls per analyst per UTC day.
+
+    BYO fallback is intentionally not rate limited: no platform credential
+    means the submitter still owns that spend. Redis failure is fail-open so
+    product feedback remains usable during a cache interruption.
+    """
+    limit = settings.planner_daily_limit_per_user
+    if limit <= 0 or not _platform_planner_enabled():
+        return
+    day = datetime.now(tz=UTC).strftime("%Y-%m-%d")
+    key = f"planner_rate:{user_id}:{day}"
+    try:
+        count = int(redis_client.incr(key))
+        if count == 1:
+            redis_client.expire(key, 90_000)
+    except Exception as exc:  # noqa: BLE001 - availability beats limiter failure
+        logger.warning("planner.rate_limit_unavailable", error=str(exc))
+        return
+    if count > limit:
+        raise PlannerRateLimitExceeded(
+            f"Platform Planner daily limit reached ({limit} evaluations). "
+            "Try again after 00:00 UTC."
+        )
 
 
 def _all_suggestions(session: Session) -> list[RoadmapSuggestion]:

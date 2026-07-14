@@ -92,6 +92,11 @@ var secretsFromKeyVault = [
     identity: 'system'
   }
   {
+    name: 'planner-api-key'
+    keyVaultUrl: 'https://${keyVaultName}${environment().suffixes.keyvaultDns}/secrets/planner-api-key'
+    identity: 'system'
+  }
+  {
     name: 'azure-openai-api-key'
     keyVaultUrl: 'https://${keyVaultName}${environment().suffixes.keyvaultDns}/secrets/azure-openai-api-key'
     identity: 'system'
@@ -136,6 +141,10 @@ var appEnv = [
   { name: 'ANTHROPIC_API_KEY', secretRef: 'anthropic-api-key' }
   { name: 'ANTHROPIC_MODEL', value: anthropicModel }
   { name: 'OPENAI_API_KEY', secretRef: 'openai-api-key' }
+  { name: 'PLANNER_PROVIDER', value: 'openai' }
+  { name: 'PLANNER_MODEL', value: 'gpt-4o-mini' }
+  { name: 'PLANNER_API_KEY', secretRef: 'planner-api-key' }
+  { name: 'PLANNER_DAILY_LIMIT_PER_USER', value: '20' }
   { name: 'AZURE_OPENAI_API_KEY', secretRef: 'azure-openai-api-key' }
   { name: 'AZURE_OPENAI_ENDPOINT', secretRef: 'azure-openai-endpoint' }
   { name: 'AZURE_OPENAI_DEPLOYMENT', secretRef: 'azure-openai-deployment' }

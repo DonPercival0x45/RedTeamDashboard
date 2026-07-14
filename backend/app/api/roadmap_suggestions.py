@@ -76,6 +76,15 @@ def _audit(
     )
 
 
+def _enforce_planner_budget(redis_client: Any, user_id: uuid.UUID) -> None:
+    try:
+        suggestion_svc.enforce_planner_rate_limit(
+            redis_client, user_id=user_id
+        )
+    except suggestion_svc.PlannerRateLimitExceeded as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
+
+
 def _load_all(session: DbSession) -> list[RoadmapSuggestion]:
     return list(
         session.execute(
@@ -129,6 +138,7 @@ def create_suggestion(
                 },
             )
 
+    _enforce_planner_budget(redis_client, user.id)
     row, execution = suggestion_svc.create_and_evaluate(
         session,
         redis_client,
@@ -618,11 +628,9 @@ def re_evaluate_suggestion(
 ) -> RoadmapSuggestion:
     """Re-run the planner agent on an existing feedback row.
 
-    Used when the first eval failed (no BYO key cached at the time),
-    when the project context has shifted since the row was submitted,
-    or when the analyst wants a fresh take. The kicker's BYO key drives
-    the call — not the original author's — so a teammate with an active
-    key can fix a stale row even if the author is offline.
+    Used when the first eval failed, when project context has shifted,
+    or when the analyst wants a fresh take. The platform Planner key drives
+    the call when configured; legacy installs retain the kicker's BYO fallback.
 
     The original body is preserved verbatim; only agent_summary /
     agent_pros / agent_cons get replaced.
@@ -630,6 +638,7 @@ def re_evaluate_suggestion(
     row = session.get(RoadmapSuggestion, suggestion_id)
     if row is None:
         raise HTTPException(status_code=404, detail="suggestion not found")
+    _enforce_planner_budget(redis_client, user.id)
 
     from app.agents.planner import PlanningAgent, render_approved_roadmap
 

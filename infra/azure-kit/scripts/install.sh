@@ -40,6 +40,7 @@ ENTRA_TENANT_ID_FROM_FLAG=false
 ENTRA_CLIENT_ID_FROM_FLAG=false
 ANTHROPIC_KEY="${ANTHROPIC_API_KEY:-}"
 OPENAI_KEY="${OPENAI_API_KEY:-}"
+PLANNER_KEY="${PLANNER_API_KEY:-}"
 # Comma-separated list of IPv4 CIDRs allowed inbound HTTPS to the whole
 # Container Apps environment (frontend + backend + MCP). Empty → no
 # restriction (wide open).
@@ -93,6 +94,8 @@ Options:
                           llm-provider is anthropic.
   --openai-key KEY        OpenAI API key to store in Key Vault. Falls back to
                           OPENAI_API_KEY env var.
+  PLANNER_API_KEY env     Dedicated Suggestion Box evaluation key. Optional;
+                          falls back to the org provider key when unset.
   --entra-tenant-id ID    Entra tenant id for analyst SSO (from setup-entra.sh).
                           Optional. Persists as an env var (RTD_ENTRA_TENANT_ID)
                           on the frontend Container App via Bicep for subsequent
@@ -449,6 +452,11 @@ if [[ -n "$OPENAI_KEY" ]]; then
     az keyvault secret set --vault-name "$KV_NAME" --name openai-api-key \
         --value "$OPENAI_KEY" --only-show-errors -o none
     green "    openai-api-key stored in Key Vault."
+fi
+if [[ -n "$PLANNER_KEY" ]]; then
+    az keyvault secret set --vault-name "$KV_NAME" --name planner-api-key \
+        --value "$PLANNER_KEY" --only-show-errors -o none
+    green "    planner-api-key stored in Key Vault."
 fi
 
 # v1.4.7: force a NEW revision so the containers re-read Key Vault secrets.
