@@ -51,6 +51,7 @@ import {
   useFindingChat,
 } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
+import { LoaderOverlay } from "@/components/loader";
 import type {
   Attachment,
   Finding,
@@ -184,6 +185,16 @@ function FindingPane({ id, slug }: { id: string; slug: string | null }) {
         )}
       </div>
 
+      {/* grouped hits — visible on every tab when the finding has items
+          (subdomains, open ports, live URLs, etc.). The full sortable
+          version lives in Details tab; this is the always-on primary
+          view because for tool findings the items ARE the finding. */}
+      {findingHasItems(finding) && (
+        <section className="mt-5 rounded-lg border border-border bg-card p-5">
+          <GroupedItemsTable finding={finding} />
+        </section>
+      )}
+
       {/* two-column body: workbench left, activity rail right */}
       <div className="mt-5 grid grid-cols-1 gap-5 xl:grid-cols-4">
         <div className="xl:col-span-3">
@@ -198,9 +209,17 @@ function FindingPane({ id, slug }: { id: string; slug: string | null }) {
   );
 }
 
+function findingHasItems(finding: Finding): boolean {
+  const items = (finding.data as { items?: unknown } | null | undefined)?.items;
+  return Array.isArray(items) && items.length > 0;
+}
+
 function ActivityRail({ entries }: { entries: FindingActivityEntry[] }) {
+  // Sticky-in-viewport + internally scrollable so long timelines don't
+  // stretch the page. max-h leaves 1.5rem top clearance (matches `top-6`)
+  // and 1.5rem bottom breathing room.
   return (
-    <div className="sticky top-6 rounded-lg border border-border bg-card/40 p-4">
+    <div className="sticky top-6 flex max-h-[calc(100vh-3rem)] flex-col rounded-lg border border-border bg-card/40 p-4">
       <h2 className="mb-3 flex items-center gap-2 text-sm font-medium">
         <Activity className="h-4 w-4 text-muted-foreground" />
         Activity
@@ -212,7 +231,7 @@ function ActivityRail({ entries }: { entries: FindingActivityEntry[] }) {
           this timeline.
         </p>
       ) : (
-        <ol className="space-y-3 border-l border-border pl-4">
+        <ol className="-mr-2 space-y-3 overflow-y-auto border-l border-border pl-4 pr-2">
           {entries.map((e, i) => (
             <TimelineRow key={`${e.ts}-${i}`} entry={e} />
           ))}
@@ -374,7 +393,7 @@ function DecisionPanel({ finding }: { finding: Finding }) {
   }
 
   return (
-    <section className="rounded-lg border border-border bg-card/40 p-4">
+    <section className="relative rounded-lg border border-border bg-card/40 p-4">
       <h2 className="text-sm font-medium">Decision</h2>
       <p className="mt-1 text-xs text-muted-foreground">
         Validation and reportability controls for this finding.
@@ -406,6 +425,7 @@ function DecisionPanel({ finding }: { finding: Finding }) {
         )}
       </div>
       {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
+      <LoaderOverlay show={busy} size={0.8} label="Updating decision" />
     </section>
   );
 }

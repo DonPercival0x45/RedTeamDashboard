@@ -6,6 +6,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { qk, useMe } from "@/lib/hooks";
 import { Ban, Layers, Link2, Maximize2, Plus, Search, Sparkles, Trash2, Upload, Wand2, Wrench, X } from "lucide-react";
 import { DateTime } from "@/components/date-time";
+import { LoaderOverlay } from "@/components/loader";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -1107,6 +1108,8 @@ function FindingSlideOver({
             </section>
           )}
 
+          <GroupedItemsPanel finding={finding} />
+
           {error && (
             <p className="rounded-md border border-critical/40 bg-critical/10 p-2 text-xs text-critical">
               {error}
@@ -1147,6 +1150,7 @@ function FindingSlideOver({
             Editing, evidence, AI actions, context, and history live in the full view.
           </p>
         </footer>
+        <LoaderOverlay show={busy} size={1.2} label="Applying decision" />
       </aside>
     </>
   );
