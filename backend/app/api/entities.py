@@ -24,8 +24,18 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from app.api.deps import CurrentUser, DbSession
-from app.models import ActorType, AuditLog, Engagement, Entity
+from app.models import (
+    ActorType,
+    AuditLog,
+    Engagement,
+    Entity,
+    EntityFindingLink,
+    Finding,
+    ScopeItem,
+    ScopeKind,
+)
 from app.services import darkweb_import, entity_store
+from app.services.entities import extract_finding_context
 from app.services.maltego_import import parse_mtgx
 
 router = APIRouter()
@@ -56,6 +66,33 @@ class MaltegoImportResult(BaseModel):
     skipped_unknown: int
     total_nodes: int
     entities: list[StoredEntityRead]
+
+
+class FindingContextCandidate(BaseModel):
+    type: str
+    value: str
+    entity_id: uuid.UUID | None = None
+    scope_item_id: uuid.UUID | None = None
+    scope_source: str | None = None
+    scope_compatible: bool
+
+
+class FindingContextPromotionItem(BaseModel):
+    type: str = Field(min_length=1, max_length=80)
+    value: str = Field(min_length=1, max_length=500)
+    add_to_entities: bool = True
+    add_to_scope: bool = False
+
+
+class FindingContextPromotionRequest(BaseModel):
+    items: list[FindingContextPromotionItem] = Field(min_length=1, max_length=100)
+
+
+class FindingContextPromotionResult(BaseModel):
+    entities_created: int
+    entity_links_created: int
+    scope_items_created: int
+    candidates: list[FindingContextCandidate]
 
 
 class DarkwebImportResult(BaseModel):
@@ -93,6 +130,47 @@ def _engagement_by_slug(session, slug: str) -> Engagement:
     return eng
 
 
+def _finding_or_404(session, finding_id: uuid.UUID) -> Finding:
+    finding = session.get(Finding, finding_id)
+    if finding is None or finding.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="finding not found")
+    return finding
+
+
+def _context_candidates(session, finding: Finding) -> list[FindingContextCandidate]:
+    extracted = extract_finding_context(finding)
+    if not extracted:
+        return []
+    entities = list(
+        session.execute(
+            select(Entity).where(Entity.engagement_id == finding.engagement_id)
+        ).scalars()
+    )
+    scope = list(
+        session.execute(
+            select(ScopeItem).where(ScopeItem.engagement_id == finding.engagement_id)
+        ).scalars()
+    )
+    entity_map = {(row.type, row.value): row for row in entities}
+    scope_map = {(row.kind.value, row.value): row for row in scope}
+    compatible = {kind.value for kind in ScopeKind}
+    candidates: list[FindingContextCandidate] = []
+    for kind, value in extracted:
+        entity = entity_map.get((kind, value))
+        scope_item = scope_map.get((kind, value))
+        candidates.append(
+            FindingContextCandidate(
+                type=kind,
+                value=value,
+                entity_id=entity.id if entity else None,
+                scope_item_id=scope_item.id if scope_item else None,
+                scope_source=scope_item.source if scope_item else None,
+                scope_compatible=kind in compatible,
+            )
+        )
+    return candidates
+
+
 def _entity_to_read(e: Entity) -> StoredEntityRead:
     return StoredEntityRead(
         id=e.id,
@@ -109,6 +187,155 @@ def _entity_to_read(e: Entity) -> StoredEntityRead:
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/findings/{finding_id}/context-candidates",
+    response_model=list[FindingContextCandidate],
+)
+def list_finding_context_candidates(
+    finding_id: uuid.UUID,
+    session: DbSession,
+    _user: CurrentUser,
+) -> list[FindingContextCandidate]:
+    """Extract entity/scope candidates without changing engagement state."""
+    return _context_candidates(session, _finding_or_404(session, finding_id))
+
+
+@router.post(
+    "/findings/{finding_id}/context/promote",
+    response_model=FindingContextPromotionResult,
+)
+def promote_finding_context(
+    finding_id: uuid.UUID,
+    body: FindingContextPromotionRequest,
+    session: DbSession,
+    user: CurrentUser,
+) -> FindingContextPromotionResult:
+    """Persist analyst-selected finding context as entities and/or found scope.
+
+    Adding Found Scope expands the targets eligible for later approval-gated
+    enumeration and scan actions, so the UI presents an explicit confirmation.
+    Every mutation is provenance-linked and audit logged here.
+    """
+    finding = _finding_or_404(session, finding_id)
+    engagement = session.get(Engagement, finding.engagement_id)
+    if engagement is None:
+        raise HTTPException(status_code=404, detail="engagement not found")
+
+    entities_created = 0
+    links_created = 0
+    scope_created = 0
+    promoted: list[dict[str, Any]] = []
+    scope_kinds = {kind.value: kind for kind in ScopeKind}
+
+    for requested in body.items:
+        kind = requested.type.strip().lower()
+        value = requested.value.strip()
+        if kind in {"domain", "subdomain"}:
+            value = value.lower()
+        if not (requested.add_to_entities or requested.add_to_scope):
+            raise HTTPException(
+                status_code=400,
+                detail="each promotion item must select entities, scope, or both",
+            )
+        if requested.add_to_scope and kind not in scope_kinds:
+            raise HTTPException(
+                status_code=400,
+                detail=f"entity type {kind!r} cannot be added to scope",
+            )
+
+        if requested.add_to_entities:
+            entity = session.execute(
+                select(Entity).where(
+                    Entity.engagement_id == finding.engagement_id,
+                    Entity.type == kind,
+                    Entity.value == value,
+                )
+            ).scalar_one_or_none()
+            if entity is None:
+                entity = Entity(
+                    engagement_id=finding.engagement_id,
+                    type=kind,
+                    value=value,
+                    properties={},
+                    source_tool="finding_promotion",
+                    source_attribution=f"finding:{finding.id}",
+                )
+                session.add(entity)
+                session.flush()
+                entities_created += 1
+
+            linked = session.execute(
+                select(EntityFindingLink.id).where(
+                    EntityFindingLink.entity_id == entity.id,
+                    EntityFindingLink.finding_id == finding.id,
+                )
+            ).scalar_one_or_none()
+            if linked is None:
+                session.add(
+                    EntityFindingLink(
+                        entity_id=entity.id,
+                        finding_id=finding.id,
+                        created_by=user.id,
+                    )
+                )
+                links_created += 1
+
+        if requested.add_to_scope:
+            scope_kind = scope_kinds[kind]
+            existing_scope = session.execute(
+                select(ScopeItem.id).where(
+                    ScopeItem.engagement_id == finding.engagement_id,
+                    ScopeItem.kind == scope_kind,
+                    ScopeItem.value == value,
+                    ScopeItem.is_exclusion.is_(False),
+                )
+            ).scalar_one_or_none()
+            if existing_scope is None:
+                session.add(
+                    ScopeItem(
+                        engagement_id=finding.engagement_id,
+                        kind=scope_kind,
+                        value=value,
+                        is_exclusion=False,
+                        source="found",
+                        note=f"Promoted from finding {finding.id}",
+                    )
+                )
+                scope_created += 1
+
+        promoted.append(
+            {
+                "type": kind,
+                "value": value,
+                "entity": requested.add_to_entities,
+                "scope": requested.add_to_scope,
+            }
+        )
+
+    session.add(
+        AuditLog(
+            engagement_id=finding.engagement_id,
+            actor_type=ActorType.user,
+            actor_id=str(user.id),
+            event_type="finding.context_promoted",
+            payload={
+                "finding_id": str(finding.id),
+                "entities_created": entities_created,
+                "entity_links_created": links_created,
+                "scope_items_created": scope_created,
+                "items": promoted,
+            },
+        )
+    )
+    session.commit()
+    return FindingContextPromotionResult(
+        entities_created=entities_created,
+        entity_links_created=links_created,
+        scope_items_created=scope_created,
+        candidates=_context_candidates(session, finding),
+    )
 
 
 @router.post(

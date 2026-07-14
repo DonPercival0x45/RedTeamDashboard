@@ -823,6 +823,24 @@ export async function importFindingsNmap(
 // Stored entities (Phase 10 Maltego import target)
 // ---------------------------------------------------------------------------
 
+export function listFindingContextCandidates(
+  findingId: string,
+): Promise<import("@/lib/types").FindingContextCandidate[]> {
+  return request<import("@/lib/types").FindingContextCandidate[]>(
+    `/findings/${findingId}/context-candidates`,
+  );
+}
+
+export function promoteFindingContext(
+  findingId: string,
+  items: import("@/lib/types").FindingContextPromotionItem[],
+): Promise<import("@/lib/types").FindingContextPromotionResult> {
+  return request<import("@/lib/types").FindingContextPromotionResult>(
+    `/findings/${findingId}/context/promote`,
+    { method: "POST", body: JSON.stringify({ items }) },
+  );
+}
+
 export function listStoredEntities(
   slug: string,
 ): Promise<import("@/lib/types").StoredEntity[]> {

@@ -59,6 +59,7 @@ import {
   getFinding,
   getFindingActivity,
   getFindingChat,
+  listFindingContextCandidates,
   listIntegrations,
   listObservations,
   listProviderKeys,
@@ -68,6 +69,7 @@ import {
   listStoredEntities,
   listToolInvocations,
   listTools,
+  promoteFindingContext,
   retryAgentExecution,
   retryTask,
   revokeAuthorization,
@@ -115,6 +117,7 @@ export const qk = {
   finding: (id: string) => ["finding", id] as const,
   findingActivity: (id: string) => ["finding-activity", id] as const,
   findingChat: (id: string) => ["finding-chat", id] as const,
+  findingContext: (id: string) => ["finding-context", id] as const,
   observations: (slug: string) => ["observations", slug] as const,
   scope: (slug: string) => ["scope", slug] as const,
   entities: (slug: string) => ["entities", slug] as const,
@@ -447,6 +450,27 @@ export function useStoredEntities(slug: string) {
   return useQuery({
     queryKey: qk.storedEntities(slug),
     queryFn: () => listStoredEntities(slug),
+  });
+}
+
+export function useFindingContext(findingId: string) {
+  return useQuery({
+    queryKey: qk.findingContext(findingId),
+    queryFn: () => listFindingContextCandidates(findingId),
+  });
+}
+
+export function usePromoteFindingContextMutation(findingId: string, slug: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (items: Parameters<typeof promoteFindingContext>[1]) =>
+      promoteFindingContext(findingId, items),
+    onSuccess: (result) => {
+      qc.setQueryData(qk.findingContext(findingId), result.candidates);
+      void qc.invalidateQueries({ queryKey: qk.scope(slug) });
+      void qc.invalidateQueries({ queryKey: qk.entities(slug) });
+      void qc.invalidateQueries({ queryKey: qk.storedEntities(slug) });
+    },
   });
 }
 

@@ -13,9 +13,11 @@ from app.main import app
 from app.models import (
     Engagement,
     EngagementStatus,
+    EntityFindingLink,
     Finding,
     FindingPhase,
     FindingStatus,
+    ScopeItem,
     Severity,
 )
 
@@ -124,6 +126,66 @@ def test_correlates_same_value_across_findings(
     assert len(ip["findings"]) == 2
     # Aggregated severity is the max across disclosing findings.
     assert ip["severity"] == "high"
+
+
+def test_finding_context_can_promote_entity_and_found_scope(
+    client: TestClient, db: Session, engagement: Engagement
+) -> None:
+    finding = Finding(
+        engagement_id=engagement.id,
+        title="Discovered api.acme.com at 172.18.0.5",
+        summary="Contact admin@acme.com for ownership.",
+        severity=Severity.info,
+        details={},
+        source_tool="manual",
+        target="api.acme.com",
+        phase=FindingPhase.osint,
+        status=FindingStatus.validated,
+    )
+    db.add(finding)
+    db.commit()
+    db.refresh(finding)
+    headers = {"X-User-Id": "ent@example.com"}
+
+    candidates = client.get(
+        f"/findings/{finding.id}/context-candidates", headers=headers
+    )
+    assert candidates.status_code == 200, candidates.text
+    values = {(row["type"], row["value"]) for row in candidates.json()}
+    assert ("domain", "api.acme.com") in values
+    assert ("ip", "172.18.0.5") in values
+    assert ("email", "admin@acme.com") in values
+
+    body = {
+        "items": [
+            {
+                "type": "domain",
+                "value": "api.acme.com",
+                "add_to_entities": True,
+                "add_to_scope": True,
+            }
+        ]
+    }
+    promoted = client.post(
+        f"/findings/{finding.id}/context/promote", json=body, headers=headers
+    )
+    assert promoted.status_code == 200, promoted.text
+    assert promoted.json()["entities_created"] == 1
+    assert promoted.json()["entity_links_created"] == 1
+    assert promoted.json()["scope_items_created"] == 1
+
+    scope = db.query(ScopeItem).filter_by(engagement_id=engagement.id).one()
+    assert scope.value == "api.acme.com"
+    assert scope.source == "found"
+    assert db.query(EntityFindingLink).filter_by(finding_id=finding.id).count() == 1
+
+    repeated = client.post(
+        f"/findings/{finding.id}/context/promote", json=body, headers=headers
+    )
+    assert repeated.status_code == 200, repeated.text
+    assert repeated.json()["entities_created"] == 0
+    assert repeated.json()["entity_links_created"] == 0
+    assert repeated.json()["scope_items_created"] == 0
 
 
 def test_type_and_query_filters(

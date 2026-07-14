@@ -16,6 +16,7 @@ from app.models.authorization import Authorization
 from app.models.conversation import Conversation, ConversationMessage
 from app.models.engagement import Engagement, EngagementStatus, EngagementTimeFrame
 from app.models.entity import Entity
+from app.models.entity_finding_link import EntityFindingLink
 from app.models.finding import (
     Finding,
     FindingExclusion,
@@ -71,6 +72,7 @@ __all__ = [
     "EngagementStatus",
     "EngagementTimeFrame",
     "Entity",
+    "EntityFindingLink",
     "Finding",
     "FindingExclusion",
     "FindingPhase",
@@ -82,7 +84,7 @@ __all__ = [
     "MCPLease",
     "MCPLeaseStatus",
     "Observation",
-  "ObservationFindingLink",
+    "ObservationFindingLink",
     "OwnerEligibility",
     "RiskLevel",
     "RoadmapSuggestion",
