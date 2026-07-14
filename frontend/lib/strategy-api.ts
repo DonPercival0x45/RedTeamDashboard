@@ -1,6 +1,13 @@
 import { API_BASE_URL } from "@/lib/config";
 import { ApiError, authHeaders } from "@/lib/api";
 import type {
+  StrategistActionResult,
+  StrategistChatResponse,
+  StrategistChatState,
+  StrategistRunResponse,
+  StrategistSummary,
+} from "@/lib/strategist-types";
+import type {
   Checkpoint,
   CompletionDecision,
   CompletionMutationResponse,
@@ -371,6 +378,59 @@ export function approveCompletion(
       idempotency_key: crypto.randomUUID(),
       accepted_exceptions: acceptedExceptions,
     }),
+  );
+}
+
+export function runEngagementStrategist(
+  slug: string,
+  mode: "generate-initial" | "recommend" | "reassess" | "review-completion",
+): Promise<StrategistRunResponse> {
+  return strategyRequest<StrategistRunResponse>(
+    `/engagements/${encodeURIComponent(slug)}/strategy/${mode}`,
+    { method: "POST" },
+  );
+}
+
+export function getStrategistChat(slug: string): Promise<StrategistChatState> {
+  return strategyRequest<StrategistChatState>(
+    `/engagements/${encodeURIComponent(slug)}/strategy/chat`,
+  );
+}
+
+export function postStrategistChat(
+  slug: string,
+  message: string,
+  conversationId?: string | null,
+): Promise<StrategistChatResponse> {
+  return strategyRequest<StrategistChatResponse>(
+    `/engagements/${encodeURIComponent(slug)}/strategy/chat`,
+    json({ message, conversation_id: conversationId || null }),
+  );
+}
+
+export function decideStrategistChatAction(
+  slug: string,
+  messageId: string,
+  actionIndex: number,
+  action: "accept" | "deny",
+): Promise<StrategistActionResult> {
+  return strategyRequest<StrategistActionResult>(
+    `/engagements/${encodeURIComponent(slug)}/strategy/chat/messages/${messageId}/actions/${action}`,
+    json({ action_index: actionIndex }),
+  );
+}
+
+export function summarizeStrategistChat(slug: string): Promise<StrategistSummary> {
+  return strategyRequest<StrategistSummary>(
+    `/engagements/${encodeURIComponent(slug)}/strategy/chat/summarize`,
+    { method: "POST" },
+  );
+}
+
+export function clearStrategistChat(slug: string): Promise<void> {
+  return strategyRequest<void>(
+    `/engagements/${encodeURIComponent(slug)}/strategy/chat`,
+    { method: "DELETE" },
   );
 }
 

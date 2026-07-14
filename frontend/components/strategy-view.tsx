@@ -21,6 +21,7 @@ import {
   getCompletionReadiness,
   getCurrentStrategy,
   getResumeBriefing,
+  getStrategistChat,
   listCheckpoints,
   listCompletionDecisions,
   listCoverage,
@@ -28,15 +29,24 @@ import {
   listStrategyRevisions,
   listStrategySignals,
   listWorkItems,
+  postStrategistChat,
   reopenCompletion,
   resolveWorkItem,
+  runEngagementStrategist,
   startCompletionReview,
+  summarizeStrategistChat,
+  clearStrategistChat,
+  decideStrategistChatAction,
   transitionObjective,
   transitionWorkItem,
   updateCoverageItem,
   updateObjective,
   updateWorkItem,
 } from "@/lib/strategy-api";
+import type {
+  StrategistChatState,
+  StrategistRunResponse,
+} from "@/lib/strategist-types";
 import type {
   Checkpoint,
   CompletionDecision,
@@ -70,6 +80,7 @@ type LoadState = {
   completion: CompletionReadiness;
   decisions: CompletionDecision[];
   resume: ResumeBriefing;
+  chat: StrategistChatState;
 };
 
 const WORK_STATUSES: Array<WorkItemStatus | "all"> = [
@@ -148,6 +159,9 @@ export function StrategyView({
   const [completionExceptions, setCompletionExceptions] = useState<
     Record<string, string>
   >({});
+  const [strategistMessage, setStrategistMessage] = useState("");
+  const [lastStrategistRun, setLastStrategistRun] =
+    useState<StrategistRunResponse | null>(null);
 
   const refresh = useCallback(async () => {
     setError(null);
@@ -162,6 +176,7 @@ export function StrategyView({
       completion,
       decisions,
       resume,
+      chat,
     ] = await Promise.all([
       getCurrentStrategy(slug),
       listStrategyRevisions(slug),
@@ -173,6 +188,7 @@ export function StrategyView({
       getCompletionReadiness(slug),
       listCompletionDecisions(slug),
       getResumeBriefing(slug),
+      getStrategistChat(slug),
     ]);
     setData({
       current,
@@ -185,6 +201,7 @@ export function StrategyView({
       completion,
       decisions,
       resume,
+      chat,
     });
     setStrategyBody((previous) => previous || current?.body || "");
     setStrategySummary((previous) => previous || current?.summary || "");
@@ -503,6 +520,18 @@ export function StrategyView({
         <div className="mt-3 overflow-x-auto"><table className="w-full text-left text-xs"><thead><tr className="border-b border-border text-muted-foreground"><th className="py-2">Target</th><th>Category</th><th>Status</th><th>Reason</th></tr></thead><tbody>{data.coverage.map((item) => <tr key={item.id} className="border-b border-border/60"><td className="py-2 font-mono">{item.target_kind}:{item.target_key}</td><td>{item.activity_category}</td><td>{readOnly ? <Badge variant="outline">{item.status}</Badge> : <select value={item.status} onChange={(event) => { const next = event.target.value as CoverageStatus; const reason = next === "accepted_gap" ? window.prompt("Accepted gap rationale (required)") ?? "" : item.reason ?? ""; if (next === "accepted_gap" && !reason.trim()) return; void mutate(`coverage-${item.id}`, () => updateCoverageItem(slug, item, next, reason), "Coverage updated."); }} className="h-8 rounded border border-input bg-background px-2">{COVERAGE_STATUSES.map((status) => <option key={status}>{status}</option>)}</select>}</td><td className="max-w-xs truncate">{item.reason ?? "—"}</td></tr>)}</tbody></table>{data.coverage.length === 0 && <p className="py-3 text-sm text-muted-foreground">No coverage rows yet.</p>}</div>
       </section>
 
+      <StrategistSection
+        slug={slug}
+        readOnly={readOnly}
+        chat={data.chat}
+        message={strategistMessage}
+        setMessage={setStrategistMessage}
+        lastRun={lastStrategistRun}
+        setLastRun={setLastStrategistRun}
+        busy={busy}
+        mutate={mutate}
+      />
+
       <CompletionSection slug={slug} engagementStatus={engagementStatus} readiness={data.completion} decisions={data.decisions} exceptions={completionExceptions} setExceptions={setCompletionExceptions} busy={busy} mutate={mutate} />
     </div>
   );
@@ -522,6 +551,145 @@ function WorkDetail({ item, objectives, slug, readOnly, busy, resolution, setRes
   const objective = objectives.find((row) => row.id === item.objective_id);
   const terminal = item.status === "completed" || item.status === "cancelled";
   return <article className="rounded border border-border bg-background p-4"><div className="flex items-start justify-between gap-2"><div><h4 className="font-semibold">{item.title}</h4><p className="mt-1 text-xs text-muted-foreground">row v{item.row_version} · {item.executor_type}{objective ? ` · ${objective.title}` : ""}</p></div><Badge variant="outline">{item.status}</Badge></div>{item.description && <p className="mt-3 whitespace-pre-wrap text-sm">{item.description}</p>}{item.rationale && <p className="mt-3 text-xs text-muted-foreground">Rationale: {item.rationale}</p>}{item.acceptance_criteria.length > 0 && <div className="mt-3"><p className="text-xs font-medium">Acceptance criteria</p><ul className="mt-1 list-disc pl-5 text-xs text-muted-foreground">{item.acceptance_criteria.map((criterion, index) => <li key={index}>{criterion}</li>)}</ul></div>}{item.finding_links.length > 0 && <div className="mt-3 flex flex-wrap gap-2">{item.finding_links.map((link) => <Link key={`${link.finding_id}-${link.relationship}`} href={`/e/findings/${link.finding_id}?slug=${encodeURIComponent(slug)}&returnTo=${encodeURIComponent(`/e?slug=${slug}&view=strategy&workItem=${item.id}`)}`} className="rounded-full border border-border px-2 py-1 text-[10px] hover:underline">Finding · {link.relationship}</Link>)}</div>}{!readOnly && <div className="mt-4 space-y-2 border-t border-border pt-3"><div className="flex flex-wrap gap-2">{(item.status === "ready" || item.status === "blocked") && <SmallAction onClick={() => void mutate(`work-${item.id}-start`, () => transitionWorkItem(item.id, "start", item.row_version), "Work started.")}>Start</SmallAction>}{item.status === "in_progress" && <SmallAction onClick={() => { const reason = window.prompt("Blocking reason"); if (reason?.trim()) void mutate(`work-${item.id}-block`, () => blockWorkItem(item.id, item.row_version, reason.trim()), "Work blocked."); }}>Block</SmallAction>}{!terminal && item.status !== "deferred" && <SmallAction onClick={() => void mutate(`work-${item.id}-defer`, () => transitionWorkItem(item.id, "defer", item.row_version, window.prompt("Deferral reason") ?? undefined), "Work deferred.")}>Defer</SmallAction>}{(item.status === "deferred" || item.status === "completed") && <SmallAction onClick={() => void mutate(`work-${item.id}-reopen`, () => transitionWorkItem(item.id, "reopen", item.row_version), "Work reopened.")}>Reopen</SmallAction>}{!terminal && <SmallAction onClick={() => void mutate(`work-${item.id}-cancel`, () => transitionWorkItem(item.id, "cancel", item.row_version, window.prompt("Cancellation reason") ?? undefined), "Work cancelled.")}>Cancel</SmallAction>}<SmallAction onClick={() => { const title = window.prompt("Work item title", item.title); if (title?.trim()) void mutate(`work-${item.id}-edit`, () => updateWorkItem(item.id, { expected_row_version: item.row_version, title: title.trim() }), "Work item updated."); }}>Edit</SmallAction></div>{!terminal && <div className="flex gap-2"><select value={resolution} onChange={(event) => setResolution(event.target.value as WorkItemResolution)} className="h-8 rounded border border-input bg-background px-2 text-xs">{RESOLUTIONS.map((outcome) => <option key={outcome}>{outcome}</option>)}</select><Button size="sm" variant="outline" disabled={busy !== null} onClick={() => void mutate(`work-${item.id}-resolve`, () => resolveWorkItem(item.id, item.row_version, resolution, window.prompt("Resolution note") ?? undefined), "Work resolved.")}>Resolve</Button></div>}</div>}</article>;
+}
+
+function StrategistSection({ slug, readOnly, chat, message, setMessage, lastRun, setLastRun, busy, mutate }: { slug: string; readOnly: boolean; chat: StrategistChatState; message: string; setMessage: (value: string) => void; lastRun: StrategistRunResponse | null; setLastRun: (value: StrategistRunResponse | null) => void; busy: string | null; mutate: (key: string, action: () => Promise<unknown>, success: string) => Promise<boolean> }) {
+  const runModes = [
+    ["generate-initial", "Generate initial"],
+    ["recommend", "Recommend next"],
+    ["reassess", "Reassess"],
+    ["review-completion", "Review completion"],
+  ] as const;
+  return (
+    <section className="rounded-lg border border-violet-500/30 bg-violet-500/5 p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-semibold">Engagement Strategist</h3>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Personal conversation over the shared dossier. Recommendations create proposals; they never execute tools or silently change strategy.
+          </p>
+        </div>
+        <div className="flex flex-wrap justify-end gap-2">
+          {runModes.map(([mode, label]) => (
+            <Button
+              key={mode}
+              size="sm"
+              variant="outline"
+              disabled={readOnly || busy !== null}
+              onClick={() =>
+                void mutate(
+                  `strategist-${mode}`,
+                  async () => {
+                    setLastRun(await runEngagementStrategist(slug, mode));
+                  },
+                  `${label} strategist run completed. Review proposals before accepting them.`,
+                )
+              }
+            >
+              {busy === `strategist-${mode}` ? "Running…" : label}
+            </Button>
+          ))}
+        </div>
+      </div>
+
+      {lastRun && (
+        <details open className="mt-4 rounded border border-violet-500/20 bg-background/70 p-3">
+          <summary className="cursor-pointer text-sm font-medium">Latest strategist output</summary>
+          <p className="mt-2 whitespace-pre-wrap text-sm">{lastRun.output.situation_summary}</p>
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
+            <FactCard title={`Facts (${lastRun.output.facts.length})`} value={lastRun.output.facts.map((row) => row.statement)} />
+            <FactCard title={`Inferences (${lastRun.output.inferences.length})`} value={lastRun.output.inferences.map((row) => `${row.confidence}: ${row.statement}`)} />
+            <FactCard title={`Hypotheses (${lastRun.output.hypotheses.length})`} value={lastRun.output.hypotheses.map((row) => `${row.statement} — validate: ${row.validation_needed}`)} />
+            <FactCard title={`Coverage gaps (${lastRun.output.coverage_gaps.length})`} value={lastRun.output.coverage_gaps} />
+          </div>
+          {(lastRun.output.work_item_proposals.length > 0 || lastRun.output.strategy_revision_proposal) && (
+            <div className="mt-3 rounded border border-amber-500/30 bg-amber-500/5 p-3 text-xs">
+              <p className="font-medium">Proposals awaiting analyst action</p>
+              <ul className="mt-2 space-y-1 text-muted-foreground">
+                {lastRun.output.work_item_proposals.map((proposal) => <li key={proposal.proposal_key}>• Work: {proposal.title}</li>)}
+                {lastRun.output.strategy_revision_proposal && <li>• Strategy: {lastRun.output.strategy_revision_proposal.summary ?? "Proposed revision"}</li>}
+              </ul>
+              <p className="mt-2">Open proposals appear in Needs decision or the chat action cards; generating output does not accept them.</p>
+            </div>
+          )}
+          {lastRun.output.warnings.length > 0 && <div className="mt-3"><FactCard title="Warnings" value={lastRun.output.warnings} /></div>}
+          <p className="mt-2 font-mono text-[10px] text-muted-foreground">execution {lastRun.execution_id} · context {lastRun.context_hash.slice(0, 12)}…</p>
+        </details>
+      )}
+
+      <div className="mt-4 rounded border border-border bg-background/70 p-3">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h4 className="text-xs font-medium">Personal strategist conversation</h4>
+            <p className="text-[10px] text-muted-foreground">Raw chat is visible only to you. Accepted actions become shared records.</p>
+          </div>
+          {!readOnly && (
+            <div className="flex gap-2">
+              <SmallAction onClick={() => void mutate("strategist-summarize", () => summarizeStrategistChat(slug), "Strategist conversation summarized into the audit ledger.")}>Summarize</SmallAction>
+              <SmallAction onClick={() => { if (window.confirm("Clear your personal strategist conversation? Shared accepted records and audit history remain.")) void mutate("strategist-clear", () => clearStrategistChat(slug), "Personal strategist conversation cleared."); }}>Clear</SmallAction>
+            </div>
+          )}
+        </div>
+        <div className="mt-3 max-h-[34rem] space-y-3 overflow-y-auto pr-1">
+          {chat.messages.length === 0 ? (
+            <p className="rounded border border-dashed border-border p-3 text-xs text-muted-foreground">No strategist conversation yet. Ask for priorities, gaps, or a proposed next move.</p>
+          ) : (
+            chat.messages.map((row) => {
+              const actions = row.action_payload?.actions ?? [];
+              return (
+                <div key={row.id} className={cn("rounded border p-3 text-sm", row.role === "user" ? "ml-8 border-primary/30 bg-primary/5" : "mr-8 border-border bg-card")}>
+                  <div className="flex justify-between gap-2 text-[10px] uppercase text-muted-foreground"><span>{row.role === "user" ? "Analyst" : "Strategist"}</span><DateTime value={row.created_at} /></div>
+                  <p className="mt-1 whitespace-pre-wrap">{row.content}</p>
+                  {actions.length > 0 && (
+                    <ul className="mt-3 space-y-2">
+                      {actions.map((action, index) => (
+                        <li key={`${action.suggestion_id}-${index}`} className="rounded border border-amber-500/30 bg-amber-500/5 p-2 text-xs">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div><p className="font-medium">{action.title}</p><p className="text-[10px] text-muted-foreground">{action.suggestion_kind} · {action.status}</p></div>
+                            {action.status === "proposed" && !readOnly && (
+                              <div className="flex gap-1">
+                                <SmallAction onClick={() => void mutate(`strategist-action-${row.id}-${index}-deny`, () => decideStrategistChatAction(slug, row.id, index, "deny"), `Proposal “${action.title}” denied.`)}>Deny</SmallAction>
+                                <SmallAction onClick={() => void mutate(`strategist-action-${row.id}-${index}-accept`, () => decideStrategistChatAction(slug, row.id, index, "accept"), `Proposal “${action.title}” accepted into shared state.`)}>Accept</SmallAction>
+                              </div>
+                            )}
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              );
+            })
+          )}
+        </div>
+        {!readOnly && (
+          <div className="mt-3 flex gap-2">
+            <Textarea value={message} onChange={(event) => setMessage(event.target.value)} placeholder="Ask the Engagement Strategist…" rows={3} />
+            <Button
+              className="self-end"
+              disabled={!message.trim() || busy !== null}
+              onClick={() =>
+                void (async () => {
+                  const text = message.trim();
+                  if (
+                    await mutate(
+                      "strategist-chat",
+                      () => postStrategistChat(slug, text, chat.conversation_id),
+                      "Strategist replied. Review any proposed actions explicitly.",
+                    )
+                  ) {
+                    setMessage("");
+                  }
+                })()
+              }
+            >
+              {busy === "strategist-chat" ? "Thinking…" : "Send"}
+            </Button>
+          </div>
+        )}
+      </div>
+    </section>
+  );
 }
 
 function CompletionSection({ slug, engagementStatus, readiness, decisions, exceptions, setExceptions, busy, mutate }: { slug: string; engagementStatus: EngagementStatus; readiness: CompletionReadiness; decisions: CompletionDecision[]; exceptions: Record<string, string>; setExceptions: (value: Record<string, string>) => void; busy: string | null; mutate: (key: string, action: () => Promise<unknown>, success: string) => Promise<boolean> }) {
