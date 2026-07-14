@@ -26,6 +26,7 @@ Endpoints::
 
     POST   /engagements/{slug}/findings/import           -> bulk import findings (JSON/CSV)
     POST   /engagements/{slug}/findings/import/nessus    -> import Nessus .nessus v2 XML
+    POST   /engagements/{slug}/findings/import/nmap      -> import Nmap -oX XML
     PATCH  /findings/{finding_id}                        -> update title/summary/severity/phase
     GET    /engagements/{slug}/export                    -> full JSON snapshot
 
@@ -1176,6 +1177,16 @@ class NessusImportResult(BaseModel):
     total_items: int
 
 
+class NmapImportResult(BaseModel):
+    """Response shape for an Nmap ``-oX`` import."""
+
+    imported: list[FindingRead]
+    total_ports: int
+    skipped_closed: int
+    skipped_out_of_scope: int
+    observed_at: datetime | None = None
+
+
 class BurpImportResult(BaseModel):
     """Response shape for the Burp Pro Issue Export XML importer.
 
@@ -1409,6 +1420,50 @@ def import_nessus(
         "skipped_info": result.skipped_info,
         "skipped_out_of_scope": result.skipped_out_of_scope,
         "total_items": result.total_items,
+    }
+
+
+@router.post(
+    "/engagements/{slug}/findings/import/nmap",
+    response_model=NmapImportResult,
+    status_code=status.HTTP_201_CREATED,
+)
+def import_nmap(
+    slug: str,
+    session: DbSession,
+    user: CurrentUser,
+    file: Annotated[UploadFile, File(..., description="Nmap -oX XML export.")],
+) -> dict[str, Any]:
+    """Import open services from an analyst-supplied Nmap XML export."""
+    from app.services.nmap_import import parse_nmap_xml
+
+    eng = _get_engagement_or_404(session, slug)
+    _reject_flushed(eng)
+    raw = file.file.read(20 * 1024 * 1024 + 1)
+    if len(raw) > 20 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Nmap XML exceeds the 20 MB limit")
+    scope_items = list(
+        session.execute(
+            select(ScopeItem).where(ScopeItem.engagement_id == eng.id)
+        ).scalars()
+    )
+    try:
+        result = parse_nmap_xml(raw, scope_items=scope_items)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    created, _skipped = _create_findings_from_imports(
+        session, eng, result.items, user, source="nmap_import"
+    )
+    session.commit()
+    for finding in created:
+        session.refresh(finding)
+    return {
+        "imported": [_finding_to_read(finding) for finding in created],
+        "total_ports": result.total_ports,
+        "skipped_closed": result.skipped_closed,
+        "skipped_out_of_scope": result.skipped_out_of_scope,
+        "observed_at": result.observed_at,
     }
 
 
