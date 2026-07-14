@@ -204,12 +204,18 @@ def get_finding(
     this is the cross-engagement fetch the pane needs so it can render
     from just the finding id in the URL.
     """
+    from app.api.engagements import _finding_to_read
+
     finding = session.get(Finding, finding_id)
     if finding is None:
         raise HTTPException(status_code=404, detail="finding not found")
-    # Return the ORM row; FastAPI's response_model validates with
-    # from_attributes=True (FindingRead has no explicit model_config).
-    return finding
+    # Must run through the same envelope-unpacker the list endpoint uses:
+    # ORM stores ``details = {thread_id, args, **tool_data}`` and
+    # ``source_tool``, but FindingRead expects ``tool``, ``args``, and
+    # ``data`` at the top level. Returning the ORM row raw made
+    # from_attributes see the wrong shape (data={}, tool=None), which
+    # broke Evidence Details and every other UI that reads finding.data.
+    return FindingRead.model_validate(_finding_to_read(finding))
 
 
 @router.get(
