@@ -321,34 +321,7 @@ function FindingWorkbench({
         </div>
       </div>
 
-      <div className="space-y-4 p-4">
-        {/* Grouped hits — visible on every tab when the finding has
-            items (subdomains, open ports, live URLs, Nessus plugin
-            hits, etc.). Sits above the tab content so it's part of
-            the workbench, not a separate section above it. */}
-        {findingHasItems(finding) && (
-          <div className="rounded-md border border-border bg-background/40 p-3">
-            <GroupedItemsView
-              items={extractItems(finding.data)}
-              headerLabel="Items"
-              headerNote={
-                finding.group_key
-                  ? "Every re-run of this tool against the same target folds here — hits are deduped by their natural key."
-                  : undefined
-              }
-              maxHeight="60vh"
-            />
-            {finding.group_key && (
-              <p
-                className="mt-2 truncate font-mono text-[10px] text-muted-foreground"
-                title={finding.group_key}
-              >
-                {finding.group_key}
-              </p>
-            )}
-          </div>
-        )}
-
+      <div className="p-4">
         {tab === "ai" && <ChatRail findingId={finding.id} slug={slug} />}
         {tab === "notes" && (
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
@@ -359,9 +332,33 @@ function FindingWorkbench({
           </div>
         )}
         {tab === "evidence" && (
-          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-            <EvidenceChecklistPanel finding={finding} />
-            <AttachmentsPanel finding={finding} />
+          <div className="space-y-4">
+            {findingHasItems(finding) && (
+              <section className="rounded-lg border border-border bg-background/40 p-4">
+                <GroupedItemsView
+                  items={extractItems(finding.data)}
+                  headerLabel="Evidence Details"
+                  headerNote={
+                    finding.group_key
+                      ? "Every re-run of this tool against the same target folds here — hits are deduped by their natural key."
+                      : undefined
+                  }
+                  maxHeight="60vh"
+                />
+                {finding.group_key && (
+                  <p
+                    className="mt-2 truncate font-mono text-[10px] text-muted-foreground"
+                    title={finding.group_key}
+                  >
+                    {finding.group_key}
+                  </p>
+                )}
+              </section>
+            )}
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+              <EvidenceChecklistPanel finding={finding} />
+              <AttachmentsPanel finding={finding} />
+            </div>
           </div>
         )}
         {tab === "details" && (

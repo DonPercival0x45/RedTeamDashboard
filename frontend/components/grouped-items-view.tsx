@@ -10,8 +10,8 @@
 
 "use client";
 
-import { useMemo, useState } from "react";
-import { ChevronDown, ChevronRight, Layers } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { ChevronDown, ChevronRight, Layers, Maximize2, Minimize2 } from "lucide-react";
 
 type Item = Record<string, unknown>;
 
@@ -195,20 +195,21 @@ function GroupSection({
   items,
   primary,
   extras,
-  defaultOpen,
+  open,
+  onToggle,
 }: {
   label: string;
   items: Item[];
   primary: string | null;
   extras: string[];
-  defaultOpen: boolean;
+  open: boolean;
+  onToggle: () => void;
 }) {
-  const [open, setOpen] = useState(defaultOpen);
   return (
     <section className="rounded-md border border-border/70 bg-card/40">
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
+        onClick={onToggle}
         className="flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left text-xs hover:bg-muted/40"
         aria-expanded={open}
       >
@@ -238,11 +239,16 @@ export function GroupedItemsView({
   headerLabel = "Items",
   headerNote,
   maxHeight = "70vh",
+  // When true, every group starts collapsed (analyst opens what they
+  // need). When false (default), the first / largest group opens so
+  // the panel isn't a wall of dropdowns on first render.
+  defaultCollapsed = false,
 }: {
   items: Item[];
   headerLabel?: string;
   headerNote?: string;
   maxHeight?: string;
+  defaultCollapsed?: boolean;
 }) {
   const columns = useMemo(() => collectColumns(items), [items]);
   const { primary, groupBy, extras } = useMemo(
@@ -263,21 +269,77 @@ export function GroupedItemsView({
     return Array.from(bucket.entries()).sort((a, b) => b[1].length - a[1].length);
   }, [items, groupBy]);
 
+  // Per-group open state, keyed by label. Recomputed whenever the
+  // group set changes (e.g. finding switches). Preserves user toggles
+  // in between.
+  const [openMap, setOpenMap] = useState<Record<string, boolean>>({});
+  useEffect(() => {
+    if (!groups) {
+      setOpenMap({});
+      return;
+    }
+    setOpenMap(() => {
+      const next: Record<string, boolean> = {};
+      groups.forEach(([label], idx) => {
+        next[label] = defaultCollapsed ? false : idx === 0;
+      });
+      return next;
+    });
+  }, [groups, defaultCollapsed]);
+
+  const anyOpen = groups?.some(([label]) => openMap[label]) ?? false;
+  const allOpen = groups?.every(([label]) => openMap[label]) ?? false;
+
+  function toggleAll(open: boolean) {
+    if (!groups) return;
+    const next: Record<string, boolean> = {};
+    groups.forEach(([label]) => {
+      next[label] = open;
+    });
+    setOpenMap(next);
+  }
+
   if (!items.length) return null;
 
   return (
     <div className="flex flex-col gap-2">
-      <div className="flex items-center justify-between gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <h3 className="flex items-center gap-1.5 text-sm font-medium">
           <Layers className="h-3.5 w-3.5 text-muted-foreground" />
           {headerLabel}
           <span className="text-xs text-muted-foreground">({items.length})</span>
         </h3>
-        {groupBy && (
-          <span className="text-[10px] text-muted-foreground">
-            grouped by <span className="font-mono">{groupBy}</span>
-          </span>
-        )}
+        <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
+          {groupBy && (
+            <span>
+              grouped by <span className="font-mono">{groupBy}</span>
+            </span>
+          )}
+          {groups && groups.length > 1 && (
+            <div className="flex gap-1">
+              <button
+                type="button"
+                onClick={() => toggleAll(true)}
+                disabled={allOpen}
+                className="inline-flex items-center gap-1 rounded border border-border px-1.5 py-0.5 hover:bg-muted/40 disabled:opacity-40"
+                aria-label="Expand all groups"
+              >
+                <Maximize2 className="h-3 w-3" />
+                Expand all
+              </button>
+              <button
+                type="button"
+                onClick={() => toggleAll(false)}
+                disabled={!anyOpen}
+                className="inline-flex items-center gap-1 rounded border border-border px-1.5 py-0.5 hover:bg-muted/40 disabled:opacity-40"
+                aria-label="Collapse all groups"
+              >
+                <Minimize2 className="h-3 w-3" />
+                Collapse all
+              </button>
+            </div>
+          )}
+        </div>
       </div>
       {headerNote && (
         <p className="text-[11px] text-muted-foreground/80">{headerNote}</p>
@@ -287,16 +349,17 @@ export function GroupedItemsView({
         style={{ maxHeight }}
       >
         {groups ? (
-          groups.map(([label, subItems], idx) => (
+          groups.map(([label, subItems]) => (
             <GroupSection
               key={label}
               label={label}
               items={subItems}
               primary={primary}
               extras={extras}
-              // Open the first (largest) group by default; collapse the rest
-              // so the panel stays scannable on findings with many groups.
-              defaultOpen={idx === 0}
+              open={!!openMap[label]}
+              onToggle={() =>
+                setOpenMap((prev) => ({ ...prev, [label]: !prev[label] }))
+              }
             />
           ))
         ) : (

@@ -1174,6 +1174,7 @@ function GroupedItemsPanel({ finding }: { finding: Finding }) {
         headerLabel="Items"
         headerNote="Every re-run against the same target folds here — hits are deduped by their natural key."
         maxHeight="calc(100vh - 22rem)"
+        defaultCollapsed
       />
       {finding.group_key && (
         <p
