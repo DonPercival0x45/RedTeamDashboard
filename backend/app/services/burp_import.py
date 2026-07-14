@@ -33,6 +33,7 @@ from typing import Any
 from defusedxml import ElementTree
 
 from app.models import FindingPhase, ScopeItem, Severity
+from app.services.scope_matcher import evaluate_scope_candidates, infer_scope_kind
 
 # Burp Pro severity strings → our Severity enum. "False Positive" rarely
 # appears in exports (analyst-marked) but we map it to info just in case.
@@ -135,23 +136,13 @@ def _host_in_scope(
     host_elem: Any,
     scope_items: list[ScopeItem],
 ) -> bool:
-    """Literal-string scope match against the host's known addresses.
-
-    Same posture as ``nessus_import._host_in_scope``: exact string match
-    only. CIDR / wildcard expansion lives in the orchestrator scope-gate.
-    If empty-scope is configured, every host is in scope (caller's
-    responsibility to know).
-    """
-    if not scope_items:
-        return True
-    addrs = _host_addresses(host_elem)
-    if not addrs:
-        return False
-    excludes = {item.value for item in scope_items if item.is_exclusion}
-    if addrs & excludes:
-        return False
-    includes = {item.value for item in scope_items if not item.is_exclusion}
-    return bool(addrs & includes)
+    """Evaluate every Burp host representation through one scope policy."""
+    addresses = _host_addresses(host_elem)
+    return evaluate_scope_candidates(
+        [(value, infer_scope_kind(value)) for value in addresses],
+        scope_items,
+        empty_scope_allowed=True,
+    ).allowed
 
 
 def _parse_export_time(root: Any) -> datetime | None:

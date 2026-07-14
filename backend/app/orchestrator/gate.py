@@ -19,16 +19,15 @@ deferred along with the active tool set.
 from __future__ import annotations
 
 import enum
-import ipaddress
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlparse
 
-from app.models import RiskLevel, ScopeKind
+from app.models import RiskLevel
 from app.orchestrator.scope import ScopeSnapshot
 from app.orchestrator.tools import ToolSpec, get_tool
+from app.services.scope_matcher import evaluate_scope
 
 
 class Action(enum.StrEnum):
@@ -80,89 +79,6 @@ class Decision:
         return self.action is Action.deny
 
 
-def _normalize_domain(value: str) -> str:
-    return value.strip().lower().rstrip(".")
-
-
-def _domain_matches(target: str, scope_value: str) -> bool:
-    t = _normalize_domain(target)
-    s = _normalize_domain(scope_value)
-    if not t or not s:
-        return False
-    # Exact match, or target is a subdomain of scope. The leading dot guards
-    # the label boundary so `evilacme.com` does NOT match `acme.com`.
-    return t == s or t.endswith("." + s)
-
-
-def _extract_host(url: str) -> str | None:
-    candidate = url.strip()
-    if "://" not in candidate:
-        candidate = "http://" + candidate
-    try:
-        parsed = urlparse(candidate)
-    except ValueError:
-        return None
-    return parsed.hostname
-
-
-def _ip_equals(a: str, b: str) -> bool:
-    try:
-        return ipaddress.ip_address(a.strip()) == ipaddress.ip_address(b.strip())
-    except ValueError:
-        return False
-
-
-def _ip_in_cidr(ip_value: str, cidr_value: str) -> bool:
-    try:
-        ip = ipaddress.ip_address(ip_value.strip())
-        net = ipaddress.ip_network(cidr_value.strip(), strict=False)
-    except ValueError:
-        return False
-    return ip in net
-
-
-def _cidr_subnet_of(target_cidr: str, scope_cidr: str) -> bool:
-    try:
-        tnet = ipaddress.ip_network(target_cidr.strip(), strict=False)
-        snet = ipaddress.ip_network(scope_cidr.strip(), strict=False)
-    except ValueError:
-        return False
-    if tnet.version != snet.version:
-        return False
-    return tnet.subnet_of(snet)
-
-
-def _item_matches(target: str, target_kind: ScopeKind, item: ScopeSnapshot) -> bool:
-    if target_kind is ScopeKind.domain:
-        if item.kind is ScopeKind.domain:
-            return _domain_matches(target, item.value)
-        return False
-
-    if target_kind is ScopeKind.url:
-        host = _extract_host(target)
-        if host is None:
-            return False
-        if item.kind is ScopeKind.url:
-            return target.strip().lower() == item.value.strip().lower()
-        if item.kind is ScopeKind.domain:
-            return _domain_matches(host, item.value)
-        return False
-
-    if target_kind is ScopeKind.ip:
-        if item.kind is ScopeKind.ip:
-            return _ip_equals(target, item.value)
-        if item.kind is ScopeKind.cidr:
-            return _ip_in_cidr(target, item.value)
-        return False
-
-    if target_kind is ScopeKind.cidr:
-        if item.kind is ScopeKind.cidr:
-            return _cidr_subnet_of(target, item.value)
-        return False
-
-    return False
-
-
 def scope_check(
     spec: ToolSpec,
     tool_args: Mapping[str, Any],
@@ -190,30 +106,13 @@ def scope_check(
             reason=f"empty target arg '{spec.target_arg}'",
         )
     target = raw.strip()
-
-    # Exclusions beat includes — check them first.
-    for item in scope_items:
-        if item.is_exclusion and _item_matches(target, spec.kind, item):
-            return ScopeDecision(
-                ok=False,
-                reason=f"target {target!r} matches exclusion {item.value!r}",
-                target=target,
-                matched_exclusion_id=item.id,
-            )
-
-    for item in scope_items:
-        if not item.is_exclusion and _item_matches(target, spec.kind, item):
-            return ScopeDecision(
-                ok=True,
-                reason=f"target {target!r} matches scope item {item.value!r}",
-                target=target,
-                matched_include_id=item.id,
-            )
-
+    match = evaluate_scope(target, spec.kind, scope_items)
     return ScopeDecision(
-        ok=False,
-        reason=f"target {target!r} not in any scope item",
-        target=target,
+        ok=match.allowed,
+        reason=match.reason,
+        target=match.target,
+        matched_include_id=match.matched_include_id,
+        matched_exclusion_id=match.matched_exclusion_id,
     )
 
 
