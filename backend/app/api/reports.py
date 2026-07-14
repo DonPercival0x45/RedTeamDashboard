@@ -28,6 +28,8 @@ from app.models import (
     Observation,
     ScopeItem,
 )
+from app.schemas.report import ReportReadiness
+from app.services.report_readiness import build_report_readiness
 
 router = APIRouter()
 
@@ -36,6 +38,23 @@ _env = Environment(
     loader=FileSystemLoader(str(_TEMPLATES_DIR)),
     autoescape=select_autoescape(["html"]),
 )
+
+
+@router.get(
+    "/engagements/{slug}/report/readiness",
+    response_model=ReportReadiness,
+)
+def engagement_report_readiness(
+    slug: str,
+    session: DbSession,
+    _user: CurrentUser,
+) -> ReportReadiness:
+    engagement = session.execute(
+        select(Engagement).where(Engagement.slug == slug)
+    ).scalar_one_or_none()
+    if engagement is None:
+        raise HTTPException(status_code=404, detail="engagement not found")
+    return build_report_readiness(session, engagement=engagement)
 
 
 @router.get(
