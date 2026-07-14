@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   Activity,
   ArrowLeft,
@@ -18,6 +18,8 @@ import { Badge } from "@/components/ui/badge";
 import {
   createFindingSummary,
   createObservation,
+  deleteAttachment,
+  deleteFinding,
   linkObservationFinding,
   listAttachments,
   listFindingSummaries,
@@ -25,9 +27,11 @@ import {
   listObservationsForFinding,
   listScope,
   listTasks,
+  loadAttachmentBlob,
+  rewriteFindingSummary,
+  triageFinding,
   updateFinding,
   uploadAttachment,
-  loadAttachmentBlob,
   validateFinding,
 } from "@/lib/api";
 import {
@@ -331,7 +335,7 @@ function FindingWorkbench({
             <ScopeStatusPanel finding={finding} slug={slug} />
             <RelatedPanel finding={finding} slug={slug} />
             <ReportPreviewPanel finding={finding} />
-            <DetailsPanel finding={finding} />
+            <DetailsPanel finding={finding} slug={slug} />
           </div>
         )}
         {tab === "tools" && <AgentToolsPanel findingId={finding.id} slug={slug} />}
@@ -461,6 +465,22 @@ function SummaryPanel({ finding }: { finding: Finding }) {
     }
   }
 
+  async function draftWithAi(mode: "triage" | "rewrite") {
+    if (mode === "rewrite" && !draft.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const result = mode === "triage"
+        ? await triageFinding(finding.id)
+        : await rewriteFindingSummary(finding.id, draft.trim());
+      setDraft(result.summary);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <section className="rounded-lg border border-border bg-card/40 p-4">
       <h2 className="text-sm font-medium">Summary / analyst notes</h2>
@@ -480,15 +500,21 @@ function SummaryPanel({ finding }: { finding: Finding }) {
         placeholder="Add a new summary/history entry…"
         className="mt-3 min-h-24 w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
       />
-      <div className="mt-2 flex items-center gap-2">
+      <div className="mt-2 flex flex-wrap items-center gap-2">
         <button
           type="button"
           onClick={saveSummary}
           disabled={busy || !draft.trim()}
           className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
         >
-          {busy ? "Saving…" : "Save summary"}
+          {busy ? "Working…" : "Save summary"}
         </button>
+        <SmallButton disabled={busy} onClick={() => void draftWithAi("triage")}>
+          AI Triage
+        </SmallButton>
+        <SmallButton disabled={busy || !draft.trim()} onClick={() => void draftWithAi("rewrite")}>
+          AI Rewrite
+        </SmallButton>
         {error && <span className="text-xs text-destructive">{error}</span>}
       </div>
       <div className="mt-4">
@@ -793,6 +819,17 @@ function AttachmentsPanel({ finding }: { finding: Finding }) {
     }
   }
 
+  async function removeAttachment(id: string) {
+    if (!window.confirm("Delete this attachment?")) return;
+    setBusy(true);
+    try {
+      await deleteAttachment(id);
+      setRows((prev) => (prev ?? []).filter((row) => row.id !== id));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <section className="rounded-lg border border-border bg-card/40 p-4">
       <div className="flex items-center justify-between gap-2">
@@ -830,8 +867,16 @@ function AttachmentsPanel({ finding }: { finding: Finding }) {
                   {Math.ceil(row.size_bytes / 1024)} KB
                 </span>
               </div>
-              <div className="text-[10px] text-muted-foreground">
-                {fmtTs(row.created_at)}
+              <div className="mt-1 flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
+                <span>{fmtTs(row.created_at)}</span>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void removeAttachment(row.id)}
+                  className="text-destructive hover:underline disabled:opacity-50"
+                >
+                  Delete
+                </button>
               </div>
             </li>
           ))}
@@ -1041,20 +1086,93 @@ function ReportPreviewPanel({ finding }: { finding: Finding }) {
   );
 }
 
-function DetailsPanel({ finding }: { finding: Finding }) {
+function DetailsPanel({ finding, slug }: { finding: Finding; slug: string | null }) {
+  const router = useRouter();
+  const [deleting, setDeleting] = useState(false);
+
+  async function removeFinding() {
+    if (!window.confirm("Delete this finding? It will be hidden from findings, reports, and exports.")) return;
+    setDeleting(true);
+    try {
+      await deleteFinding(finding.id);
+      router.replace(slug ? `/e?slug=${encodeURIComponent(slug)}` : "/");
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   return (
-    <section className="rounded-lg border border-border bg-card/40 p-4 lg:col-span-2">
-      <h2 className="text-sm font-medium">Raw finding details</h2>
-      <div className="mt-3 grid grid-cols-2 gap-2 text-xs md:grid-cols-4">
-        <InfoTile label="Tool" value={finding.tool ?? "manual"} />
-        <InfoTile label="Target" value={finding.target ?? "—"} />
-        <InfoTile label="Created" value={fmtTs(finding.created_at)} />
-        <InfoTile label="Observed" value={fmtTs(finding.observed_at)} />
+    <>
+      <section className="rounded-lg border border-border bg-card/40 p-4 lg:col-span-2">
+        <h2 className="text-sm font-medium">Finding details</h2>
+        <div className="mt-3 grid grid-cols-2 gap-2 text-xs md:grid-cols-4">
+          <InfoTile label="Tool" value={finding.tool ?? "manual"} />
+          <InfoTile label="Target" value={finding.target ?? "—"} />
+          <InfoTile label="Created" value={fmtTs(finding.created_at)} />
+          <InfoTile label="Observed" value={fmtTs(finding.observed_at)} />
+        </div>
+        <GroupedItemsTable finding={finding} />
+        <details className="mt-4 rounded-md border border-border bg-background">
+          <summary className="cursor-pointer px-3 py-2 text-xs font-medium">Raw payload</summary>
+          <pre className="max-h-96 overflow-auto border-t border-border p-3 font-mono text-xs text-muted-foreground">
+            {JSON.stringify({ args: finding.args, data: finding.data }, null, 2)}
+          </pre>
+        </details>
+      </section>
+      <section className="rounded-lg border border-destructive/30 bg-destructive/5 p-4">
+        <h2 className="text-sm font-medium text-destructive">Danger zone</h2>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Soft-delete this finding from analyst views and client exports. Audit history is retained.
+        </p>
+        <button
+          type="button"
+          disabled={deleting}
+          onClick={() => void removeFinding()}
+          className="mt-3 rounded-md border border-destructive/40 px-3 py-1.5 text-xs text-destructive hover:bg-destructive/10 disabled:opacity-50"
+        >
+          {deleting ? "Deleting…" : "Delete finding"}
+        </button>
+      </section>
+    </>
+  );
+}
+
+function GroupedItemsTable({ finding }: { finding: Finding }) {
+  const items = Array.isArray((finding.data as { items?: unknown }).items)
+    ? ((finding.data as { items: unknown[] }).items as Record<string, unknown>[])
+    : [];
+  if (items.length === 0) return null;
+  const columns = Array.from(
+    new Set(items.flatMap((item) => Object.keys(item)).filter((key) => key !== "first_seen_at")),
+  );
+  return (
+    <div className="mt-4">
+      <div className="flex items-center justify-between gap-2">
+        <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          Grouped items ({items.length})
+        </h3>
+        {finding.group_key && <span className="font-mono text-[10px] text-muted-foreground">{finding.group_key}</span>}
       </div>
-      <pre className="mt-3 max-h-96 overflow-auto rounded-md border border-border bg-background p-3 font-mono text-xs text-muted-foreground">
-        {JSON.stringify({ args: finding.args, data: finding.data }, null, 2)}
-      </pre>
-    </section>
+      <div className="mt-2 max-h-72 overflow-auto rounded-md border border-border bg-background">
+        <table className="w-full border-collapse text-xs">
+          <thead className="sticky top-0 bg-background">
+            <tr className="border-b border-border">
+              {columns.map((column) => <th key={column} className="px-2 py-1.5 text-left font-medium text-muted-foreground">{column}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {items.map((item, index) => (
+              <tr key={index} className="border-b border-border/40 last:border-0">
+                {columns.map((column) => {
+                  const value = item[column];
+                  return <td key={column} className="px-2 py-1.5 font-mono text-[11px]">{value == null ? "—" : typeof value === "object" ? JSON.stringify(value) : String(value)}</td>;
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
   );
 }
 

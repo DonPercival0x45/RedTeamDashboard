@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useQueryClient } from "@tanstack/react-query";
 import { qk, useMe } from "@/lib/hooks";
@@ -11,45 +11,27 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  acceptSuggestion,
-  analyzeFinding,
   bulkDeleteFindings,
   correlateFindings,
   createFinding,
-  createFindingSummary,
-  deleteAttachment,
-  deleteFinding,
-  dismissSuggestion,
-  listAttachments,
-  listFindingSummaries,
-  listObservationsForFinding,
-  loadAttachmentBlob,
   mergeFindings,
   regroupFindingsApply,
   regroupFindingsPreview,
   repairFindingGroups,
-  triageFinding,
-  rewriteFindingSummary,
-  updateFinding,
-  uploadAttachment,
   validateFinding,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { FindingImporter } from "@/components/finding-importer";
 import { BurpImporter } from "@/components/burp-importer";
 import type {
-  Attachment,
   CorrelateGroup,
   Finding,
   FindingExclusion,
   FindingPhase,
   FindingSort,
-  FindingSummaryEntry,
   FindingValidationStatus,
-  Observation,
   RegroupProposal,
   Severity,
-  Suggestion,
 } from "@/lib/types";
 
 // ── display helpers ────────────────────────────────────────────────────────
@@ -776,10 +758,6 @@ export function FindingsView({
           slug={slug}
           onClose={() => setSelected(null)}
           onUpdated={handleUpdated}
-          onDeleted={(id) => {
-            onDeleted(id);
-            setSelected(null);
-          }}
         />
       )}
 
@@ -1013,223 +991,29 @@ function FilterRow<T extends string>({
 
 // ── slide-over: finding detail + validation + attack-path placeholder ──────
 
-// ── Attachment thumbnail (fetches binary with auth, revokes URL on unmount) ──
-
-function AttachmentThumb({
-  attachment,
-  onDelete,
-}: {
-  attachment: Attachment;
-  onDelete: () => void;
-}) {
-  const [src, setSrc] = useState<string | null>(null);
-  const [deleting, setDeleting] = useState(false);
-
-  useEffect(() => {
-    if (!attachment.content_type.startsWith("image/")) return;
-    let objectUrl: string | null = null;
-    loadAttachmentBlob(attachment.id)
-      .then((url) => { objectUrl = url; setSrc(url); })
-      .catch(() => setSrc(null));
-    return () => { if (objectUrl) URL.revokeObjectURL(objectUrl); };
-  }, [attachment.id, attachment.content_type]);
-
-  const handleDelete = async () => {
-    if (!window.confirm("Delete this attachment? This cannot be undone.")) {
-      return;
-    }
-    setDeleting(true);
-    try {
-      await deleteAttachment(attachment.id);
-      onDelete();
-    } finally {
-      setDeleting(false);
-    }
-  };
-
-  return (
-    <div className="group relative overflow-hidden rounded border border-border bg-background">
-      {src ? (
-        <img src={src} alt={attachment.filename} className="h-24 w-full object-cover" />
-      ) : (
-        <div className="flex h-24 items-center justify-center p-2 text-center font-mono text-[10px] text-muted-foreground">
-          {attachment.filename}
-        </div>
-      )}
-      <button
-        type="button"
-        onClick={handleDelete}
-        disabled={deleting}
-        className="absolute right-1 top-1 rounded bg-black/60 p-0.5 opacity-0 transition-opacity group-hover:opacity-100"
-        aria-label="Delete attachment"
-      >
-        <X className="h-3 w-3 text-white" />
-      </button>
-      <p className="truncate px-1.5 py-0.5 text-[10px] text-muted-foreground">
-        {attachment.filename}
-      </p>
-    </div>
-  );
-}
-
-// ── slide-over ───────────────────────────────────────────────────────────────
+// ── compact slide-over preview ───────────────────────────────────────────────
 
 function FindingSlideOver({
   finding,
   slug,
   onClose,
   onUpdated,
-  onDeleted,
 }: {
   finding: Finding;
   slug: string;
   onClose: () => void;
   onUpdated: (f: Finding) => void;
-  onDeleted: (findingId: string) => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // v0.10.0: soft-delete confirmation. Two-step so a stray click can't
-  // wipe a finding; second click within the same open of the slide-over
-  // is the real DELETE.
-  const [confirmingDelete, setConfirmingDelete] = useState(false);
-  const [deleting, setDeleting] = useState(false);
-
-  const [analyzing, setAnalyzing] = useState(false);
-  const [analyzeError, setAnalyzeError] = useState<string | null>(null);
-  const [suggestions, setSuggestions] = useState<Suggestion[] | null>(null);
-  const [dispatchedIds, setDispatchedIds] = useState<Set<string>>(new Set());
-  const [decidingId, setDecidingId] = useState<string | null>(null);
-
-  // Summary editor — the textarea is for the NEXT entry. v0.7.0 made it
-  // append-only: every Save records an immutable history row below.
-  const [summary, setSummary] = useState("");
-  const [savingSummary, setSavingSummary] = useState(false);
-  const [summaryError, setSummaryError] = useState<string | null>(null);
-
-  // AI Triage — populates the textarea with an LLM-written summary; the
-  // analyst then edits + clicks Save. Does NOT auto-save.
-  const [triaging, setTriaging] = useState(false);
-  // v0.20.0 (roadmap #1): AI rewrite — refines the analyst's CURRENT
-  // draft for clarity (no fabrication). Also fills the textarea; no auto-save.
-  const [rewriting, setRewriting] = useState(false);
-
-  // Summary history (newest first). Refreshed after each Save.
-  const [summaries, setSummaries] = useState<FindingSummaryEntry[] | null>(null);
-  const [viewingSummary, setViewingSummary] = useState<FindingSummaryEntry | null>(
-    null,
-  );
-
-  // Attachments
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
-  // v1.4.8: observations that reference this finding (back-refs).
-  const [linkedObs, setLinkedObs] = useState<Observation[] | null>(null);
-  const [uploading, setUploading] = useState(false);
-  const [uploadError, setUploadError] = useState<string | null>(null);
-  const fileRef = useRef<HTMLInputElement>(null);
-
-  // Load attachments + summary history when the slide-over opens
   useEffect(() => {
-    listAttachments(finding.id)
-      .then(setAttachments)
-      .catch(() => setAttachments([]));
-    listFindingSummaries(finding.id)
-      .then(setSummaries)
-      .catch(() => setSummaries([]));
-    listObservationsForFinding(finding.id)
-      .then(setLinkedObs)
-      .catch(() => setLinkedObs([]));
-  }, [finding.id]);
-
-  const doSaveSummary = async () => {
-    const trimmed = summary.trim();
-    if (!trimmed) {
-      setSummaryError("Write a summary first — empty entries aren't recorded.");
-      return;
-    }
-    setSavingSummary(true);
-    setSummaryError(null);
-    try {
-      const entry = await createFindingSummary(finding.id, trimmed);
-      // Prepend the new row to the history; clear the textarea so the
-      // analyst can start fresh next time.
-      setSummaries((prev) => [entry, ...(prev ?? [])]);
-      setSummary("");
-      // Refresh the parent's cached finding.summary so the Report tab
-      // and table can see the new latest. Local-only update; no extra
-      // server round-trip.
-      onUpdated({ ...finding, summary: entry.body });
-    } catch (err) {
-      setSummaryError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSavingSummary(false);
-    }
-  };
-
-  const doTriage = async () => {
-    setTriaging(true);
-    setSummaryError(null);
-    try {
-      const res = await triageFinding(finding.id);
-      setSummary(res.summary);
-    } catch (err) {
-      setSummaryError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setTriaging(false);
-    }
-  };
-
-  const doRewrite = async () => {
-    const draft = summary.trim();
-    if (!draft) return; // button is disabled in this case, but guard anyway
-    setRewriting(true);
-    setSummaryError(null);
-    try {
-      const res = await rewriteFindingSummary(finding.id, draft);
-      setSummary(res.summary);
-    } catch (err) {
-      setSummaryError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setRewriting(false);
-    }
-  };
-
-  const onFileChosen = useCallback(
-    async (e: React.ChangeEvent<HTMLInputElement>) => {
-      const file = e.target.files?.[0];
-      if (!file) return;
-      setUploading(true);
-      setUploadError(null);
-      try {
-        const att = await uploadAttachment(finding.id, file);
-        setAttachments((prev) => [...prev, att]);
-      } catch (err) {
-        setUploadError(err instanceof Error ? err.message : String(err));
-      } finally {
-        setUploading(false);
-        e.target.value = "";
-      }
-    },
-    [finding.id],
-  );
-
-  const doDelete = async () => {
-    if (!confirmingDelete) {
-      setConfirmingDelete(true);
-      return;
-    }
-    setDeleting(true);
-    setError(null);
-    try {
-      await deleteFinding(finding.id);
-      onDeleted(finding.id);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-      setDeleting(false);
-      setConfirmingDelete(false);
-    }
-  };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
 
   const decide = async (decision: FindingValidationStatus) => {
     setBusy(true);
@@ -1243,608 +1027,130 @@ function FindingSlideOver({
     }
   };
 
-  // v1.4.0: analyst-set reportability marker. Passing `null` clears the
-  // exclusion — the row goes back into the client-facing export.
-  const setExclusion = async (next: FindingExclusion | null) => {
-    setBusy(true);
-    setError(null);
-    try {
-      onUpdated(await updateFinding(finding.id, { exclusion: next }));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  // v1.4.7: free-form tags. Replace the whole list on each change so the
-  // backend PATCH semantics (tags = full list) line up with the UI. The
-  // normalizer on the backend trims / de-dups / caps, so we keep it dumb
-  // here — just append the trimmed input.
-  const [tagDraft, setTagDraft] = useState("");
-  const setTags = async (next: string[]) => {
-    setBusy(true);
-    setError(null);
-    try {
-      onUpdated(await updateFinding(finding.id, { tags: next }));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-  const addTag = () => {
-    const t = tagDraft.trim();
-    if (!t) return;
-    const current = finding.tags ?? [];
-    if (current.includes(t)) {
-      setTagDraft("");
-      return;
-    }
-    setTagDraft("");
-    void setTags([...current, t]);
-  };
-  const removeTag = (tag: string) => {
-    void setTags((finding.tags ?? []).filter((t) => t !== tag));
-  };
-
-  // Agents may run scan/enum paths only — never exploitation (CHARTER decided).
-  const agentAllowed = finding.phase !== "exploit";
-
-  const runAgent = async () => {
-    setAnalyzing(true);
-    setAnalyzeError(null);
-    try {
-      const res = await analyzeFinding(finding.id);
-      setSuggestions(res.suggestions);
-    } catch (err) {
-      setAnalyzeError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setAnalyzing(false);
-    }
-  };
-
-  const acceptOne = async (s: Suggestion) => {
-    setDecidingId(s.id);
-    setAnalyzeError(null);
-    try {
-      const res = await acceptSuggestion(s.id);
-      setSuggestions((prev) =>
-        prev?.map((x) => (x.id === s.id ? res.suggestion : x)) ?? null,
-      );
-      if (res.dispatched) {
-        setDispatchedIds((prev) => new Set(prev).add(s.id));
-      }
-    } catch (err) {
-      setAnalyzeError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setDecidingId(null);
-    }
-  };
-
-  const dismissOne = async (s: Suggestion) => {
-    setDecidingId(s.id);
-    setAnalyzeError(null);
-    try {
-      const updated = await dismissSuggestion(s.id);
-      setSuggestions((prev) =>
-        prev?.map((x) => (x.id === s.id ? updated : x)) ?? null,
-      );
-    } catch (err) {
-      setAnalyzeError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setDecidingId(null);
-    }
-  };
+  const groupedItems = Array.isArray((finding.data as { items?: unknown }).items)
+    ? (finding.data as { items: unknown[] }).items.length
+    : 0;
 
   return (
     <>
-      <div
-        className="fixed inset-0 z-40 bg-black/60"
-        onClick={onClose}
-        aria-hidden
-      />
-      <aside className="fixed inset-y-0 right-0 z-50 flex w-full max-w-md flex-col overflow-y-auto border-l border-border bg-popover p-6">
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <div className="font-mono text-xs text-muted-foreground">
-              {shortId(finding.id)} · {PHASE_LABEL[finding.phase]}
+      <div className="fixed inset-0 z-40 bg-black/60" onClick={onClose} aria-hidden />
+      <aside
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Finding preview: ${finding.title}`}
+        className="fixed inset-y-0 right-0 z-50 flex w-full max-w-md flex-col border-l border-border bg-popover shadow-2xl"
+      >
+        <header className="border-b border-border px-5 py-4">
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <p className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+                {shortId(finding.id)} · {PHASE_LABEL[finding.phase]}
+              </p>
+              <h2 className="mt-1 line-clamp-2 text-lg font-semibold leading-tight">
+                {finding.title}
+              </h2>
             </div>
-            <h2 className="mt-1 text-lg font-semibold leading-tight">
-              {finding.title}
-            </h2>
+            <button
+              type="button"
+              onClick={onClose}
+              className="shrink-0 rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+              aria-label="Close finding preview"
+            >
+              <X className="h-5 w-5" />
+            </button>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="text-muted-foreground hover:text-foreground"
-            aria-label="Close"
-          >
-            <X className="h-5 w-5" />
-          </button>
-        </div>
-        <div className="mt-1 flex justify-end">
-          <Link
-            href={`/e/findings/${finding.id}?slug=${encodeURIComponent(slug)}`}
-            className="inline-flex items-center gap-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
-            title="Open the full finding pane — activity timeline, context, and (soon) the AI assistant"
-          >
-            <Maximize2 className="h-3 w-3" /> Open full view
-          </Link>
-        </div>
-
-        <div className="mt-3 flex items-center gap-2">
-          <Badge variant="outline" className={SEVERITY_CLASS[finding.severity]}>
-            {finding.severity}
-          </Badge>
-          <span className="text-xs text-muted-foreground">
-            {STATUS_LABEL[finding.status]}
-          </span>
-        </div>
-
-        {finding.target && (
-          <p className="mt-3 font-mono text-xs text-muted-foreground">
-            target: {finding.target}
-          </p>
-        )}
-
-        <GroupedItemsPanel finding={finding} />
-
-        <pre className="mt-4 max-h-64 overflow-auto rounded-md border border-border bg-background p-3 font-mono text-xs text-muted-foreground">
-          {JSON.stringify(finding.data, null, 2)}
-        </pre>
-
-        {/* Summary — analyst narrative that flows into the report. Each
-            Save appends an immutable entry to history below; the textarea
-            clears so the next observation lands as its own row. */}
-        <div className="mt-5">
-          <h3 className="text-sm font-medium">Summary</h3>
-          <Textarea
-            value={summary}
-            onChange={(e) => setSummary(e.target.value)}
-            placeholder="Write a summary for the report…"
-            rows={4}
-            className="mt-2 text-sm"
-          />
-          <div className="mt-2 flex flex-wrap items-center gap-2">
-            <Button
-              size="sm"
-              disabled={savingSummary || !summary.trim()}
-              onClick={doSaveSummary}
-            >
-              {savingSummary ? "Saving…" : "Save summary"}
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={triaging || savingSummary}
-              onClick={doTriage}
-              title="Ask the LLM to draft a report-ready summary into the textarea. You can edit, then Save."
-            >
-              {triaging ? "Triaging…" : "AI Triage"}
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={rewriting || savingSummary || triaging || !summary.trim()}
-              onClick={doRewrite}
-              title="Refine the current draft for clarity. The LLM is constrained not to add facts you didn't write."
-            >
-              {rewriting ? "Rewriting…" : "AI Rewrite"}
-            </Button>
-            {summaryError && (
-              <p className="text-xs text-critical">{summaryError}</p>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <Badge variant="outline" className={SEVERITY_CLASS[finding.severity]}>
+              {finding.severity}
+            </Badge>
+            <Badge variant="secondary" className="text-[10px]">
+              {STATUS_LABEL[finding.status]}
+            </Badge>
+            {finding.exclusion && (
+              <Badge variant="outline" className={EXCLUSION_BADGE_CLASS[finding.exclusion]}>
+                {EXCLUSION_LABEL[finding.exclusion]}
+              </Badge>
             )}
           </div>
-        </div>
+        </header>
 
-        {/* Summary history — newest first. Click a card to read the full body. */}
-        <div className="mt-5">
-          <h3 className="text-sm font-medium">Summary history</h3>
-          {summaries === null ? (
-            <p className="mt-2 text-xs text-muted-foreground">Loading…</p>
-          ) : summaries.length === 0 ? (
-            <p className="mt-2 text-xs text-muted-foreground">
-              No summaries recorded yet. Save one above to start the history.
-            </p>
-          ) : (
-            <ul className="mt-2 space-y-2">
-              {summaries.map((entry) => (
-                <li key={entry.id}>
-                  <button
-                    type="button"
-                    onClick={() => setViewingSummary(entry)}
-                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-left transition-colors hover:border-foreground/40 hover:bg-secondary/40"
-                  >
-                    <p className="line-clamp-2 text-xs text-foreground">
-                      {entry.body}
-                    </p>
-                    <p className="mt-1.5 text-[10px] text-muted-foreground">
-                      {entry.author_display_name ||
-                        entry.author_email ||
-                        "(unknown analyst)"}{" "}
-                      ·{" "}
-                      {new Date(entry.created_at).toLocaleString(undefined, {
-                        year: "numeric",
-                        month: "short",
-                        day: "numeric",
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })}
-                    </p>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-
-        {/* Screenshots / evidence attachments */}
-        <div className="mt-5">
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-medium">Screenshots</h3>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={uploading}
-              onClick={() => fileRef.current?.click()}
-            >
-              <Upload className="mr-1.5 h-3.5 w-3.5" />
-              {uploading ? "Uploading…" : "Add"}
-            </Button>
-            <input
-              ref={fileRef}
-              type="file"
-              accept="image/*"
-              className="hidden"
-              onChange={onFileChosen}
-            />
-          </div>
-          {uploadError && (
-            <p className="mt-1 text-xs text-critical">{uploadError}</p>
-          )}
-          {attachments.length === 0 ? (
-            <p className="mt-2 text-xs text-muted-foreground">
-              No screenshots attached yet.
-            </p>
-          ) : (
-            <div className="mt-2 grid grid-cols-2 gap-2">
-              {attachments.map((att) => (
-                <AttachmentThumb
-                  key={att.id}
-                  attachment={att}
-                  onDelete={() =>
-                    setAttachments((prev) => prev.filter((a) => a.id !== att.id))
-                  }
-                />
-              ))}
+        <div className="flex-1 space-y-4 overflow-y-auto px-5 py-4">
+          <section className="grid grid-cols-2 gap-2 text-xs">
+            <div className="rounded-md border border-border bg-background p-2">
+              <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Target</p>
+              <p className="mt-1 truncate font-mono" title={finding.target ?? undefined}>
+                {finding.target ?? "—"}
+              </p>
             </div>
+            <div className="rounded-md border border-border bg-background p-2">
+              <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Source</p>
+              <p className="mt-1 truncate">{finding.tool ?? "manual"}</p>
+            </div>
+          </section>
+
+          <section className="rounded-md border border-border bg-card/40 p-3">
+            <div className="flex items-center justify-between gap-2">
+              <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                Current summary
+              </h3>
+              {groupedItems > 0 && (
+                <span className="text-[10px] text-muted-foreground">
+                  {groupedItems} grouped item{groupedItems === 1 ? "" : "s"}
+                </span>
+              )}
+            </div>
+            <p className="mt-2 line-clamp-5 whitespace-pre-wrap text-sm">
+              {finding.summary?.trim() || "No summary recorded yet."}
+            </p>
+          </section>
+
+          {(finding.tags ?? []).length > 0 && (
+            <section>
+              <h3 className="text-[10px] uppercase tracking-wide text-muted-foreground">Tags</h3>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {(finding.tags ?? []).map((tag) => (
+                  <span key={tag} className="rounded-full border border-border bg-muted/40 px-2 py-0.5 text-[10px]">
+                    {tag}
+                  </span>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {error && (
+            <p className="rounded-md border border-critical/40 bg-critical/10 p-2 text-xs text-critical">
+              {error}
+            </p>
           )}
         </div>
 
-        {/* Suggested attack path — Strategic watcher (Phase 9). */}
-        <div className="mt-6 rounded-md border border-dashed border-border p-4">
-          <h3 className="text-sm font-medium">Suggested attack path</h3>
-          <p className="mt-1 text-xs text-muted-foreground/70">
-            Strategic proposes next-step tasks (scan / enum only). Accepting
-            agent-eligible tasks dispatches a worker run; active tools still
-            stop at the approval gate.
-          </p>
-          <div className="mt-3 flex gap-2">
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={!agentAllowed || analyzing}
-              onClick={runAgent}
-              title={
-                agentAllowed
-                  ? "Ask Strategic to propose next steps"
-                  : "Agents never run exploitation — analyst only"
-              }
-            >
-              {analyzing ? "Thinking…" : "Agent (automate)"}
-            </Button>
-          </div>
-          {!agentAllowed && (
-            <p className="mt-2 text-xs text-muted-foreground/60">
-              Exploitation is analyst-only — the Agent option is disabled for
-              this phase.
-            </p>
-          )}
-          {analyzeError && (
-            <p className="mt-2 text-xs text-critical">{analyzeError}</p>
-          )}
-          {suggestions !== null && suggestions.length === 0 && (
-            <p className="mt-3 text-xs text-muted-foreground/70">
-              Strategic had no follow-up tasks to propose.
-            </p>
-          )}
-          {suggestions !== null && suggestions.length > 0 && (
-            <ul className="mt-3 space-y-2">
-              {suggestions.map((s) => (
-                <li
-                  key={s.id}
-                  className="rounded-md border border-border bg-background p-3"
-                >
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <p className="text-sm font-medium leading-snug">
-                        {s.title}
-                      </p>
-                      {s.body && (
-                        <p className="mt-1 text-xs text-muted-foreground">
-                          {s.body}
-                        </p>
-                      )}
-                      <p className="mt-1 font-mono text-[10px] uppercase tracking-wider text-muted-foreground/60">
-                        {String(s.payload.tool ?? "?")} →{" "}
-                        {String(s.payload.target ?? "?")}
-                        {" · "}
-                        {String(s.payload.task_kind ?? "?")}
-                      </p>
-                    </div>
-                    {s.status === "open" && (
-                      <div className="flex shrink-0 gap-1">
-                        <Button
-                          size="sm"
-                          disabled={decidingId === s.id}
-                          onClick={() => acceptOne(s)}
-                        >
-                          Accept
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          disabled={decidingId === s.id}
-                          onClick={() => dismissOne(s)}
-                        >
-                          Dismiss
-                        </Button>
-                      </div>
-                    )}
-                    {s.status !== "open" && (
-                      <span className="shrink-0 self-center text-xs text-muted-foreground capitalize">
-                        {s.status}
-                        {dispatchedIds.has(s.id) ? " · dispatched" : ""}
-                      </span>
-                    )}
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-
-        {/* Validation gate */}
-        <div className="mt-auto pt-6">
-          {error && <p className="mb-2 text-sm text-critical">{error}</p>}
+        <footer className="space-y-3 border-t border-border bg-background/70 px-5 py-4">
           <div className="flex flex-wrap gap-2">
             <Button
               size="sm"
               disabled={busy || finding.status === "validated"}
-              onClick={() => decide("validated")}
+              onClick={() => void decide("validated")}
             >
               Validate
             </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={busy}
-              onClick={() => decide("rejected")}
-            >
+            <Button size="sm" variant="outline" disabled={busy} onClick={() => void decide("rejected")}>
               Reject
             </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={busy}
-              onClick={() => decide("false_positive")}
-            >
+            <Button size="sm" variant="outline" disabled={busy} onClick={() => void decide("false_positive")}>
               False positive
             </Button>
           </div>
-
-          {/* v1.4.0: reportability marker. Orthogonal to validation —
-              a validated finding can still be excluded from the client
-              deliverable if it's out of scope or off-limits per ROE. */}
-          <div className="mt-3">
-            <p className="text-xs uppercase tracking-wide text-muted-foreground">
-              Reportability
-              {finding.exclusion && (
-                <span className="ml-2 rounded border border-border/70 bg-secondary/50 px-1.5 py-0.5 text-[10px] tracking-normal text-foreground">
-                  {EXCLUSION_LABEL[finding.exclusion]}
-                </span>
-              )}
-            </p>
-            <div className="mt-1.5 flex flex-wrap gap-2">
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={busy || finding.exclusion === "out_of_scope"}
-                onClick={() => setExclusion("out_of_scope")}
-                title="Real finding, but not in the client-declared scope. Report exporter drops it when 'Omit excluded' is on."
-              >
-                Out of scope
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={busy || finding.exclusion === "outside_roe"}
-                onClick={() => setExclusion("outside_roe")}
-                title="Real finding, but off-limits per the engagement's rules of engagement / legal terms."
-              >
-                Outside ROE
-              </Button>
-              {finding.exclusion && (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={busy}
-                  onClick={() => setExclusion(null)}
-                >
-                  Clear
-                </Button>
-              )}
-            </div>
-          </div>
-
-          {/* v1.4.7: free-form tags. Correlate / filter foundation. */}
-          <div className="mt-3">
-            <p className="text-xs uppercase tracking-wide text-muted-foreground">
-              Tags
-            </p>
-            <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-              {(finding.tags ?? []).map((tag) => (
-                <span
-                  key={tag}
-                  className="inline-flex items-center gap-1 rounded-full border border-border bg-muted/40 px-2 py-0.5 text-xs"
-                >
-                  {tag}
-                  <button
-                    type="button"
-                    aria-label={`Remove tag ${tag}`}
-                    disabled={busy}
-                    onClick={() => removeTag(tag)}
-                    className="text-muted-foreground hover:text-critical disabled:opacity-50"
-                  >
-                    <X className="h-3 w-3" />
-                  </button>
-                </span>
-              ))}
-              {(finding.tags ?? []).length === 0 && (
-                <span className="text-xs text-muted-foreground">
-                  No tags yet.
-                </span>
-              )}
-            </div>
-            <div className="mt-1.5 flex gap-2">
-              <Input
-                value={tagDraft}
-                onChange={(e) => setTagDraft(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    addTag();
-                  }
-                }}
-                placeholder="Add a tag (e.g. xss, cred-leak)"
-                disabled={busy}
-                className="h-8 flex-1 text-xs"
-              />
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={busy || !tagDraft.trim()}
-                onClick={addTag}
-              >
-                Add
-              </Button>
-            </div>
-          </div>
-
-          {/* v1.4.8: observations referencing this finding (back-refs). */}
-          <div className="mt-3">
-            <p className="text-xs uppercase tracking-wide text-muted-foreground">
-              Referenced by
-            </p>
-            <div className="mt-1.5 space-y-1">
-              {linkedObs === null ? (
-                <p className="text-xs text-muted-foreground">Loading…</p>
-              ) : linkedObs.length === 0 ? (
-                <p className="text-xs text-muted-foreground">
-                  No observations reference this finding.
-                </p>
-              ) : (
-                linkedObs.map((o) => (
-                  <p
-                    key={o.id}
-                    className="rounded-md border border-border bg-muted/30 px-2 py-1 text-xs"
-                  >
-                    {o.content}
-                  </p>
-                ))
-              )}
-            </div>
-          </div>
-
-          {/* v0.10.0: soft-delete. Two-step confirm; audit_log records
-              the actor + timestamp so a future recovery view can un-hide. */}
-          <div className="mt-3 flex items-center gap-2">
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={deleting}
-              onClick={doDelete}
-              className={
-                confirmingDelete
-                  ? "border-rose-500 bg-rose-500/10 text-rose-800 dark:text-rose-100 hover:bg-rose-500/20"
-                  : "border-rose-500/40 text-rose-600 dark:text-rose-300 hover:bg-rose-500/10"
-              }
-              title="Soft-delete this finding — hidden from Findings, Report, and JSON export. audit_log preserves who + when."
-            >
-              <Trash2 className="mr-1.5 h-3.5 w-3.5" />
-              {deleting
-                ? "Deleting…"
-                : confirmingDelete
-                  ? "Click again to confirm"
-                  : "Delete finding"}
-            </Button>
-            {confirmingDelete && !deleting && (
-              <button
-                type="button"
-                onClick={() => setConfirmingDelete(false)}
-                className="text-xs text-muted-foreground hover:text-foreground"
-              >
-                Cancel
-              </button>
-            )}
-          </div>
-        </div>
+          <Button asChild className="w-full">
+            <Link href={`/e/findings/${finding.id}?slug=${encodeURIComponent(slug)}`}>
+              <Maximize2 className="mr-2 h-4 w-4" />
+              Open full finding workbench
+            </Link>
+          </Button>
+          <p className="text-center text-[10px] text-muted-foreground">
+            Editing, evidence, AI actions, context, and history live in the full view.
+          </p>
+        </footer>
       </aside>
-
-      {/* Summary detail popup — opens when the analyst clicks a row in
-          Summary history. z-60 so it sits over the slide-over. */}
-      {viewingSummary && (
-        <>
-          <div
-            className="fixed inset-0 z-[60] bg-black/70"
-            onClick={() => setViewingSummary(null)}
-            aria-hidden
-          />
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-label="Summary detail"
-            className="fixed left-1/2 top-1/2 z-[70] flex max-h-[80vh] w-[min(640px,92vw)] -translate-x-1/2 -translate-y-1/2 flex-col rounded-lg border border-border bg-popover p-5 shadow-xl"
-          >
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <h3 className="text-sm font-semibold text-foreground">
-                  Summary recorded{" "}
-                  {new Date(viewingSummary.created_at).toLocaleString()}
-                </h3>
-                <p className="mt-0.5 text-xs text-muted-foreground">
-                  by{" "}
-                  {viewingSummary.author_display_name ||
-                    viewingSummary.author_email ||
-                    "(unknown analyst)"}
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setViewingSummary(null)}
-                className="text-muted-foreground hover:text-foreground"
-                aria-label="Close"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-            <div className="mt-4 overflow-y-auto whitespace-pre-wrap text-sm text-foreground">
-              {viewingSummary.body}
-            </div>
-          </div>
-        </>
-      )}
     </>
   );
 }
