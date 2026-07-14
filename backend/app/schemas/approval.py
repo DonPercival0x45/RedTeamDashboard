@@ -30,6 +30,13 @@ class ApprovalRead(BaseModel):
     updated_at: datetime
 
 
+class ApprovalInboxRead(ApprovalRead):
+    """Pending approval enriched for the tenant-global analyst inbox."""
+
+    engagement_slug: str
+    engagement_name: str
+
+
 class ApprovalDecision(BaseModel):
     """Body for POST /approvals/{id}/decision.
 

@@ -17,17 +17,18 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import select
 
-from app.api.deps import CurrentNonGuestUser, DbSession, RedisClient
+from app.api.deps import CurrentNonGuestUser, CurrentUser, DbSession, RedisClient
 from app.models import (
     ActorType,
     Approval,
     ApprovalStatus,
     AuditLog,
     Authorization,
+    Engagement,
 )
 from app.runs.events import encode_command
 from app.runs.streams import inbound_stream, load_run_model
-from app.schemas.approval import ApprovalDecision, ApprovalRead
+from app.schemas.approval import ApprovalDecision, ApprovalInboxRead, ApprovalRead
 
 router = APIRouter()
 
@@ -39,6 +40,7 @@ router = APIRouter()
 def list_approvals(
     engagement_id: UUID,
     session: DbSession,
+    _user: CurrentUser,
     status: Annotated[ApprovalStatus | None, Query()] = None,
 ) -> list[Approval]:
     stmt = select(Approval).where(Approval.engagement_id == engagement_id)
@@ -48,8 +50,37 @@ def list_approvals(
     return list(session.execute(stmt).scalars())
 
 
+@router.get("/approvals", response_model=list[ApprovalInboxRead])
+def list_approval_inbox(
+    session: DbSession,
+    _user: CurrentUser,
+    status_filter: Annotated[
+        ApprovalStatus, Query(alias="status")
+    ] = ApprovalStatus.pending,
+    limit: Annotated[int, Query(ge=1, le=200)] = 100,
+) -> list[ApprovalInboxRead]:
+    """Tenant-global, recoverable approval queue for the app shell."""
+    rows = session.execute(
+        select(Approval, Engagement.slug, Engagement.name)
+        .join(Engagement, Engagement.id == Approval.engagement_id)
+        .where(Approval.status == status_filter)
+        .order_by(Approval.created_at.asc(), Approval.id.asc())
+        .limit(limit)
+    ).all()
+    return [
+        ApprovalInboxRead(
+            **ApprovalRead.model_validate(approval).model_dump(),
+            engagement_slug=slug,
+            engagement_name=name,
+        )
+        for approval, slug, name in rows
+    ]
+
+
 @router.get("/approvals/{approval_id}", response_model=ApprovalRead)
-def get_approval(approval_id: UUID, session: DbSession) -> Approval:
+def get_approval(
+    approval_id: UUID, session: DbSession, _user: CurrentUser
+) -> Approval:
     approval = session.get(Approval, approval_id)
     if approval is None:
         raise HTTPException(status_code=404, detail="approval not found")

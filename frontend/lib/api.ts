@@ -16,6 +16,7 @@ import type {
   AnalyzeFindingResponse,
   TriageFindingResponse,
   Approval,
+  ApprovalInboxItem,
   ApprovalStatus,
   Attachment,
   Authorization,
@@ -502,6 +503,10 @@ export function listApprovals(
 ): Promise<Approval[]> {
   const q = status ? `?status=${status}` : "";
   return request<Approval[]>(`/engagements/${slug}/approvals${q}`);
+}
+
+export function listPendingApprovals(): Promise<ApprovalInboxItem[]> {
+  return request<ApprovalInboxItem[]>("/approvals?status=pending&limit=200");
 }
 
 export function decideApproval(

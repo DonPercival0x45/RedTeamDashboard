@@ -283,6 +283,7 @@ function EngagementDetail({ slug }: { slug: string }) {
             queryKey: qk.toolInvocations(slug),
           });
         } else if (event.type === "approval.pending" && canWrite) {
+          void qc.invalidateQueries({ queryKey: qk.pendingApprovals() });
           setPending({
             approval_id: event.approval_id,
             thread_id: event.thread_id,
@@ -474,6 +475,7 @@ function EngagementDetail({ slug }: { slug: string }) {
             setPending(null);
             setGrantsRefreshKey((k) => k + 1);
           }}
+          onClose={() => setPending(null)}
         />
       )}
     </div>

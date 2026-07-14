@@ -21,15 +21,19 @@ export interface PendingApproval {
   args: Record<string, unknown>;
   risk: string;
   scope: Record<string, unknown>;
-  tool_call_id: string;
+  tool_call_id?: string;
+  engagement_slug?: string;
+  engagement_name?: string;
 }
 
 export function ApprovalsModal({
   pending,
   onResolved,
+  onClose,
 }: {
   pending: PendingApproval | null;
   onResolved: (approvalId: string) => void;
+  onClose: () => void;
 }) {
   const [argsJson, setArgsJson] = useState("");
   const [reason, setReason] = useState("");
@@ -89,7 +93,7 @@ export function ApprovalsModal({
   };
 
   return (
-    <Dialog open onOpenChange={(open) => !open && onResolved(pending.approval_id)}>
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Approval required: {pending.tool}</DialogTitle>
