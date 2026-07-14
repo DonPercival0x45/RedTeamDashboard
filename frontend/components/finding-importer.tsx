@@ -5,13 +5,14 @@ import { Upload } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { importFindings, importFindingsNessus } from "@/lib/api";
+import { importFindings, importFindingsNessus, importFindingsNmap } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import type {
   Finding,
   FindingImport,
   FindingPhase,
   NessusImportResult,
+  NmapImportResult,
   Severity,
 } from "@/lib/types";
 
@@ -144,7 +145,7 @@ function parseFindingsJSON(raw: string): {
 
 // ── component ────────────────────────────────────────────────────────────────
 
-type Mode = "csv" | "json" | "nessus";
+type Mode = "csv" | "json" | "nessus" | "nmap";
 
 const CSV_PLACEHOLDER = `title,severity,phase,summary,target,source_tool
 SQL injection in login form,high,vuln_scan,Bypasses authentication,https://api.example.com/login,manual
@@ -185,9 +186,11 @@ export function FindingImporter({
   const [nessusResult, setNessusResult] = useState<NessusImportResult | null>(
     null,
   );
+  const [nmapFile, setNmapFile] = useState<File | null>(null);
+  const [nmapResult, setNmapResult] = useState<NmapImportResult | null>(null);
 
   useEffect(() => {
-    if (mode === "nessus") {
+    if (mode === "nessus" || mode === "nmap") {
       setParsed(null);
       return;
     }
@@ -209,6 +212,11 @@ export function FindingImporter({
         setNessusFile(file);
         setNessusResult(null);
         setText("");
+      } else if (file.name.toLowerCase().endsWith(".xml")) {
+        setMode("nmap");
+        setNmapFile(file);
+        setNmapResult(null);
+        setText("");
       } else {
         setText(await file.text());
         if (file.name.endsWith(".json")) setMode("json");
@@ -220,6 +228,22 @@ export function FindingImporter({
   );
 
   const onImport = async () => {
+    if (mode === "nmap") {
+      if (!nmapFile) return;
+      setImporting(true);
+      setImportError(null);
+      try {
+        const result = await importFindingsNmap(slug, nmapFile);
+        onImported(result.imported);
+        setNmapResult(result);
+        setNmapFile(null);
+      } catch (err) {
+        setImportError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setImporting(false);
+      }
+      return;
+    }
     if (mode === "nessus") {
       if (!nessusFile) return;
       setImporting(true);
@@ -258,13 +282,13 @@ export function FindingImporter({
         <div>
           <p className="text-sm font-medium">Import findings</p>
           <p className="text-xs text-muted-foreground">
-            Paste or upload CSV / JSON, or upload a Nessus .nessus XML
-            export. All imports land as <em>pending validation</em> for
+            Paste or upload CSV / JSON, Nessus, or Nmap XML. All scanner
+            imports land as <em>pending validation</em> for
             analyst review.
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-1">
-          {(["csv", "json", "nessus"] as Mode[]).map((m) => (
+          {(["csv", "json", "nessus", "nmap"] as Mode[]).map((m) => (
             <button
               key={m}
               type="button"
@@ -273,6 +297,8 @@ export function FindingImporter({
                 setText("");
                 setNessusFile(null);
                 setNessusResult(null);
+                setNmapFile(null);
+                setNmapResult(null);
                 setImportError(null);
               }}
               className={cn(
@@ -319,7 +345,7 @@ export function FindingImporter({
       )}
 
       {/* CSV/JSON paste-or-loaded text body */}
-      {mode !== "nessus" && (
+      {mode !== "nessus" && mode !== "nmap" && (
         <Textarea
           value={text}
           onChange={(e) => setText(e.target.value)}
@@ -361,6 +387,29 @@ export function FindingImporter({
           <p className="text-[11px] text-muted-foreground/70">
             Out-of-scope hosts are dropped silently. Counts are shown below
             after import.
+          </p>
+        </div>
+      )}
+
+      {mode === "nmap" && (
+        <div className="space-y-2 rounded border border-border bg-background p-2 text-xs">
+          <div className="flex items-center gap-2">
+            <span className="text-muted-foreground">File:</span>
+            <span className="truncate font-mono">
+              {nmapFile?.name ?? (
+                <span className="text-muted-foreground/70">
+                  none selected — upload an <code>nmap -oX</code> XML file
+                </span>
+              )}
+            </span>
+            {nmapFile && (
+              <span className="ml-auto shrink-0 font-mono text-[10px] text-muted-foreground">
+                {(nmapFile.size / 1024).toFixed(1)} KB
+              </span>
+            )}
+          </div>
+          <p className="text-[11px] text-muted-foreground/70">
+            Open ports are grouped by service signature. Closed and out-of-scope ports are counted but not imported.
           </p>
         </div>
       )}
@@ -448,6 +497,18 @@ export function FindingImporter({
         </div>
       )}
 
+      {mode === "nmap" && nmapResult && (
+        <div className="space-y-1 rounded border border-border bg-background p-2 text-xs">
+          <div className="font-medium">
+            Imported <span className="font-mono">{nmapResult.imported.length}</span> grouped findings from{" "}
+            <span className="font-mono">{nmapResult.total_ports}</span> ports
+          </div>
+          <p className="text-muted-foreground">
+            Skipped {nmapResult.skipped_closed} closed · {nmapResult.skipped_out_of_scope} out-of-scope
+          </p>
+        </div>
+      )}
+
       {importError && (
         <p className="text-xs text-critical">{importError}</p>
       )}
@@ -460,7 +521,9 @@ export function FindingImporter({
             importing ||
             (mode === "nessus"
               ? !nessusFile
-              : !parsed || parsed.rows.length === 0)
+              : mode === "nmap"
+                ? !nmapFile
+                : !parsed || parsed.rows.length === 0)
           }
           onClick={onImport}
         >
@@ -470,6 +533,10 @@ export function FindingImporter({
               ? nessusFile
                 ? "Import Nessus"
                 : "Import"
+              : mode === "nmap"
+                ? nmapFile
+                  ? "Import Nmap"
+                  : "Import"
               : parsed && parsed.rows.length > 0
                 ? `Import ${parsed.rows.length}`
                 : "Import"}

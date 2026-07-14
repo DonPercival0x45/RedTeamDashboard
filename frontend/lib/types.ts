@@ -378,6 +378,14 @@ export interface NessusImportResult {
 
 // Response shape for POST /engagements/{slug}/findings/import/burp
 // (v0.7.0 — Burp Pro Issue Export XML upload).
+export interface NmapImportResult {
+  imported: Finding[];
+  total_ports: number;
+  skipped_closed: number;
+  skipped_out_of_scope: number;
+  observed_at: string | null;
+}
+
 export interface BurpImportResult {
   imported: Finding[];
   skipped_info: number;

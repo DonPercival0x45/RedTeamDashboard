@@ -756,6 +756,27 @@ export async function importFindingsNessus(
   return response.json() as Promise<import("@/lib/types").NessusImportResult>;
 }
 
+export async function importFindingsNmap(
+  slug: string,
+  file: File,
+): Promise<import("@/lib/types").NmapImportResult> {
+  const form = new FormData();
+  form.append("file", file);
+  const response = await fetch(
+    `${API_BASE_URL}/engagements/${slug}/findings/import/nmap`,
+    {
+      method: "POST",
+      body: form,
+      headers: { ...(await authHeaders()) },
+    },
+  );
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`${response.status} ${response.statusText}: ${text}`);
+  }
+  return response.json() as Promise<import("@/lib/types").NmapImportResult>;
+}
+
 // ---------------------------------------------------------------------------
 // Stored entities (Phase 10 Maltego import target)
 // ---------------------------------------------------------------------------
