@@ -6,8 +6,10 @@ a non-trivial PDF.
 """
 from __future__ import annotations
 
+import sys
 import uuid
 from collections.abc import Iterator
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -23,6 +25,7 @@ from app.models import (
     Engagement,
     EngagementStatus,
     Finding,
+    FindingExclusion,
     FindingPhase,
     FindingStatus,
     Observation,
@@ -159,6 +162,103 @@ def test_report_includes_observations(
     )
     assert resp.status_code == 200
     assert resp.content.startswith(b"%PDF-")
+
+
+def _seed_export_profile_findings(db: Session, engagement_id: uuid.UUID) -> None:
+    db.add_all(
+        [
+            Finding(
+                engagement_id=engagement_id,
+                title="Client-safe finding",
+                severity=Severity.low,
+                details={},
+                source_tool="manual",
+                target="acme.com",
+                phase=FindingPhase.general,
+                status=FindingStatus.validated,
+            ),
+            Finding(
+                engagement_id=engagement_id,
+                title="Internal-only excluded finding",
+                severity=Severity.info,
+                details={},
+                source_tool="manual",
+                target="archive.acme.com",
+                phase=FindingPhase.general,
+                status=FindingStatus.validated,
+                exclusion=FindingExclusion.out_of_scope,
+            ),
+        ]
+    )
+    db.commit()
+
+
+def test_json_export_preserves_internal_default_and_supports_client_profile(
+    client: TestClient, db: Session, engagement: Engagement
+) -> None:
+    _seed_export_profile_findings(db, engagement.id)
+    headers = {"X-User-Id": "report-test@example.com"}
+
+    internal_export = client.get(
+        f"/engagements/{engagement.slug}/export", headers=headers
+    )
+    assert internal_export.status_code == 200, internal_export.text
+    internal_body = internal_export.json()
+    assert internal_body["export_profile"] == "internal"
+    assert internal_body["omit_excluded"] is False
+    assert {row["title"] for row in internal_body["findings"]} == {
+        "Client-safe finding",
+        "Internal-only excluded finding",
+    }
+
+    client_export = client.get(
+        f"/engagements/{engagement.slug}/export?omit_excluded=true",
+        headers=headers,
+    )
+    assert client_export.status_code == 200, client_export.text
+    client_body = client_export.json()
+    assert client_body["export_profile"] == "client"
+    assert client_body["omit_excluded"] is True
+    assert client_body["excluded_count"] == 1
+    assert [row["title"] for row in client_body["findings"]] == [
+        "Client-safe finding"
+    ]
+
+
+def test_pdf_export_defaults_client_safe_and_internal_is_explicit(
+    client: TestClient,
+    db: Session,
+    engagement: Engagement,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed_export_profile_findings(db, engagement.id)
+    rendered_html: list[str] = []
+
+    class FakeHTML:
+        def __init__(self, *, string: str) -> None:
+            rendered_html.append(string)
+
+        def write_pdf(self) -> bytes:
+            return b"%PDF-fake"
+
+    monkeypatch.setitem(sys.modules, "weasyprint", SimpleNamespace(HTML=FakeHTML))
+    headers = {"X-User-Id": "report-test@example.com"}
+
+    client_report = client.get(
+        f"/engagements/{engagement.slug}/report", headers=headers
+    )
+    assert client_report.status_code == 200, client_report.text
+    assert "client-report" in client_report.headers["content-disposition"]
+    assert "Client-safe finding" in rendered_html[-1]
+    assert "Internal-only excluded finding" not in rendered_html[-1]
+
+    internal_report = client.get(
+        f"/engagements/{engagement.slug}/report?omit_excluded=false",
+        headers=headers,
+    )
+    assert internal_report.status_code == 200, internal_report.text
+    assert "internal-report" in internal_report.headers["content-disposition"]
+    assert "Internal-only excluded finding" in rendered_html[-1]
 
 
 def test_report_404_for_unknown_engagement(client: TestClient) -> None:

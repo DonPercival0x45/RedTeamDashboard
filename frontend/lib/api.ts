@@ -749,7 +749,8 @@ export async function downloadEngagementReport(
   slug: string,
   opts: { omitExcluded?: boolean } = {},
 ): Promise<void> {
-  const q = opts.omitExcluded ? "?omit_excluded=true" : "";
+  const omitExcluded = opts.omitExcluded ?? true;
+  const q = `?omit_excluded=${omitExcluded ? "true" : "false"}`;
   const response = await fetch(`${API_BASE_URL}/engagements/${slug}/report${q}`, {
     headers: await authHeaders(),
   });
@@ -1002,7 +1003,8 @@ export async function downloadEngagementExport(
   slug: string,
   opts: { omitExcluded?: boolean } = {},
 ): Promise<void> {
-  const q = opts.omitExcluded ? "?omit_excluded=true" : "";
+  const omitExcluded = opts.omitExcluded ?? true;
+  const q = `?omit_excluded=${omitExcluded ? "true" : "false"}`;
   const data = await request<Record<string, unknown>>(
     `/engagements/${slug}/export${q}`,
   );
@@ -1011,7 +1013,8 @@ export async function downloadEngagementExport(
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `${slug}-export.json`;
+  const profile = omitExcluded ? "client" : "internal";
+  a.download = `${slug}-${profile}-export.json`;
   document.body.appendChild(a);
   a.click();
   a.remove();
