@@ -13,6 +13,7 @@ from typing import Any
 from defusedxml import ElementTree
 
 from app.models import FindingPhase, ScopeItem, Severity
+from app.services.scope_matcher import evaluate_scope_candidates, infer_scope_kind
 
 
 @dataclass
@@ -64,18 +65,11 @@ def _host_identity(host: Any) -> tuple[str, set[str], dict[str, str]]:
 
 
 def _in_scope(known: set[str], scope_items: list[ScopeItem]) -> bool:
-    if not scope_items:
-        return True
-    lowered = {value.lower() for value in known}
-    exclusions = {
-        item.value.lower() for item in scope_items if item.is_exclusion
-    }
-    if lowered & exclusions:
-        return False
-    includes = {
-        item.value.lower() for item in scope_items if not item.is_exclusion
-    }
-    return bool(lowered & includes)
+    return evaluate_scope_candidates(
+        [(value, infer_scope_kind(value)) for value in known],
+        scope_items,
+        empty_scope_allowed=True,
+    ).allowed
 
 
 def parse_nmap_xml(

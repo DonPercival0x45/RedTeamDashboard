@@ -41,7 +41,7 @@ def test_parse_nmap_open_ports_and_metadata() -> None:
     assert item.observed_at is not None
 
 
-def test_parse_nmap_enforces_exact_scope() -> None:
+def test_parse_nmap_drops_host_without_scope_match() -> None:
     allowed = ScopeItem(
         kind=ScopeKind.domain,
         value="other.example.test",
@@ -51,6 +51,18 @@ def test_parse_nmap_enforces_exact_scope() -> None:
     result = parse_nmap_xml(_SAMPLE, scope_items=[allowed])
     assert result.items == []
     assert result.skipped_out_of_scope == 1
+
+
+def test_parse_nmap_accepts_ip_inside_cidr_scope() -> None:
+    allowed = ScopeItem(
+        kind=ScopeKind.cidr,
+        value="192.0.2.0/24",
+        is_exclusion=False,
+        source="defined",
+    )
+    result = parse_nmap_xml(_SAMPLE, scope_items=[allowed])
+    assert result.skipped_out_of_scope == 0
+    assert len(result.items) == 1
 
 
 def test_parse_nmap_rejects_other_xml() -> None:
