@@ -102,6 +102,8 @@ from app.schemas.finding import (
     CorrelateGroup,
     CorrelateResponse,
     EntityRead,
+    FindingBulkUpdate,
+    FindingBulkUpdateResult,
     FindingCreate,
     FindingRead,
     FindingSummaryCreate,
@@ -1562,6 +1564,107 @@ def update_finding(
         session.refresh(finding)
 
     return _finding_to_read(finding)
+
+
+@router.post(
+    "/engagements/{slug}/findings/bulk-update",
+    response_model=FindingBulkUpdateResult,
+)
+def bulk_update_findings(
+    slug: str,
+    body: FindingBulkUpdate,
+    session: DbSession,
+    user: CurrentNonGuestUser,
+) -> FindingBulkUpdateResult:
+    """Apply one analyst-controlled operation to up to 500 findings atomically.
+
+    Missing, cross-engagement, or already-deleted IDs reject the whole request;
+    bulk triage never silently applies to only part of the analyst's selection.
+    Group parents are updated as selected records — child/source rows are not
+    implicitly mutated.
+    """
+    eng = _get_engagement_or_404(session, slug)
+    _reject_flushed(eng)
+    ids = list(dict.fromkeys(body.finding_ids))
+    rows = list(
+        session.execute(
+            select(Finding).where(
+                Finding.engagement_id == eng.id,
+                Finding.id.in_(ids),
+                Finding.deleted_at.is_(None),
+            )
+        ).scalars()
+    )
+    found_ids = {row.id for row in rows}
+    missing = [str(finding_id) for finding_id in ids if finding_id not in found_ids]
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "bulk update requires active findings from one engagement",
+                "missing_or_unavailable_ids": missing,
+            },
+        )
+
+    now = datetime.now(tz=UTC)
+    operation = body.operation
+    audit_value: Any = None
+    for finding in rows:
+        if operation == "set_status":
+            assert body.status is not None  # schema validates matching value
+            finding.status = body.status
+            if body.status is FindingStatus.validated:
+                finding.validated_at = now
+                finding.validated_by = user.id
+            else:
+                finding.validated_at = None
+                finding.validated_by = None
+            audit_value = body.status.value
+        elif operation == "set_exclusion":
+            finding.exclusion = body.exclusion
+            audit_value = body.exclusion.value if body.exclusion else None
+        elif operation == "set_severity":
+            assert body.severity is not None
+            finding.severity = body.severity
+            audit_value = body.severity.value
+        elif operation == "set_phase":
+            assert body.phase is not None
+            finding.phase = body.phase
+            audit_value = body.phase.value
+        elif operation == "add_tags":
+            incoming = body.tags or []
+            finding.tags = list(dict.fromkeys([*(finding.tags or []), *incoming]))[:20]
+            audit_value = incoming
+        elif operation == "remove_tags":
+            removed = set(body.tags or [])
+            finding.tags = [tag for tag in (finding.tags or []) if tag not in removed]
+            audit_value = list(removed)
+
+    session.add(
+        AuditLog(
+            engagement_id=eng.id,
+            actor_type=ActorType.user,
+            actor_id=str(user.id),
+            event_type="findings.bulk_updated",
+            payload={
+                "operation": operation,
+                "value": audit_value,
+                "count": len(rows),
+                "finding_ids": [str(row.id) for row in rows],
+                **({"reason": body.reason} if body.reason else {}),
+            },
+        )
+    )
+    session.commit()
+    for finding in rows:
+        session.refresh(finding)
+    by_id = {finding.id: finding for finding in rows}
+    ordered = [by_id[finding_id] for finding_id in ids]
+    return FindingBulkUpdateResult(
+        operation=operation,
+        affected=len(ordered),
+        findings=[FindingRead.model_validate(_finding_to_read(row)) for row in ordered],
+    )
 
 
 # ---------------------------------------------------------------------------

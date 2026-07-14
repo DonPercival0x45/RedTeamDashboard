@@ -9,10 +9,10 @@ live events without two code paths. The worker stores findings with
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.models import FindingExclusion, FindingPhase, FindingStatus, Severity
 
@@ -91,6 +91,57 @@ class FindingUpdate(BaseModel):
     @classmethod
     def _normalize_tags_field(cls, v: list[str] | None) -> list[str] | None:
         return _normalize_tags(v) if v is not None else None
+
+
+class FindingBulkUpdate(BaseModel):
+    """One transactional analyst operation over a bounded finding set."""
+
+    finding_ids: list[UUID] = Field(min_length=1, max_length=500)
+    operation: Literal[
+        "set_status",
+        "set_exclusion",
+        "set_severity",
+        "set_phase",
+        "add_tags",
+        "remove_tags",
+    ]
+    status: FindingStatus | None = None
+    exclusion: FindingExclusion | None = None
+    severity: Severity | None = None
+    phase: FindingPhase | None = None
+    tags: list[str] | None = None
+    reason: str | None = Field(default=None, max_length=500)
+
+    @field_validator("tags")
+    @classmethod
+    def _normalize_bulk_tags(cls, value: list[str] | None) -> list[str] | None:
+        return _normalize_tags(value) if value is not None else None
+
+    @model_validator(mode="after")
+    def _operation_has_value(self) -> FindingBulkUpdate:
+        if self.operation == "set_exclusion":
+            if "exclusion" not in self.model_fields_set:
+                raise ValueError("operation 'set_exclusion' requires exclusion (null clears)")
+            return self
+        required = {
+            "set_status": self.status,
+            "set_severity": self.severity,
+            "set_phase": self.phase,
+            "add_tags": self.tags,
+            "remove_tags": self.tags,
+        }
+        value = required[self.operation]
+        if value is None:
+            raise ValueError(f"operation {self.operation!r} requires its matching value")
+        if self.operation in {"add_tags", "remove_tags"} and not self.tags:
+            raise ValueError(f"operation {self.operation!r} requires at least one tag")
+        return self
+
+
+class FindingBulkUpdateResult(BaseModel):
+    operation: str
+    affected: int
+    findings: list[FindingRead]
 
 
 class FindingCreate(BaseModel):
