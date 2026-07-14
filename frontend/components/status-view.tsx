@@ -645,7 +645,7 @@ export function StatusView({
                       </Badge>
                     ) : "—"}
                   </td>
-                  <td className="whitespace-nowrap px-3 py-2 text-xs text-muted-foreground">{fmtDate(entity.started_at)}</td>
+                  <td className="whitespace-nowrap px-3 py-2 text-xs text-muted-foreground"><DateTime value={entity.started_at} /></td>
                   <td className="max-w-md px-3 py-2 text-xs text-muted-foreground">{entity.synopsis ?? entity.subtitle ?? "—"}</td>
                 </tr>
               ))}

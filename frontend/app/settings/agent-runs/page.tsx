@@ -252,7 +252,7 @@ export default function AgentRunsPage() {
                   <td className="px-3 py-2 text-xs">{String(entity.log.agent ?? "unknown")}</td>
                   <td className="px-3 py-2"><span className={cn("rounded-full border px-2 py-0.5 text-[10px]", COLOR_BADGE[entity.color])}>{COLOR_LABEL[entity.color]}</span></td>
                   <td className="px-3 py-2 text-xs">{entity.outcome ? OUTCOME_LABEL[entity.outcome] : "—"}</td>
-                  <td className="whitespace-nowrap px-3 py-2 text-xs text-muted-foreground">{fmtDate(entity.started_at)}</td>
+                  <td className="whitespace-nowrap px-3 py-2 text-xs text-muted-foreground"><DateTime value={entity.started_at} /></td>
                   <td className="max-w-md px-3 py-2 text-xs text-muted-foreground">{entity.synopsis ?? "—"}</td>
                 </tr>
               ))}
