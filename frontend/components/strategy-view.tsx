@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { DateTime } from "@/components/date-time";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -135,6 +136,9 @@ export function StrategyView({
   slug: string;
   engagementStatus: EngagementStatus;
 }) {
+  const searchParams = useSearchParams();
+  const requestedWorkItemId = searchParams?.get("workItem") ?? null;
+  const handledWorkLink = useRef<string | null>(null);
   const [data, setData] = useState<LoadState | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
@@ -150,7 +154,7 @@ export function StrategyView({
   const [workObjective, setWorkObjective] = useState("");
   const [workStatusFilter, setWorkStatusFilter] = useState<WorkItemStatus | "all">("all");
   const [workQuery, setWorkQuery] = useState("");
-  const [selectedWorkId, setSelectedWorkId] = useState<string | null>(null);
+  const [selectedWorkId, setSelectedWorkId] = useState<string | null>(requestedWorkItemId);
   const [resolution, setResolution] = useState<WorkItemResolution>("completed");
   const [checkpointNarrative, setCheckpointNarrative] = useState("");
   const [coverageTarget, setCoverageTarget] = useState("");
@@ -211,6 +215,21 @@ export function StrategyView({
         : workItems[0]?.id ?? null,
     );
   }, [slug]);
+
+  useEffect(() => {
+    if (requestedWorkItemId) setSelectedWorkId(requestedWorkItemId);
+  }, [requestedWorkItemId]);
+
+  useEffect(() => {
+    if (!requestedWorkItemId || handledWorkLink.current === requestedWorkItemId || !data?.workItems.some((item) => item.id === requestedWorkItemId)) return;
+    handledWorkLink.current = requestedWorkItemId;
+    const frame = window.requestAnimationFrame(() => {
+      const detail = document.getElementById("work-item-detail");
+      detail?.focus({ preventScroll: true });
+      detail?.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [data?.workItems, requestedWorkItemId]);
 
   useEffect(() => {
     let active = true;
@@ -495,7 +514,9 @@ export function StrategyView({
             ))}
             {visibleWork.length === 0 && <li className="text-sm text-muted-foreground">No matching work.</li>}
           </ul>
-          <WorkDetail item={selectedWork} objectives={data.objectives} slug={slug} readOnly={readOnly} busy={busy} resolution={resolution} setResolution={setResolution} mutate={mutate} />
+          <div id="work-item-detail" tabIndex={-1}>
+            <WorkDetail item={selectedWork} objectives={data.objectives} slug={slug} readOnly={readOnly} busy={busy} resolution={resolution} setResolution={setResolution} mutate={mutate} />
+          </div>
         </div>
       </section>
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
@@ -27,7 +27,6 @@ import {
   listFindings,
   listObservationsForFinding,
   listScope,
-  listTasks,
   loadAttachmentBlob,
   rewriteFindingSummary,
   triageFinding,
@@ -49,7 +48,9 @@ import {
   usePromoteFindingContextMutation,
   qk,
   useFindingChat,
+  useTasks,
 } from "@/lib/hooks";
+import { listWorkItems } from "@/lib/strategy-api";
 import { cn } from "@/lib/utils";
 import { LoaderOverlay } from "@/components/loader";
 import { GroupedItemsView, extractItems } from "@/components/grouped-items-view";
@@ -68,6 +69,7 @@ import type {
   Severity,
   Task,
 } from "@/lib/types";
+import type { WorkItem } from "@/lib/strategy-types";
 
 const SEVERITY_CLASS: Record<Severity, string> = {
   critical: "border-rose-500/50 bg-rose-500/15 text-rose-700 dark:text-rose-200",
@@ -232,7 +234,7 @@ function ActivityRail({ entries }: { entries: FindingActivityEntry[] }) {
   );
 }
 
-type WorkbenchTab = "notes" | "ai" | "evidence" | "details" | "tools";
+type WorkbenchTab = "notes" | "ai" | "evidence" | "details" | "tasks" | "tools";
 
 const WORKBENCH_TABS: Array<{
   id: WorkbenchTab;
@@ -258,6 +260,11 @@ const WORKBENCH_TABS: Array<{
     id: "details",
     label: "Details",
     description: "Raw payload, timestamps, and normalized finding metadata.",
+  },
+  {
+    id: "tasks",
+    label: "Tasks",
+    description: "Linked strategic work and Tactical execution history for this finding.",
   },
   {
     id: "tools",
@@ -373,6 +380,7 @@ function FindingWorkbench({
             <DetailsPanel finding={finding} slug={slug} />
           </div>
         )}
+        {tab === "tasks" && <FindingTasksPanel findingId={finding.id} slug={slug} />}
         {tab === "tools" && <AgentToolsPanel findingId={finding.id} slug={slug} />}
       </div>
     </section>
@@ -1435,25 +1443,101 @@ function openToolActions(messages: FindingChatMessage[]) {
   );
 }
 
+function FindingTasksPanel({ findingId, slug }: { findingId: string; slug: string | null }) {
+  const [workItems, setWorkItems] = useState<WorkItem[] | null>(null);
+  const [workError, setWorkError] = useState<string | null>(null);
+  const { data: tasks, isLoading: tasksLoading, error: tasksError } = useTasks(slug ?? "");
+
+  useEffect(() => {
+    if (!slug) {
+      setWorkItems([]);
+      return;
+    }
+    let cancelled = false;
+    setWorkItems(null);
+    setWorkError(null);
+    listWorkItems(slug, { finding_id: findingId, limit: 500 })
+      .then((rows) => {
+        if (!cancelled) setWorkItems(rows);
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setWorkItems([]);
+          setWorkError(error instanceof Error ? error.message : String(error));
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [findingId, slug]);
+
+  const findingTasks = (tasks ?? []).filter((task) => task.finding_id === findingId);
+
+  return (
+    <div className="space-y-4">
+      <section className="rounded-lg border border-violet-500/30 bg-violet-500/5 p-4">
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div>
+            <h2 className="text-sm font-medium">Linked engagement work</h2>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Durable objectives and analyst/agent coordination linked to this finding. WorkItems are planning records; Tactical Tasks remain the execution boundary below.
+            </p>
+          </div>
+          {slug && (
+            <Link href={`/e?slug=${encodeURIComponent(slug)}&view=strategy`} className="text-xs text-violet-700 underline dark:text-violet-200">
+              Open Strategy
+            </Link>
+          )}
+        </div>
+        {workItems === null ? (
+          <p className="mt-3 text-xs text-muted-foreground">Loading linked work…</p>
+        ) : workError ? (
+          <p className="mt-3 rounded border border-destructive/30 bg-destructive/5 p-2 text-xs text-destructive">{workError}</p>
+        ) : workItems.length === 0 ? (
+          <p className="mt-3 rounded border border-dashed border-border p-3 text-xs text-muted-foreground">No WorkItems are linked to this finding.</p>
+        ) : (
+          <ul className="mt-3 space-y-2">
+            {workItems.map((item) => {
+              const relationship = item.finding_links.find((link) => link.finding_id === findingId)?.relationship ?? "related";
+              return (
+                <li key={item.id} className="rounded border border-border bg-background p-3 text-xs">
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div>
+                      {slug ? (
+                        <Link className="font-medium underline decoration-muted-foreground/40 underline-offset-2" href={`/e?slug=${encodeURIComponent(slug)}&view=strategy&workItem=${encodeURIComponent(item.id)}`}>
+                          {item.title}
+                        </Link>
+                      ) : (
+                        <p className="font-medium">{item.title}</p>
+                      )}
+                      <p className="mt-1 text-[10px] text-muted-foreground">{relationship.replaceAll("_", " ")} · {item.executor_type.replaceAll("_", " ")} · {item.priority}</p>
+                    </div>
+                    <Badge variant="outline" className="text-[10px] uppercase">{item.status.replaceAll("_", " ")}</Badge>
+                  </div>
+                  {item.description && <p className="mt-2 text-muted-foreground">{item.description}</p>}
+                  {item.blocked_reason && <p className="mt-2 text-amber-700 dark:text-amber-200">Blocked: {item.blocked_reason}</p>}
+                  {item.resolution_outcome && <p className="mt-2 text-emerald-700 dark:text-emerald-200">Resolution: {item.resolution_outcome.replaceAll("_", " ")}{item.resolution_note ? ` — ${item.resolution_note}` : ""}</p>}
+                  <p className="mt-2 font-mono text-[10px] text-muted-foreground">work item {item.id}</p>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </section>
+
+      {tasksError && <p className="rounded border border-destructive/30 bg-destructive/5 p-2 text-xs text-destructive">{tasksError instanceof Error ? tasksError.message : "Execution tasks could not be loaded."}</p>}
+      <ActionHistoryPanel tasks={findingTasks} loading={tasksLoading} slug={slug} />
+    </div>
+  );
+}
+
 function AgentToolsPanel({ findingId, slug }: { findingId: string; slug: string | null }) {
   const { data: chat } = useFindingChat(findingId);
   const acceptAction = useAcceptFindingChatActionMutation(findingId);
   const denyAction = useDenyFindingChatActionMutation(findingId);
   const proposedActions = openToolActions(chat?.messages ?? []);
-  const [tasks, setTasks] = useState<Task[] | null>(null);
-
-  const refreshTasks = useCallback(() => {
-    if (!slug) {
-      setTasks([]);
-      return;
-    }
-    listTasks(slug).then(setTasks).catch(() => setTasks([]));
-  }, [slug]);
-
-  useEffect(() => {
-    refreshTasks();
-  }, [refreshTasks, findingId]);
-
+  const qc = useQueryClient();
+  const { data: tasks, isLoading: tasksLoading } = useTasks(slug ?? "");
   const findingTasks = (tasks ?? []).filter((task) => task.finding_id === findingId);
 
   return (
@@ -1487,7 +1571,7 @@ function AgentToolsPanel({ findingId, slug }: { findingId: string; slug: string 
               onAccept={() =>
                 acceptAction.mutate(
                   { messageId, actionIndex: index },
-                  { onSuccess: refreshTasks },
+                  { onSuccess: () => void qc.invalidateQueries({ queryKey: qk.tasks(slug ?? "") }) },
                 )
               }
               accepting={acceptAction.isPending}
@@ -1507,7 +1591,7 @@ function AgentToolsPanel({ findingId, slug }: { findingId: string; slug: string 
           </p>
         )}
       </div>
-      <ActionHistoryPanel tasks={findingTasks} loading={tasks === null} />
+      <ActionHistoryPanel tasks={findingTasks} loading={tasksLoading} slug={slug} />
     </section>
   );
 }
@@ -1515,9 +1599,11 @@ function AgentToolsPanel({ findingId, slug }: { findingId: string; slug: string 
 function ActionHistoryPanel({
   tasks,
   loading,
+  slug,
 }: {
   tasks: Task[];
   loading: boolean;
+  slug: string | null;
 }) {
   return (
     <section className="rounded-lg border border-border bg-card/40 p-4">
@@ -1545,7 +1631,16 @@ function ActionHistoryPanel({
                 {String(task.payload.tool ?? "?")} → {String(task.payload.target ?? "?")}
               </p>
               <div className="mt-2 grid grid-cols-1 gap-2 text-[10px] text-muted-foreground sm:grid-cols-3">
-                <span>run: {task.run_id ?? "not dispatched"}</span>
+                <span>
+                  run:{" "}
+                  {task.run_id && slug ? (
+                    <Link className="font-mono underline" href={`/e?slug=${encodeURIComponent(slug)}&view=status&run=${encodeURIComponent(task.run_id)}`}>
+                      {task.run_id}
+                    </Link>
+                  ) : (
+                    "not dispatched"
+                  )}
+                </span>
                 <span>sent: <DateTime value={task.dispatched_at} /></span>
                 <span>done: <DateTime value={task.completed_at} /></span>
               </div>
@@ -1576,7 +1671,7 @@ function ChatRail({
   const acceptAction = useAcceptFindingChatActionMutation(findingId);
   const denyAction = useDenyFindingChatActionMutation(findingId);
   const { data: findings } = useFindings(slug ?? "");
-  const [tasks, setTasks] = useState<Task[] | null>(null);
+  const { data: tasks } = useTasks(slug ?? "");
   const messages = chat?.messages ?? [];
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -1613,23 +1708,6 @@ function ChatRail({
     }
     return s;
   };
-
-  useEffect(() => {
-    if (!slug) {
-      setTasks([]);
-      return;
-    }
-    listTasks(slug)
-      .then(setTasks)
-      .catch(() => setTasks([]));
-    const id = window.setInterval(() => {
-      listTasks(slug)
-        .then(setTasks)
-        .catch(() => undefined);
-    }, 4000);
-    return () => window.clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [slug]);
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
