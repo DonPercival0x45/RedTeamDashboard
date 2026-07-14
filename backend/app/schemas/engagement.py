@@ -5,7 +5,7 @@ from datetime import date, datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.models import EngagementStatus, EngagementTimeFrame, ScopeKind
 
@@ -23,6 +23,23 @@ LLMProvider = Literal[
     "deepseek",
     "custom",
 ]
+
+
+class InitialScopeItemCreate(BaseModel):
+    """Client-defined scope staged with a new engagement."""
+
+    kind: ScopeKind
+    value: str = Field(min_length=1, max_length=500)
+    is_exclusion: bool = False
+    note: str | None = Field(default=None, max_length=500)
+
+    @field_validator("value")
+    @classmethod
+    def _strip_nonblank_value(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("initial scope value cannot be blank")
+        return normalized
 
 
 class EngagementCreate(BaseModel):
@@ -44,6 +61,13 @@ class EngagementCreate(BaseModel):
     )
     start_date: date | None = None
     end_date: date | None = None
+    initial_scope: list[InitialScopeItemCreate] = Field(
+        default_factory=list,
+        max_length=1000,
+        description=(
+            "Optional client-defined scope persisted atomically with the engagement."
+        ),
+    )
 
     @model_validator(mode="after")
     def _check_custom_dates(self) -> EngagementCreate:
@@ -54,6 +78,17 @@ class EngagementCreate(BaseModel):
                 )
             if self.end_date < self.start_date:
                 raise ValueError("end_date cannot be before start_date")
+
+        seen: set[tuple[ScopeKind, str, bool]] = set()
+        for item in self.initial_scope:
+            key = (item.kind, item.value, item.is_exclusion)
+            if key in seen:
+                disposition = "exclusion" if item.is_exclusion else "included target"
+                raise ValueError(
+                    f"duplicate initial_scope item: {item.kind.value}:{item.value} "
+                    f"already exists as an {disposition}"
+                )
+            seen.add(key)
         return self
 
 

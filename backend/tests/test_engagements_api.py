@@ -14,12 +14,12 @@ from typing import Any
 import pytest
 import redis as redis_lib
 from fastapi.testclient import TestClient
-from sqlalchemy import select, text
+from sqlalchemy import event, select, text
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.main import app
-from app.models import Engagement, Finding, Severity
+from app.models import AuditLog, Engagement, Finding, ScopeItem, Severity
 from app.runs.streams import inbound_stream, outbound_stream
 
 # ---------------------------------------------------------------------------
@@ -113,6 +113,169 @@ def test_create_with_auto_generated_slug(
     assert body["name"] == name
     assert body["status"] == "active"
     assert body["created_by"] is not None
+
+
+def test_create_with_initial_scope_is_atomic_and_audited(
+    client: TestClient,
+    db: Session,
+    cleanup_slugs: list[str],
+) -> None:
+    name = f"Scoped setup {uuid.uuid4().hex[:6]}"
+    response = client.post(
+        "/engagements",
+        json={
+            "name": name,
+            "initial_scope": [
+                {"kind": "domain", "value": "example.test"},
+                {
+                    "kind": "domain",
+                    "value": "admin.example.test",
+                    "is_exclusion": True,
+                    "note": "Client exclusion",
+                },
+            ],
+        },
+        headers=_headers(),
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    cleanup_slugs.append(body["slug"])
+    assert body["scope_count"] == 1
+    assert body["exclusion_count"] == 1
+
+    engagement = db.execute(
+        select(Engagement).where(Engagement.slug == body["slug"])
+    ).scalar_one()
+    scope = list(
+        db.execute(
+            select(ScopeItem).where(ScopeItem.engagement_id == engagement.id)
+        ).scalars()
+    )
+    assert {(row.value, row.is_exclusion) for row in scope} == {
+        ("example.test", False),
+        ("admin.example.test", True),
+    }
+    assert all(row.source == "defined" for row in scope)
+    audit = db.execute(
+        select(AuditLog).where(
+            AuditLog.engagement_id == engagement.id,
+            AuditLog.event_type == "engagement.created",
+        )
+    ).scalar_one()
+    assert audit.payload["initial_scope_count"] == 2
+    assert audit.payload["include_count"] == 1
+    assert audit.payload["exclusion_count"] == 1
+
+
+def test_duplicate_initial_scope_rejects_entire_setup(
+    client: TestClient, db: Session
+) -> None:
+    name = f"Duplicate setup {uuid.uuid4().hex[:6]}"
+    response = client.post(
+        "/engagements",
+        json={
+            "name": name,
+            "initial_scope": [
+                {"kind": "domain", "value": "example.test"},
+                {"kind": "domain", "value": "example.test"},
+            ],
+        },
+        headers=_headers(),
+    )
+    assert response.status_code == 422, response.text
+    assert "domain:example.test" in response.text
+    assert db.execute(
+        select(Engagement.id).where(Engagement.name == name)
+    ).scalar_one_or_none() is None
+
+
+def test_include_and_exclusion_for_same_initial_value_are_distinct(
+    client: TestClient, db: Session, cleanup_slugs: list[str]
+) -> None:
+    name = f"Carved setup {uuid.uuid4().hex[:6]}"
+    response = client.post(
+        "/engagements",
+        json={
+            "name": name,
+            "initial_scope": [
+                {"kind": "domain", "value": "example.test"},
+                {
+                    "kind": "domain",
+                    "value": "example.test",
+                    "is_exclusion": True,
+                },
+            ],
+        },
+        headers=_headers(),
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    cleanup_slugs.append(body["slug"])
+    assert body["scope_count"] == 1
+    assert body["exclusion_count"] == 1
+    engagement = db.execute(
+        select(Engagement).where(Engagement.slug == body["slug"])
+    ).scalar_one()
+    rows = list(
+        db.execute(
+            select(ScopeItem).where(ScopeItem.engagement_id == engagement.id)
+        ).scalars()
+    )
+    assert {row.is_exclusion for row in rows} == {False, True}
+
+
+def test_blank_initial_scope_rejects_entire_setup(
+    client: TestClient, db: Session
+) -> None:
+    name = f"Blank setup {uuid.uuid4().hex[:6]}"
+    response = client.post(
+        "/engagements",
+        json={
+            "name": name,
+            "initial_scope": [{"kind": "domain", "value": "   "}],
+        },
+        headers=_headers(),
+    )
+    assert response.status_code == 422, response.text
+    assert "initial scope value cannot be blank" in response.text
+    assert db.execute(
+        select(Engagement.id).where(Engagement.name == name)
+    ).scalar_one_or_none() is None
+
+
+def test_scope_insert_failure_rolls_back_engagement_and_audit(
+    client: TestClient, db: Session
+) -> None:
+    name = f"Rollback setup {uuid.uuid4().hex[:6]}"
+
+    def fail_scope_insert(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("injected scope insert failure")
+
+    event.listen(ScopeItem, "before_insert", fail_scope_insert)
+    try:
+        with pytest.raises(RuntimeError, match="injected scope insert failure"):
+            client.post(
+                "/engagements",
+                json={
+                    "name": name,
+                    "initial_scope": [
+                        {"kind": "domain", "value": "example.test"},
+                    ],
+                },
+                headers=_headers(),
+            )
+    finally:
+        event.remove(ScopeItem, "before_insert", fail_scope_insert)
+
+    assert db.execute(
+        select(Engagement.id).where(Engagement.name == name)
+    ).scalar_one_or_none() is None
+    assert db.execute(
+        select(AuditLog.id).where(
+            AuditLog.event_type == "engagement.created",
+            AuditLog.payload["name"].astext == name,
+        )
+    ).scalar_one_or_none() is None
 
 
 def test_create_with_description_round_trips(
