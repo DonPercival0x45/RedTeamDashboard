@@ -186,34 +186,6 @@ function FindingPane({ id, slug }: { id: string; slug: string | null }) {
         )}
       </div>
 
-      {/* grouped hits — visible on every tab when the finding has items
-          (subdomains, open ports, live URLs, etc.). Uses the shared
-          GroupedItemsView which auto-picks a primary field (subdomain /
-          url / host / ...) and an optional group-by column (source /
-          service / status_code / ...) so tool output stays readable. */}
-      {findingHasItems(finding) && (
-        <section className="mt-5 rounded-lg border border-border bg-card p-5">
-          <GroupedItemsView
-            items={extractItems(finding.data)}
-            headerLabel="Items"
-            headerNote={
-              finding.group_key
-                ? "Every re-run of this tool against the same target folds here — hits are deduped by their natural key."
-                : undefined
-            }
-            maxHeight="60vh"
-          />
-          {finding.group_key && (
-            <p
-              className="mt-2 truncate font-mono text-[10px] text-muted-foreground"
-              title="Grouping key"
-            >
-              {finding.group_key}
-            </p>
-          )}
-        </section>
-      )}
-
       {/* two-column body: workbench left, activity rail right */}
       <div className="mt-5 grid grid-cols-1 gap-5 xl:grid-cols-4">
         <div className="xl:col-span-3">
@@ -349,7 +321,34 @@ function FindingWorkbench({
         </div>
       </div>
 
-      <div className="p-4">
+      <div className="space-y-4 p-4">
+        {/* Grouped hits — visible on every tab when the finding has
+            items (subdomains, open ports, live URLs, Nessus plugin
+            hits, etc.). Sits above the tab content so it's part of
+            the workbench, not a separate section above it. */}
+        {findingHasItems(finding) && (
+          <div className="rounded-md border border-border bg-background/40 p-3">
+            <GroupedItemsView
+              items={extractItems(finding.data)}
+              headerLabel="Items"
+              headerNote={
+                finding.group_key
+                  ? "Every re-run of this tool against the same target folds here — hits are deduped by their natural key."
+                  : undefined
+              }
+              maxHeight="60vh"
+            />
+            {finding.group_key && (
+              <p
+                className="mt-2 truncate font-mono text-[10px] text-muted-foreground"
+                title={finding.group_key}
+              >
+                {finding.group_key}
+              </p>
+            )}
+          </div>
+        )}
+
         {tab === "ai" && <ChatRail findingId={finding.id} slug={slug} />}
         {tab === "notes" && (
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">

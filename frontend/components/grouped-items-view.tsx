@@ -129,8 +129,11 @@ function detectStructure(items: Item[], columns: string[]): {
   return { primary, groupBy, extras };
 }
 
-// One item rendered as a single row: primary value + a comma-separated
-// extras tail. Dense, monospace for machine-readable values.
+// One item rendered as a stacked block: primary value on the first
+// line, then a labelled row per extras field. Long values wrap
+// naturally so the card grows downward instead of overflowing the
+// container (matters for Nessus items where description/solution can
+// be paragraph-length).
 function ItemRow({ item, primary, extras }: {
   item: Item;
   primary: string | null;
@@ -142,24 +145,28 @@ function ItemRow({ item, primary, extras }: {
     .filter(([, v]) => v !== null && v !== undefined && v !== "");
 
   return (
-    <li className="flex flex-col gap-0.5 rounded border border-border/60 bg-background/60 px-2 py-1.5">
+    <li className="flex min-w-0 flex-col gap-1 overflow-hidden rounded border border-border/60 bg-background/60 px-2 py-1.5">
       {primaryValue !== null && (
         <span
-          className="truncate font-mono text-xs text-foreground"
+          className="break-words font-mono text-xs text-foreground"
           title={primaryValue}
         >
           {primaryValue}
         </span>
       )}
       {extraPairs.length > 0 && (
-        <span className="flex flex-wrap gap-x-2 gap-y-0.5 text-[10px] text-muted-foreground">
+        <dl className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 text-[10px] text-muted-foreground">
           {extraPairs.map(([k, v]) => (
-            <span key={k} className="whitespace-nowrap">
-              <span className="text-muted-foreground/70">{k}:</span>{" "}
-              <span className="font-mono">{toDisplay(v)}</span>
-            </span>
+            <div key={k} className="contents">
+              <dt className="whitespace-nowrap text-muted-foreground/70">
+                {k}:
+              </dt>
+              <dd className="min-w-0 break-words font-mono">
+                {toDisplay(v)}
+              </dd>
+            </div>
           ))}
-        </span>
+        </dl>
       )}
     </li>
   );
@@ -276,7 +283,7 @@ export function GroupedItemsView({
         <p className="text-[11px] text-muted-foreground/80">{headerNote}</p>
       )}
       <div
-        className="space-y-2 overflow-y-auto pr-1"
+        className="space-y-2 overflow-x-hidden overflow-y-auto pr-1"
         style={{ maxHeight }}
       >
         {groups ? (
