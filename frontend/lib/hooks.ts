@@ -50,6 +50,7 @@ import {
   getGlobalAgentRunSteps,
   getStatusSteps,
   getMe,
+  getReportReadiness,
   listGlobalAgentRuns,
   listAdminUsers,
   listAuthorizations,
@@ -111,6 +112,7 @@ export const qk = {
     ["authorizations", engagementId, { active }] as const,
   engagements: () => ["engagements"] as const,
   engagement: (slug: string) => ["engagement", slug] as const,
+  reportReadiness: (slug: string) => ["report-readiness", slug] as const,
   findings: (slug: string) => ["findings", slug] as const,
   finding: (id: string) => ["finding", id] as const,
   findingActivity: (id: string) => ["finding-activity", id] as const,
@@ -894,6 +896,13 @@ export function useGlobalAgentRunSteps(
     queryFn: () => getGlobalAgentRunSteps(executionId as string),
     enabled,
     refetchInterval: opts.liveTerminal ? false : 3_000,
+  });
+}
+
+export function useReportReadiness(slug: string) {
+  return useQuery({
+    queryKey: qk.reportReadiness(slug),
+    queryFn: () => getReportReadiness(slug),
   });
 }
 

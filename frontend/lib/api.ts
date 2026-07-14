@@ -676,8 +676,16 @@ export function getEngagementCosts(slug: string): Promise<CostRollup> {
 }
 
 // ---------------------------------------------------------------------------
-// Reports (PDF export)
+// Reports (readiness + PDF export)
 // ---------------------------------------------------------------------------
+
+export function getReportReadiness(
+  slug: string,
+): Promise<import("@/lib/types").ReportReadiness> {
+  return request<import("@/lib/types").ReportReadiness>(
+    `/engagements/${slug}/report/readiness`,
+  );
+}
 
 export async function downloadEngagementReport(
   slug: string,
