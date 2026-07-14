@@ -25,7 +25,17 @@ _IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 _CIDR_RE = re.compile(r"^(?:\d{1,3}\.){3}\d{1,3}/\d{1,2}$")
 _CIDR_FIND = re.compile(r"(?:\d{1,3}\.){3}\d{1,3}/\d{1,2}")
 _DOMAIN_FIND = re.compile(r"\b(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}\b")
-_HOST_KEYS = {"subdomains": "subdomain", "domains": "domain", "hosts": "host"}
+# Plural keys → typed list-of-strings. Singular keys → one entry per dict.
+# Singular forms exist so finding.details['items'][*].subdomain etc. from
+# subfinder/httpx/nmap flow into Discovered Context as promotable indicators.
+_HOST_KEYS_PLURAL = {"subdomains": "subdomain", "domains": "domain", "hosts": "host"}
+_HOST_KEYS_SINGULAR = {
+    "subdomain": "subdomain",
+    "domain": "domain",
+    "hostname": "host",
+    "fqdn": "domain",
+    "url": "url",
+}
 
 _SEVERITY_RANK: dict[Severity, int] = {
     Severity.critical: 4,
@@ -67,10 +77,12 @@ def _walk(value: Any, sink: list[tuple[EntityType, str]]) -> None:
         return
     if isinstance(value, dict):
         for k, v in value.items():
-            if k in _HOST_KEYS and isinstance(v, list):
+            if k in _HOST_KEYS_PLURAL and isinstance(v, list):
                 for item in v:
                     if isinstance(item, str) and item.strip():
-                        sink.append((_HOST_KEYS[k], item.strip().lower()))
+                        sink.append((_HOST_KEYS_PLURAL[k], item.strip().lower()))
+            if k in _HOST_KEYS_SINGULAR and isinstance(v, str) and v.strip():
+                sink.append((_HOST_KEYS_SINGULAR[k], v.strip().lower()))
             if k == "host" and isinstance(v, str) and v.strip():
                 host = v.strip()
                 kind: EntityType = "ip" if _IPV4_RE.fullmatch(host) else "host"

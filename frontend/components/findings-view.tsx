@@ -7,6 +7,7 @@ import { qk, useMe } from "@/lib/hooks";
 import { Ban, Layers, Link2, Maximize2, Plus, Search, Sparkles, Trash2, Upload, Wand2, Wrench, X } from "lucide-react";
 import { DateTime } from "@/components/date-time";
 import { LoaderOverlay } from "@/components/loader";
+import { GroupedItemsView, extractItems } from "@/components/grouped-items-view";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -1156,92 +1157,32 @@ function FindingSlideOver({
   );
 }
 
-// ── v1.4.0 (part 2): Grouped items panel ───────────────────────────────────
+// ── v1.4.0 (part 2, redesigned in v1.34.0): Grouped items panel ────────────
 
 // Rendered inside the slide-over when a finding has data.items[] — one
-// row per hit (subdomain, open port, affected URL, etc.). Falls back to
-// null when the finding is un-grouped so the old JSON dump is the only
-// detail view for legacy rows.
+// card per hit (subdomain, open port, affected URL, etc.). Uses the
+// shared <GroupedItemsView> which auto-detects a primary field and an
+// optional low-cardinality group-by column (source, service, ...) so
+// dense tool output stays readable in the narrow slide-over.
 function GroupedItemsPanel({ finding }: { finding: Finding }) {
-  const items = Array.isArray((finding.data as { items?: unknown }).items)
-    ? ((finding.data as { items: unknown[] }).items as Record<string, unknown>[])
-    : null;
-  if (!items || items.length === 0) return null;
-
-  // Column keys = union of every item's keys, minus internal-only ones.
-  // Preserves order-of-first-appearance for stable column ordering.
-  const columns: string[] = [];
-  const seen = new Set<string>();
-  for (const it of items) {
-    if (!it || typeof it !== "object") continue;
-    for (const k of Object.keys(it)) {
-      if (seen.has(k)) continue;
-      if (k === "first_seen_at") continue;
-      seen.add(k);
-      columns.push(k);
-    }
-  }
-
+  const items = extractItems(finding.data);
+  if (items.length === 0) return null;
   return (
-    <div className="mt-5">
-      <div className="flex items-center justify-between">
-        <h3 className="text-sm font-medium">
-          <Layers className="mr-1.5 inline h-3.5 w-3.5 -translate-y-0.5" />
-          Items ({items.length})
-        </h3>
-        {finding.group_key && (
-          <span
-            className="font-mono text-[10px] text-muted-foreground"
-            title="Grouping key"
-          >
-            {finding.group_key}
-          </span>
-        )}
-      </div>
-      <p className="mt-0.5 text-[11px] text-muted-foreground/80">
-        Every re-run of this tool against the same target folds into this
-        row. Individual hits are deduped by their natural key.
-      </p>
-      <div className="mt-2 max-h-64 overflow-auto rounded-md border border-border">
-        <table className="w-full border-collapse text-xs">
-          <thead className="sticky top-0 bg-popover">
-            <tr className="border-b border-border text-left">
-              {columns.map((c) => (
-                <th
-                  key={c}
-                  className="px-2 py-1.5 font-medium text-muted-foreground"
-                >
-                  {c}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {items.map((it, idx) => (
-              <tr
-                key={idx}
-                className="border-b border-border/40 last:border-0"
-              >
-                {columns.map((c) => {
-                  const v = it[c];
-                  return (
-                    <td
-                      key={c}
-                      className="px-2 py-1.5 font-mono text-[11px] text-foreground/90"
-                    >
-                      {v === null || v === undefined
-                        ? "—"
-                        : typeof v === "object"
-                          ? JSON.stringify(v)
-                          : String(v)}
-                    </td>
-                  );
-                })}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+    <div className="mt-4">
+      <GroupedItemsView
+        items={items}
+        headerLabel="Items"
+        headerNote="Every re-run against the same target folds here — hits are deduped by their natural key."
+        maxHeight="calc(100vh - 22rem)"
+      />
+      {finding.group_key && (
+        <p
+          className="mt-1 truncate font-mono text-[10px] text-muted-foreground"
+          title="Grouping key"
+        >
+          {finding.group_key}
+        </p>
+      )}
     </div>
   );
 }

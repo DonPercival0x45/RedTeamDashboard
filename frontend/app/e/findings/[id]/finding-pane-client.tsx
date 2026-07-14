@@ -52,6 +52,7 @@ import {
 } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
 import { LoaderOverlay } from "@/components/loader";
+import { GroupedItemsView, extractItems } from "@/components/grouped-items-view";
 import type {
   Attachment,
   Finding,
@@ -186,12 +187,30 @@ function FindingPane({ id, slug }: { id: string; slug: string | null }) {
       </div>
 
       {/* grouped hits — visible on every tab when the finding has items
-          (subdomains, open ports, live URLs, etc.). The full sortable
-          version lives in Details tab; this is the always-on primary
-          view because for tool findings the items ARE the finding. */}
+          (subdomains, open ports, live URLs, etc.). Uses the shared
+          GroupedItemsView which auto-picks a primary field (subdomain /
+          url / host / ...) and an optional group-by column (source /
+          service / status_code / ...) so tool output stays readable. */}
       {findingHasItems(finding) && (
         <section className="mt-5 rounded-lg border border-border bg-card p-5">
-          <GroupedItemsTable finding={finding} />
+          <GroupedItemsView
+            items={extractItems(finding.data)}
+            headerLabel="Items"
+            headerNote={
+              finding.group_key
+                ? "Every re-run of this tool against the same target folds here — hits are deduped by their natural key."
+                : undefined
+            }
+            maxHeight="60vh"
+          />
+          {finding.group_key && (
+            <p
+              className="mt-2 truncate font-mono text-[10px] text-muted-foreground"
+              title="Grouping key"
+            >
+              {finding.group_key}
+            </p>
+          )}
         </section>
       )}
 
@@ -219,7 +238,7 @@ function ActivityRail({ entries }: { entries: FindingActivityEntry[] }) {
   // stretch the page. max-h leaves 1.5rem top clearance (matches `top-6`)
   // and 1.5rem bottom breathing room.
   return (
-    <div className="sticky top-6 flex max-h-[calc(100vh-3rem)] flex-col rounded-lg border border-border bg-card/40 p-4">
+    <div className="sticky top-16 flex max-h-[calc(100vh-5rem)] flex-col rounded-lg border border-border bg-card/40 p-4">
       <h2 className="mb-3 flex items-center gap-2 text-sm font-medium">
         <Activity className="h-4 w-4 text-muted-foreground" />
         Activity
@@ -1025,68 +1044,112 @@ function ContextPromotionPanel({ finding, slug }: { finding: Finding; slug: stri
           No structured indicators were extracted. Add one manually below.
         </p>
       ) : (
-        <div className="mt-3 overflow-x-auto rounded-md border border-border bg-background">
-          <table className="w-full text-xs">
-            <thead>
-              <tr className="border-b border-border text-left text-[10px] uppercase tracking-wide text-muted-foreground">
-                <th className="w-8 px-2 py-2" />
-                <th className="px-2 py-2">Value</th>
-                <th className="px-2 py-2">Entity</th>
-                <th className="px-2 py-2">Scope</th>
-                <th className="px-2 py-2 text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(candidates ?? []).map((row) => {
-                const key = keyFor(row.type, row.value);
-                return (
-                  <tr key={key} className="border-b border-border/50 last:border-0">
-                    <td className="px-2 py-2">
-                      <input
-                        type="checkbox"
-                        checked={selected.has(key)}
-                        onChange={(event) => setSelected((previous) => {
-                          const next = new Set(previous);
-                          if (event.target.checked) next.add(key); else next.delete(key);
-                          return next;
-                        })}
-                      />
-                    </td>
-                    <td className="px-2 py-2">
-                      <p className="font-mono">{row.value}</p>
-                      <p className="text-[10px] text-muted-foreground">{row.type}</p>
-                    </td>
-                    <td className="px-2 py-2">{row.entity_id ? "Saved" : "Not saved"}</td>
-                    <td className="px-2 py-2">
-                      {row.scope_item_id ? row.scope_source ?? "defined" : row.scope_compatible ? "Unknown" : "N/A"}
-                    </td>
-                    <td className="px-2 py-2">
-                      <div className="flex justify-end gap-1">
-                        {!row.entity_id && (
-                          <SmallButton disabled={promote.isPending} onClick={() => submit([{
-                            type: row.type, value: row.value, add_to_entities: true, add_to_scope: false,
-                          }])}>Entity</SmallButton>
-                        )}
-                        {row.scope_compatible && !row.scope_item_id && (
-                          <SmallButton disabled={promote.isPending} onClick={() => submit([{
-                            type: row.type, value: row.value, add_to_entities: false, add_to_scope: true,
-                          }])}>Scope</SmallButton>
-                        )}
-                        {row.scope_compatible && !row.entity_id && !row.scope_item_id && (
-                          <SmallButton disabled={promote.isPending} onClick={() => submit([{
-                            type: row.type,
-                            value: row.value,
-                            add_to_entities: true,
-                            add_to_scope: true,
-                          }])}>Both</SmallButton>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+        // Grouped by type (subdomain / domain / url / ip / ...) so a
+        // finding that yielded 30 subdomains reads as one section, not
+        // 30 rows. Each candidate is a compact card with checkbox +
+        // saved/scope badges + inline promote buttons.
+        <div className="mt-3 max-h-[60vh] space-y-2 overflow-y-auto pr-1">
+          {Object.entries(
+            (candidates ?? []).reduce<Record<string, typeof candidates>>((acc, row) => {
+              (acc[row.type] ||= []).push(row);
+              return acc;
+            }, {}),
+          )
+            .sort(([, a], [, b]) => (b?.length ?? 0) - (a?.length ?? 0))
+            .map(([type, rows]) => (
+              <section
+                key={type}
+                className="rounded-md border border-border/70 bg-background"
+              >
+                <header className="flex items-center justify-between gap-2 border-b border-border/60 px-2 py-1.5 text-[11px]">
+                  <span className="font-medium">
+                    {type}
+                    <span className="ml-1 text-[10px] text-muted-foreground">
+                      ({rows?.length ?? 0})
+                    </span>
+                  </span>
+                </header>
+                <ul className="divide-y divide-border/40">
+                  {(rows ?? []).map((row) => {
+                    const key = keyFor(row.type, row.value);
+                    const savedEntity = !!row.entity_id;
+                    const savedScope = !!row.scope_item_id;
+                    return (
+                      <li
+                        key={key}
+                        className="flex items-center gap-2 px-2 py-1"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selected.has(key)}
+                          onChange={(event) =>
+                            setSelected((previous) => {
+                              const next = new Set(previous);
+                              if (event.target.checked) next.add(key);
+                              else next.delete(key);
+                              return next;
+                            })
+                          }
+                          className="shrink-0"
+                        />
+                        <span
+                          className="min-w-0 flex-1 truncate font-mono text-xs"
+                          title={row.value}
+                        >
+                          {row.value}
+                        </span>
+                        <span className="flex shrink-0 items-center gap-1 text-[10px] text-muted-foreground">
+                          {savedEntity && (
+                            <span className="rounded bg-emerald-500/15 px-1 py-0.5 text-emerald-700 dark:text-emerald-300">
+                              entity
+                            </span>
+                          )}
+                          {savedScope && (
+                            <span className="rounded bg-sky-500/15 px-1 py-0.5 text-sky-700 dark:text-sky-300">
+                              {row.scope_source ?? "scope"}
+                            </span>
+                          )}
+                          {!savedEntity && (
+                            <SmallButton
+                              disabled={promote.isPending}
+                              onClick={() =>
+                                submit([
+                                  {
+                                    type: row.type,
+                                    value: row.value,
+                                    add_to_entities: true,
+                                    add_to_scope: false,
+                                  },
+                                ])
+                              }
+                            >
+                              Entity
+                            </SmallButton>
+                          )}
+                          {row.scope_compatible && !savedScope && (
+                            <SmallButton
+                              disabled={promote.isPending}
+                              onClick={() =>
+                                submit([
+                                  {
+                                    type: row.type,
+                                    value: row.value,
+                                    add_to_entities: false,
+                                    add_to_scope: true,
+                                  },
+                                ])
+                              }
+                            >
+                              Scope
+                            </SmallButton>
+                          )}
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </section>
+            ))}
         </div>
       )}
 
@@ -1324,7 +1387,9 @@ function DetailsPanel({ finding, slug }: { finding: Finding; slug: string | null
           <InfoTile label="Created" value={<DateTime value={finding.created_at} />} />
           <InfoTile label="Observed" value={<DateTime value={finding.observed_at} />} />
         </div>
-        <GroupedItemsTable finding={finding} />
+        {/* Items table lives above the tabs (always-visible block) so
+            it's not duplicated here. Raw JSON payload still available
+            below for legacy / manual inspection. */}
         <details className="mt-4 rounded-md border border-border bg-background">
           <summary className="cursor-pointer px-3 py-2 text-xs font-medium">Raw payload</summary>
           <pre className="max-h-96 overflow-auto border-t border-border p-3 font-mono text-xs text-muted-foreground">
@@ -1347,45 +1412,6 @@ function DetailsPanel({ finding, slug }: { finding: Finding; slug: string | null
         </button>
       </section>
     </>
-  );
-}
-
-function GroupedItemsTable({ finding }: { finding: Finding }) {
-  const items = Array.isArray((finding.data as { items?: unknown }).items)
-    ? ((finding.data as { items: unknown[] }).items as Record<string, unknown>[])
-    : [];
-  if (items.length === 0) return null;
-  const columns = Array.from(
-    new Set(items.flatMap((item) => Object.keys(item)).filter((key) => key !== "first_seen_at")),
-  );
-  return (
-    <div className="mt-4">
-      <div className="flex items-center justify-between gap-2">
-        <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          Grouped items ({items.length})
-        </h3>
-        {finding.group_key && <span className="font-mono text-[10px] text-muted-foreground">{finding.group_key}</span>}
-      </div>
-      <div className="mt-2 max-h-72 overflow-auto rounded-md border border-border bg-background">
-        <table className="w-full border-collapse text-xs">
-          <thead className="sticky top-0 bg-background">
-            <tr className="border-b border-border">
-              {columns.map((column) => <th key={column} className="px-2 py-1.5 text-left font-medium text-muted-foreground">{column}</th>)}
-            </tr>
-          </thead>
-          <tbody>
-            {items.map((item, index) => (
-              <tr key={index} className="border-b border-border/40 last:border-0">
-                {columns.map((column) => {
-                  const value = item[column];
-                  return <td key={column} className="px-2 py-1.5 font-mono text-[11px]">{value == null ? "—" : typeof value === "object" ? JSON.stringify(value) : String(value)}</td>;
-                })}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
   );
 }
 
