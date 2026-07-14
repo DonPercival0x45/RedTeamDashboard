@@ -27,6 +27,7 @@ import { ObservationsView } from "@/components/observations-view";
 import { CostsView } from "@/components/costs-view";
 import { ContributionsView } from "@/components/contributions-view";
 import { StatusView } from "@/components/status-view";
+import { StrategyView } from "@/components/strategy-view";
 import { ToolsView } from "@/components/tools-view";
 import { GrantsCard } from "@/components/grants-card";
 import { RunPrompt } from "@/components/run-prompt";
@@ -212,6 +213,7 @@ function ReportView({ slug }: { slug: string }) {
 
 const VALID_VIEWS = new Set<EngagementView>([
   "findings",
+  "strategy",
   "entities",
   "observations",
   "report",
@@ -480,6 +482,10 @@ function EngagementDetail({ slug }: { slug: string }) {
               onUpdated={upsertFinding}
               onDeleted={removeFinding}
             />
+          )}
+
+          {view === "strategy" && (
+            <StrategyView slug={slug} engagementStatus={engagement.status} />
           )}
 
           {view === "entities" && (

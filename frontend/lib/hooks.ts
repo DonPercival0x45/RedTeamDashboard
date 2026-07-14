@@ -69,6 +69,7 @@ import {
   listRoadmapSuggestions,
   listScope,
   listStoredEntities,
+  listTasks,
   listToolInvocations,
   listTools,
   promoteFindingContext,
@@ -97,6 +98,8 @@ import type {
   RoadmapListFilters,
   ScopeItem,
   StatusKind,
+  Task,
+  TaskStatus,
   ToolInvocationRead,
   ToolStatus,
   UserRole,
@@ -122,6 +125,8 @@ export const qk = {
   findingActivity: (id: string) => ["finding-activity", id] as const,
   findingChat: (id: string) => ["finding-chat", id] as const,
   findingContext: (id: string) => ["finding-context", id] as const,
+  tasks: (slug: string, status?: TaskStatus) =>
+    ["tasks", slug, { status: status ?? null }] as const,
   observations: (slug: string) => ["observations", slug] as const,
   scope: (slug: string) => ["scope", slug] as const,
   entities: (slug: string) => ["entities", slug] as const,
@@ -175,6 +180,22 @@ export function useFindings(slug: string) {
   return useQuery({
     queryKey: qk.findings(slug),
     queryFn: () => listFindings(slug),
+  });
+}
+
+export function useTasks(slug: string, status?: TaskStatus) {
+  return useQuery({
+    queryKey: qk.tasks(slug, status),
+    queryFn: () => listTasks(slug, status),
+    enabled: Boolean(slug),
+    refetchInterval: (query) => {
+      const tasks = query.state.data as Task[] | undefined;
+      return tasks?.some((task) =>
+        ["pending", "dispatched", "running"].includes(task.status),
+      )
+        ? 4000
+        : false;
+    },
   });
 }
 
@@ -588,8 +609,13 @@ export function usePutAgentConfigurationMutation() {
         const next = list.filter(
           (c) => c.engagement_slug !== data.engagement_slug,
         );
-        // Empty rows (all three roles null) are dropped from the list.
-        if (data.strategic || data.tactical || data.correlate) {
+        // Empty rows (all configurable roles null) are dropped from the list.
+        if (
+          data.strategic ||
+          data.engagement_strategist ||
+          data.tactical ||
+          data.correlate
+        ) {
           next.push(data);
           next.sort((a, b) =>
             a.engagement_slug.localeCompare(b.engagement_slug),
@@ -872,9 +898,11 @@ export function prefetchEngagementView(
         queryFn: () => getEngagementCosts(slug),
       });
       return;
+    case "strategy":
     case "contributions":
     case "report":
-      // Skip: contributions key depends on filter state; report has no fetch.
+      // Strategy loads a coordinated dossier; contributions depends on filter
+      // state; report has no standalone prefetch entry.
       return;
   }
 }
