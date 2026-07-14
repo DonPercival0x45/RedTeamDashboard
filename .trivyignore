@@ -48,3 +48,15 @@ CVE-2026-42506
 # -----------------------------------------------------------------------------
 CVE-2026-33814
 CVE-2026-39821
+
+# -----------------------------------------------------------------------------
+# Go stdlib (os.Root symlink-following) — v1.33.1 addition.
+# CVE-2026-39822 is in os.Root, added by Trivy DB update on 2026-07-14.
+# subfinder builds with an older Go toolchain (v1.25.11 + v1.26.4) that
+# still ships this bug. Subfinder never uses os.Root — it writes only its
+# own stdout / stderr and reads no filesystem paths derived from
+# attacker-controlled input. Vulnerable code path is not reached.
+# Revisit alongside the other subfinder CVEs above once we move subfinder
+# out of the backend image (Kali attack-box arc).
+# -----------------------------------------------------------------------------
+CVE-2026-39822
