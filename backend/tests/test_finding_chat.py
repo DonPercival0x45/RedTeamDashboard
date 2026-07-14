@@ -220,6 +220,31 @@ def test_ask_finding_chat_persists_bubbles_execution_and_audit(
     assert [m["role"] for m in state.json()["messages"]] == ["user", "assistant"]
 
 
+def test_missing_provider_key_returns_actionable_error_without_orphan_message(
+    client: TestClient, db: Session, finding: Finding
+) -> None:
+    resp = client.post(
+        f"/findings/{finding.id}/chat",
+        json={"message": "what should I do next?"},
+        headers=HDR,
+    )
+    assert resp.status_code == 400
+    detail = resp.json()["detail"]
+    assert detail["code"] == "missing_provider_key"
+    assert detail["action_url"] == "/settings/keys"
+    assert "provider key" in detail["message"]
+
+    conv = db.execute(
+        select(Conversation).where(Conversation.finding_id == finding.id)
+    ).scalar_one()
+    count = db.execute(
+        select(func.count(ConversationMessage.id)).where(
+            ConversationMessage.conversation_id == conv.id
+        )
+    ).scalar_one()
+    assert count == 0
+
+
 def test_plain_prose_chat_response_gets_safe_agent_action(
     monkeypatch: pytest.MonkeyPatch,
     client: TestClient,

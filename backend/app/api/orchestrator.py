@@ -86,6 +86,23 @@ from app.services.status_notifier import notify_status_event
 router = APIRouter()
 
 
+def _missing_provider_key_error(exc: Exception) -> HTTPException:
+    provider = getattr(exc, "provider", "selected")
+    return HTTPException(
+        status_code=400,
+        detail={
+            "code": "missing_provider_key",
+            "message": (
+                f"No {provider} provider key is cached for this browser session. "
+                "Upload or re-select a key, then try again."
+            ),
+            "action_label": "Open Keys settings",
+            "action_url": "/settings/keys",
+            "provider": provider,
+        },
+    )
+
+
 def _engagement_by_slug(session: Session, slug: str) -> Engagement:
     eng = session.execute(
         select(Engagement).where(Engagement.slug == slug)
@@ -387,7 +404,10 @@ def ask_finding_chat(
     )
     conv.updated_at = datetime.now(tz=UTC)
     session.add(user_message)
-    session.commit()
+    # Flush so the pending user bubble is visible to the LLM history query,
+    # but don't commit it until the assistant reply succeeds. If provider-key
+    # resolution fails, rollback removes the orphan user-only bubble.
+    session.flush()
     session.refresh(user_message)
 
     try:
@@ -400,13 +420,7 @@ def ask_finding_chat(
         )
     except NoProviderKeyError as exc:
         session.rollback()
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"No provider key configured for the LLM call ({exc}). "
-                "Add one under /settings/keys."
-            ),
-        ) from exc
+        raise _missing_provider_key_error(exc) from exc
     except Exception as exc:
         session.rollback()
         raise HTTPException(status_code=502, detail=f"chat failed: {exc}") from exc
@@ -605,13 +619,7 @@ def triage_finding(
         )
     except NoProviderKeyError as exc:
         session.rollback()
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"No provider key configured for the LLM call ({exc}). "
-                "Add one under /settings/keys."
-            ),
-        ) from exc
+        raise _missing_provider_key_error(exc) from exc
     except Exception as exc:
         # The service marked the AgentExecution row failed before re-raising,
         # so a row exists for the Costs tab to surface the failed call. Commit
@@ -688,13 +696,7 @@ def rewrite_finding_summary_endpoint(
         )
     except NoProviderKeyError as exc:
         session.rollback()
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"No provider key configured for the LLM call ({exc}). "
-                "Add one under /settings/keys."
-            ),
-        ) from exc
+        raise _missing_provider_key_error(exc) from exc
     except Exception as exc:
         session.commit()
         raise HTTPException(

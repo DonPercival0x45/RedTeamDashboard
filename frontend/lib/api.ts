@@ -96,6 +96,53 @@ export async function authHeaders(): Promise<Record<string, string>> {
   return { "X-User-Id": DEV_USER };
 }
 
+export class ApiError extends Error {
+  status: number;
+  detail: unknown;
+  code?: string;
+  actionLabel?: string;
+  actionUrl?: string;
+
+  constructor(status: number, statusText: string, detail: unknown) {
+    const parsed = parseApiErrorDetail(detail);
+    super(`${status} ${statusText}: ${parsed.message}`);
+    this.name = "ApiError";
+    this.status = status;
+    this.detail = detail;
+    this.code = parsed.code;
+    this.actionLabel = parsed.actionLabel;
+    this.actionUrl = parsed.actionUrl;
+  }
+}
+
+function parseApiErrorDetail(detail: unknown): {
+  message: string;
+  code?: string;
+  actionLabel?: string;
+  actionUrl?: string;
+} {
+  if (detail && typeof detail === "object" && "detail" in detail) {
+    return parseApiErrorDetail((detail as { detail: unknown }).detail);
+  }
+  if (typeof detail === "string") return { message: detail };
+  if (detail && typeof detail === "object") {
+    const d = detail as Record<string, unknown>;
+    return {
+      message:
+        typeof d.message === "string"
+          ? d.message
+          : typeof d.error === "string"
+            ? d.error
+            : JSON.stringify(detail),
+      code: typeof d.code === "string" ? d.code : undefined,
+      actionLabel:
+        typeof d.action_label === "string" ? d.action_label : undefined,
+      actionUrl: typeof d.action_url === "string" ? d.action_url : undefined,
+    };
+  }
+  return { message: "Request failed" };
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     ...init,
@@ -107,7 +154,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!response.ok) {
     const text = await response.text().catch(() => "");
-    throw new Error(`${response.status} ${response.statusText}: ${text}`);
+    let detail: unknown = text;
+    try {
+      detail = text ? JSON.parse(text) : text;
+    } catch {
+      // keep raw text
+    }
+    throw new ApiError(response.status, response.statusText, detail);
   }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;

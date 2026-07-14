@@ -3,11 +3,11 @@
 # All targets are .PHONY — there are no file products. Run `make help` for
 # the menu.
 
-COMPOSE := docker compose -f infra/docker-compose.yml
+COMPOSE := docker compose -f infra/docker-compose.yml -f infra/docker-compose.override.yml
 BACKEND := $(COMPOSE) exec -T backend
 
 .DEFAULT_GOAL := help
-.PHONY: help up down rebuild logs logs-backend logs-worker logs-frontend \
+.PHONY: help up down rebuild doctor logs logs-backend logs-worker logs-frontend \
         test test-fast lint typecheck check shell-backend shell-redis psql \
         redis-flush worker-stop worker-start
 
@@ -27,6 +27,11 @@ down: ## Stop the stack (preserves volumes)
 
 rebuild: ## Rebuild backend + worker images and recreate containers
 	$(COMPOSE) up -d --build backend worker
+
+doctor: ## Show branch, container health, and DB migration revision
+	@git branch --show-current | sed 's/^/branch: /'
+	@$(COMPOSE) ps --format 'table {{.Service}}\t{{.State}}\t{{.Health}}'
+	@$(COMPOSE) exec -T postgres psql -U rtd -d rtd -tAc 'select version_num from alembic_version;' | sed 's/^/db revision: /'
 
 worker-stop: ## Stop only the worker (used by `make test`)
 	$(COMPOSE) stop worker

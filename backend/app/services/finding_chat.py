@@ -645,11 +645,13 @@ def generate_finding_chat_reply(
 
     try:
         response = llm.invoke([("system", _SYSTEM_PROMPT), ("user", prompt)])
+        retry_count = 0
+        first_tokens_in, first_tokens_out = _extract_usage(response)
         # Some providers intermittently stop after ~1 token (no usable
         # output). Detect via near-zero output tokens and retry once — the
         # next call almost always returns the full answer.
-        _tin, _tout = _extract_usage(response)
-        if (_tout or 0) < 8:
+        if (first_tokens_out or 0) < 8:
+            retry_count = 1
             response = llm.invoke(
                 [("system", _SYSTEM_PROMPT), ("user", prompt)]
             )
@@ -664,7 +666,11 @@ def generate_finding_chat_reply(
         content, action_payload = _parse_assistant_payload(
             response.content, finding, allow_defaults=allow_defaults
         )
-        tokens_in, tokens_out = _extract_usage(response)
+        final_tokens_in, final_tokens_out = _extract_usage(response)
+        retry_tokens_in = (final_tokens_in or 0) if retry_count else 0
+        retry_tokens_out = (final_tokens_out or 0) if retry_count else 0
+        tokens_in = (first_tokens_in or 0) + retry_tokens_in
+        tokens_out = (first_tokens_out or 0) + retry_tokens_out
         execution.status = AgentExecutionStatus.completed
         execution.completed_at = datetime.now(tz=UTC)
         execution.tokens_in = tokens_in
@@ -672,7 +678,12 @@ def generate_finding_chat_reply(
         execution.cost_usd = pricing.cost_usd(
             model_name, tokens_in, tokens_out, provider=provider
         )
-        execution.output = {"message_chars": len(content)}
+        execution.output = {
+            "message_chars": len(content),
+            "retry_count": retry_count,
+            "first_tokens_out": first_tokens_out,
+            "final_tokens_out": final_tokens_out,
+        }
         assistant = ConversationMessage(
             conversation_id=conversation.id,
             role="assistant",
