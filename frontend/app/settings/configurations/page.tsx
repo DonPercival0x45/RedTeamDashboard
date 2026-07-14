@@ -46,6 +46,11 @@ const ROLES: {
     hint: "Analyzes findings and suggests scan / enum tasks.",
   },
   {
+    key: "engagement_strategist",
+    label: "Engagement Strategist",
+    hint: "Synthesizes shared engagement strategy and proposes coordinated work.",
+  },
+  {
     key: "tactical",
     label: "Tactical",
     hint: "Dispatches accepted tasks to the worker run stream.",
@@ -224,8 +229,12 @@ export default function SettingsConfigurationsPage() {
           {engagements.map((eng) => {
             const cfg = configsBySlug.get(eng.slug);
             const pinnedCount = cfg
-              ? [cfg.strategic, cfg.tactical, cfg.correlate].filter(Boolean)
-                  .length
+              ? [
+                  cfg.strategic,
+                  cfg.engagement_strategist,
+                  cfg.tactical,
+                  cfg.correlate,
+                ].filter(Boolean).length
               : 0;
             const isActive = eng.slug === activeSlug;
             return (
@@ -244,9 +253,9 @@ export default function SettingsConfigurationsPage() {
                 {pinnedCount > 0 && (
                   <span
                     className="ml-2 shrink-0 rounded bg-primary/20 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-primary"
-                    title={`${pinnedCount} of 3 agents pinned`}
+                    title={`${pinnedCount} of 4 agents pinned`}
                   >
-                    {pinnedCount}/3
+                    {pinnedCount}/4
                   </span>
                 )}
               </button>

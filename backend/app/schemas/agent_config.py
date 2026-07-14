@@ -1,8 +1,9 @@
 """Schemas for Settings > Configurations — per-analyst per-engagement
-routing of agent models. v1.24.0 covers only the three engagement-scoped
-agents; ``planner``/``triage``/``tool_review``/``finding_chat`` routing
+routing of agent models. Engagement strategy adds a fourth configurable
+engagement-scoped agent; ``planner``/``triage``/``tool_review``/``finding_chat`` routing
 is intentionally deferred (see MEMORY note).
 """
+
 from __future__ import annotations
 
 import uuid
@@ -14,9 +15,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 # The three roles this bundle exposes. Storage column is the wider
 # ``agent_name`` enum so we can add ``planner``/``triage``/etc later
 # without a migration.
-ConfigurableAgentRole = Literal["strategic", "tactical", "correlate"]
+ConfigurableAgentRole = Literal["strategic", "engagement_strategist", "tactical", "correlate"]
 
-_ACCEPTED_ROLES = {"strategic", "tactical", "correlate"}
+_ACCEPTED_ROLES = {"strategic", "engagement_strategist", "tactical", "correlate"}
 
 
 class AgentConfigRolePayload(BaseModel):
@@ -25,9 +26,10 @@ class AgentConfigRolePayload(BaseModel):
     strategic: str | None = Field(
         default=None, description="Model for Strategic on this engagement"
     )
-    tactical: str | None = Field(
-        default=None, description="Model for Tactical on this engagement"
+    engagement_strategist: str | None = Field(
+        default=None, description="Model for Engagement Strategist on this engagement"
     )
+    tactical: str | None = Field(default=None, description="Model for Tactical on this engagement")
     correlate: str | None = Field(
         default=None, description="Model for Correlate on this engagement"
     )
@@ -41,6 +43,7 @@ class AgentConfigRead(BaseModel):
     engagement_id: uuid.UUID
     engagement_slug: str
     strategic: str | None = None
+    engagement_strategist: str | None = None
     tactical: str | None = None
     correlate: str | None = None
     updated_at: datetime | None = None
@@ -55,6 +58,7 @@ class AgentConfigPut(BaseModel):
     are left unchanged; ``null`` clears a specific role."""
 
     strategic: str | None = None
+    engagement_strategist: str | None = None
     tactical: str | None = None
     correlate: str | None = None
 

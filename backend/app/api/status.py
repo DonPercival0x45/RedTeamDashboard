@@ -327,7 +327,7 @@ def _approval_history(row: Approval) -> list[StatusTransition]:
 
 
 def _agent_to_entity(row: AgentExecution) -> StatusEntity:
-    agent_label = row.agent.value.capitalize()
+    agent_label = row.agent.value.replace("_", " ").title()
     color = _agent_color(row.status)
     outcome = _agent_outcome(row)
     thread_id = (
@@ -397,6 +397,9 @@ def _task_to_entity(row: Task) -> StatusEntity:
         started_at=row.dispatched_at,
         completed_at=row.completed_at,
         retryable=color == "failed",
+        finding_id=row.finding_id,
+        work_item_id=row.work_item_id,
+        task_id=row.id,
         run_slug=_run_slug(task_slug_source),
         outcome=outcome,
         synopsis=_task_synopsis(row, outcome),
@@ -404,6 +407,7 @@ def _task_to_entity(row: Task) -> StatusEntity:
             "kind": row.kind.value,
             "owner_eligibility": row.owner_eligibility.value,
             "finding_id": str(row.finding_id) if row.finding_id else None,
+            "work_item_id": str(row.work_item_id) if row.work_item_id else None,
             "run_id": str(row.run_id) if row.run_id else None,
             "dispatched_at": (
                 row.dispatched_at.isoformat() if row.dispatched_at else None

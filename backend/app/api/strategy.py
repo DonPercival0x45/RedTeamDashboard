@@ -1155,7 +1155,7 @@ def create_work_item_result(
         session,
         work.engagement_id,
         user.id,
-        "work_item.result_proposed",
+        "work_item.agent_result_proposed",
         {"work_item_id": str(work.id), "result_id": str(result.id), "revision": revision},
     )
     session.commit()
@@ -1264,7 +1264,7 @@ def accept_work_item_result(
         session,
         work.engagement_id,
         user.id,
-        "work_item.result_accepted",
+        "work_item.agent_result_accepted",
         {
             "work_item_id": str(work.id),
             "result_id": str(result.id),
@@ -1315,7 +1315,7 @@ def reject_work_item_result(
         session,
         work.engagement_id,
         user.id,
-        "work_item.result_rejected",
+        "work_item.agent_result_rejected",
         {"work_item_id": str(work.id), "result_id": str(result.id), "reason": body.reason},
     )
     session.commit()
@@ -1570,7 +1570,7 @@ def create_checkpoint(
         session,
         eng.id,
         user.id,
-        "checkpoint.created",
+        "engagement.checkpoint_created",
         {
             "checkpoint_id": str(row.id),
             "strategy_revision_id": str(row.strategy_revision_id)
@@ -1619,7 +1619,7 @@ def get_resume(slug: str, session: DbSession, _user: CurrentUser):
             .where(
                 AuditLog.engagement_id == eng.id,
                 AuditLog.created_at > cursor,
-                AuditLog.event_type != "checkpoint.created",
+                AuditLog.event_type != "engagement.checkpoint_created",
             )
             .order_by(AuditLog.created_at.desc())
             .limit(100)

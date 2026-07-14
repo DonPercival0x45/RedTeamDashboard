@@ -15,6 +15,7 @@ for managing authorized security engagements.
 The MCP server exposes tools for Claude Code and other AI assistants, with the same
 approval gates and audit logging as the web UI.
 """
+
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -29,8 +30,10 @@ from app.api.agent_configurations import router as agent_configurations_router
 from app.api.api_keys import router as api_keys_router
 from app.api.approvals import router as approvals_router
 from app.api.authorizations import router as authorizations_router
+from app.api.completion import router as completion_router
 from app.api.contributions import router as contributions_router
 from app.api.deps import AsyncRedisClient, DbSession
+from app.api.engagement_strategist import router as engagement_strategist_router
 from app.api.engagements import router as engagements_router
 from app.api.entities import router as entities_router
 from app.api.events import router as events_router
@@ -44,6 +47,7 @@ from app.api.reports import router as reports_router
 from app.api.roadmap_suggestions import router as roadmap_suggestions_router
 from app.api.status import router as status_router
 from app.api.strategy import router as strategy_router
+from app.api.strategy_suggestions import router as strategy_suggestions_router
 from app.api.tool_invocations import router as tool_invocations_router
 from app.api.tools import router as tools_router
 from app.core.config import settings
@@ -91,6 +95,9 @@ app.include_router(integrations_router)
 app.include_router(admin_users_router)
 app.include_router(status_router)
 app.include_router(strategy_router)
+app.include_router(completion_router)
+app.include_router(engagement_strategist_router)
+app.include_router(strategy_suggestions_router)
 app.include_router(contributions_router)
 app.include_router(tools_router)
 app.include_router(releases_router)
@@ -123,9 +130,7 @@ async def health(session: DbSession, redis: AsyncRedisClient) -> JSONResponse:
 
     healthy = db_ok and redis_ok
     return JSONResponse(
-        status_code=(
-            status.HTTP_200_OK if healthy else status.HTTP_503_SERVICE_UNAVAILABLE
-        ),
+        status_code=(status.HTTP_200_OK if healthy else status.HTTP_503_SERVICE_UNAVAILABLE),
         content={
             "status": "ok" if healthy else "degraded",
             "env": settings.env,

@@ -50,6 +50,8 @@ export interface Engagement {
   slug: string;
   description: string | null;
   status: EngagementStatus;
+  work_state: "active" | "completion_review" | "completed";
+  work_state_version: number;
   time_frame: EngagementTimeFrame;
   start_date: string | null;
   end_date: string | null;
@@ -256,6 +258,9 @@ export interface StatusEntity {
   started_at: string | null;
   completed_at: string | null;
   retryable: boolean;
+  finding_id?: string | null;
+  work_item_id?: string | null;
+  task_id?: string | null;
   log: Record<string, unknown>;
   history: StatusTransition[];
   // v1.2.0
@@ -588,6 +593,7 @@ export interface Task {
   id: string;
   engagement_id: string;
   finding_id: string | null;
+  work_item_id: string | null;
   title: string;
   kind: TaskKind;
   owner_eligibility: OwnerEligibility;
@@ -640,7 +646,14 @@ export interface ProviderKeyProbeResult {
 
 export type SuggestionKind = "task" | "ephemeral" | "note";
 export type SuggestionStatus = "open" | "accepted" | "dismissed";
-export type AgentName = "strategic" | "tactical";
+export type AgentName =
+  | "strategic"
+  | "engagement_strategist"
+  | "tactical"
+  | "correlate"
+  | "triage"
+  | "planner"
+  | "tool_review";
 
 export interface Suggestion {
   id: string;
@@ -791,7 +804,7 @@ export type RunEventType = RunEvent["type"];
 
 // ─── Costs (Phase 11) ───────────────────────────────────────────────────────
 
-export type AgentCostName = "strategic" | "tactical";
+export type AgentCostName = AgentName;
 
 export interface CostBucket {
   executions: number;
@@ -1180,12 +1193,17 @@ export interface ToolInvocationRead {
 
 // The three engagement-scoped agent roles this bundle covers. Adding
 // planner/triage/etc later widens this union without a migration.
-export type ConfigurableAgentRole = "strategic" | "tactical" | "correlate";
+export type ConfigurableAgentRole =
+  | "strategic"
+  | "engagement_strategist"
+  | "tactical"
+  | "correlate";
 
 export interface AgentConfigRead {
   engagement_id: string;
   engagement_slug: string;
   strategic: string | null;
+  engagement_strategist: string | null;
   tactical: string | null;
   correlate: string | null;
   updated_at: string | null;
@@ -1199,12 +1217,14 @@ export interface AgentConfigListResponse {
 // unchanged; explicit ``null`` clears that specific role.
 export interface AgentConfigPut {
   strategic?: string | null;
+  engagement_strategist?: string | null;
   tactical?: string | null;
   correlate?: string | null;
 }
 
 export interface AgentConfigRolePayload {
   strategic?: string | null;
+  engagement_strategist?: string | null;
   tactical?: string | null;
   correlate?: string | null;
 }

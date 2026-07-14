@@ -21,6 +21,7 @@ Accept implicitly dispatches when the suggestion's task would be agent-eligible
 worker's existing inbound stream and goes through the same approval gate as a
 hand-started run, so an active tool still pauses for an analyst decision.
 """
+
 from __future__ import annotations
 
 import uuid
@@ -28,11 +29,11 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Annotated, Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.agents import StrategicAgent, TacticalAgent, TacticalRefusedExploit
+from app.agents import StrategicAgent
 from app.api.deps import CurrentNonGuestUser, CurrentUser, DbSession, RedisClient
 from app.core import pricing
 from app.models import (
@@ -46,12 +47,9 @@ from app.models import (
     ConversationMessage,
     Engagement,
     Finding,
-    OwnerEligibility,
     Suggestion,
-    SuggestionKind,
     SuggestionStatus,
     Task,
-    TaskKind,
     TaskStatus,
     Tool,
     ToolInvocation,
@@ -104,9 +102,7 @@ def _missing_provider_key_error(exc: Exception) -> HTTPException:
 
 
 def _engagement_by_slug(session: Session, slug: str) -> Engagement:
-    eng = session.execute(
-        select(Engagement).where(Engagement.slug == slug)
-    ).scalar_one_or_none()
+    eng = session.execute(select(Engagement).where(Engagement.slug == slug)).scalar_one_or_none()
     if eng is None:
         raise HTTPException(status_code=404, detail=f"engagement '{slug}' not found")
     return eng
@@ -139,6 +135,14 @@ def analyze_finding(
     finding = session.get(Finding, finding_id)
     if finding is None:
         raise HTTPException(status_code=404, detail="finding not found")
+    from app.models import EngagementWorkState
+
+    engagement = session.get(Engagement, finding.engagement_id)
+    if engagement and engagement.work_state is EngagementWorkState.completed:
+        raise HTTPException(
+            status_code=409,
+            detail="completed engagement is read-only; reopen it before analysis",
+        )
 
     agent = StrategicAgent(redis_client=redis_client)
     execution, suggestions = agent.analyze_finding(
@@ -318,7 +322,7 @@ def clear_finding_chat(
     finding_id: uuid.UUID,
     session: DbSession,
     user: CurrentNonGuestUser,
-) -> None:
+) -> Response:
     """Clear the current analyst's finding-scoped AI conversation.
 
     This deletes persisted chat bubbles/action proposals for this analyst and
@@ -351,7 +355,7 @@ def clear_finding_chat(
         )
     )
     session.commit()
-    return None
+    return Response(status_code=204)
 
 
 @router.post(
@@ -635,9 +639,7 @@ def triage_finding(
             detail=str(exc)[:500],
             engagement_slug=eng.slug if eng else None,
         )
-        raise HTTPException(
-            status_code=502, detail=f"triage failed: {exc}"
-        ) from exc
+        raise HTTPException(status_code=502, detail=f"triage failed: {exc}") from exc
 
     session.add(
         AuditLog(
@@ -699,9 +701,7 @@ def rewrite_finding_summary_endpoint(
         raise _missing_provider_key_error(exc) from exc
     except Exception as exc:
         session.commit()
-        raise HTTPException(
-            status_code=502, detail=f"rewrite failed: {exc}"
-        ) from exc
+        raise HTTPException(status_code=502, detail=f"rewrite failed: {exc}") from exc
 
     session.add(
         AuditLog(
@@ -761,104 +761,45 @@ def accept_suggestion(
     redis_client: RedisClient,
     user: CurrentNonGuestUser,
 ) -> AcceptSuggestionResponse:
-    """Accept a Strategic suggestion.
+    """Accept and atomically route a typed proposal.
 
-    For ``kind=task`` suggestions: mint a ``Task`` row, then (if it's agent-
-    eligible scan/enum) ask Tactical to dispatch it immediately. The dispatched
-    run still hits the existing approval gate for active tools.
+    Work-item acceptance creates committed analyst work without dispatching.
+    Strategy proposals become a current, versioned revision. Execution-task
+    proposals alone may reach Tactical, which retains scope and approval gates.
     """
-    suggestion = session.get(Suggestion, suggestion_id)
-    if suggestion is None:
-        raise HTTPException(status_code=404, detail="suggestion not found")
-    if suggestion.status != SuggestionStatus.open:
-        raise HTTPException(
-            status_code=409,
-            detail=f"suggestion is {suggestion.status.value}; cannot accept",
-        )
+    from app.services.suggestion_router import accept_suggestion as route_acceptance
 
-    suggestion.status = SuggestionStatus.accepted
-    suggestion.decided_by = user.id
-    suggestion.decided_at = datetime.now(tz=UTC)
-
-    task: Task | None = None
-    dispatched = False
-
-    if suggestion.kind == SuggestionKind.task:
-        payload = dict(suggestion.payload or {})
-        kind_raw = payload.get("task_kind") or TaskKind.enum.value
-        owner_raw = payload.get("owner_eligibility") or OwnerEligibility.either.value
-        try:
-            task_kind = TaskKind(kind_raw)
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=422,
-                detail=f"invalid task_kind on suggestion payload: {kind_raw!r}",
-            ) from exc
-        try:
-            owner_eligibility = OwnerEligibility(owner_raw)
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=422,
-                detail=f"invalid owner_eligibility: {owner_raw!r}",
-            ) from exc
-
-        task = Task(
-            engagement_id=suggestion.engagement_id,
-            finding_id=suggestion.finding_id,
-            title=suggestion.title,
-            kind=task_kind,
-            owner_eligibility=owner_eligibility,
-            status=TaskStatus.pending,
-            payload=payload,
-        )
-        session.add(task)
-        session.flush()
-        suggestion.task_id = task.id
-
-        # Auto-dispatch agent-eligible scan/enum tasks. Analyst-only or
-        # exploit tasks stay pending for manual action.
-        agent_eligible_owner = owner_eligibility in (
-            OwnerEligibility.agent,
-            OwnerEligibility.either,
-        )
-        agent_eligible_kind = task_kind in (TaskKind.scan, TaskKind.enum)
-        if agent_eligible_owner and agent_eligible_kind:
-            tactical = TacticalAgent(redis_client)
-            try:
-                tactical.dispatch(
-                    session,
-                    task=task,
-                    trigger=AgentTrigger.manual,
-                    acting_user_id=user.id,
-                )
-                dispatched = True
-            except TacticalRefusedExploit:
-                # Defense-in-depth — shouldn't fire since we checked kind, but
-                # if it ever does, swallow and leave the task pending.
-                dispatched = False
-
-    session.add(
-        AuditLog(
-            engagement_id=suggestion.engagement_id,
-            actor_type=ActorType.user,
-            actor_id=str(user.id),
-            event_type="suggestion.accepted",
-            payload={
-                "suggestion_id": str(suggestion.id),
-                "task_id": str(task.id) if task else None,
-                "dispatched": dispatched,
-            },
-        )
+    result = route_acceptance(
+        session,
+        redis_client,
+        suggestion_id=suggestion_id,
+        user_id=user.id,
     )
-    session.commit()
-    session.refresh(suggestion)
-    if task is not None:
-        session.refresh(task)
-
     return AcceptSuggestionResponse(
-        suggestion=SuggestionRead.model_validate(suggestion),
-        task=TaskRead.model_validate(task) if task else None,
-        dispatched=dispatched,
+        suggestion=SuggestionRead.model_validate(result.suggestion),
+        task=TaskRead.model_validate(result.task) if result.task else None,
+        work_item=(
+            {
+                "id": str(result.work_item.id),
+                "engagement_id": str(result.work_item.engagement_id),
+                "title": result.work_item.title,
+                "status": result.work_item.status.value,
+                "row_version": result.work_item.row_version,
+            }
+            if result.work_item
+            else None
+        ),
+        strategy_revision=(
+            {
+                "id": str(result.strategy_revision.id),
+                "engagement_id": str(result.strategy_revision.engagement_id),
+                "version": result.strategy_revision.version,
+                "state": result.strategy_revision.state.value,
+            }
+            if result.strategy_revision
+            else None
+        ),
+        dispatched=result.dispatched,
     )
 
 
@@ -962,18 +903,14 @@ def engagement_costs(
     for ex in rows:
         used_in = ex.tokens_in or 0
         used_out = ex.tokens_out or 0
-        derived = pricing.cost_usd(
-            ex.model_name, used_in, used_out, ex.model_provider
-        )
+        derived = pricing.cost_usd(ex.model_name, used_in, used_out, ex.model_provider)
         priced = derived is not None
         cost = derived if priced else Decimal(0)
         if not priced and ex.model_name and (used_in or used_out):
             unpriced.add(ex.model_name)
 
         agent_acc = by_agent.setdefault(ex.agent, _new_bucket())
-        model_acc = by_model.setdefault(
-            (ex.model_provider, ex.model_name), _new_bucket()
-        )
+        model_acc = by_model.setdefault((ex.model_provider, ex.model_name), _new_bucket())
         for acc in (total, agent_acc, model_acc):
             acc["executions"] += 1
             acc["tokens_in"] += used_in
@@ -1000,9 +937,7 @@ def engagement_costs(
         total=_as_bucket(total),
         by_agent=[
             AgentCost(agent=agent, **_as_bucket(acc).model_dump())
-            for agent, acc in sorted(
-                by_agent.items(), key=lambda kv: kv[1]["cost"], reverse=True
-            )
+            for agent, acc in sorted(by_agent.items(), key=lambda kv: kv[1]["cost"], reverse=True)
         ],
         by_model=[
             ModelCost(
@@ -1011,9 +946,7 @@ def engagement_costs(
                 priced=acc.get("priced", False),
                 **_as_bucket(acc).model_dump(),
             )
-            for key, acc in sorted(
-                by_model.items(), key=lambda kv: kv[1]["cost"], reverse=True
-            )
+            for key, acc in sorted(by_model.items(), key=lambda kv: kv[1]["cost"], reverse=True)
         ],
         unpriced_models=sorted(unpriced),
         tools=tool_summary,

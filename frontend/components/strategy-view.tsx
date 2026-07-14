@@ -227,6 +227,20 @@ export function StrategyView({
     };
   }, [refresh]);
 
+  // Shared strategy/work state can change in another analyst session. Until
+  // typed SSE events ship, refresh on focus and at a modest visible-page tick.
+  useEffect(() => {
+    const refetch = () => {
+      if (document.visibilityState === "visible") void refresh().catch(() => undefined);
+    };
+    window.addEventListener("focus", refetch);
+    const interval = window.setInterval(refetch, 30_000);
+    return () => {
+      window.removeEventListener("focus", refetch);
+      window.clearInterval(interval);
+    };
+  }, [refresh]);
+
   const mutate = useCallback(
     async (key: string, action: () => Promise<unknown>, success: string) => {
       setBusy(key);

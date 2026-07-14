@@ -43,6 +43,7 @@ DELETE soft-archives the engagement (worker stops considering it for new runs
 once status != active); /flush is the destructive operation, gated to a
 separate endpoint so it can't fire from a stray HTTP verb.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -152,17 +153,13 @@ def _slugify(name: str) -> str:
 
 def _unique_slug(session: DbSession, base: str) -> str:
     candidate = base
-    while session.execute(
-        select(Engagement.id).where(Engagement.slug == candidate)
-    ).first():
+    while session.execute(select(Engagement.id).where(Engagement.slug == candidate)).first():
         candidate = f"{base}-{uuid.uuid4().hex[:6]}"
     return candidate
 
 
 def _get_engagement_or_404(session: DbSession, slug: str) -> Engagement:
-    eng = session.execute(
-        select(Engagement).where(Engagement.slug == slug)
-    ).scalar_one_or_none()
+    eng = session.execute(select(Engagement).where(Engagement.slug == slug)).scalar_one_or_none()
     if eng is None:
         raise HTTPException(status_code=404, detail="engagement not found")
     return eng
@@ -170,7 +167,7 @@ def _get_engagement_or_404(session: DbSession, slug: str) -> Engagement:
 
 # v1.4.5: scope quick-actions. Cheap aggregate so the engagement list
 # cards can render ``N in scope · M exclusions`` without an N+1 trip per
-# card. ``scope_count`` counts the actionable (non-exclusion) items; 
+# card. ``scope_count`` counts the actionable (non-exclusion) items;
 # ``exclusion_count`` counts the !-marked items. Returns
 # ``(scope_count, exclusion_count)`` for one engagement.
 def _scope_counts_for(session: DbSession, engagement_id: uuid.UUID) -> tuple[int, int]:
@@ -183,9 +180,7 @@ def _scope_counts_for(session: DbSession, engagement_id: uuid.UUID) -> tuple[int
     return int(rows[0] or 0), int(rows[1] or 0)
 
 
-def _populate_scope_counts(
-    session: DbSession, reads: list[EngagementRead]
-) -> list[EngagementRead]:
+def _populate_scope_counts(session: DbSession, reads: list[EngagementRead]) -> list[EngagementRead]:
     """Bulk fill ``scope_count`` / ``exclusion_count`` on a list of read
     shapes with a single grouped query. No-op when ``reads`` is empty."""
     if not reads:
@@ -201,8 +196,7 @@ def _populate_scope_counts(
         .group_by(ScopeItem.engagement_id)
     ).all()
     counts: dict[uuid.UUID, tuple[int, int]] = {
-        row[0]: (int(row[1] or 0), int(row[2] or 0))
-        for row in grouped
+        row[0]: (int(row[1] or 0), int(row[2] or 0)) for row in grouped
     }
     for r in reads:
         scope, excl = counts.get(r.id, (0, 0))
@@ -247,9 +241,7 @@ def _build_export_payload(
         )
     audit_rows = list(
         session.execute(
-            select(AuditLog)
-            .where(AuditLog.engagement_id == eng.id)
-            .order_by(AuditLog.created_at)
+            select(AuditLog).where(AuditLog.engagement_id == eng.id).order_by(AuditLog.created_at)
         ).scalars()
     )
     audit_summary: dict[str, Any] = {"count": len(audit_rows)}
@@ -265,8 +257,100 @@ def _build_export_payload(
         ).scalars()
     )
 
+    # Shared Engagement Strategist state is part of the canonical archive.
+    # Personal raw strategist/finding conversations remain user-scoped and are
+    # intentionally excluded, matching the existing conversation privacy rule.
+    from app.models import (
+        CoverageItem,
+        EngagementCheckpoint,
+        EngagementCompletionDecision,
+        EngagementObjective,
+        EngagementStrategyRevision,
+        StrategySignal,
+        Task,
+        WorkItem,
+        WorkItemFinding,
+        WorkItemResult,
+    )
+
+    strategies = list(
+        session.execute(
+            select(EngagementStrategyRevision)
+            .where(EngagementStrategyRevision.engagement_id == eng.id)
+            .order_by(EngagementStrategyRevision.version)
+        ).scalars()
+    )
+    objectives = list(
+        session.execute(
+            select(EngagementObjective)
+            .where(EngagementObjective.engagement_id == eng.id)
+            .order_by(EngagementObjective.display_order, EngagementObjective.created_at)
+        ).scalars()
+    )
+    work_items = list(
+        session.execute(
+            select(WorkItem).where(WorkItem.engagement_id == eng.id).order_by(WorkItem.created_at)
+        ).scalars()
+    )
+    work_ids = [row.id for row in work_items]
+    work_results = (
+        list(
+            session.execute(
+                select(WorkItemResult)
+                .where(WorkItemResult.work_item_id.in_(work_ids))
+                .order_by(WorkItemResult.work_item_id, WorkItemResult.revision)
+            ).scalars()
+        )
+        if work_ids
+        else []
+    )
+    work_findings = (
+        list(
+            session.execute(
+                select(WorkItemFinding).where(WorkItemFinding.work_item_id.in_(work_ids))
+            ).scalars()
+        )
+        if work_ids
+        else []
+    )
+    signals = list(
+        session.execute(
+            select(StrategySignal)
+            .where(StrategySignal.engagement_id == eng.id)
+            .order_by(StrategySignal.created_at)
+        ).scalars()
+    )
+    coverage = list(
+        session.execute(
+            select(CoverageItem)
+            .where(CoverageItem.engagement_id == eng.id)
+            .order_by(CoverageItem.created_at)
+        ).scalars()
+    )
+    checkpoints = list(
+        session.execute(
+            select(EngagementCheckpoint)
+            .where(EngagementCheckpoint.engagement_id == eng.id)
+            .order_by(EngagementCheckpoint.created_at)
+        ).scalars()
+    )
+    completion_decisions = list(
+        session.execute(
+            select(EngagementCompletionDecision)
+            .where(EngagementCompletionDecision.engagement_id == eng.id)
+            .order_by(EngagementCompletionDecision.created_at)
+        ).scalars()
+    )
+    linked_tasks = list(
+        session.execute(
+            select(Task)
+            .where(Task.engagement_id == eng.id, Task.work_item_id.is_not(None))
+            .order_by(Task.created_at)
+        ).scalars()
+    )
+
     return {
-        "version": "1",
+        "version": "2",
         "exported_at": str(datetime.now(tz=UTC)),
         "engagement": {
             "id": str(eng.id),
@@ -274,6 +358,8 @@ def _build_export_payload(
             "name": eng.name,
             "status": eng.status,
             "description": eng.description,
+            "work_state": eng.work_state,
+            "work_state_version": eng.work_state_version,
             "created_at": str(eng.created_at),
             "archived_at": str(eng.archived_at) if eng.archived_at else None,
         },
@@ -306,6 +392,155 @@ def _build_export_payload(
                 "created_at": str(o.created_at),
             }
             for o in observations
+        ],
+        "strategy_revisions": [
+            {
+                "id": str(row.id),
+                "version": row.version,
+                "state": row.state,
+                "based_on_revision_id": str(row.based_on_revision_id)
+                if row.based_on_revision_id
+                else None,
+                "summary": row.summary,
+                "body": row.body,
+                "structured": row.structured,
+                "created_by_user_id": str(row.created_by_user_id)
+                if row.created_by_user_id
+                else None,
+                "created_at": str(row.created_at),
+            }
+            for row in strategies
+        ],
+        "objectives": [
+            {
+                "id": str(row.id),
+                "title": row.title,
+                "description": row.description,
+                "success_criteria": row.success_criteria,
+                "status": row.status,
+                "priority": row.priority,
+                "display_order": row.display_order,
+                "owner_user_id": str(row.owner_user_id) if row.owner_user_id else None,
+                "target_date": str(row.target_date) if row.target_date else None,
+                "row_version": row.row_version,
+            }
+            for row in objectives
+        ],
+        "work_items": [
+            {
+                "id": str(row.id),
+                "objective_id": str(row.objective_id) if row.objective_id else None,
+                "parent_work_item_id": str(row.parent_work_item_id)
+                if row.parent_work_item_id
+                else None,
+                "title": row.title,
+                "description": row.description,
+                "rationale": row.rationale,
+                "acceptance_criteria": row.acceptance_criteria,
+                "status": row.status,
+                "priority": row.priority,
+                "executor_type": row.executor_type,
+                "assigned_user_id": str(row.assigned_user_id) if row.assigned_user_id else None,
+                "blocked_reason": row.blocked_reason,
+                "due_at": str(row.due_at) if row.due_at else None,
+                "resolution_outcome": row.resolution_outcome,
+                "resolution_note": row.resolution_note,
+                "row_version": row.row_version,
+                "created_at": str(row.created_at),
+            }
+            for row in work_items
+        ],
+        "work_item_findings": [
+            {
+                "work_item_id": str(row.work_item_id),
+                "finding_id": str(row.finding_id),
+                "relationship": row.relationship,
+                "created_at": str(row.created_at),
+            }
+            for row in work_findings
+        ],
+        "work_item_results": [
+            {
+                "id": str(row.id),
+                "work_item_id": str(row.work_item_id),
+                "revision": row.revision,
+                "state": row.state,
+                "summary": row.summary,
+                "structured": row.structured,
+                "evidence_refs": row.evidence_refs,
+                "created_at": str(row.created_at),
+            }
+            for row in work_results
+        ],
+        "strategy_signals": [
+            {
+                "id": str(row.id),
+                "source_finding_id": str(row.source_finding_id) if row.source_finding_id else None,
+                "source_work_item_id": str(row.source_work_item_id)
+                if row.source_work_item_id
+                else None,
+                "source_work_item_result_id": str(row.source_work_item_result_id)
+                if row.source_work_item_result_id
+                else None,
+                "signal_type": row.signal_type,
+                "summary": row.summary,
+                "confidence": row.confidence,
+                "evidence_refs": row.evidence_refs,
+                "suggested_effect": row.suggested_effect,
+                "dedup_key": row.dedup_key,
+                "status": row.status,
+            }
+            for row in signals
+        ],
+        "coverage_items": [
+            {
+                "id": str(row.id),
+                "objective_id": str(row.objective_id) if row.objective_id else None,
+                "scope_item_id": str(row.scope_item_id) if row.scope_item_id else None,
+                "target_kind": row.target_kind,
+                "target_key": row.target_key,
+                "activity_category": row.activity_category,
+                "status": row.status,
+                "supporting_refs": row.supporting_refs,
+                "reason": row.reason,
+                "row_version": row.row_version,
+            }
+            for row in coverage
+        ],
+        "checkpoints": [
+            {
+                "id": str(row.id),
+                "strategy_revision_id": str(row.strategy_revision_id)
+                if row.strategy_revision_id
+                else None,
+                "material_event_cursor": str(row.material_event_cursor),
+                "facts": row.facts,
+                "narrative": row.narrative,
+                "created_at": str(row.created_at),
+            }
+            for row in checkpoints
+        ],
+        "completion_decisions": [
+            {
+                "id": str(row.id),
+                "action": row.action,
+                "from_work_state": row.from_work_state,
+                "to_work_state": row.to_work_state,
+                "readiness_hash": row.readiness_hash,
+                "readiness_snapshot": row.readiness_snapshot,
+                "accepted_exceptions": row.accepted_exceptions,
+                "prior_completion_decision_id": str(row.prior_completion_decision_id)
+                if row.prior_completion_decision_id
+                else None,
+                "reason": row.reason,
+                "idempotency_key": row.idempotency_key,
+                "decided_by_user_id": str(row.decided_by_user_id),
+                "created_at": str(row.created_at),
+            }
+            for row in completion_decisions
+        ],
+        "work_item_execution_links": [
+            {"task_id": str(row.id), "work_item_id": str(row.work_item_id)} for row in linked_tasks
         ],
         "audit_summary": audit_summary,
     }
@@ -439,10 +674,7 @@ def update_engagement(
             )
         if body.status is EngagementStatus.active and eng.status is EngagementStatus.archived:
             eng.archived_at = None
-        elif (
-            body.status is EngagementStatus.archived
-            and eng.status is EngagementStatus.active
-        ):
+        elif body.status is EngagementStatus.archived and eng.status is EngagementStatus.active:
             eng.archived_at = datetime.now(tz=UTC)
         eng.status = body.status
 
@@ -566,9 +798,7 @@ def create_scope_item(
     "/scope/parse",
     response_model=ScopeImportPreview,
 )
-def parse_scope_blob(
-    body: ScopeImportRequest, _user: CurrentUser
-) -> ScopeImportPreview:
+def parse_scope_blob(body: ScopeImportRequest, _user: CurrentUser) -> ScopeImportPreview:
     """Pure parser — no engagement, no DB writes.
 
     Lets the /new wizard preview an import before the engagement exists.
@@ -585,9 +815,7 @@ def parse_scope_blob(
             }
             for r in rows
         ],
-        errors=[
-            {"line": e.line, "raw": e.raw, "reason": e.reason} for e in errors
-        ],
+        errors=[{"line": e.line, "raw": e.raw, "reason": e.reason} for e in errors],
         would_create=len(rows),
     )
 
@@ -615,9 +843,7 @@ def import_scope(
     _reject_flushed(eng)
     rows, errors = parse_scope_text(body.text)
 
-    error_rows = [
-        {"line": e.line, "raw": e.raw, "reason": e.reason} for e in errors
-    ]
+    error_rows = [{"line": e.line, "raw": e.raw, "reason": e.reason} for e in errors]
 
     if dry_run:
         return ScopeImportPreview(
@@ -635,9 +861,7 @@ def import_scope(
         )
 
     existing = list(
-        session.execute(
-            select(ScopeItem).where(ScopeItem.engagement_id == eng.id)
-        ).scalars()
+        session.execute(select(ScopeItem).where(ScopeItem.engagement_id == eng.id)).scalars()
     )
     seen = {(s.kind, s.value, s.is_exclusion) for s in existing}
 
@@ -698,9 +922,7 @@ def import_scope(
 def list_scope(slug: str, session: DbSession) -> list[ScopeItem]:
     eng = _get_engagement_or_404(session, slug)
     rows = session.execute(
-        select(ScopeItem)
-        .where(ScopeItem.engagement_id == eng.id)
-        .order_by(ScopeItem.created_at)
+        select(ScopeItem).where(ScopeItem.engagement_id == eng.id).order_by(ScopeItem.created_at)
     ).scalars()
     return list(rows)
 
@@ -794,9 +1016,7 @@ def list_findings(
         Query(
             ge=1,
             le=500,
-            description=(
-                "Optional page size. Omit to preserve the current full-list UI behavior."
-            ),
+            description=("Optional page size. Omit to preserve the current full-list UI behavior."),
         ),
     ] = None,
     offset: Annotated[
@@ -825,9 +1045,7 @@ def list_findings(
         # Postgres puts NULLs LAST when using DESC by default; explicit
         # nullslast() for clarity. Tie-break on created_at so the result
         # is stable for findings that share an observed_at.
-        stmt = stmt.order_by(
-            Finding.observed_at.desc().nullslast(), Finding.created_at.desc()
-        )
+        stmt = stmt.order_by(Finding.observed_at.desc().nullslast(), Finding.created_at.desc())
     else:  # newest
         stmt = stmt.order_by(Finding.created_at.desc())
 
@@ -867,9 +1085,7 @@ def list_entities(
         result = [e for e in result if e.get("type") == type]
     if q:
         needle = q.lower()
-        result = [
-            e for e in result if needle in str(e.get("value") or "").lower()
-        ]
+        result = [e for e in result if needle in str(e.get("value") or "").lower()]
     return result
 
 
@@ -1081,11 +1297,7 @@ def link_observation_to_finding(
         {"observation_id": observation_id, "finding_id": finding_id},
     )
     if existing is None:
-        session.add(
-            ObservationFindingLink(
-                observation_id=observation_id, finding_id=finding_id
-            )
-        )
+        session.add(ObservationFindingLink(observation_id=observation_id, finding_id=finding_id))
         session.commit()
     obs = session.get(Observation, observation_id)
     assert obs is not None
@@ -1117,9 +1329,7 @@ def unlink_observation_from_finding(
     return Response(status_code=204)
 
 
-@router.get(
-    "/findings/{finding_id}/observations", response_model=list[ObservationRead]
-)
+@router.get("/findings/{finding_id}/observations", response_model=list[ObservationRead])
 def list_observations_for_finding(
     finding_id: uuid.UUID, session: DbSession
 ) -> list[dict[str, Any]]:
@@ -1141,9 +1351,7 @@ def list_observations_for_finding(
         return []
     rows = list(
         session.execute(
-            select(Observation)
-            .where(Observation.id.in_(obs_ids))
-            .order_by(Observation.created_at)
+            select(Observation).where(Observation.id.in_(obs_ids)).order_by(Observation.created_at)
         ).scalars()
     )
     finding_ids = _observation_finding_ids(session, [o.id for o in rows])
@@ -1267,7 +1475,6 @@ def _create_findings_from_imports(
     *,
     source: str,
 ) -> tuple[list[Finding], int]:  # noqa: PLR0912, C901 — dispatch mixing grouped + per-hit + Burp dedup
-
     """Persist a list of import-shaped items as Findings + write the audit row.
 
     ``items`` is duck-typed: each must expose ``title``, ``severity``,
@@ -1349,9 +1556,7 @@ def _create_findings_from_imports(
                 item_details=item.details,
                 phase=item.phase,
                 status=status,
-                validated_by=user.id
-                if status == FindingStatus.validated
-                else None,
+                validated_by=user.id if status == FindingStatus.validated else None,
                 burp_serial_number=serial,
             )
             if not added:
@@ -1460,14 +1665,10 @@ def import_nessus(
 
     raw = _read_scanner_upload(file)
     scope_items = list(
-        session.execute(
-            select(ScopeItem).where(ScopeItem.engagement_id == eng.id)
-        ).scalars()
+        session.execute(select(ScopeItem).where(ScopeItem.engagement_id == eng.id)).scalars()
     )
     try:
-        result = parse_nessus_xml(
-            raw, include_info=include_info, scope_items=scope_items
-        )
+        result = parse_nessus_xml(raw, include_info=include_info, scope_items=scope_items)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -1504,9 +1705,7 @@ def import_nmap(
     _reject_flushed(eng)
     raw = _read_scanner_upload(file)
     scope_items = list(
-        session.execute(
-            select(ScopeItem).where(ScopeItem.engagement_id == eng.id)
-        ).scalars()
+        session.execute(select(ScopeItem).where(ScopeItem.engagement_id == eng.id)).scalars()
     )
     try:
         result = parse_nmap_xml(raw, scope_items=scope_items)
@@ -1561,14 +1760,10 @@ def import_burp(
 
     raw = _read_scanner_upload(file)
     scope_items = list(
-        session.execute(
-            select(ScopeItem).where(ScopeItem.engagement_id == eng.id)
-        ).scalars()
+        session.execute(select(ScopeItem).where(ScopeItem.engagement_id == eng.id)).scalars()
     )
     try:
-        result = parse_burp_xml(
-            raw, include_info=include_info, scope_items=scope_items
-        )
+        result = parse_burp_xml(raw, include_info=include_info, scope_items=scope_items)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -1641,9 +1836,7 @@ def _scanner_duplicate_index(
             if source == "burp" and item_serial:
                 burp_serials.add(str(item_serial))
     return DuplicateIndex(
-        group_dedup_keys={
-            key: frozenset(values) for key, values in group_dedup_keys.items()
-        },
+        group_dedup_keys={key: frozenset(values) for key, values in group_dedup_keys.items()},
         burp_serials=frozenset(burp_serials),
     )
 
@@ -1703,9 +1896,7 @@ def preview_scanner_import(
     _reject_flushed(eng)
     raw = _read_scanner_upload(file)
     scope_items = list(
-        session.execute(
-            select(ScopeItem).where(ScopeItem.engagement_id == eng.id)
-        ).scalars()
+        session.execute(select(ScopeItem).where(ScopeItem.engagement_id == eng.id)).scalars()
     )
     duplicate_index = _scanner_duplicate_index(session, eng.id, source)
     try:
@@ -1758,9 +1949,7 @@ def commit_scanner_import(
             status_code=400,
             detail="selected_group_keys must be a JSON array",
         ) from exc
-    if not isinstance(decoded_keys, list) or any(
-        not isinstance(key, str) for key in decoded_keys
-    ):
+    if not isinstance(decoded_keys, list) or any(not isinstance(key, str) for key in decoded_keys):
         raise HTTPException(
             status_code=400,
             detail="selected_group_keys must be a JSON array of strings",
@@ -1778,9 +1967,7 @@ def commit_scanner_import(
         )
 
     scope_items = list(
-        session.execute(
-            select(ScopeItem).where(ScopeItem.engagement_id == eng.id)
-        ).scalars()
+        session.execute(select(ScopeItem).where(ScopeItem.engagement_id == eng.id)).scalars()
     )
     duplicate_index = _scanner_duplicate_index(session, eng.id, source)
     try:
@@ -2148,9 +2335,7 @@ def correlate_findings(
                 Finding.engagement_id == eng.id,
                 Finding.deleted_at.is_(None),
                 Finding.exclusion.is_(None),
-                Finding.status.in_(
-                    [FindingStatus.validated, FindingStatus.pending_validation]
-                ),
+                Finding.status.in_([FindingStatus.validated, FindingStatus.pending_validation]),
             )
             .order_by(Finding.created_at.desc())
         ).scalars()
@@ -2174,8 +2359,7 @@ def correlate_findings(
         raise HTTPException(
             status_code=400,
             detail=(
-                "no provider key cached — upload one at /settings/keys "
-                "before running Correlate."
+                "no provider key cached — upload one at /settings/keys before running Correlate."
             ),
         ) from exc
 
@@ -2195,10 +2379,7 @@ def correlate_findings(
     session.commit()
 
     return CorrelateResponse(
-        groups=[
-            CorrelateGroup(rationale=g.rationale, finding_ids=g.finding_ids)
-            for g in groups
-        ],
+        groups=[CorrelateGroup(rationale=g.rationale, finding_ids=g.finding_ids) for g in groups],
         total_considered=len(findings),
     )
 
@@ -2450,9 +2631,7 @@ def regroup_findings_apply(
         if _EXCLUSION_PRIORITY[winning_exclusion] > _EXCLUSION_PRIORITY[parent_ex]:
             from app.models import FindingExclusion
 
-            parent.exclusion = (
-                FindingExclusion(winning_exclusion) if winning_exclusion else None
-            )
+            parent.exclusion = FindingExclusion(winning_exclusion) if winning_exclusion else None
 
         # Soft-delete every source row with a pointer back to the parent.
         for f in members:
@@ -2635,14 +2814,17 @@ def repair_groups(
 
         # Rekey path.
         if new_key and new_key != parent.group_key:
-            existing = parents_by_key.get(new_key) or session.execute(
-                select(Finding).where(
-                    Finding.engagement_id == eng.id,
-                    Finding.deleted_at.is_(None),
-                    Finding.group_key == new_key,
-                    Finding.id != parent.id,
-                )
-            ).scalar_one_or_none()
+            existing = (
+                parents_by_key.get(new_key)
+                or session.execute(
+                    select(Finding).where(
+                        Finding.engagement_id == eng.id,
+                        Finding.deleted_at.is_(None),
+                        Finding.group_key == new_key,
+                        Finding.id != parent.id,
+                    )
+                ).scalar_one_or_none()
+            )
             if existing is not None:
                 # Fold THIS parent INTO existing: re-point sources,
                 # merge items, soft-delete this parent.
@@ -2659,9 +2841,7 @@ def repair_groups(
                 continue
             # No collision — just rekey in place.
             parent.group_key = new_key
-            new_title = group_title(
-                parent.source_tool, new_key, parent.details or {}
-            )
+            new_title = group_title(parent.source_tool, new_key, parent.details or {})
             if new_title:
                 parent.title = new_title
             parents_rekeyed += 1
@@ -2933,6 +3113,32 @@ def merge_findings(
 
     parent.details = parent_details
 
+    # Preserve the work ledger across merge: transfer every child link to the
+    # surviving parent, collapsing only exact (work item, relationship)
+    # duplicates. Historical child IDs remain in the immutable merge audit.
+    from app.models import WorkItemFinding
+
+    child_id_set = {child.id for child in children}
+    work_links = list(
+        session.execute(
+            select(WorkItemFinding).where(WorkItemFinding.finding_id.in_(child_id_set))
+        ).scalars()
+    )
+    transferred_work_links = 0
+    for link in work_links:
+        duplicate = session.execute(
+            select(WorkItemFinding).where(
+                WorkItemFinding.work_item_id == link.work_item_id,
+                WorkItemFinding.finding_id == parent.id,
+                WorkItemFinding.relationship == link.relationship,
+            )
+        ).scalar_one_or_none()
+        if duplicate is not None:
+            session.delete(link)
+        else:
+            link.finding_id = parent.id
+            transferred_work_links += 1
+
     now = datetime.now(tz=UTC)
     for c in children:
         c.deleted_at = now
@@ -2955,6 +3161,7 @@ def merge_findings(
                 "child_ids": [str(c.id) for c in children],
                 "final_severity": top_sev.value,
                 "items_added": items_added,
+                "transferred_work_links": transferred_work_links,
                 "group_key": parent.group_key,
             },
         )
@@ -2968,9 +3175,11 @@ class BulkDeleteRequest(BaseModel):
     """Body for POST /engagements/{slug}/findings/bulk-delete (v0.10.0)."""
 
     finding_ids: list[uuid.UUID] = Field(
-        ..., min_length=1, max_length=500,
+        ...,
+        min_length=1,
+        max_length=500,
         description="IDs to soft-delete. Max 500 per call to keep the "
-                    "audit_log payload from ballooning.",
+        "audit_log payload from ballooning.",
     )
 
 
@@ -3092,9 +3301,7 @@ def delete_finding(
 # ---------------------------------------------------------------------------
 
 
-def _finding_summary_to_read(
-    entry: FindingSummary, author: User | None
-) -> dict[str, Any]:
+def _finding_summary_to_read(entry: FindingSummary, author: User | None) -> dict[str, Any]:
     return {
         "id": entry.id,
         "finding_id": entry.finding_id,
@@ -3372,13 +3579,17 @@ def start_run(
     user: CurrentNonGuestUser,
 ) -> RunStartResponse:
     eng = _get_engagement_or_404(session, slug)
+    from app.models import EngagementWorkState
+
+    if eng.work_state is EngagementWorkState.completed:
+        raise HTTPException(
+            status_code=409,
+            detail="completed engagement is read-only; reopen it before starting runs",
+        )
     if eng.status is not EngagementStatus.active:
         raise HTTPException(
             status_code=409,
-            detail=(
-                f"engagement is {eng.status.value}; only active engagements "
-                "accept new runs"
-            ),
+            detail=(f"engagement is {eng.status.value}; only active engagements accept new runs"),
         )
 
     # Resolve effective model: body wins, else fall back to env defaults.
@@ -3439,13 +3650,9 @@ def start_run(
     from app.orchestrator.tools import all_tools
     from app.services import mcp_lease
 
-    allowed_tools = [
-        spec.name for spec in all_tools() if spec.kind != TaskKind.exploit
-    ]
+    allowed_tools = [spec.name for spec in all_tools() if spec.kind != TaskKind.exploit]
     scope_items_for_lease = list(
-        session.execute(
-            select(ScopeItem).where(ScopeItem.engagement_id == eng.id)
-        ).scalars()
+        session.execute(select(ScopeItem).where(ScopeItem.engagement_id == eng.id)).scalars()
     )
     lease = mcp_lease.mint_for_engagement(
         session,
