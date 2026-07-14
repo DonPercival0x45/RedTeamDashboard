@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.agents.strategic import _extract_usage, _make_chat_model
+from app.core.config import settings
 from app.models import (
     AgentExecution,
     AgentExecutionStatus,
@@ -143,9 +144,9 @@ matching the required schema.
 class PlanningAgent:
     """Evaluates one suggestion at a time. ``evaluate`` is the entry point.
 
-    Like Strategic, BYO key resolution uses the ephemeral Redis cache
-    keyed on the suggestion author's user id — never an engagement
-    creator or env-var fallback.
+    Planner evaluation prefers a platform-owned key so feedback evaluation
+    is consistent and never consumes the submitter's BYO balance. Existing
+    installs retain a BYO fallback when no platform credential is configured.
     """
 
     def __init__(
@@ -172,15 +173,44 @@ class PlanningAgent:
                 self._provider or "test",
                 self._model_name or "test",
             )
-        provider = self._provider
-        model_name = self._model_name
-        if not (provider and model_name):
+        provider = self._provider or settings.planner_provider
+        model_name = self._model_name or settings.planner_model
+
+        platform_key = settings.planner_api_key
+        if platform_key.startswith("PLACEHOLDER-"):
+            platform_key = ""
+        platform_endpoint = settings.planner_endpoint or None
+        if not platform_key:
+            if provider == "openai":
+                platform_key = settings.openai_api_key
+            elif provider == "anthropic":
+                platform_key = settings.anthropic_api_key
+            elif provider == "azure":
+                platform_key = settings.azure_openai_api_key
+                platform_endpoint = (
+                    platform_endpoint or settings.azure_openai_endpoint
+                )
+        if platform_key and not platform_key.startswith("PLACEHOLDER-"):
+            return (
+                _make_chat_model(
+                    provider,
+                    model_name,
+                    api_key=platform_key,
+                    endpoint=platform_endpoint,
+                ),
+                provider,
+                model_name,
+            )
+
+        # Backwards-compatible escape hatch for installs that have not yet
+        # configured a platform credential. Explicit constructor overrides
+        # still win in tests; otherwise preserve the historical run default.
+        if not (self._provider and self._model_name):
             provider, model_name = default_provider_model()
         if self._redis is None:
             raise RuntimeError(
-                "PlanningAgent needs a redis_client to resolve the "
-                "submitter's BYO key — construct with "
-                "PlanningAgent(redis_client=...)"
+                "PlanningAgent needs PLANNER_API_KEY (preferred), an org "
+                "provider key, or redis_client for BYO fallback"
             )
         from app.services.ephemeral_provider_key import resolve_for_user
 

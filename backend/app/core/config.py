@@ -117,6 +117,16 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     openai_model: str = "gpt-4o-mini"
 
+    # Suggestion Box planner. This is a platform function: prefer its own
+    # inexpensive key/model so submitting product feedback never bills the
+    # analyst's ephemeral BYO credentials. Blank planner_api_key falls back to
+    # the corresponding org-level provider key for backwards compatibility.
+    planner_provider: str = "openai"
+    planner_model: str = "gpt-4o-mini"
+    planner_api_key: str = ""
+    planner_endpoint: str = ""
+    planner_daily_limit_per_user: int = 20
+
     # Ollama
     ollama_host: str = "http://ollama:11434"
     ollama_model: str = "llama3.1:8b"

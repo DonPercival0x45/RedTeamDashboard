@@ -42,6 +42,11 @@ services:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-rtd}:${POSTGRES_PASSWORD:-rtd}@postgres:5432/${POSTGRES_DB:-rtd}
       REDIS_URL: redis://redis:6379/0
       LLM_PROVIDER: ${LLM_PROVIDER:-anthropic}
+      PLANNER_PROVIDER: ${PLANNER_PROVIDER:-openai}
+      PLANNER_MODEL: ${PLANNER_MODEL:-gpt-4o-mini}
+      PLANNER_API_KEY: ${PLANNER_API_KEY:-}
+      PLANNER_ENDPOINT: ${PLANNER_ENDPOINT:-}
+      PLANNER_DAILY_LIMIT_PER_USER: ${PLANNER_DAILY_LIMIT_PER_USER:-20}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-opus-4-7}
       OLLAMA_HOST: ${OLLAMA_HOST:-http://host.docker.internal:11434}
@@ -87,6 +92,11 @@ services:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-rtd}:${POSTGRES_PASSWORD:-rtd}@postgres:5432/${POSTGRES_DB:-rtd}
       REDIS_URL: redis://redis:6379/0
       LLM_PROVIDER: ${LLM_PROVIDER:-anthropic}
+      PLANNER_PROVIDER: ${PLANNER_PROVIDER:-openai}
+      PLANNER_MODEL: ${PLANNER_MODEL:-gpt-4o-mini}
+      PLANNER_API_KEY: ${PLANNER_API_KEY:-}
+      PLANNER_ENDPOINT: ${PLANNER_ENDPOINT:-}
+      PLANNER_DAILY_LIMIT_PER_USER: ${PLANNER_DAILY_LIMIT_PER_USER:-20}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-opus-4-7}
       OLLAMA_HOST: ${OLLAMA_HOST:-http://host.docker.internal:11434}

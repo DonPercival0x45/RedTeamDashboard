@@ -74,6 +74,7 @@ az keyvault secret set --vault-name <KV-NAME> \
 # Drop in the LLM provider key(s) you'll actually use
 az keyvault secret set --vault-name <KV-NAME> --name anthropic-api-key --value 'sk-ant-…'
 az keyvault secret set --vault-name <KV-NAME> --name openai-api-key    --value 'sk-…'
+az keyvault secret set --vault-name <KV-NAME> --name planner-api-key   --value 'sk-…'
 
 # Restart the apps so they pick up the rotated secrets
 az containerapp revision restart -n rtd-prod-backend -g rtd-prod \
