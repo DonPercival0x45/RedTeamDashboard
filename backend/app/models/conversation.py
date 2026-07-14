@@ -1,14 +1,20 @@
 from __future__ import annotations
 
+import enum
 import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, ForeignKey, String, Text, func
+from sqlalchemy import CheckConstraint, DateTime, Enum, ForeignKey, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, TimestampMixin, uuid7
+
+
+class ConversationContextType(enum.StrEnum):
+    finding = "finding"
+    engagement = "engagement"
 
 
 class Conversation(Base, TimestampMixin):
@@ -20,6 +26,13 @@ class Conversation(Base, TimestampMixin):
     """
 
     __tablename__ = "conversations"
+    __table_args__ = (
+        CheckConstraint(
+            "(context_type = 'finding' AND finding_id IS NOT NULL) "
+            "OR (context_type = 'engagement' AND finding_id IS NULL)",
+            name="ck_conversations_context_consistency",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid7
@@ -30,9 +43,15 @@ class Conversation(Base, TimestampMixin):
         nullable=False,
         index=True,
     )
-    finding_id: Mapped[uuid.UUID] = mapped_column(
+    finding_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("findings.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    context_type: Mapped[ConversationContextType] = mapped_column(
+        Enum(ConversationContextType, name="conversation_context_type"),
+        default=ConversationContextType.finding,
         nullable=False,
         index=True,
     )

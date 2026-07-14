@@ -20,6 +20,8 @@ class SuggestionKind(enum.StrEnum):
     task = "task"
     ephemeral = "ephemeral"
     note = "note"
+    work_item = "work_item"
+    strategy_revision = "strategy_revision"
 
 
 class SuggestionStatus(enum.StrEnum):
@@ -42,6 +44,7 @@ class AgentName(enum.StrEnum):
     triage = "triage"
     tool_review = "tool_review"
     correlate = "correlate"
+    engagement_strategist = "engagement_strategist"
 
 
 class Suggestion(Base, TimestampMixin):
@@ -92,4 +95,15 @@ class Suggestion(Base, TimestampMixin):
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     task_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("tasks.id", ondelete="SET NULL")
+    )
+    proposal_key: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    context_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    objective_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("engagement_objectives.id", ondelete="SET NULL"),
+    )
+    work_item_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("work_items.id", ondelete="SET NULL"),
+        index=True,
     )

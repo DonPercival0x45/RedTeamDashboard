@@ -4,7 +4,7 @@ import enum
 import uuid
 from datetime import date, datetime
 
-from sqlalchemy import Date, DateTime, Enum, ForeignKey, String, Text
+from sqlalchemy import Date, DateTime, Enum, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -22,6 +22,12 @@ class EngagementTimeFrame(enum.StrEnum):
     point_in_time_continuous = "point_in_time_continuous"
     point_in_time = "point_in_time"
     custom = "custom"
+
+
+class EngagementWorkState(enum.StrEnum):
+    active = "active"
+    completion_review = "completion_review"
+    completed = "completed"
 
 
 class Engagement(Base, TimestampMixin):
@@ -51,3 +57,15 @@ class Engagement(Base, TimestampMixin):
     )
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     flushed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Engagement Strategist foundation: work completion is independent from
+    # archive/flush visibility, with a version for optimistic updates.
+    work_state: Mapped[EngagementWorkState] = mapped_column(
+        Enum(EngagementWorkState, name="engagement_work_state"),
+        default=EngagementWorkState.active,
+        nullable=False,
+        server_default="active",
+        index=True,
+    )
+    work_state_version: Mapped[int] = mapped_column(
+        Integer, default=1, nullable=False, server_default="1"
+    )
