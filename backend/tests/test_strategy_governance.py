@@ -298,6 +298,12 @@ def test_execution_suggestion_is_inert_then_acceptance_routes_through_tactical(
     assert task.owner_eligibility == OwnerEligibility.agent
     assert calls == [task.id]
 
+    repeated_accept = client.post(f"/suggestions/{suggestion_id}/accept", headers=HDR)
+    assert repeated_accept.status_code == 200, repeated_accept.text
+    assert repeated_accept.json()["dispatched"] is True
+    assert repeated_accept.json()["task"]["id"] == str(task.id)
+    assert calls == [task.id]
+
 
 def test_execution_proposal_rechecks_version_scope_and_terminal_state(
     client: TestClient,

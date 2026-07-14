@@ -31,6 +31,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from sqlalchemy import select
+from sqlalchemy.orm import object_session
 
 from app.mcp.auth import get_current_key, get_current_lease, get_current_user
 from app.models import (
@@ -143,6 +144,9 @@ def _resolve_engagement(session, slug: str) -> Engagement:
 
 
 def _ensure_mutable_engagement(eng: Engagement) -> None:
+    session = object_session(eng)
+    if session is not None:
+        session.refresh(eng, with_for_update=True)
     if eng.status == EngagementStatus.flushed:
         raise ValueError("engagement has been flushed")
     if eng.status == EngagementStatus.archived:

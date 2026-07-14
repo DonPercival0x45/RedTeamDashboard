@@ -31,7 +31,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Query, Response
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, object_session
 
 from app.agents import StrategicAgent
 from app.api.deps import CurrentNonGuestUser, CurrentUser, DbSession, RedisClient
@@ -111,6 +111,9 @@ def _engagement_by_slug(session: Session, slug: str) -> Engagement:
 
 
 def _ensure_mutable_engagement(engagement: Engagement) -> None:
+    session = object_session(engagement)
+    if session is not None:
+        session.refresh(engagement, with_for_update=True)
     if engagement.status == EngagementStatus.flushed:
         raise HTTPException(status_code=404, detail="engagement not found")
     if engagement.status == EngagementStatus.archived:
@@ -492,7 +495,12 @@ def accept_finding_chat_action(
     if finding is None:
         raise HTTPException(status_code=404, detail="finding not found")
     _ensure_finding_mutable(session, finding)
-    message = session.get(ConversationMessage, message_id)
+    message = session.execute(
+        select(ConversationMessage)
+        .where(ConversationMessage.id == message_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
     if message is None:
         raise HTTPException(status_code=404, detail="message not found")
     conv = session.get(Conversation, message.conversation_id)
@@ -560,7 +568,12 @@ def deny_finding_chat_action(
     if finding is None:
         raise HTTPException(status_code=404, detail="finding not found")
     _ensure_finding_mutable(session, finding)
-    message = session.get(ConversationMessage, message_id)
+    message = session.execute(
+        select(ConversationMessage)
+        .where(ConversationMessage.id == message_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
     if message is None:
         raise HTTPException(status_code=404, detail="message not found")
     conv = session.get(Conversation, message.conversation_id)
@@ -831,13 +844,23 @@ def dismiss_suggestion(
     session: DbSession,
     user: CurrentNonGuestUser,
 ) -> Suggestion:
-    suggestion = session.get(Suggestion, suggestion_id)
-    if suggestion is None:
+    initial = session.get(Suggestion, suggestion_id)
+    if initial is None:
         raise HTTPException(status_code=404, detail="suggestion not found")
-    engagement = session.get(Engagement, suggestion.engagement_id)
+    engagement = session.get(Engagement, initial.engagement_id)
     if engagement is None:
         raise HTTPException(status_code=404, detail="engagement not found")
     _ensure_mutable_engagement(engagement)
+    suggestion = session.execute(
+        select(Suggestion)
+        .where(Suggestion.id == suggestion_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
+    if suggestion is None or suggestion.engagement_id != engagement.id:
+        raise HTTPException(status_code=404, detail="suggestion not found")
+    if suggestion.status == SuggestionStatus.dismissed:
+        return suggestion
     if suggestion.status != SuggestionStatus.open:
         raise HTTPException(
             status_code=409,

@@ -8,6 +8,8 @@ from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import object_session
 
 from app.api.deps import CurrentNonGuestUser, CurrentUser, DbSession
 from app.models import (
@@ -56,6 +58,9 @@ def _engagement(session: DbSession, slug: str, *, lock: bool = False) -> Engagem
 
 
 def _mutable(engagement: Engagement) -> None:
+    session = object_session(engagement)
+    if session is not None:
+        session.refresh(engagement, with_for_update=True)
     if engagement.status == EngagementStatus.archived:
         raise HTTPException(status_code=409, detail="archived engagement is read-only")
     if engagement.work_state == EngagementWorkState.completed:
@@ -144,6 +149,8 @@ def create_coverage(
         item_status = CoverageStatus(body.status)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if item_status == CoverageStatus.accepted_gap and not (body.reason or "").strip():
+        raise HTTPException(status_code=422, detail="accepted gaps require a reason")
     if body.objective_id is not None:
         objective = session.get(EngagementObjective, body.objective_id)
         if objective is None or objective.engagement_id != eng.id:
@@ -185,7 +192,11 @@ def create_coverage(
         "coverage.created",
         {"coverage_item_id": str(row.id), "status": item_status.value},
     )
-    session.commit()
+    try:
+        session.commit()
+    except IntegrityError as exc:
+        session.rollback()
+        raise HTTPException(status_code=409, detail="coverage item already exists") from exc
     session.refresh(row)
     return row
 

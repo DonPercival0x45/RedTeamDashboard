@@ -69,7 +69,12 @@ def _engagement_by_slug(session: Session, slug: str) -> Engagement:
 
 
 def _ensure_mutable_engagement(session: Session, engagement_id: uuid.UUID) -> None:
-    engagement = session.get(Engagement, engagement_id)
+    engagement = session.execute(
+        select(Engagement)
+        .where(Engagement.id == engagement_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
     if engagement is None or engagement.status == EngagementStatus.flushed:
         raise HTTPException(status_code=404, detail="engagement not found")
     if engagement.status == EngagementStatus.archived:

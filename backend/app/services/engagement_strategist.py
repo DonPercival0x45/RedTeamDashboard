@@ -27,7 +27,9 @@ from app.models import (
     CoverageItem,
     Engagement,
     EngagementObjective,
+    EngagementStatus,
     EngagementStrategyRevision,
+    EngagementWorkState,
     Entity,
     Finding,
     Observation,
@@ -41,6 +43,7 @@ from app.models import (
     Task,
     WorkItem,
     WorkItemFinding,
+    WorkItemResult,
 )
 from app.orchestrator.llm import default_provider_model
 from app.schemas.engagement_strategist import StrategistOutput
@@ -70,6 +73,40 @@ def _enum(value: Any) -> Any:
 
 def _bounded(value: Any, size: int = 1000) -> str:
     return str(value or "")[:size]
+
+
+def _bounded_json(value: Any, *, max_chars: int = 12_000) -> Any:
+    """Bound untrusted JSON by depth, fan-out, string size, and total bytes."""
+
+    def walk(item: Any, depth: int = 0) -> Any:
+        if depth >= 5:
+            return "[depth truncated]"
+        if isinstance(item, dict):
+            keys = sorted(item, key=str)
+            bounded = {str(key)[:200]: walk(item[key], depth + 1) for key in keys[:50]}
+            if len(keys) > 50:
+                bounded["_truncated_keys"] = len(keys) - 50
+            return bounded
+        if isinstance(item, list):
+            values = [walk(entry, depth + 1) for entry in item[:50]]
+            if len(item) > 50:
+                values.append({"_truncated_items": len(item) - 50})
+            return values
+        if isinstance(item, str):
+            return item[:2_000]
+        if item is None or isinstance(item, (bool, int, float)):
+            return item
+        return str(item)[:2_000]
+
+    bounded = walk(value)
+    encoded = json.dumps(bounded, sort_keys=True, default=str)
+    if len(encoded) <= max_chars:
+        return bounded
+    return {
+        "_truncated": True,
+        "preview": encoded[:max_chars],
+        "original_chars": len(encoded),
+    }
 
 
 def build_engagement_dossier(
@@ -212,7 +249,7 @@ def build_engagement_dossier(
                 "version": strategy.version,
                 "summary": _bounded(strategy.summary, 300),
                 "body": _bounded(strategy.body, 20000),
-                "structured": strategy.structured,
+                "structured": _bounded_json(strategy.structured),
             }
             if strategy
             else None
@@ -333,7 +370,20 @@ def build_engagement_dossier(
             }
             for row in coverage
         ],
-        "report_readiness": readiness.model_dump(mode="json"),
+        "report_readiness": _bounded_json(readiness.model_dump(mode="json"), max_chars=16_000),
+        "allowed_record_refs": {
+            "engagement": [str(engagement.id)],
+            "strategy_revision": [str(strategy.id)] if strategy else [],
+            "objective": [str(row.id) for row in objectives],
+            "work_item": [str(row.id) for row in work],
+            "work_item_result": [],
+            "finding": [str(row.id) for row in findings],
+            "observation": [str(row.id) for row in observations],
+            "entity": [str(row.id) for row in entities],
+            "task": [str(row.id) for row in tasks],
+            "coverage_item": [str(row.id) for row in coverage],
+            "strategy_signal": [str(row.id) for row in signals],
+        },
         "bounds": {
             "objectives": 100,
             "scope": 200,
@@ -394,8 +444,86 @@ def _resolve_model(
     return provider or default_provider, model or default_model
 
 
-def _validate_proposals(session: Session, engagement: Engagement, output: StrategistOutput) -> None:
+def _validate_proposals(
+    session: Session,
+    engagement: Engagement,
+    output: StrategistOutput,
+    dossier: dict[str, Any],
+) -> None:
+    refs = [ref for item in [*output.facts, *output.inferences] for ref in item.refs]
+    allowed_refs = {
+        ref_type: set(ids)
+        for ref_type, ids in (dossier.get("allowed_record_refs") or {}).items()
+        if isinstance(ids, list)
+    }
+    for ref in refs:
+        if str(ref.id) not in allowed_refs.get(ref.type, set()):
+            raise ValueError(
+                f"strategist referenced a {ref.type} record not supplied in the dossier"
+            )
+    refs_by_type: dict[str, set[uuid.UUID]] = {}
+    for ref in refs:
+        refs_by_type.setdefault(ref.type, set()).add(ref.id)
+    if refs_by_type.get("engagement", set()) - {engagement.id}:
+        raise ValueError("strategist referenced a foreign engagement")
+
+    model_by_type = {
+        "strategy_revision": EngagementStrategyRevision,
+        "objective": EngagementObjective,
+        "work_item": WorkItem,
+        "finding": Finding,
+        "observation": Observation,
+        "entity": Entity,
+        "task": Task,
+        "coverage_item": CoverageItem,
+        "strategy_signal": StrategySignal,
+    }
+    for ref_type, model in model_by_type.items():
+        ids = refs_by_type.get(ref_type, set())
+        if not ids:
+            continue
+        valid = set(
+            session.execute(
+                select(model.id).where(
+                    model.engagement_id == engagement.id,
+                    model.id.in_(ids),
+                )
+            ).scalars()
+        )
+        if valid != ids:
+            raise ValueError(f"strategist referenced a foreign or unknown {ref_type}")
+
+    result_ids = refs_by_type.get("work_item_result", set())
+    if result_ids:
+        valid_results = set(
+            session.execute(
+                select(WorkItemResult.id)
+                .join(WorkItem, WorkItem.id == WorkItemResult.work_item_id)
+                .where(
+                    WorkItem.engagement_id == engagement.id,
+                    WorkItemResult.id.in_(result_ids),
+                )
+            ).scalars()
+        )
+        if valid_results != result_ids:
+            raise ValueError("strategist referenced a foreign or unknown work-item result")
+
+    revision = output.strategy_revision_proposal
+    if revision is not None:
+        current_revision_id = session.execute(
+            select(EngagementStrategyRevision.id).where(
+                EngagementStrategyRevision.engagement_id == engagement.id,
+                EngagementStrategyRevision.state == StrategyRevisionState.current,
+            )
+        ).scalar_one_or_none()
+        if revision.based_on_revision_id is None:
+            revision.based_on_revision_id = current_revision_id
+        elif revision.based_on_revision_id != current_revision_id:
+            raise ValueError("strategy revision proposal is not based on the current revision")
+
     objective_ids = {row.objective_id for row in output.work_item_proposals if row.objective_id}
+    if {str(item) for item in objective_ids} - allowed_refs.get("objective", set()):
+        raise ValueError("strategist proposed an objective not supplied in the dossier")
     if objective_ids:
         valid = set(
             session.execute(
@@ -414,6 +542,8 @@ def _validate_proposals(session: Session, engagement: Engagement, output: Strate
                 finding_ids.add(uuid.UUID(str(link.get("finding_id"))))
             except (TypeError, ValueError) as exc:
                 raise ValueError("strategist proposed an invalid finding reference") from exc
+    if {str(item) for item in finding_ids} - allowed_refs.get("finding", set()):
+        raise ValueError("strategist proposed a finding not supplied in the dossier")
     if finding_ids:
         valid_findings = set(
             session.execute(
@@ -531,6 +661,7 @@ def run_engagement_strategist(
         raise RuntimeError(
             "engagement strategist daily cost limit reached; retry after the UTC reset"
         )
+
     execution = AgentExecution(
         engagement_id=engagement.id,
         agent=AgentName.engagement_strategist,
@@ -551,6 +682,29 @@ def run_engagement_strategist(
     session.add(execution)
     session.commit()
     session.refresh(execution)
+
+    # Serialize production runs per engagement after telemetry registration.
+    # A rejected concurrent request is recorded as failed, while every acquired
+    # lock is now inside the try/finally recovery boundary below.
+    lock_key = f"engagement_strategist:run_lock:{engagement.id}"
+    lock_token = str(uuid.uuid4())
+    lock_acquired = False
+    set_lock = getattr(redis_client, "set", None)
+    if callable(set_lock):
+        try:
+            lock_acquired = bool(set_lock(lock_key, lock_token, nx=True, ex=600))
+        except Exception as exc:
+            execution.status = AgentExecutionStatus.failed
+            execution.completed_at = datetime.now(tz=UTC)
+            execution.error = f"engagement strategist lock unavailable: {exc}"[:1000]
+            session.commit()
+            raise RuntimeError(execution.error) from exc
+        if not lock_acquired:
+            execution.status = AgentExecutionStatus.failed
+            execution.completed_at = datetime.now(tz=UTC)
+            execution.error = "an engagement strategist run is already in progress"
+            session.commit()
+            raise RuntimeError(execution.error)
     try:
         credential = resolve_for_user(redis_client, user_id=acting_user_id, provider=provider)
         llm = _make_chat_model(
@@ -578,11 +732,29 @@ def run_engagement_strategist(
             ]
         )
         output = _parse_output(response)
-        _validate_proposals(session, engagement, output)
+        _validate_proposals(session, engagement, output, dossier)
+
+        # The LLM call can outlive an archive/completion action in another
+        # session. Re-lock and refresh lifecycle state before any proposal or
+        # assistant effect is persisted; an in-flight run becomes failed
+        # telemetry rather than writing into a read-only engagement.
+        current_engagement = session.execute(
+            select(Engagement)
+            .where(Engagement.id == engagement.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).scalar_one_or_none()
+        if current_engagement is None or current_engagement.status == EngagementStatus.flushed:
+            raise RuntimeError("engagement was flushed while strategist was running")
+        if current_engagement.status == EngagementStatus.archived:
+            raise RuntimeError("engagement was archived while strategist was running")
+        if current_engagement.work_state == EngagementWorkState.completed:
+            raise RuntimeError("engagement completed while strategist was running")
+
         suggestions = (
             _persist_suggestions(
                 session,
-                engagement=engagement,
+                engagement=current_engagement,
                 execution=execution,
                 output=output,
                 context_hash=context_hash,
@@ -606,3 +778,14 @@ def run_engagement_strategist(
         execution.error = str(exc)[:1000]
         session.commit()
         raise
+    finally:
+        if lock_acquired:
+            try:
+                get_lock = getattr(redis_client, "get", None)
+                delete_lock = getattr(redis_client, "delete", None)
+                if callable(delete_lock) and (
+                    not callable(get_lock) or get_lock(lock_key) == lock_token
+                ):
+                    delete_lock(lock_key)
+            except Exception:  # noqa: BLE001 — TTL is the recovery path
+                pass

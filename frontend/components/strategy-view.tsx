@@ -303,8 +303,10 @@ export function StrategyView({
     return <p className="text-sm text-critical">{error ?? "Strategy workspace unavailable."}</p>;
   }
 
+  // Completion review is a live remediation state: analysts must be able to
+  // resolve blockers and refresh the readiness hash before approval.
   const readOnly =
-    engagementStatus !== "active" || data.completion.work_state !== "active";
+    engagementStatus !== "active" || data.completion.work_state === "completed";
   const remaining = data.workItems.filter((item) =>
     ["ready", "in_progress", "blocked"].includes(item.status),
   ).length;
@@ -333,7 +335,7 @@ export function StrategyView({
         <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-200">
           {engagementStatus !== "active"
             ? `This engagement is ${engagementStatus}. Strategy and work are read-only.`
-            : `Engagement work state is ${data.completion.work_state}. Reopen or finish the completion decision before changing strategy or work.`}
+            : "This engagement is completed. Reopen it before changing strategy or work."}
         </div>
       )}
       {error && <p role="alert" className="rounded-md border border-critical/40 bg-critical/10 p-3 text-sm text-critical">{error}</p>}

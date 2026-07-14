@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException, Response
 from sqlalchemy import delete, select
+from sqlalchemy.orm import object_session
 from sqlalchemy.orm.attributes import flag_modified
 
 from app.api.deps import CurrentNonGuestUser, CurrentUser, DbSession, RedisClient
@@ -21,6 +22,7 @@ from app.models import (
     EngagementStatus,
     EngagementWorkState,
     Suggestion,
+    SuggestionStatus,
 )
 from app.schemas.engagement_strategist import (
     StrategistActionDecision,
@@ -46,6 +48,9 @@ def _engagement(session: DbSession, slug: str) -> Engagement:
 
 
 def _mutable(row: Engagement) -> None:
+    session = object_session(row)
+    if session is not None:
+        session.refresh(row, with_for_update=True)
     if row.status == EngagementStatus.archived:
         raise HTTPException(status_code=409, detail="archived engagement is read-only")
     if row.work_state == EngagementWorkState.completed:
@@ -209,6 +214,17 @@ def post_chat(
         )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"strategist chat failed: {exc}") from exc
+
+    current_engagement = session.execute(
+        select(Engagement)
+        .where(Engagement.id == engagement.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
+    if current_engagement is None:
+        raise HTTPException(status_code=404, detail="engagement not found")
+    _mutable(current_engagement)
+
     actions = [
         {
             "type": "suggestion",
@@ -245,7 +261,13 @@ def _action_message(
     user_id: uuid.UUID,
 ) -> tuple[Engagement, ConversationMessage, list[dict]]:
     engagement = _engagement(session, slug)
-    message = session.get(ConversationMessage, message_id)
+    _mutable(engagement)
+    message = session.execute(
+        select(ConversationMessage)
+        .where(ConversationMessage.id == message_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
     conversation = session.get(Conversation, message.conversation_id) if message else None
     if (
         message is None
@@ -328,30 +350,51 @@ def deny_action(
     if body.action_index >= len(actions) or not isinstance(actions[body.action_index], dict):
         raise HTTPException(status_code=404, detail="action not found")
     action = dict(actions[body.action_index])
+    try:
+        suggestion_id = uuid.UUID(str(action.get("suggestion_id")))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="invalid suggestion action") from exc
+    if action.get("status") == "denied":
+        return StrategistActionResult(
+            message=StrategistChatMessageRead.model_validate(message),
+            suggestion_id=suggestion_id,
+            status="denied",
+        )
     if action.get("status") != "proposed":
         raise HTTPException(status_code=409, detail=f"action is {action.get('status')}")
-    suggestion_id = uuid.UUID(str(action.get("suggestion_id")))
-    suggestion = session.get(Suggestion, suggestion_id)
+    suggestion = session.execute(
+        select(Suggestion).where(Suggestion.id == suggestion_id).with_for_update()
+    ).scalar_one_or_none()
     if suggestion is None or suggestion.engagement_id != engagement.id:
         raise HTTPException(status_code=422, detail="invalid suggestion action")
-    from app.models import SuggestionStatus
+    if suggestion.status == SuggestionStatus.accepted:
+        raise HTTPException(
+            status_code=409,
+            detail="suggestion was already accepted and cannot be denied",
+        )
 
-    suggestion.status = SuggestionStatus.dismissed
-    suggestion.decided_by = user.id
-    suggestion.decided_at = datetime.now(tz=UTC)
+    newly_dismissed = suggestion.status == SuggestionStatus.open
+    if newly_dismissed:
+        suggestion.status = SuggestionStatus.dismissed
+        suggestion.decided_by = user.id
+        suggestion.decided_at = datetime.now(tz=UTC)
     action["status"] = "denied"
     actions[body.action_index] = action
     message.action_payload = {**(message.action_payload or {}), "actions": actions}
     flag_modified(message, "action_payload")
-    session.add(
-        AuditLog(
-            engagement_id=engagement.id,
-            actor_type=ActorType.user,
-            actor_id=str(user.id),
-            event_type="suggestion.dismissed",
-            payload={"suggestion_id": str(suggestion.id), "source": "engagement_strategist_chat"},
+    if newly_dismissed:
+        session.add(
+            AuditLog(
+                engagement_id=engagement.id,
+                actor_type=ActorType.user,
+                actor_id=str(user.id),
+                event_type="suggestion.dismissed",
+                payload={
+                    "suggestion_id": str(suggestion.id),
+                    "source": "engagement_strategist_chat",
+                },
+            )
         )
-    )
     session.commit()
     session.refresh(message)
     return StrategistActionResult(

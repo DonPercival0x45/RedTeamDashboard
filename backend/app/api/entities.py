@@ -23,6 +23,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy.orm import object_session
 
 from app.api.deps import CurrentNonGuestUser, CurrentUser, DbSession
 from app.models import (
@@ -137,6 +138,9 @@ def _finding_or_404(session, finding_id: uuid.UUID) -> Finding:
 
 
 def _ensure_mutable(engagement: Engagement) -> None:
+    session = object_session(engagement)
+    if session is not None:
+        session.refresh(engagement, with_for_update=True)
     if engagement.status == EngagementStatus.flushed:
         raise HTTPException(status_code=404, detail="engagement not found")
     if engagement.status == EngagementStatus.archived:

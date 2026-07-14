@@ -66,6 +66,7 @@ from fastapi import (
 )
 from pydantic import BaseModel, Field
 from sqlalchemy import case, func, select, text
+from sqlalchemy.orm import object_session
 
 from app.api.deps import (
     CurrentAdminUser,
@@ -547,6 +548,7 @@ def _build_export_payload(
 
 
 def _reject_only_flushed(eng: Engagement) -> None:
+    """Unlocked read/preview guard; does not serialize a mutation."""
     if eng.status is EngagementStatus.flushed:
         raise HTTPException(
             status_code=409,
@@ -554,9 +556,16 @@ def _reject_only_flushed(eng: Engagement) -> None:
         )
 
 
-def _reject_flushed(eng: Engagement) -> None:
-    """Reject data mutations in flushed, archived, or completed engagements."""
+def _lock_not_flushed(eng: Engagement) -> None:
+    session = object_session(eng)
+    if session is not None:
+        session.refresh(eng, with_for_update=True)
     _reject_only_flushed(eng)
+
+
+def _reject_flushed(eng: Engagement) -> None:
+    """Lock the engagement and reject read-only lifecycle mutations."""
+    _lock_not_flushed(eng)
     if eng.status is EngagementStatus.archived:
         raise HTTPException(status_code=409, detail="archived engagement is read-only")
     from app.models import EngagementWorkState
@@ -682,7 +691,7 @@ def update_engagement(
     _user: CurrentNonGuestUser,
 ) -> EngagementRead:
     eng = _get_engagement_or_404(session, slug)
-    _reject_only_flushed(eng)
+    _lock_not_flushed(eng)
     from app.models import EngagementWorkState
 
     if eng.status is EngagementStatus.archived and (
@@ -755,7 +764,7 @@ def export_engagement(
 )
 def archive_engagement(slug: str, session: DbSession, _user: CurrentNonGuestUser) -> Engagement:
     eng = _get_engagement_or_404(session, slug)
-    _reject_only_flushed(eng)
+    _lock_not_flushed(eng)
     if eng.status is not EngagementStatus.archived:
         eng.status = EngagementStatus.archived
         eng.archived_at = datetime.now(tz=UTC)
@@ -3633,13 +3642,7 @@ def start_run(
     user: CurrentNonGuestUser,
 ) -> RunStartResponse:
     eng = _get_engagement_or_404(session, slug)
-    from app.models import EngagementWorkState
-
-    if eng.work_state is EngagementWorkState.completed:
-        raise HTTPException(
-            status_code=409,
-            detail="completed engagement is read-only; reopen it before starting runs",
-        )
+    _reject_flushed(eng)
     if eng.status is not EngagementStatus.active:
         raise HTTPException(
             status_code=409,

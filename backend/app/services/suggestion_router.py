@@ -319,10 +319,17 @@ def accept_suggestion(
     user_id: uuid.UUID,
     commit: bool = True,
 ) -> SuggestionAcceptance:
+    initial = session.get(Suggestion, suggestion_id)
+    if initial is None:
+        raise HTTPException(status_code=404, detail="suggestion not found")
+    locked_engagement = _mutable_engagement(session, initial.engagement_id)
     suggestion = session.execute(
-        select(Suggestion).where(Suggestion.id == suggestion_id).with_for_update()
+        select(Suggestion)
+        .where(Suggestion.id == suggestion_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
     ).scalar_one_or_none()
-    if suggestion is None:
+    if suggestion is None or suggestion.engagement_id != locked_engagement.id:
         raise HTTPException(status_code=404, detail="suggestion not found")
     if suggestion.status == SuggestionStatus.accepted:
         accepted_revision_id = (suggestion.payload or {}).get("accepted_strategy_revision_id")
@@ -332,9 +339,10 @@ def accept_suggestion(
             )
         except ValueError:
             accepted_revision_uuid = None
+        accepted_task = session.get(Task, suggestion.task_id) if suggestion.task_id else None
         return SuggestionAcceptance(
             suggestion=suggestion,
-            task=session.get(Task, suggestion.task_id) if suggestion.task_id else None,
+            task=accepted_task,
             work_item=session.get(WorkItem, suggestion.work_item_id)
             if suggestion.work_item_id
             else None,
@@ -343,10 +351,14 @@ def accept_suggestion(
                 if accepted_revision_uuid
                 else None
             ),
+            dispatched=(
+                accepted_task is not None
+                and accepted_task.status
+                in {TaskStatus.dispatched, TaskStatus.running, TaskStatus.completed}
+            ),
         )
     if suggestion.status != SuggestionStatus.open:
         raise HTTPException(status_code=409, detail=f"suggestion is {suggestion.status.value}")
-    _mutable_engagement(session, suggestion.engagement_id)
     result = SuggestionAcceptance(suggestion=suggestion)
     task_route = suggestion.kind == SuggestionKind.task
     if suggestion.kind == SuggestionKind.work_item:

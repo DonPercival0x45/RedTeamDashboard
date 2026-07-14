@@ -75,6 +75,18 @@ def engagement(db: Session) -> Iterator[Engagement]:
 def test_coverage_gap_requires_explicit_exception(
     client: TestClient, db: Session, engagement: Engagement
 ) -> None:
+    invalid_gap = client.post(
+        f"/engagements/{engagement.slug}/coverage",
+        headers=HDR,
+        json={
+            "target_kind": "domain",
+            "target_key": "missing-reason.example.test",
+            "activity_category": "scanner_coverage",
+            "status": "accepted_gap",
+        },
+    )
+    assert invalid_gap.status_code == 422, invalid_gap.text
+
     coverage = client.post(
         f"/engagements/{engagement.slug}/coverage",
         headers=HDR,
@@ -87,6 +99,18 @@ def test_coverage_gap_requires_explicit_exception(
         },
     )
     assert coverage.status_code == 201, coverage.text
+    duplicate = client.post(
+        f"/engagements/{engagement.slug}/coverage",
+        headers=HDR,
+        json={
+            "target_kind": "domain",
+            "target_key": "example.test",
+            "activity_category": "scanner_coverage",
+            "status": "deferred",
+            "reason": "Duplicate",
+        },
+    )
+    assert duplicate.status_code == 409, duplicate.text
 
     readiness = client.get(f"/engagements/{engagement.slug}/completion/readiness", headers=HDR)
     assert readiness.status_code == 200, readiness.text

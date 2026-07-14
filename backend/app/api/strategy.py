@@ -14,7 +14,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, object_session
 
 from app.api.deps import CurrentNonGuestUser, CurrentUser, DbSession
 from app.models import (
@@ -95,6 +95,9 @@ def _engagement(session: Session, slug: str) -> Engagement:
 
 
 def _ensure_mutable(engagement: Engagement) -> None:
+    session = object_session(engagement)
+    if session is not None:
+        session.refresh(engagement, with_for_update=True)
     if engagement.status in (EngagementStatus.archived, EngagementStatus.flushed):
         raise HTTPException(
             status_code=409,
@@ -181,10 +184,27 @@ def _finding_for_engagement(
 
 
 def _work_item_locked(session: Session, work_item_id: uuid.UUID) -> WorkItem:
-    row = session.execute(
-        select(WorkItem).where(WorkItem.id == work_item_id).with_for_update()
+    initial = session.get(WorkItem, work_item_id)
+    if initial is None:
+        raise HTTPException(status_code=404, detail="work item not found")
+    # Global mutation lock order is Engagement → child record. Completion
+    # already locks Engagement first; using the same order avoids lifecycle /
+    # completion deadlocks while still refreshing the mutable child row.
+    engagement = session.execute(
+        select(Engagement)
+        .where(Engagement.id == initial.engagement_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
     ).scalar_one_or_none()
-    if row is None:
+    if engagement is None:
+        raise HTTPException(status_code=404, detail="engagement not found")
+    row = session.execute(
+        select(WorkItem)
+        .where(WorkItem.id == work_item_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
+    if row is None or row.engagement_id != engagement.id:
         raise HTTPException(status_code=404, detail="work item not found")
     return row
 
@@ -1180,12 +1200,19 @@ def create_work_item_result(
 def _result_and_work_locked(
     session: Session, result_id: uuid.UUID
 ) -> tuple[WorkItemResult, WorkItem]:
-    result = session.execute(
-        select(WorkItemResult).where(WorkItemResult.id == result_id).with_for_update()
-    ).scalar_one_or_none()
-    if result is None:
+    initial = session.get(WorkItemResult, result_id)
+    if initial is None:
         raise HTTPException(status_code=404, detail="work item result not found")
-    work = _work_item_locked(session, result.work_item_id)
+    # Engagement → WorkItem → Result matches every other work mutation path.
+    work = _work_item_locked(session, initial.work_item_id)
+    result = session.execute(
+        select(WorkItemResult)
+        .where(WorkItemResult.id == result_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
+    if result is None or result.work_item_id != work.id:
+        raise HTTPException(status_code=404, detail="work item result not found")
     return result, work
 
 
@@ -1493,15 +1520,21 @@ def _decide_signal(
     user: Any,
     target: StrategySignalStatus,
 ):
-    row = session.execute(
-        select(StrategySignal).where(StrategySignal.id == signal_id).with_for_update()
-    ).scalar_one_or_none()
-    if row is None:
+    initial = session.get(StrategySignal, signal_id)
+    if initial is None:
         raise HTTPException(status_code=404, detail="strategy signal not found")
-    eng = session.get(Engagement, row.engagement_id)
+    eng = session.get(Engagement, initial.engagement_id)
     if eng is None:
         raise HTTPException(status_code=404, detail="engagement not found")
     _ensure_mutable(eng)
+    row = session.execute(
+        select(StrategySignal)
+        .where(StrategySignal.id == signal_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
+    if row is None or row.engagement_id != eng.id:
+        raise HTTPException(status_code=404, detail="strategy signal not found")
     if row.status == target:
         return row
     if row.status != StrategySignalStatus.open:

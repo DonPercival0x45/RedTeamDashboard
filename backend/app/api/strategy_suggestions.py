@@ -47,18 +47,29 @@ def create_execution_suggestion(
     session: DbSession,
     user: CurrentNonGuestUser,
 ) -> ExecutionSuggestionResponse:
-    work_item = session.execute(
-        select(WorkItem).where(WorkItem.id == work_item_id).with_for_update()
-    ).scalar_one_or_none()
-    if work_item is None:
+    initial_work_item = session.get(WorkItem, work_item_id)
+    if initial_work_item is None:
         raise HTTPException(status_code=404, detail="work item not found")
-    engagement = session.get(Engagement, work_item.engagement_id)
+    engagement = session.execute(
+        select(Engagement)
+        .where(Engagement.id == initial_work_item.engagement_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
     if engagement is None or engagement.status == EngagementStatus.flushed:
         raise HTTPException(status_code=404, detail="engagement not found")
     if engagement.status == EngagementStatus.archived:
         raise HTTPException(status_code=409, detail="archived engagement is read-only")
     if engagement.work_state == EngagementWorkState.completed:
         raise HTTPException(status_code=409, detail="completed engagement is read-only")
+    work_item = session.execute(
+        select(WorkItem)
+        .where(WorkItem.id == work_item_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
+    if work_item is None or work_item.engagement_id != engagement.id:
+        raise HTTPException(status_code=404, detail="work item not found")
     if work_item.status in {WorkItemStatus.completed, WorkItemStatus.cancelled}:
         raise HTTPException(status_code=409, detail="terminal work item cannot launch execution")
     if work_item.row_version != body.expected_work_item_version:
@@ -69,11 +80,15 @@ def create_execution_suggestion(
         select(Suggestion).where(
             Suggestion.engagement_id == work_item.engagement_id,
             Suggestion.kind == SuggestionKind.task,
-            Suggestion.work_item_id == work_item.id,
             Suggestion.proposal_key == body.idempotency_key,
         )
     ).scalar_one_or_none()
     if existing is not None:
+        if existing.work_item_id != work_item.id:
+            raise HTTPException(
+                status_code=409,
+                detail="idempotency key was already used for another work item",
+            )
         return ExecutionSuggestionResponse(
             suggestion=SuggestionRead.model_validate(existing),
             scope_reason=str((existing.payload or {}).get("scope_reason") or "already validated"),

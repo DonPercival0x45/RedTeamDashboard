@@ -83,6 +83,7 @@ async def create_tool_invocation(
     handed to the worker instead (v0.15 wiring).
     """
     eng = _get_engagement_or_404(session, slug)
+    session.refresh(eng, with_for_update=True)
     if eng.status == EngagementStatus.archived:
         raise HTTPException(status_code=409, detail="archived engagement is read-only")
     if eng.status == EngagementStatus.flushed:
