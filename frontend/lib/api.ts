@@ -724,6 +724,48 @@ export function importFindings(
   });
 }
 
+async function scannerImportError(response: Response): Promise<Error> {
+  const body = await response.json().catch(() => null) as { detail?: unknown } | null;
+  const detail = typeof body?.detail === "string" ? body.detail : response.statusText;
+  return new Error(`${response.status}: ${detail}`);
+}
+
+export async function previewScannerImport(
+  slug: string,
+  source: import("@/lib/types").ScannerImportSource,
+  file: File,
+  includeInfo: boolean = false,
+): Promise<import("@/lib/types").ScannerImportPreview> {
+  const form = new FormData();
+  form.append("file", file);
+  const query = includeInfo ? "?include_info=true" : "";
+  const response = await fetch(
+    `${API_BASE_URL}/engagements/${encodeURIComponent(slug)}/findings/import/${source}/preview${query}`,
+    { method: "POST", body: form, headers: { ...(await authHeaders()) } },
+  );
+  if (!response.ok) throw await scannerImportError(response);
+  return response.json() as Promise<import("@/lib/types").ScannerImportPreview>;
+}
+
+export async function commitScannerImport(
+  slug: string,
+  source: import("@/lib/types").ScannerImportSource,
+  file: File,
+  fileSha256: string,
+  selectedGroupKeys: string[],
+): Promise<import("@/lib/types").ScannerImportCommitResult> {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("file_sha256", fileSha256);
+  form.append("selected_group_keys", JSON.stringify(selectedGroupKeys));
+  const response = await fetch(
+    `${API_BASE_URL}/engagements/${encodeURIComponent(slug)}/findings/import/${source}/commit`,
+    { method: "POST", body: form, headers: { ...(await authHeaders()) } },
+  );
+  if (!response.ok) throw await scannerImportError(response);
+  return response.json() as Promise<import("@/lib/types").ScannerImportCommitResult>;
+}
+
 /**
  * Upload a Tenable Nessus .nessus v2 XML export. The backend parser
  * walks ReportItems and persists each as a Finding(status=pending_validation).

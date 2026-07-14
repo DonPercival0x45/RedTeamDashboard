@@ -395,6 +395,52 @@ export interface BurpImportResult {
   export_time: string | null;
 }
 
+export type ScannerImportSource = "nessus" | "burp" | "nmap";
+
+export interface ScannerScopeReason {
+  code: string;
+  count: number;
+  message: string;
+}
+
+export interface ScannerPreviewGroup {
+  selection_key: string;
+  title: string;
+  severity: Severity;
+  phase: FindingPhase;
+  item_count: number;
+  target_count: number;
+  targets: string[];
+  targets_truncated: boolean;
+  scope_decision: string;
+  scope_reasons: ScannerScopeReason[];
+  in_scope_item_count: number;
+  out_of_scope_item_count: number;
+  duplicate_state: "new" | "partial" | "existing";
+  duplicate_item_count: number;
+  default_selected: boolean;
+}
+
+export interface ScannerImportPreview {
+  source: ScannerImportSource;
+  file_sha256: string;
+  total_source_rows: number;
+  groups: ScannerPreviewGroup[];
+  counts: Record<string, number>;
+  parser_counts: Record<string, number>;
+}
+
+export interface ScannerImportCommitResult {
+  source: ScannerImportSource;
+  file_sha256: string;
+  selected_group_count: number;
+  selected_item_count: number;
+  skipped_out_of_scope: number;
+  skipped_duplicate: number;
+  imported: Finding[];
+  parser_counts: Record<string, number>;
+}
+
 // Phase 10 — stored entities (Maltego import target + future sources).
 // Complements the existing derived-from-findings Entity (above).
 export interface StoredEntity {

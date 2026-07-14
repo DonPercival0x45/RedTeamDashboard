@@ -4,15 +4,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Upload } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { ScannerImportWizard } from "@/components/scanner-import-wizard";
 import { Textarea } from "@/components/ui/textarea";
-import { importFindings, importFindingsNessus, importFindingsNmap } from "@/lib/api";
+import { importFindings } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import type {
   Finding,
   FindingImport,
   FindingPhase,
-  NessusImportResult,
-  NmapImportResult,
   Severity,
 } from "@/lib/types";
 
@@ -178,16 +177,7 @@ export function FindingImporter({
   const [importing, setImporting] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
-  // Nessus-mode state. Kept separate from the text-paste flow because
-  // .nessus files are routinely 1-10MB and we don't pre-parse client-side
-  // — the result panel reports the post-import counts from the server.
-  const [nessusFile, setNessusFile] = useState<File | null>(null);
-  const [includeInfo, setIncludeInfo] = useState(false);
-  const [nessusResult, setNessusResult] = useState<NessusImportResult | null>(
-    null,
-  );
-  const [nmapFile, setNmapFile] = useState<File | null>(null);
-  const [nmapResult, setNmapResult] = useState<NmapImportResult | null>(null);
+  const [scannerInitialFile, setScannerInitialFile] = useState<File | null>(null);
 
   useEffect(() => {
     if (mode === "nessus" || mode === "nmap") {
@@ -205,19 +195,18 @@ export function FindingImporter({
     async (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
       if (!file) return;
-      // Auto-detect by extension. .nessus → file-only Nessus mode; other
-      // file types feed the existing text-paste flow.
+      // Auto-detect scanner exports, then hand the browser File object to
+      // the shared server-backed preview wizard.
       if (file.name.endsWith(".nessus")) {
         setMode("nessus");
-        setNessusFile(file);
-        setNessusResult(null);
+        setScannerInitialFile(file);
         setText("");
       } else if (file.name.toLowerCase().endsWith(".xml")) {
         setMode("nmap");
-        setNmapFile(file);
-        setNmapResult(null);
+        setScannerInitialFile(file);
         setText("");
       } else {
+        setScannerInitialFile(null);
         setText(await file.text());
         if (file.name.endsWith(".json")) setMode("json");
         else setMode("csv");
@@ -228,38 +217,6 @@ export function FindingImporter({
   );
 
   const onImport = async () => {
-    if (mode === "nmap") {
-      if (!nmapFile) return;
-      setImporting(true);
-      setImportError(null);
-      try {
-        const result = await importFindingsNmap(slug, nmapFile);
-        onImported(result.imported);
-        setNmapResult(result);
-        setNmapFile(null);
-      } catch (err) {
-        setImportError(err instanceof Error ? err.message : String(err));
-      } finally {
-        setImporting(false);
-      }
-      return;
-    }
-    if (mode === "nessus") {
-      if (!nessusFile) return;
-      setImporting(true);
-      setImportError(null);
-      try {
-        const result = await importFindingsNessus(slug, nessusFile, includeInfo);
-        onImported(result.imported);
-        setNessusResult(result);
-        setNessusFile(null);
-      } catch (err) {
-        setImportError(err instanceof Error ? err.message : String(err));
-      } finally {
-        setImporting(false);
-      }
-      return;
-    }
     if (!parsed || parsed.rows.length === 0) return;
     setImporting(true);
     setImportError(null);
@@ -295,10 +252,7 @@ export function FindingImporter({
               onClick={() => {
                 setMode(m);
                 setText("");
-                setNessusFile(null);
-                setNessusResult(null);
-                setNmapFile(null);
-                setNmapResult(null);
+                setScannerInitialFile(null);
                 setImportError(null);
               }}
               className={cn(
@@ -355,63 +309,14 @@ export function FindingImporter({
         />
       )}
 
-      {/* Nessus: file-only upload + include_info toggle */}
-      {mode === "nessus" && (
-        <div className="space-y-2 rounded border border-border bg-background p-2 text-xs">
-          <div className="flex items-center gap-2">
-            <span className="text-muted-foreground">File:</span>
-            <span className="truncate font-mono">
-              {nessusFile?.name ?? (
-                <span className="text-muted-foreground/70">
-                  none selected — click the File button above
-                </span>
-              )}
-            </span>
-            {nessusFile && (
-              <span className="ml-auto shrink-0 font-mono text-[10px] text-muted-foreground">
-                {(nessusFile.size / 1024).toFixed(1)} KB
-              </span>
-            )}
-          </div>
-          <label className="flex cursor-pointer items-center gap-2 text-muted-foreground">
-            <input
-              type="checkbox"
-              checked={includeInfo}
-              onChange={(e) => setIncludeInfo(e.target.checked)}
-              className="accent-foreground"
-            />
-            <span>
-              Include <span className="font-mono">severity=Info</span> findings
-            </span>
-          </label>
-          <p className="text-[11px] text-muted-foreground/70">
-            Out-of-scope hosts are dropped silently. Counts are shown below
-            after import.
-          </p>
-        </div>
-      )}
-
-      {mode === "nmap" && (
-        <div className="space-y-2 rounded border border-border bg-background p-2 text-xs">
-          <div className="flex items-center gap-2">
-            <span className="text-muted-foreground">File:</span>
-            <span className="truncate font-mono">
-              {nmapFile?.name ?? (
-                <span className="text-muted-foreground/70">
-                  none selected — upload an <code>nmap -oX</code> XML file
-                </span>
-              )}
-            </span>
-            {nmapFile && (
-              <span className="ml-auto shrink-0 font-mono text-[10px] text-muted-foreground">
-                {(nmapFile.size / 1024).toFixed(1)} KB
-              </span>
-            )}
-          </div>
-          <p className="text-[11px] text-muted-foreground/70">
-            Open ports are grouped by service signature. Closed and out-of-scope ports are counted but not imported.
-          </p>
-        </div>
+      {(mode === "nessus" || mode === "nmap") && (
+        <ScannerImportWizard
+          key={mode}
+          slug={slug}
+          source={mode}
+          initialFile={scannerInitialFile}
+          onImported={onImported}
+        />
       )}
 
       {/* Parse preview */}
@@ -463,85 +368,26 @@ export function FindingImporter({
         </div>
       )}
 
-      {/* Nessus post-import result panel (server-side counts) */}
-      {mode === "nessus" && nessusResult && (
-        <div className="space-y-1 rounded border border-border bg-background p-2 text-xs">
-          <div className="font-medium">
-            Imported{" "}
-            <span className="font-mono">{nessusResult.imported.length}</span> of{" "}
-            <span className="font-mono">{nessusResult.total_items}</span>{" "}
-            ReportItems
-          </div>
-          {(nessusResult.skipped_info > 0 ||
-            nessusResult.skipped_out_of_scope > 0) && (
-            <div className="text-muted-foreground">
-              Skipped:{" "}
-              {nessusResult.skipped_info > 0 && (
-                <span>
-                  <span className="font-mono">{nessusResult.skipped_info}</span>{" "}
-                  info
-                </span>
-              )}
-              {nessusResult.skipped_info > 0 &&
-                nessusResult.skipped_out_of_scope > 0 && <span> · </span>}
-              {nessusResult.skipped_out_of_scope > 0 && (
-                <span>
-                  <span className="font-mono">
-                    {nessusResult.skipped_out_of_scope}
-                  </span>{" "}
-                  out-of-scope
-                </span>
-              )}
-            </div>
-          )}
-        </div>
-      )}
-
-      {mode === "nmap" && nmapResult && (
-        <div className="space-y-1 rounded border border-border bg-background p-2 text-xs">
-          <div className="font-medium">
-            Imported <span className="font-mono">{nmapResult.imported.length}</span> grouped findings from{" "}
-            <span className="font-mono">{nmapResult.total_ports}</span> ports
-          </div>
-          <p className="text-muted-foreground">
-            Skipped {nmapResult.skipped_closed} closed · {nmapResult.skipped_out_of_scope} out-of-scope
-          </p>
-        </div>
-      )}
-
       {importError && (
         <p className="text-xs text-critical">{importError}</p>
       )}
 
-      <div className="flex justify-end">
-        <Button
-          type="button"
-          size="sm"
-          disabled={
-            importing ||
-            (mode === "nessus"
-              ? !nessusFile
-              : mode === "nmap"
-                ? !nmapFile
-                : !parsed || parsed.rows.length === 0)
-          }
-          onClick={onImport}
-        >
-          {importing
-            ? "Importing…"
-            : mode === "nessus"
-              ? nessusFile
-                ? "Import Nessus"
-                : "Import"
-              : mode === "nmap"
-                ? nmapFile
-                  ? "Import Nmap"
-                  : "Import"
+      {mode !== "nessus" && mode !== "nmap" && (
+        <div className="flex justify-end">
+          <Button
+            type="button"
+            size="sm"
+            disabled={importing || !parsed || parsed.rows.length === 0}
+            onClick={onImport}
+          >
+            {importing
+              ? "Importing…"
               : parsed && parsed.rows.length > 0
                 ? `Import ${parsed.rows.length}`
                 : "Import"}
-        </Button>
-      </div>
+          </Button>
+        </div>
+      )}
     </div>
   );
 }
