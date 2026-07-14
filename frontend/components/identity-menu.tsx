@@ -7,6 +7,7 @@
 // work as deep-links for bookmarks.
 import { Settings } from "lucide-react";
 import { useState } from "react";
+import { ApprovalInbox } from "@/components/approval-inbox";
 import { Button } from "@/components/ui/button";
 import { SettingsModal } from "@/components/settings/settings-modal";
 import { WhatsNewModal } from "@/components/settings/whats-new-modal";
@@ -34,6 +35,7 @@ export function IdentityMenu() {
           <span className="ml-1 text-xs text-muted-foreground/60">(dev)</span>
         )}
       </span>
+      <ApprovalInbox />
       <button
         type="button"
         onClick={() => setWhatsNewOpen(true)}

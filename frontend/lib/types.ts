@@ -96,6 +96,11 @@ export interface Approval {
   updated_at: string;
 }
 
+export interface ApprovalInboxItem extends Approval {
+  engagement_slug: string;
+  engagement_name: string;
+}
+
 export type Severity = "info" | "low" | "medium" | "high" | "critical";
 
 export type FindingPhase =

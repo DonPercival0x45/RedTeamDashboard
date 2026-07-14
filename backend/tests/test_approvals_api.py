@@ -128,23 +128,48 @@ def test_list_pending_approvals_returns_only_pending(
     response = client.get(
         f"/engagements/{engagement.id}/approvals",
         params={"status": "pending"},
+        headers={"X-User-Id": "analyst@example.com"},
     )
     assert response.status_code == 200
     rows = response.json()
     assert [r["id"] for r in rows] == [str(pending.id)]
 
 
+def test_global_approval_inbox_is_enriched_and_oldest_first(
+    client: TestClient, db: Session, engagement: Engagement
+) -> None:
+    first = _pending_approval(db, engagement.id)
+    second = _pending_approval(db, engagement.id)
+
+    response = client.get(
+        "/approvals",
+        params={"status": "pending"},
+        headers={"X-User-Id": "analyst@example.com"},
+    )
+    assert response.status_code == 200, response.text
+    rows = [row for row in response.json() if row["engagement_id"] == str(engagement.id)]
+    assert [row["id"] for row in rows] == [str(first.id), str(second.id)]
+    assert all(row["engagement_slug"] == engagement.slug for row in rows)
+    assert all(row["engagement_name"] == engagement.name for row in rows)
+
+
 def test_get_single_approval(
     client: TestClient, db: Session, engagement: Engagement
 ) -> None:
     approval = _pending_approval(db, engagement.id)
-    response = client.get(f"/approvals/{approval.id}")
+    response = client.get(
+        f"/approvals/{approval.id}",
+        headers={"X-User-Id": "analyst@example.com"},
+    )
     assert response.status_code == 200
     assert response.json()["id"] == str(approval.id)
 
 
 def test_get_missing_approval_is_404(client: TestClient) -> None:
-    response = client.get(f"/approvals/{uuid.uuid4()}")
+    response = client.get(
+        f"/approvals/{uuid.uuid4()}",
+        headers={"X-User-Id": "analyst@example.com"},
+    )
     assert response.status_code == 404
 
 

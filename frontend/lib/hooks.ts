@@ -65,6 +65,7 @@ import {
   listObservations,
   listProviderKeys,
   listOrchestratorTools,
+  listPendingApprovals,
   listRoadmapSuggestions,
   listScope,
   listStoredEntities,
@@ -112,6 +113,7 @@ export const qk = {
     ["roadmap-suggestions", filters] as const,
   authorizations: (engagementId: string, active?: boolean) =>
     ["authorizations", engagementId, { active }] as const,
+  pendingApprovals: () => ["approvals", "pending"] as const,
   engagements: () => ["engagements"] as const,
   engagement: (slug: string) => ["engagement", slug] as const,
   reportReadiness: (slug: string) => ["report-readiness", slug] as const,
@@ -745,13 +747,26 @@ export function useRevokeAuthorizationMutation(engagementId: string) {
 
 // ── approvals ────────────────────────────────────────────────────────
 
+export function usePendingApprovals() {
+  return useQuery({
+    queryKey: qk.pendingApprovals(),
+    queryFn: listPendingApprovals,
+    refetchInterval: (query) =>
+      (query.state.data?.length ?? 0) > 0 ? 3_000 : 10_000,
+  });
+}
+
 export function useDecideApprovalMutation() {
-  // No query to invalidate — approvals are per-modal, ephemeral.
+  const qc = useQueryClient();
   return useMutation({
     mutationFn: (params: {
       approvalId: string;
       body: Parameters<typeof decideApproval>[1];
     }) => decideApproval(params.approvalId, params.body),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: qk.pendingApprovals() });
+      void qc.invalidateQueries({ queryKey: ["engagement-status"] });
+    },
   });
 }
 
