@@ -211,6 +211,27 @@ def test_parse_drops_out_of_scope_hosts(db: Session) -> None:
     assert [i.title for i in result.items] == ["kept"]
 
 
+def test_parse_cidr_scope_keeps_contained_host() -> None:
+    xml = _make_xml(
+        _host(
+            "inside.example.test",
+            "10.0.0.42",
+            _item(severity=2, plugin_name="kept-by-cidr"),
+        )
+    )
+    scope_items = [
+        ScopeItem(
+            engagement_id=uuid.uuid4(),
+            kind=ScopeKind.cidr,
+            value="10.0.0.0/24",
+            is_exclusion=False,
+        ),
+    ]
+    result = parse_nessus_xml(xml, scope_items=scope_items)
+    assert result.skipped_out_of_scope == 0
+    assert [row.title for row in result.items] == ["kept-by-cidr"]
+
+
 def test_parse_empty_scope_does_no_filtering() -> None:
     xml = _make_xml(
         _host(

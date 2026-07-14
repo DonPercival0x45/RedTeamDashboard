@@ -24,6 +24,7 @@ from typing import Any
 from defusedxml import ElementTree
 
 from app.models import FindingPhase, ScopeItem, Severity
+from app.services.scope_matcher import evaluate_scope_candidates, infer_scope_kind
 
 # Nessus severity attribute (string) → our Severity enum.
 # 0 = Info, 1 = Low, 2 = Medium, 3 = High, 4 = Critical.
@@ -100,28 +101,18 @@ def _host_in_scope(
     host_props: dict[str, str],
     scope_items: list[ScopeItem],
 ) -> bool:
-    """Literal-string scope match against the host's known addresses.
-
-    CIDR/wildcard scope expansion lives in the orchestrator scope-gate
-    (``app/orchestrator/gate.py``). The Phase 11 JSON importer doesn't
-    apply scope filtering at all; this importer is stricter because
-    Nessus exports often span hundreds of hosts and analysts should not
-    have to manually prune out-of-scope rows. If exact-string match
-    proves insufficient, swap to the gate's scope logic in a follow-up.
-    """
-    if not scope_items:
-        return True
-    addrs = {host_target}
+    """Evaluate all Nessus host identities through the canonical matcher."""
+    addresses = {host_target}
     if "host-fqdn" in host_props:
-        addrs.add(host_props["host-fqdn"])
+        addresses.add(host_props["host-fqdn"])
     if "host-ip" in host_props:
-        addrs.add(host_props["host-ip"])
-    addrs.discard("")
-    excludes = {item.value for item in scope_items if item.is_exclusion}
-    if addrs & excludes:
-        return False
-    includes = {item.value for item in scope_items if not item.is_exclusion}
-    return bool(addrs & includes)
+        addresses.add(host_props["host-ip"])
+    addresses.discard("")
+    return evaluate_scope_candidates(
+        [(value, infer_scope_kind(value)) for value in addresses],
+        scope_items,
+        empty_scope_allowed=True,
+    ).allowed
 
 
 def parse_nessus_xml(
