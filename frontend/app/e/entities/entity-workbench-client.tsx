@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { ArrowLeft, Boxes, Clipboard, Network, RefreshCcw, ShieldCheck } from "lucide-react";
+import { DateTime } from "@/components/date-time";
 import { Badge } from "@/components/ui/badge";
 import {
   listEntities,
@@ -251,7 +252,7 @@ function ToolsPanel({ type, value, tasks }: { type: string; value: string; tasks
 }
 
 function EvidencePanel({ storedMatches, entity }: { storedMatches: StoredEntity[]; entity: Entity | null }) {
-  return <div className="space-y-4"><section className="rounded-lg border border-border bg-background p-4"><h2 className="text-sm font-medium">Imported records</h2>{storedMatches.length === 0 ? <p className="mt-2 text-sm text-muted-foreground">No imported records for this exact entity.</p> : <ul className="mt-3 space-y-2">{storedMatches.map((s) => <li key={s.id} className="rounded border border-border p-3 text-xs"><p className="font-mono">{s.type}:{s.value}</p><p className="mt-1 text-muted-foreground">{s.source_attribution ?? s.source_tool} · {new Date(s.created_at).toLocaleString()}</p><pre className="mt-2 max-h-44 overflow-auto rounded bg-muted/40 p-2">{JSON.stringify(s.properties, null, 2)}</pre></li>)}</ul>}</section><section className="rounded-lg border border-border bg-background p-4"><h2 className="text-sm font-medium">Finding provenance</h2>{entity ? <ul className="mt-3 space-y-2">{entity.findings.map((f) => <li key={f.id} className="rounded border border-border p-2 text-xs">{f.title} · {f.tool ?? "manual"} · {f.phase}</li>)}</ul> : <p className="mt-2 text-sm text-muted-foreground">No derived finding provenance.</p>}</section></div>;
+  return <div className="space-y-4"><section className="rounded-lg border border-border bg-background p-4"><h2 className="text-sm font-medium">Imported records</h2>{storedMatches.length === 0 ? <p className="mt-2 text-sm text-muted-foreground">No imported records for this exact entity.</p> : <ul className="mt-3 space-y-2">{storedMatches.map((s) => <li key={s.id} className="rounded border border-border p-3 text-xs"><p className="font-mono">{s.type}:{s.value}</p><p className="mt-1 text-muted-foreground">{s.source_attribution ?? s.source_tool} · <DateTime value={s.created_at} /></p><pre className="mt-2 max-h-44 overflow-auto rounded bg-muted/40 p-2">{JSON.stringify(s.properties, null, 2)}</pre></li>)}</ul>}</section><section className="rounded-lg border border-border bg-background p-4"><h2 className="text-sm font-medium">Finding provenance</h2>{entity ? <ul className="mt-3 space-y-2">{entity.findings.map((f) => <li key={f.id} className="rounded border border-border p-2 text-xs">{f.title} · {f.tool ?? "manual"} · {f.phase}</li>)}</ul> : <p className="mt-2 text-sm text-muted-foreground">No derived finding provenance.</p>}</section></div>;
 }
 
 function ActivityPanel({ entity, findings, tasks, storedMatches }: { entity: Entity | null; findings: Finding[]; tasks: Task[]; storedMatches: StoredEntity[] }) {
@@ -261,7 +262,7 @@ function ActivityPanel({ entity, findings, tasks, storedMatches }: { entity: Ent
     ...storedMatches.map((s) => ({ ts: s.created_at, label: `Imported from ${s.source_tool}`, detail: s.source_attribution ?? s.type })),
   ].sort((a, b) => String(b.ts).localeCompare(String(a.ts)));
   if (!entity && rows.length === 0) return <p className="text-sm text-muted-foreground">No activity for this entity yet.</p>;
-  return <ol className="space-y-3 border-l border-border pl-4">{rows.map((r, i) => <li key={`${r.ts}-${i}`} className="relative"><span className="absolute -left-[1.4rem] flex h-5 w-5 items-center justify-center rounded-full bg-card"><Network className="h-3.5 w-3.5 text-muted-foreground" /></span><p className="text-sm font-medium">{r.label}</p><p className="text-xs text-muted-foreground">{new Date(r.ts).toLocaleString()} · {r.detail}</p></li>)}</ol>;
+  return <ol className="space-y-3 border-l border-border pl-4">{rows.map((r, i) => <li key={`${r.ts}-${i}`} className="relative"><span className="absolute -left-[1.4rem] flex h-5 w-5 items-center justify-center rounded-full bg-card"><Network className="h-3.5 w-3.5 text-muted-foreground" /></span><p className="text-sm font-medium">{r.label}</p><p className="text-xs text-muted-foreground"><DateTime value={r.ts} /> · {r.detail}</p></li>)}</ol>;
 }
 
 function Metric({ label, value, tone, icon }: { label: string; value: string; tone?: "good" | "bad" | "warn"; icon?: ReactNode }) {

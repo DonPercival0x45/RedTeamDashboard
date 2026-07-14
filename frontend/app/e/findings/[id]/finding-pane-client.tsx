@@ -14,6 +14,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
+import { DateTime } from "@/components/date-time";
 import { Badge } from "@/components/ui/badge";
 import {
   createFindingSummary,
@@ -101,19 +102,6 @@ const KIND_META: Record<string, { icon: typeof Activity; tint: string }> = {
   "finding.updated": { icon: Activity, tint: "text-muted-foreground" },
 };
 
-function fmtTs(ts: string | null): string {
-  if (!ts) return "—";
-  const d = new Date(ts);
-  return Number.isNaN(d.getTime())
-    ? "—"
-    : d.toLocaleString(undefined, {
-        month: "short",
-        day: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
-      });
-}
-
 function FindingPane({ id, slug }: { id: string; slug: string | null }) {
   const { data: finding, isLoading, error } = useFinding(id);
   const { data: activity } = useFindingActivity(id);
@@ -185,9 +173,9 @@ function FindingPane({ id, slug }: { id: string; slug: string | null }) {
         )}
         <div className="mt-2 flex flex-wrap gap-x-5 gap-y-1 text-xs text-muted-foreground">
           {finding.tool && <span>source: {finding.tool}</span>}
-          <span>created {fmtTs(finding.created_at)}</span>
+          <span>created <DateTime value={finding.created_at} /></span>
           {finding.observed_at && (
-            <span>observed {fmtTs(finding.observed_at)}</span>
+            <span>observed <DateTime value={finding.observed_at} /></span>
           )}
         </div>
         {finding.summary && (
@@ -540,7 +528,7 @@ function SummaryPanel({ finding }: { finding: Finding }) {
               <li key={entry.id} className="rounded-md border border-border bg-background p-2">
                 <p className="line-clamp-3 text-xs">{entry.body}</p>
                 <p className="mt-1 text-[10px] text-muted-foreground">
-                  {entry.author_display_name || entry.author_email || "unknown"} · {fmtTs(entry.created_at)}
+                  {entry.author_display_name || entry.author_email || "unknown"} · <DateTime value={entry.created_at} />
                 </p>
               </li>
             ))}
@@ -676,7 +664,7 @@ function CommentsPanel({ finding, slug }: { finding: Finding; slug: string | nul
           rows.map((row) => (
             <div key={row.id} className="rounded-md border border-border bg-background p-2">
               <p className="text-sm">{row.content}</p>
-              <p className="mt-1 text-[10px] text-muted-foreground">{fmtTs(row.created_at)}</p>
+              <p className="mt-1 text-[10px] text-muted-foreground"><DateTime value={row.created_at} /></p>
             </div>
           ))
         )}
@@ -877,7 +865,7 @@ function AttachmentsPanel({ finding }: { finding: Finding }) {
                 </span>
               </div>
               <div className="mt-1 flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
-                <span>{fmtTs(row.created_at)}</span>
+                <span><DateTime value={row.created_at} /></span>
                 <button
                   type="button"
                   disabled={busy}
@@ -1312,8 +1300,8 @@ function DetailsPanel({ finding, slug }: { finding: Finding; slug: string | null
         <div className="mt-3 grid grid-cols-2 gap-2 text-xs md:grid-cols-4">
           <InfoTile label="Tool" value={finding.tool ?? "manual"} />
           <InfoTile label="Target" value={finding.target ?? "—"} />
-          <InfoTile label="Created" value={fmtTs(finding.created_at)} />
-          <InfoTile label="Observed" value={fmtTs(finding.observed_at)} />
+          <InfoTile label="Created" value={<DateTime value={finding.created_at} />} />
+          <InfoTile label="Observed" value={<DateTime value={finding.observed_at} />} />
         </div>
         <GroupedItemsTable finding={finding} />
         <details className="mt-4 rounded-md border border-border bg-background">
@@ -1380,7 +1368,7 @@ function GroupedItemsTable({ finding }: { finding: Finding }) {
   );
 }
 
-function InfoTile({ label, value }: { label: string; value: string }) {
+function InfoTile({ label, value }: { label: string; value: ReactNode }) {
   return (
     <div className="rounded-md border border-border bg-background p-2">
       <p className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</p>
@@ -1512,8 +1500,8 @@ function ActionHistoryPanel({
               </p>
               <div className="mt-2 grid grid-cols-1 gap-2 text-[10px] text-muted-foreground sm:grid-cols-3">
                 <span>run: {task.run_id ?? "not dispatched"}</span>
-                <span>sent: {fmtTs(task.dispatched_at)}</span>
-                <span>done: {fmtTs(task.completed_at)}</span>
+                <span>sent: <DateTime value={task.dispatched_at} /></span>
+                <span>done: <DateTime value={task.completed_at} /></span>
               </div>
             </li>
           ))}
@@ -1731,7 +1719,7 @@ function ChatBubble({
           {mine ? "Analyst" : "Assistant"}
         </span>
         <span className="text-[10px] text-muted-foreground">
-          {fmtTs(message.created_at)}
+          <DateTime value={message.created_at} />
         </span>
       </div>
       <p className="whitespace-pre-wrap leading-relaxed">{message.content}</p>
@@ -1870,7 +1858,7 @@ function TimelineRow({ entry }: { entry: FindingActivityEntry }) {
           {entry.label}
         </span>
         <span className="text-[11px] text-muted-foreground">
-          {fmtTs(entry.ts)}
+          <DateTime value={entry.ts} />
         </span>
       </div>
       {shown && (
