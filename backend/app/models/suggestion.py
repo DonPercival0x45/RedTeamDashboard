@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, Enum, ForeignKey, String, Text
+from sqlalchemy import DateTime, Enum, ForeignKey, Index, String, Text, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -56,6 +56,16 @@ class Suggestion(Base, TimestampMixin):
     """
 
     __tablename__ = "suggestions"
+    __table_args__ = (
+        Index(
+            "uq_suggestions_open_proposal_key",
+            "engagement_id",
+            "kind",
+            "proposal_key",
+            unique=True,
+            postgresql_where=text("status = 'open' AND proposal_key IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid7

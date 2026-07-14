@@ -1038,6 +1038,18 @@ def downgrade() -> None:
     op.alter_column("conversations", "finding_id", nullable=False)
     op.drop_column("conversations", "context_type")
 
+    # Remove rows carrying enum values introduced by this revision before
+    # dropping the auxiliary columns. PostgreSQL cannot remove enum labels on
+    # downgrade, so the data cleanup prevents the pre-0046 ORM from loading
+    # unknown SuggestionKind/AgentName values.
+    op.execute(
+        """
+        DELETE FROM suggestions
+        WHERE kind IN ('work_item', 'strategy_revision')
+           OR created_by_agent = 'engagement_strategist'
+        """
+    )
+
     op.drop_index("ix_suggestions_engagement_status_kind_proposal_key", table_name="suggestions")
     op.drop_index("ix_suggestions_work_item_id", table_name="suggestions")
     op.drop_column("suggestions", "work_item_id")
@@ -1128,6 +1140,13 @@ def downgrade() -> None:
         table_name="engagement_strategy_revisions",
     )
     op.drop_table("engagement_strategy_revisions")
+
+    # New strategy/ledger tables that referenced AgentExecution are gone now;
+    # clean remaining rows with the new agent_name value before the downgrade
+    # leaves code that cannot deserialize it. Agent model preferences share the
+    # same enum and need the same data cleanup if a strategist model was pinned.
+    op.execute("DELETE FROM agent_model_preference WHERE agent_role = 'engagement_strategist'")
+    op.execute("DELETE FROM agent_executions WHERE agent = 'engagement_strategist'")
 
     op.drop_index("ix_engagements_work_state", table_name="engagements")
     op.drop_column("engagements", "work_state_version")
