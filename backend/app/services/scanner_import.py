@@ -60,7 +60,6 @@ class DuplicateIndex:
 
     group_dedup_keys: Mapping[str, frozenset[str]] = field(default_factory=dict)
     burp_serials: frozenset[str] = frozenset()
-    blocked_group_keys: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -255,14 +254,15 @@ def _evaluate_items(
         dedup_record = {"target": item.target, "burp_serial_number": serial}
         dedup_key = import_item_dedup_key(item.source_tool, dedup_record)
         group_seen = seen_by_group.setdefault(selection_key, set())
-        duplicate = (
-            selection_key in duplicate_index.blocked_group_keys
-            or dedup_key in group_seen
-            or (source == "burp" and serial and serial in seen_burp_serials)
+        duplicate = dedup_key in group_seen or (
+            source == "burp" and serial and serial in seen_burp_serials
         )
-        group_seen.add(dedup_key)
-        if source == "burp" and serial:
-            seen_burp_serials.add(serial)
+        # A rejected row must not claim the identity and suppress a later
+        # in-scope representation of the same scanner observation.
+        if scope.allowed:
+            group_seen.add(dedup_key)
+            if source == "burp" and serial:
+                seen_burp_serials.add(serial)
         evaluated.append(
             _EvaluatedItem(
                 item=item,
