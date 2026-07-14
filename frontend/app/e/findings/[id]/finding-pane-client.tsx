@@ -333,28 +333,7 @@ function FindingWorkbench({
         )}
         {tab === "evidence" && (
           <div className="space-y-4">
-            {findingHasItems(finding) && (
-              <section className="rounded-lg border border-border bg-background/40 p-4">
-                <GroupedItemsView
-                  items={extractItems(finding.data)}
-                  headerLabel="Evidence Details"
-                  headerNote={
-                    finding.group_key
-                      ? "Every re-run of this tool against the same target folds here — hits are deduped by their natural key."
-                      : undefined
-                  }
-                  maxHeight="60vh"
-                />
-                {finding.group_key && (
-                  <p
-                    className="mt-2 truncate font-mono text-[10px] text-muted-foreground"
-                    title={finding.group_key}
-                  >
-                    {finding.group_key}
-                  </p>
-                )}
-              </section>
-            )}
+            <EvidenceDetailsSection finding={finding} />
             <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
               <EvidenceChecklistPanel finding={finding} />
               <AttachmentsPanel finding={finding} />
@@ -1354,6 +1333,82 @@ function ReportPreviewPanel({ finding }: { finding: Finding }) {
           {finding.summary || "No report narrative has been written yet."}
         </p>
       </div>
+    </section>
+  );
+}
+
+// Evidence Details — always rendered on the Evidence tab. If the
+// finding has grouped items[] (subfinder, httpx, nmap, Nessus with
+// per-host hits) it renders the GroupedItemsView. If the finding is
+// a single-issue row (Nessus single-plugin, Burp single-issue) it
+// still gets a card showing the raw data fields — so analysts always
+// have "evidence details" to look at, matching the tab's promise.
+function EvidenceDetailsSection({ finding }: { finding: Finding }) {
+  const items = extractItems(finding.data);
+  const scalarKeys = Object.keys((finding.data as Record<string, unknown>) ?? {}).filter(
+    (k) => k !== "items" && k !== "grouped" && k !== "import_source" &&
+      k !== "first_seen_at" && k !== "last_seen_at",
+  );
+
+  return (
+    <section className="rounded-lg border border-border bg-background/40 p-4">
+      {items.length > 0 ? (
+        <>
+          <GroupedItemsView
+            items={items}
+            headerLabel="Evidence Details"
+            headerNote={
+              finding.group_key
+                ? "Every re-run of this tool against the same target folds here — hits are deduped by their natural key."
+                : undefined
+            }
+            maxHeight="60vh"
+          />
+          {finding.group_key && (
+            <p
+              className="mt-2 truncate font-mono text-[10px] text-muted-foreground"
+              title={finding.group_key}
+            >
+              {finding.group_key}
+            </p>
+          )}
+        </>
+      ) : scalarKeys.length > 0 ? (
+        // Single-issue finding — no items[] array, but the raw plugin /
+        // issue fields (description, solution, plugin_family, etc.) are
+        // still evidence and should show here.
+        <>
+          <h3 className="mb-2 text-sm font-medium">Evidence Details</h3>
+          <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 text-xs">
+            {scalarKeys.map((k) => {
+              const v = (finding.data as Record<string, unknown>)[k];
+              const display =
+                v === null || v === undefined
+                  ? "—"
+                  : typeof v === "object"
+                    ? JSON.stringify(v)
+                    : String(v);
+              return (
+                <div key={k} className="contents">
+                  <dt className="whitespace-nowrap font-medium text-muted-foreground">
+                    {k}:
+                  </dt>
+                  <dd className="min-w-0 break-words font-mono">
+                    {display}
+                  </dd>
+                </div>
+              );
+            })}
+          </dl>
+        </>
+      ) : (
+        <>
+          <h3 className="text-sm font-medium">Evidence Details</h3>
+          <p className="mt-2 text-xs text-muted-foreground">
+            No structured evidence recorded on this finding.
+          </p>
+        </>
+      )}
     </section>
   );
 }
