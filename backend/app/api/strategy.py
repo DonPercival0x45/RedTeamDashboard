@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Query, status
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -756,6 +756,7 @@ def list_work_items(
     needs_decision: bool | None = None,
     q: str | None = None,
     limit: Annotated[int, Query(ge=1, le=500)] = 200,
+    cursor: uuid.UUID | None = None,
 ):
     eng = _engagement(session, slug)
     stmt = select(WorkItem).where(WorkItem.engagement_id == eng.id)
@@ -784,7 +785,19 @@ def list_work_items(
             WorkItemFinding.finding_id == finding_id
         )
     if q:
-        stmt = stmt.where(WorkItem.title.ilike(f"%{q[:200]}%"))
+        needle = f"%{q[:200]}%"
+        stmt = stmt.where(
+            or_(
+                WorkItem.title.ilike(needle),
+                WorkItem.description.ilike(needle),
+                WorkItem.rationale.ilike(needle),
+            )
+        )
+    if cursor:
+        cursor_row = session.get(WorkItem, cursor)
+        if cursor_row is None or cursor_row.engagement_id != eng.id:
+            raise HTTPException(status_code=400, detail="invalid work-item cursor")
+        stmt = stmt.where(WorkItem.created_at < cursor_row.created_at)
     rows = list(
         session.execute(stmt.order_by(WorkItem.created_at.desc()).limit(limit)).scalars().unique()
     )
