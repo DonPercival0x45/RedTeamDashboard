@@ -454,6 +454,29 @@ export interface StoredEntity {
   updated_at: string;
 }
 
+export interface FindingContextCandidate {
+  type: string;
+  value: string;
+  entity_id: string | null;
+  scope_item_id: string | null;
+  scope_source: string | null;
+  scope_compatible: boolean;
+}
+
+export interface FindingContextPromotionItem {
+  type: string;
+  value: string;
+  add_to_entities: boolean;
+  add_to_scope: boolean;
+}
+
+export interface FindingContextPromotionResult {
+  entities_created: number;
+  entity_links_created: number;
+  scope_items_created: number;
+  candidates: FindingContextCandidate[];
+}
+
 export interface MaltegoImportResult {
   inserted: number;
   merged: number;

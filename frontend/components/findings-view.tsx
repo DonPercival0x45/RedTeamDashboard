@@ -1140,12 +1140,19 @@ function FindingSlideOver({
               False positive
             </Button>
           </div>
-          <Button asChild className="w-full">
-            <Link href={`/e/findings/${finding.id}?slug=${encodeURIComponent(slug)}`}>
-              <Maximize2 className="mr-2 h-4 w-4" />
-              Open full finding workbench
-            </Link>
-          </Button>
+          <div className="grid grid-cols-2 gap-2">
+            <Button asChild variant="outline">
+              <Link href={`/e/findings/${finding.id}?slug=${encodeURIComponent(slug)}&tab=details#discovered-context`}>
+                Promote context
+              </Link>
+            </Button>
+            <Button asChild>
+              <Link href={`/e/findings/${finding.id}?slug=${encodeURIComponent(slug)}`}>
+                <Maximize2 className="mr-2 h-4 w-4" />
+                Open full view
+              </Link>
+            </Button>
+          </div>
           <p className="text-center text-[10px] text-muted-foreground">
             Editing, evidence, AI actions, context, and history live in the full view.
           </p>

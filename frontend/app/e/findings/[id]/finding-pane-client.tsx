@@ -42,7 +42,9 @@ import {
   useSummarizeFindingChatMutation,
   useFinding,
   useFindingActivity,
+  useFindingContext,
   useFindings,
+  usePromoteFindingContextMutation,
   qk,
   useFindingChat,
 } from "@/lib/hooks";
@@ -272,7 +274,13 @@ function FindingWorkbench({
   finding: Finding;
   slug: string | null;
 }) {
-  const [tab, setTab] = useState<WorkbenchTab>("notes");
+  const params = useSearchParams();
+  const requestedTab = params?.get("tab") as WorkbenchTab | null;
+  const [tab, setTab] = useState<WorkbenchTab>(
+    requestedTab && WORKBENCH_TABS.some((item) => item.id === requestedTab)
+      ? requestedTab
+      : "notes",
+  );
   const { data: chat } = useFindingChat(finding.id);
   const toolActionCount = openToolActions(chat?.messages ?? []).length;
   const active = WORKBENCH_TABS.find((t) => t.id === tab) ?? WORKBENCH_TABS[0];
@@ -332,6 +340,7 @@ function FindingWorkbench({
         )}
         {tab === "details" && (
           <div className="space-y-4">
+            {slug && <ContextPromotionPanel finding={finding} slug={slug} />}
             <ScopeStatusPanel finding={finding} slug={slug} />
             <RelatedPanel finding={finding} slug={slug} />
             <ReportPreviewPanel finding={finding} />
@@ -925,6 +934,201 @@ function AttachmentPreview({ attachment }: { attachment: Attachment }) {
         className="h-32 w-full rounded object-cover"
       />
     </a>
+  );
+}
+
+function ContextPromotionPanel({ finding, slug }: { finding: Finding; slug: string }) {
+  const { data: candidates, isLoading, error } = useFindingContext(finding.id);
+  const promote = usePromoteFindingContextMutation(finding.id, slug);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [manualType, setManualType] = useState("domain");
+  const [manualValue, setManualValue] = useState("");
+  const [result, setResult] = useState<string | null>(null);
+  const keyFor = (type: string, value: string) => `${type}:${value}`;
+
+  function submit(items: Array<{ type: string; value: string; add_to_entities: boolean; add_to_scope: boolean }>) {
+    const expandsScope = items.some((item) => item.add_to_scope);
+    if (
+      expandsScope &&
+      !window.confirm(
+        "Add the selected values to Found Scope? This makes them eligible for future approval-gated enumeration and scan actions.",
+      )
+    ) return;
+    setResult(null);
+    promote.mutate(items, {
+      onSuccess: (response) => {
+        setSelected(new Set());
+        setManualValue("");
+        setResult(
+          `Created ${response.entities_created} entities, ${response.entity_links_created} provenance links, and ${response.scope_items_created} scope items.`,
+        );
+      },
+    });
+  }
+
+  const selectedRows = (candidates ?? []).filter((row) =>
+    selected.has(keyFor(row.type, row.value)),
+  );
+
+  return (
+    <section id="discovered-context" className="scroll-mt-6 rounded-lg border border-border bg-card/40 p-4">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <h2 className="text-sm font-medium">Discovered context</h2>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Promote indicators from this finding into persistent Entities, Found Scope, or both.
+          </p>
+        </div>
+        {selectedRows.length > 0 && (
+          <div className="flex flex-wrap gap-2">
+            <SmallButton
+              disabled={promote.isPending}
+              onClick={() => submit(selectedRows.map((row) => ({
+                type: row.type,
+                value: row.value,
+                add_to_entities: true,
+                add_to_scope: false,
+              })))}
+            >
+              Add {selectedRows.length} to Entities
+            </SmallButton>
+            <SmallButton
+              disabled={promote.isPending || selectedRows.every((row) => !row.scope_compatible)}
+              onClick={() => submit(selectedRows.map((row) => ({
+                type: row.type,
+                value: row.value,
+                add_to_entities: true,
+                add_to_scope: row.scope_compatible,
+              })))}
+            >
+              Add eligible to both
+            </SmallButton>
+          </div>
+        )}
+      </div>
+
+      {isLoading ? (
+        <p className="mt-3 text-xs text-muted-foreground">Extracting candidates…</p>
+      ) : error ? (
+        <p className="mt-3 text-xs text-destructive">Could not load finding context.</p>
+      ) : (candidates ?? []).length === 0 ? (
+        <p className="mt-3 rounded-md border border-dashed border-border p-3 text-xs text-muted-foreground">
+          No structured indicators were extracted. Add one manually below.
+        </p>
+      ) : (
+        <div className="mt-3 overflow-x-auto rounded-md border border-border bg-background">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="border-b border-border text-left text-[10px] uppercase tracking-wide text-muted-foreground">
+                <th className="w-8 px-2 py-2" />
+                <th className="px-2 py-2">Value</th>
+                <th className="px-2 py-2">Entity</th>
+                <th className="px-2 py-2">Scope</th>
+                <th className="px-2 py-2 text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(candidates ?? []).map((row) => {
+                const key = keyFor(row.type, row.value);
+                return (
+                  <tr key={key} className="border-b border-border/50 last:border-0">
+                    <td className="px-2 py-2">
+                      <input
+                        type="checkbox"
+                        checked={selected.has(key)}
+                        onChange={(event) => setSelected((previous) => {
+                          const next = new Set(previous);
+                          if (event.target.checked) next.add(key); else next.delete(key);
+                          return next;
+                        })}
+                      />
+                    </td>
+                    <td className="px-2 py-2">
+                      <p className="font-mono">{row.value}</p>
+                      <p className="text-[10px] text-muted-foreground">{row.type}</p>
+                    </td>
+                    <td className="px-2 py-2">{row.entity_id ? "Saved" : "Not saved"}</td>
+                    <td className="px-2 py-2">
+                      {row.scope_item_id ? row.scope_source ?? "defined" : row.scope_compatible ? "Unknown" : "N/A"}
+                    </td>
+                    <td className="px-2 py-2">
+                      <div className="flex justify-end gap-1">
+                        {!row.entity_id && (
+                          <SmallButton disabled={promote.isPending} onClick={() => submit([{
+                            type: row.type, value: row.value, add_to_entities: true, add_to_scope: false,
+                          }])}>Entity</SmallButton>
+                        )}
+                        {row.scope_compatible && !row.scope_item_id && (
+                          <SmallButton disabled={promote.isPending} onClick={() => submit([{
+                            type: row.type, value: row.value, add_to_entities: false, add_to_scope: true,
+                          }])}>Scope</SmallButton>
+                        )}
+                        {row.scope_compatible && !row.entity_id && !row.scope_item_id && (
+                          <SmallButton disabled={promote.isPending} onClick={() => submit([{
+                            type: row.type,
+                            value: row.value,
+                            add_to_entities: true,
+                            add_to_scope: true,
+                          }])}>Both</SmallButton>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <div className="mt-3 flex flex-wrap gap-2">
+        <select
+          value={manualType}
+          onChange={(event) => setManualType(event.target.value)}
+          className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+        >
+          {["domain", "ip", "cidr", "url", "email", "host", "person", "phone"].map((type) => (
+            <option key={type} value={type}>{type}</option>
+          ))}
+        </select>
+        <input
+          value={manualValue}
+          onChange={(event) => setManualValue(event.target.value)}
+          placeholder="Add a missed entity value"
+          className="h-8 min-w-52 flex-1 rounded-md border border-input bg-background px-2 font-mono text-xs"
+        />
+        <SmallButton
+          disabled={promote.isPending || !manualValue.trim()}
+          onClick={() => submit([{
+            type: manualType,
+            value: manualValue.trim(),
+            add_to_entities: true,
+            add_to_scope: false,
+          }])}
+        >
+          Add entity
+        </SmallButton>
+        {new Set(["domain", "ip", "cidr", "url"]).has(manualType) && (
+          <SmallButton
+            disabled={promote.isPending || !manualValue.trim()}
+            onClick={() => submit([{
+              type: manualType,
+              value: manualValue.trim(),
+              add_to_entities: true,
+              add_to_scope: true,
+            }])}
+          >
+            Add to both
+          </SmallButton>
+        )}
+      </div>
+      {result && <p className="mt-2 text-xs text-emerald-700 dark:text-emerald-200">{result}</p>}
+      {promote.error && (
+        <p className="mt-2 text-xs text-destructive">
+          {promote.error instanceof Error ? promote.error.message : "Promotion failed"}
+        </p>
+      )}
+    </section>
   );
 }
 

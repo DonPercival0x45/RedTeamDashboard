@@ -24,6 +24,7 @@ _EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 _IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 _CIDR_RE = re.compile(r"^(?:\d{1,3}\.){3}\d{1,3}/\d{1,2}$")
 _CIDR_FIND = re.compile(r"(?:\d{1,3}\.){3}\d{1,3}/\d{1,2}")
+_DOMAIN_FIND = re.compile(r"\b(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}\b")
 _HOST_KEYS = {"subdomains": "subdomain", "domains": "domain", "hosts": "host"}
 
 _SEVERITY_RANK: dict[Severity, int] = {
@@ -93,6 +94,21 @@ def _extract_one(finding: Finding) -> list[tuple[EntityType, str]]:
     _walk(details, found)
     # Dedupe within a single finding.
     return list(dict.fromkeys(found))
+
+
+def extract_finding_context(finding: Finding) -> list[tuple[EntityType, str]]:
+    """Return analyst-reviewable entity candidates from one finding.
+
+    The engagement-wide derived view stays deliberately conservative. This
+    finding-scoped path also inspects title/summary and domain-like strings
+    because every candidate is shown to an analyst before it is persisted.
+    """
+    found = _extract_one(finding)
+    narrative = f"{finding.title}\n{finding.summary or ''}"
+    _walk(narrative, found)
+    for domain in _DOMAIN_FIND.findall(narrative):
+        found.append(("domain", domain.lower()))
+    return list(dict.fromkeys(found))[:100]
 
 
 def extract_entities(
