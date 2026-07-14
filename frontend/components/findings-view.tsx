@@ -525,6 +525,9 @@ export function FindingsView({
             newFindings.forEach((f) => onUpdated(f));
             setShowImporter(false);
           }}
+          onScannerImported={(newFindings) => {
+            newFindings.forEach((f) => onUpdated(f));
+          }}
         />
       )}
       {showBurpImporter && (
@@ -532,7 +535,6 @@ export function FindingsView({
           slug={slug}
           onImported={(newFindings) => {
             newFindings.forEach((f) => onUpdated(f));
-            setShowBurpImporter(false);
           }}
         />
       )}

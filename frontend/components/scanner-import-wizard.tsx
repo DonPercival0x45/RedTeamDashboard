@@ -64,9 +64,11 @@ export function ScannerImportWizard({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const operationRef = useRef(0);
 
   useEffect(() => {
     if (!initialFile) return;
+    operationRef.current += 1;
     setFile(initialFile);
     setPreview(null);
     setResult(null);
@@ -89,18 +91,18 @@ export function ScannerImportWizard({
   const selectableVisible = visibleGroups.filter((group) => !disabledGroup(group));
   const selectedGroups = preview?.groups.filter((group) => selected.has(group.selection_key)) ?? [];
   const projectedItems = selectedGroups.reduce(
-    (total, group) => total + group.in_scope_item_count - group.duplicate_item_count,
+    (total, group) => total + group.in_scope_item_count,
     0,
   );
 
   async function runPreview() {
     if (!file) return;
+    const operation = ++operationRef.current;
     setBusy(true);
     setError(null);
     try {
-      // Ask the backend to include informational rows in the preview so the
-      // wizard can show them clearly while leaving them unselected by default.
-      const next = await previewScannerImport(slug, source, file, true);
+      const next = await previewScannerImport(slug, source, file);
+      if (operation !== operationRef.current) return;
       setPreview(next);
       setSelected(
         new Set(
@@ -111,14 +113,17 @@ export function ScannerImportWizard({
       );
       setStep("preview");
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (operation === operationRef.current) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
     } finally {
-      setBusy(false);
+      if (operation === operationRef.current) setBusy(false);
     }
   }
 
   async function runCommit() {
     if (!file || !preview || selected.size === 0) return;
+    const operation = ++operationRef.current;
     setBusy(true);
     setError(null);
     try {
@@ -129,17 +134,21 @@ export function ScannerImportWizard({
         preview.file_sha256,
         Array.from(selected).sort(),
       );
+      if (operation !== operationRef.current) return;
       setResult(next);
       onImported(next.imported);
       setStep("result");
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (operation === operationRef.current) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
     } finally {
-      setBusy(false);
+      if (operation === operationRef.current) setBusy(false);
     }
   }
 
   function reset(nextFile: File | null = null) {
+    operationRef.current += 1;
     setFile(nextFile);
     setPreview(null);
     setResult(null);
@@ -149,6 +158,7 @@ export function ScannerImportWizard({
     setScope("all");
     setError(null);
     setStep("upload");
+    if (fileRef.current) fileRef.current.value = "";
   }
 
   function toggle(key: string, checked: boolean) {
@@ -177,6 +187,7 @@ export function ScannerImportWizard({
         {(["upload", "preview", "confirm", "result"] as Step[]).map((name, index) => (
           <li
             key={name}
+            aria-current={step === name ? "step" : undefined}
             className={cn(
               "rounded-full border px-2 py-1 capitalize",
               step === name ? "border-foreground/40 bg-secondary text-foreground" : "text-muted-foreground",
@@ -201,6 +212,7 @@ export function ScannerImportWizard({
               type="file"
               accept=".xml,.nessus,application/xml,text/xml"
               onChange={(event) => reset(event.target.files?.[0] ?? null)}
+              disabled={busy}
               className="text-xs file:mr-2 file:rounded file:border file:border-border file:bg-secondary file:px-2 file:py-1"
             />
             {file && <span className="text-xs text-muted-foreground">{file.name} · {(file.size / 1024).toFixed(1)} KB</span>}
@@ -227,7 +239,7 @@ export function ScannerImportWizard({
           <div className="grid gap-2 md:grid-cols-[1fr_auto_auto]">
             <div className="relative">
               <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-              <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search title or target" className="pl-8" />
+              <Input aria-label="Search group title or sampled targets" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search title or sampled target" className="pl-8" />
             </div>
             <select aria-label="Filter severity" value={severity} onChange={(event) => setSeverity(event.target.value as "all" | Severity)} className="rounded border border-border bg-background px-2 text-sm">
               <option value="all">All severities</option>
@@ -286,7 +298,7 @@ export function ScannerImportWizard({
           <h3 id={`${source}-confirm-title`} className="text-sm font-medium">Confirm scanner import</h3>
           <div className="rounded border border-border bg-secondary/30 p-3 text-sm">
             <p><strong>{selected.size}</strong> groups selected from <strong>{file?.name}</strong>.</p>
-            <p className="text-xs text-muted-foreground">Up to {Math.max(projectedItems, 0)} new in-scope items will be applied. The server will verify the file hash, reparse it, and recheck scope and duplicates.</p>
+            <p className="text-xs text-muted-foreground">Up to {projectedItems} in-scope items will be considered. The server will verify the file hash, reparse it, and remove current duplicates before applying changes.</p>
           </div>
           <div className="flex justify-between">
             <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => setStep("preview")}>Back</Button>
@@ -297,7 +309,7 @@ export function ScannerImportWizard({
 
       {step === "result" && result && (
         <section className="space-y-3" aria-labelledby={`${source}-result-title`}>
-          <div className="flex items-start gap-2 rounded border border-emerald-500/30 bg-emerald-500/10 p-3">
+          <div role="status" aria-live="polite" className="flex items-start gap-2 rounded border border-emerald-500/30 bg-emerald-500/10 p-3">
             <CheckCircle2 className="mt-0.5 h-5 w-5 text-emerald-600" />
             <div>
               <h3 id={`${source}-result-title`} className="text-sm font-medium">Import complete</h3>
@@ -314,7 +326,7 @@ export function ScannerImportWizard({
           )}
           <div className="flex justify-between gap-2">
             <Button type="button" size="sm" variant="outline" onClick={() => reset()}>Import another</Button>
-            <Button asChild size="sm"><a href="?view=findings">Review all findings</a></Button>
+            <Button asChild size="sm"><a href={`/e?slug=${encodeURIComponent(slug)}&view=findings`}>Review all findings</a></Button>
           </div>
         </section>
       )}

@@ -164,9 +164,11 @@ const JSON_PLACEHOLDER = `[
 export function FindingImporter({
   slug,
   onImported,
+  onScannerImported = onImported,
 }: {
   slug: string;
   onImported: (findings: Finding[]) => void;
+  onScannerImported?: (findings: Finding[]) => void;
 }) {
   const [mode, setMode] = useState<Mode>("csv");
   const [text, setText] = useState("");
@@ -197,18 +199,19 @@ export function FindingImporter({
       if (!file) return;
       // Auto-detect scanner exports, then hand the browser File object to
       // the shared server-backed preview wizard.
-      if (file.name.endsWith(".nessus")) {
+      const lowerName = file.name.toLowerCase();
+      if (lowerName.endsWith(".nessus")) {
         setMode("nessus");
         setScannerInitialFile(file);
         setText("");
-      } else if (file.name.toLowerCase().endsWith(".xml")) {
+      } else if (lowerName.endsWith(".xml")) {
         setMode("nmap");
         setScannerInitialFile(file);
         setText("");
       } else {
         setScannerInitialFile(null);
         setText(await file.text());
-        if (file.name.endsWith(".json")) setMode("json");
+        if (lowerName.endsWith(".json")) setMode("json");
         else setMode("csv");
       }
       e.target.value = "";
@@ -265,23 +268,27 @@ export function FindingImporter({
               {m}
             </button>
           ))}
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            className="ml-1"
-            onClick={() => fileRef.current?.click()}
-          >
-            <Upload className="mr-1.5 h-3.5 w-3.5" />
-            File
-          </Button>
-          <input
-            ref={fileRef}
-            type="file"
-            accept=".csv,.json,.txt,.nessus,text/csv,application/json,text/plain,text/xml,application/xml"
-            className="hidden"
-            onChange={onFileChosen}
-          />
+          {mode !== "nessus" && mode !== "nmap" && (
+            <>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="ml-1"
+                onClick={() => fileRef.current?.click()}
+              >
+                <Upload className="mr-1.5 h-3.5 w-3.5" />
+                File
+              </Button>
+              <input
+                ref={fileRef}
+                type="file"
+                accept=".csv,.json,.txt,.nessus,text/csv,application/json,text/plain,text/xml,application/xml"
+                className="hidden"
+                onChange={onFileChosen}
+              />
+            </>
+          )}
         </div>
       </div>
 
@@ -315,7 +322,7 @@ export function FindingImporter({
           slug={slug}
           source={mode}
           initialFile={scannerInitialFile}
-          onImported={onImported}
+          onImported={onScannerImported}
         />
       )}
 
