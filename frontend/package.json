@@ -1,6 +1,6 @@
 {
   "name": "redteam-dashboard-frontend",
-  "version": "1.28.1",
+  "version": "1.29.0",
   "private": true,
   "scripts": {
     "dev": "next dev -H 0.0.0.0 -p 3000",
