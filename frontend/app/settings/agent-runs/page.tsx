@@ -12,7 +12,7 @@
 // tenant-global steps hook.
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import {
   Activity,
@@ -21,6 +21,8 @@ import {
   ChevronRight,
   CircleSlash,
   Clock,
+  LayoutGrid,
+  List,
   RefreshCcw,
   Search,
   Slash,
@@ -97,11 +99,18 @@ export default function AgentRunsPage() {
   const { data, error, refetch } = useGlobalAgentRuns();
   const cancelAgentRun = useCancelAgentExecutionMutation();
   const [search, setSearch] = useState("");
+  const [outcomeFilter, setOutcomeFilter] = useState<StatusOutcome | "all">("all");
+  const [agentFilter, setAgentFilter] = useState("all");
+  const [viewMode, setViewMode] = useState<"cards" | "table">("cards");
   const [expanded, setExpanded] = useState<StatusEntity | null>(null);
   const [cancellingId, setCancellingId] = useState<string | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
 
-  const agents = data?.agents ?? [];
+  const agents = useMemo(() => data?.agents ?? [], [data?.agents]);
+  const agentRoles = useMemo(
+    () => Array.from(new Set(agents.map((entity) => String(entity.log.agent ?? "unknown")))).sort(),
+    [agents],
+  );
 
   // v1.2.0: deep-link. If `?run=<id>` in the URL, auto-open Expand on
   // the matching row once it appears in the feed.
@@ -115,13 +124,16 @@ export default function AgentRunsPage() {
   }, [runParam, expanded, agents]);
 
   const term = search.trim().toLowerCase();
-  const visible = agents.filter((e) => {
-    if (!term) return true;
-    const hay = [e.title, e.subtitle ?? "", e.synopsis ?? "", e.run_slug]
-      .join(" ")
-      .toLowerCase();
-    return hay.includes(term);
-  });
+  const visible = agents
+    .filter((entity) => outcomeFilter === "all" || entity.outcome === outcomeFilter)
+    .filter((entity) => agentFilter === "all" || String(entity.log.agent ?? "unknown") === agentFilter)
+    .filter((entity) => {
+      if (!term) return true;
+      const hay = [entity.title, entity.subtitle ?? "", entity.synopsis ?? "", entity.run_slug]
+        .join(" ")
+        .toLowerCase();
+      return hay.includes(term);
+    });
 
   const onCancel = useCallback(
     async (entity: StatusEntity) => {
@@ -167,6 +179,35 @@ export default function AgentRunsPage() {
         </div>
       </div>
 
+      <div className="flex flex-wrap items-center gap-2">
+        <select
+          value={agentFilter}
+          onChange={(event) => setAgentFilter(event.target.value)}
+          className="h-8 rounded-md border border-border bg-background px-2 text-xs"
+        >
+          <option value="all">All agent roles</option>
+          {agentRoles.map((role) => <option key={role} value={role}>{role}</option>)}
+        </select>
+        <select
+          value={outcomeFilter}
+          onChange={(event) => setOutcomeFilter(event.target.value as StatusOutcome | "all")}
+          className="h-8 rounded-md border border-border bg-background px-2 text-xs"
+        >
+          <option value="all">All outcomes</option>
+          {(["success", "empty", "partial", "errored"] as const).map((outcome) => (
+            <option key={outcome} value={outcome}>{OUTCOME_LABEL[outcome]}</option>
+          ))}
+        </select>
+        <div className="ml-auto flex rounded-md border border-border p-0.5">
+          <button type="button" onClick={() => setViewMode("cards")} className={cn("rounded p-1.5", viewMode === "cards" ? "bg-muted" : "text-muted-foreground")} aria-label="Card view">
+            <LayoutGrid className="h-3.5 w-3.5" />
+          </button>
+          <button type="button" onClick={() => setViewMode("table")} className={cn("rounded p-1.5", viewMode === "table" ? "bg-muted" : "text-muted-foreground")} aria-label="Table view">
+            <List className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      </div>
+
       <div className="relative">
         <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
         <input
@@ -188,7 +229,7 @@ export default function AgentRunsPage() {
           op on <Link href="/settings/feedback" className="underline">Feedback</Link>{" "}
           to populate.
         </p>
-      ) : (
+      ) : viewMode === "cards" ? (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           {visible.map((entity) => (
             <StatusBox
@@ -199,6 +240,24 @@ export default function AgentRunsPage() {
               cancelling={cancellingId === entity.id}
             />
           ))}
+        </div>
+      ) : (
+        <div className="overflow-x-auto rounded-lg border border-border">
+          <table className="w-full text-sm">
+            <thead><tr className="border-b border-border text-left text-[10px] uppercase tracking-wide text-muted-foreground"><th className="px-3 py-2">Run</th><th className="px-3 py-2">Role</th><th className="px-3 py-2">Status</th><th className="px-3 py-2">Outcome</th><th className="px-3 py-2">Started</th><th className="px-3 py-2">Synopsis</th></tr></thead>
+            <tbody>
+              {visible.map((entity) => (
+                <tr key={entity.id} onClick={() => setExpanded(entity)} className="cursor-pointer border-b border-border/50 last:border-0 hover:bg-muted/30">
+                  <td className="px-3 py-2"><p className="font-medium">{entity.title}</p><p className="font-mono text-[10px] text-muted-foreground">{entity.run_slug}</p></td>
+                  <td className="px-3 py-2 text-xs">{String(entity.log.agent ?? "unknown")}</td>
+                  <td className="px-3 py-2"><span className={cn("rounded-full border px-2 py-0.5 text-[10px]", COLOR_BADGE[entity.color])}>{COLOR_LABEL[entity.color]}</span></td>
+                  <td className="px-3 py-2 text-xs">{entity.outcome ? OUTCOME_LABEL[entity.outcome] : "—"}</td>
+                  <td className="whitespace-nowrap px-3 py-2 text-xs text-muted-foreground">{fmtDate(entity.started_at)}</td>
+                  <td className="max-w-md px-3 py-2 text-xs text-muted-foreground">{entity.synopsis ?? "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
 
