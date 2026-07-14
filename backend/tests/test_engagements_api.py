@@ -189,6 +189,45 @@ def test_duplicate_initial_scope_rejects_entire_setup(
     ).scalar_one_or_none() is None
 
 
+def test_concurrent_slug_conflict_returns_409_without_partial_setup(
+    client: TestClient,
+    db: Session,
+    cleanup_slugs: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    slug = f"slug-race-{uuid.uuid4().hex[:6]}"
+    existing = _create(client, "Existing slug owner", slug=slug)
+    cleanup_slugs.append(existing["slug"])
+
+    from app.api import engagements as engagements_api
+
+    monkeypatch.setattr(
+        engagements_api,
+        "_unique_slug",
+        lambda _session, _base_slug: slug,
+    )
+    response = client.post(
+        "/engagements",
+        json={
+            "name": "Concurrent loser",
+            "initial_scope": [{"kind": "domain", "value": "loser.test"}],
+        },
+        headers=_headers(),
+    )
+
+    assert response.status_code == 409, response.text
+    assert "claimed concurrently" in response.text
+    assert db.execute(
+        select(Engagement.id).where(Engagement.name == "Concurrent loser")
+    ).scalar_one_or_none() is None
+    owner = db.execute(
+        select(Engagement).where(Engagement.slug == slug)
+    ).scalar_one()
+    assert db.execute(
+        select(ScopeItem.id).where(ScopeItem.engagement_id == owner.id)
+    ).scalar_one_or_none() is None
+
+
 def test_include_and_exclusion_for_same_initial_value_are_distinct(
     client: TestClient, db: Session, cleanup_slugs: list[str]
 ) -> None:

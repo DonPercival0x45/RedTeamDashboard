@@ -388,7 +388,19 @@ def create_engagement(
         created_by=user.id,
     )
     session.add(eng)
-    session.flush()
+    try:
+        session.flush()
+    except IntegrityError as exc:
+        constraint_name = getattr(
+            getattr(exc.orig, "diag", None), "constraint_name", None
+        )
+        session.rollback()
+        if constraint_name in {"ix_engagements_slug", "engagements_slug_key"}:
+            raise HTTPException(
+                status_code=409,
+                detail="engagement slug was claimed concurrently; retry creation",
+            ) from exc
+        raise
 
     # Persist staged scope in the same transaction as the engagement. The
     # request schema rejects exact duplicates before this endpoint runs.
@@ -424,12 +436,6 @@ def create_engagement(
     )
     try:
         session.commit()
-    except IntegrityError as exc:
-        session.rollback()
-        raise HTTPException(
-            status_code=409,
-            detail="engagement slug was claimed concurrently; retry creation",
-        ) from exc
     except Exception:
         session.rollback()
         raise
