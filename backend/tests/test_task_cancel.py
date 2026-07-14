@@ -12,7 +12,9 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
+from app.agents.strategic import StrategicAgent
 from app.core.config import settings
+from app.db.session import SessionLocal
 from app.main import app
 from app.models import (
     AuditLog,
@@ -288,6 +290,79 @@ def test_retry_rejects_cancelled_task_without_queueing(
     db.refresh(task)
     assert task.status == TaskStatus.cancelled
     assert redis_client.xlen(stream) == 0
+
+
+def test_cancelled_state_wins_policy_commit_race(
+    client: TestClient,
+    db: Session,
+    redis_client,
+    engagement: Engagement,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    previous_run_id = uuid.uuid4()
+    task = Task(
+        engagement_id=engagement.id,
+        title="Deferred race",
+        kind=TaskKind.enum,
+        owner_eligibility=OwnerEligibility.agent,
+        status=TaskStatus.deferred,
+        payload={"tool": "portscan", "target": "203.0.113.16"},
+        run_id=previous_run_id,
+    )
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+    stream = inbound_stream(engagement.id)
+    redis_client.delete(stream)
+    original_provision = StrategicAgent.provision_lease
+
+    def cancel_during_policy_commit(
+        self,
+        session,
+        *,
+        task,
+        acting_user_id,
+        **_kwargs,
+    ):
+        # Mirrors Strategic's visibility commit, which releases the row lock.
+        session.commit()
+        with SessionLocal() as concurrent:
+            current = concurrent.get(Task, task.id)
+            assert current is not None
+            assert current.status == TaskStatus.pending
+            current.status = TaskStatus.cancelled
+            current.completed_at = datetime.now(tz=UTC)
+            concurrent.commit()
+        return original_provision(
+            self,
+            session,
+            task=task,
+            acting_user_id=acting_user_id,
+            requires_container=False,
+        )
+
+    monkeypatch.setattr(
+        StrategicAgent,
+        "provision_lease",
+        cancel_during_policy_commit,
+    )
+
+    response = client.post(f"/tasks/{task.id}/retry", headers=HDR)
+
+    assert response.status_code == 409, response.text
+    db.expire_all()
+    cancelled = db.get(Task, task.id)
+    assert cancelled is not None
+    assert cancelled.status == TaskStatus.cancelled
+    assert cancelled.run_id == previous_run_id
+    assert redis_client.xlen(stream) == 0
+    audit = db.execute(
+        select(AuditLog).where(
+            AuditLog.engagement_id == engagement.id,
+            AuditLog.event_type == "task.retry_superseded",
+        )
+    ).scalar_one()
+    assert audit.payload["winning_status"] == "cancelled"
 
 
 def test_retry_enqueue_failure_restores_previous_state_and_audits(

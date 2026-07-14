@@ -1506,10 +1506,10 @@ def retry_task(
     previous_completed_at = row.completed_at
     removed = _remove_queued_run_start(redis_client, row)
     released = _release_task_leases(session, row)
+    # Leave prior run timestamps/ID intact until Tactical atomically swaps the
+    # pending row to dispatched. If cancellation wins during policy selection,
+    # it retains the old lineage needed for cleanup and audit.
     row.status = TaskStatus.pending
-    row.dispatched_at = None
-    row.completed_at = None
-    row.run_id = None
     try:
         TacticalAgent(redis_client).dispatch(
             session,
@@ -1527,6 +1527,25 @@ def retry_task(
         if failed_row is None:
             raise HTTPException(status_code=404, detail="task not found") from exc
         failed_run_id = failed_row.run_id
+        if failed_row.status == TaskStatus.cancelled:
+            session.add(
+                AuditLog(
+                    engagement_id=failed_row.engagement_id,
+                    actor_type=ActorType.user,
+                    actor_id=str(user.id),
+                    event_type="task.retry_superseded",
+                    payload={
+                        "task_id": str(failed_row.id),
+                        "previous_status": previous_status.value,
+                        "winning_status": TaskStatus.cancelled.value,
+                    },
+                )
+            )
+            session.commit()
+            raise HTTPException(
+                status_code=409,
+                detail="task was cancelled while retry dispatch was preparing",
+            ) from exc
         if failed_run_id is not None and failed_run_id != previous_run_id:
             _remove_queued_run_start(redis_client, failed_row)
             _release_task_leases(session, failed_row)
