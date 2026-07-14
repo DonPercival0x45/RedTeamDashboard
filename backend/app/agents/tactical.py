@@ -40,7 +40,7 @@ from app.models import (
 from app.orchestrator.llm import default_provider_model
 from app.orchestrator.tools import get_tool
 from app.runs.events import encode_command
-from app.runs.streams import inbound_stream, store_run_model
+from app.runs.streams import inbound_stream, run_model_key, store_run_model
 from app.services.agent_model_resolver import resolve_agent_model
 
 logger = structlog.get_logger(__name__)
@@ -208,6 +208,14 @@ class TacticalAgent:
         )
         if transitioned.rowcount != 1:
             session.rollback()
+            try:
+                self._redis.delete(run_model_key(thread_id))
+            except Exception:  # noqa: BLE001 — TTL is the final cleanup fallback
+                logger.warning(
+                    "tactical.superseded_run_model_cleanup_failed",
+                    task_id=str(task.id),
+                    thread_id=str(thread_id),
+                )
             raise ValueError(
                 f"task {task.id} changed state during dispatch; refusing to enqueue"
             )

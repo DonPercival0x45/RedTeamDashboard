@@ -314,6 +314,7 @@ def test_cancelled_state_wins_policy_commit_race(
     db.refresh(task)
     stream = inbound_stream(engagement.id)
     redis_client.delete(stream)
+    run_model_keys_before = set(redis_client.keys("run:model:*"))
     original_provision = StrategicAgent.provision_lease
 
     def cancel_during_policy_commit(
@@ -356,6 +357,7 @@ def test_cancelled_state_wins_policy_commit_race(
     assert cancelled.status == TaskStatus.cancelled
     assert cancelled.run_id == previous_run_id
     assert redis_client.xlen(stream) == 0
+    assert set(redis_client.keys("run:model:*")) == run_model_keys_before
     audit = db.execute(
         select(AuditLog).where(
             AuditLog.engagement_id == engagement.id,
