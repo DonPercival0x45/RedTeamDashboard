@@ -106,6 +106,21 @@ def test_strategy_revision_acceptance_and_stale_base(
     assert stale.status_code == 409, stale.text
     assert stale.json()["detail"]["code"] == "stale_strategy_revision"
 
+    direct = client.post(
+        f"/engagements/{engagement.slug}/strategy/revisions",
+        json={
+            "body": "Direct analyst edit.",
+            "state": "current",
+            "based_on_revision_id": revision_id,
+        },
+        headers=HDR,
+    )
+    assert direct.status_code == 201, direct.text
+    assert direct.json()["state"] == "current"
+    current = client.get(f"/engagements/{engagement.slug}/strategy", headers=HDR)
+    assert current.status_code == 200
+    assert current.json()["id"] == direct.json()["id"]
+
     audits = list(
         db.execute(select(AuditLog).where(AuditLog.engagement_id == engagement.id)).scalars()
     )
