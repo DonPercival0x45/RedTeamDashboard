@@ -45,6 +45,10 @@ export default function EngagementListPage() {
           No engagements yet — start one with{" "}
           <Link href="/new" className="underline">
             New engagement
+          </Link>{" "}
+          or follow the{" "}
+          <Link href="/settings/getting-started" className="underline">
+            Quick Start guide
           </Link>
           .
         </p>

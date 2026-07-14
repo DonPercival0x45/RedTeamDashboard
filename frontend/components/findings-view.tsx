@@ -599,6 +599,9 @@ export function FindingsView({
       {visible.length === 0 ? (
         <p className="text-sm text-muted-foreground">
           No findings{findings.length ? " match these filters." : " yet."}
+          {findings.length === 0 && (
+            <> Review the <Link href="/settings/getting-started" className="underline">Quick Start guide</Link> to follow a run into its first finding.</>
+          )}
         </p>
       ) : (
         <div className="overflow-x-auto rounded-lg border border-border">
