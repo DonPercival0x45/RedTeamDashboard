@@ -44,6 +44,7 @@ import {
   useEngagement,
   useFindings,
   useFlushEngagementMutation,
+  useReportReadiness,
 } from "@/lib/hooks";
 import type { Engagement, Finding } from "@/lib/types";
 
@@ -67,6 +68,8 @@ function formatTimeFrame(eng: Engagement): string {
 }
 
 function ReportView({ slug }: { slug: string }) {
+  const readinessQuery = useReportReadiness(slug);
+  const readiness = readinessQuery.data;
   const [exportBusy, setExportBusy] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
   // v1.4.0: analyst toggles whether findings marked out_of_scope /
@@ -108,7 +111,77 @@ function ReportView({ slug }: { slug: string }) {
           <DownloadReport slug={slug} omitExcluded={omitExcluded} />
         </div>
       </CardHeader>
-      <CardContent className="space-y-3">
+      <CardContent className="space-y-4">
+        <section className="rounded-lg border border-border bg-background/40 p-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <div className="flex items-center gap-2">
+                <span className={`h-2.5 w-2.5 rounded-full ${readiness?.ready ? "bg-emerald-500" : "bg-amber-500"}`} />
+                <h3 className="text-sm font-semibold">
+                  {readinessQuery.isLoading
+                    ? "Checking report readiness…"
+                    : readiness?.ready
+                      ? "Ready for client review"
+                      : "Report needs attention"}
+                </h3>
+              </div>
+              {readiness && (
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {readiness.reportable_count} reportable · {readiness.total_findings} total findings
+                </p>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={() => void readinessQuery.refetch()}
+              className="text-xs text-muted-foreground hover:text-foreground hover:underline"
+            >
+              Refresh preflight
+            </button>
+          </div>
+
+          {readinessQuery.error && (
+            <p className="mt-3 text-xs text-destructive">Could not load report readiness.</p>
+          )}
+          {readiness && (
+            <ul className="mt-3 grid gap-2 sm:grid-cols-2">
+              {readiness.checks
+                .filter((check) => check.count > 0)
+                .map((check) => {
+                  const view = check.target_view?.split("&", 1)[0] ?? "report";
+                  const tone = check.level === "blocker"
+                    ? "border-rose-500/40 bg-rose-500/10"
+                    : check.level === "warning"
+                      ? "border-amber-500/40 bg-amber-500/10"
+                      : "border-sky-500/40 bg-sky-500/10";
+                  return (
+                    <li key={check.key} className={`rounded-md border p-3 ${tone}`}>
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{check.level}</p>
+                          <p className="mt-1 text-xs">{check.message}</p>
+                        </div>
+                        {check.target_view && (
+                          <Link
+                            href={`/e?slug=${encodeURIComponent(slug)}&view=${encodeURIComponent(view)}`}
+                            className="shrink-0 text-xs underline"
+                          >
+                            Review
+                          </Link>
+                        )}
+                      </div>
+                    </li>
+                  );
+                })}
+            </ul>
+          )}
+          {readiness?.ready && (
+            <p className="mt-3 rounded-md border border-emerald-500/40 bg-emerald-500/10 p-3 text-xs text-emerald-700 dark:text-emerald-200">
+              No report blockers remain. Warnings are advisory and exports remain analyst controlled.
+            </p>
+          )}
+        </section>
+
         <label className="flex cursor-pointer items-start gap-2 rounded-md border border-border bg-background/40 p-3 text-sm">
           <input
             type="checkbox"

@@ -820,6 +820,23 @@ export interface ToolCostSummary {
   by_tool: ToolCost[];
 }
 
+export interface ReportReadinessCheck {
+  key: string;
+  level: "blocker" | "warning" | "info";
+  count: number;
+  message: string;
+  finding_ids: string[];
+  target_view: string | null;
+}
+
+export interface ReportReadiness {
+  ready: boolean;
+  generated_at: string;
+  reportable_count: number;
+  total_findings: number;
+  checks: ReportReadinessCheck[];
+}
+
 export interface CostRollup {
   engagement_id: string;
   engagement_slug: string;
