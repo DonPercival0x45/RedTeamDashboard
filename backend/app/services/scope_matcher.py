@@ -195,7 +195,7 @@ def evaluate_scope_candidates(
             reason=(
                 "engagement scope is empty; import policy allows parsing"
                 if empty_scope_allowed
-                else "engagement scope is empty"
+                else f"target {primary!r} not in any scope item (engagement scope is empty)"
             ),
             target=primary,
         )
