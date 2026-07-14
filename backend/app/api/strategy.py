@@ -321,13 +321,34 @@ def create_strategy_revision(
 ):
     eng = _engagement(session, slug)
     _ensure_mutable(eng)
-    if body.state not in (StrategyRevisionState.draft, StrategyRevisionState.proposed):
-        raise HTTPException(status_code=400, detail="new revisions must be draft or proposed")
-    current = _current_revision(session, eng.id)
+    if body.state not in (
+        StrategyRevisionState.draft,
+        StrategyRevisionState.proposed,
+        StrategyRevisionState.current,
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="new revisions must be draft, proposed, or current",
+        )
+    # Direct analyst edits may create the next current revision in one audited
+    # transaction. Lock history so two analysts cannot silently win.
+    revisions = list(
+        session.execute(
+            select(EngagementStrategyRevision)
+            .where(EngagementStrategyRevision.engagement_id == eng.id)
+            .order_by(EngagementStrategyRevision.version)
+            .with_for_update()
+        ).scalars()
+    )
+    current = next(
+        (row for row in revisions if row.state == StrategyRevisionState.current),
+        None,
+    )
     _check_revision_base(current, body.based_on_revision_id)
+    now = datetime.now(tz=UTC)
     row = EngagementStrategyRevision(
         engagement_id=eng.id,
-        version=_next_revision_version(session, eng.id),
+        version=max((item.version for item in revisions), default=0) + 1,
         state=body.state,
         based_on_revision_id=body.based_on_revision_id,
         summary=body.summary,
@@ -335,17 +356,37 @@ def create_strategy_revision(
         structured=body.structured,
         created_by_user_id=user.id,
         proposal_reason=body.proposal_reason,
+        decided_by_user_id=user.id if body.state == StrategyRevisionState.current else None,
+        decided_at=now if body.state == StrategyRevisionState.current else None,
     )
+    if body.state == StrategyRevisionState.current and current:
+        current.state = StrategyRevisionState.superseded
+        current.decided_by_user_id = user.id
+        current.decided_at = now
+        session.flush()
     session.add(row)
     session.flush()
+    event_type = (
+        "strategy.revision_proposed"
+        if body.state == StrategyRevisionState.proposed
+        else "strategy.revision_accepted"
+        if body.state == StrategyRevisionState.current and current is not None
+        else "strategy.created"
+    )
     _audit(
         session,
         eng.id,
         user.id,
-        "strategy.revision_proposed"
-        if body.state == StrategyRevisionState.proposed
-        else "strategy.created",
-        {"revision_id": str(row.id), "version": row.version, "state": row.state.value},
+        event_type,
+        {
+            "revision_id": str(row.id),
+            "version": row.version,
+            "state": row.state.value,
+            "direct_edit": body.state == StrategyRevisionState.current,
+            "superseded_id": str(current.id)
+            if body.state == StrategyRevisionState.current and current
+            else None,
+        },
     )
     try:
         session.commit()
@@ -672,12 +713,12 @@ def reopen_objective(
 def cancel_objective(
     slug: str,
     objective_id: uuid.UUID,
-    expected_row_version: Annotated[int, Query(ge=1)],
+    body: VersionedReason,
     session: DbSession,
     user: CurrentNonGuestUser,
 ):
     eng, row = _objective_locked(session, slug, objective_id)
-    _check_version(row, expected_row_version)
+    _check_version(row, body.expected_row_version)
     if row.status == ObjectiveStatus.completed:
         raise HTTPException(status_code=409, detail="completed objective cannot be cancelled")
     row.status = ObjectiveStatus.cancelled
@@ -687,7 +728,11 @@ def cancel_objective(
         eng.id,
         user.id,
         "objective.cancelled",
-        {"objective_id": str(row.id), "row_version": row.row_version},
+        {
+            "objective_id": str(row.id),
+            "reason": body.reason,
+            "row_version": row.row_version,
+        },
     )
     session.commit()
     session.refresh(row)
