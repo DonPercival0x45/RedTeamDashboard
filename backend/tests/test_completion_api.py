@@ -73,7 +73,7 @@ def engagement(db: Session) -> Iterator[Engagement]:
 
 
 def test_coverage_gap_requires_explicit_exception(
-    client: TestClient, engagement: Engagement
+    client: TestClient, db: Session, engagement: Engagement
 ) -> None:
     coverage = client.post(
         f"/engagements/{engagement.slug}/coverage",
@@ -144,6 +144,19 @@ def test_coverage_gap_requires_explicit_exception(
         json={"title": "Must reopen first"},
     )
     assert locked.status_code == 409, locked.text
+    scope_locked = client.post(
+        f"/engagements/{engagement.slug}/scope",
+        headers=HDR,
+        json={"kind": "domain", "value": "new.example.test"},
+    )
+    assert scope_locked.status_code == 409, scope_locked.text
+    finding_id = db.query(Finding.id).filter(Finding.engagement_id == engagement.id).scalar()
+    finding_locked = client.patch(
+        f"/findings/{finding_id}",
+        headers=HDR,
+        json={"title": "Must reopen before editing"},
+    )
+    assert finding_locked.status_code == 409, finding_locked.text
 
     approval_id = approved.json()["decision"]["id"]
     reopened = client.post(

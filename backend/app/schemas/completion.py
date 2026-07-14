@@ -12,6 +12,10 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 class CompletionRef(BaseModel):
     type: Literal[
         "work_item",
+        "objective",
+        "suggestion",
+        "strategy_revision",
+        "strategy_signal",
         "coverage_item",
         "task",
         "agent_execution",

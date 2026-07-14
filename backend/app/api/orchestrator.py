@@ -46,6 +46,8 @@ from app.models import (
     Conversation,
     ConversationMessage,
     Engagement,
+    EngagementStatus,
+    EngagementWorkState,
     Finding,
     Suggestion,
     SuggestionStatus,
@@ -108,6 +110,23 @@ def _engagement_by_slug(session: Session, slug: str) -> Engagement:
     return eng
 
 
+def _ensure_mutable_engagement(engagement: Engagement) -> None:
+    if engagement.status == EngagementStatus.flushed:
+        raise HTTPException(status_code=404, detail="engagement not found")
+    if engagement.status == EngagementStatus.archived:
+        raise HTTPException(status_code=409, detail="archived engagement is read-only")
+    if engagement.work_state == EngagementWorkState.completed:
+        raise HTTPException(status_code=409, detail="completed engagement is read-only")
+
+
+def _ensure_finding_mutable(session: Session, finding: Finding) -> Engagement:
+    engagement = session.get(Engagement, finding.engagement_id)
+    if engagement is None:
+        raise HTTPException(status_code=404, detail="engagement not found")
+    _ensure_mutable_engagement(engagement)
+    return engagement
+
+
 # ---------------------------------------------------------------------------
 # Analyze a finding (manual Strategic trigger)
 # ---------------------------------------------------------------------------
@@ -135,14 +154,7 @@ def analyze_finding(
     finding = session.get(Finding, finding_id)
     if finding is None:
         raise HTTPException(status_code=404, detail="finding not found")
-    from app.models import EngagementWorkState
-
-    engagement = session.get(Engagement, finding.engagement_id)
-    if engagement and engagement.work_state is EngagementWorkState.completed:
-        raise HTTPException(
-            status_code=409,
-            detail="completed engagement is read-only; reopen it before analysis",
-        )
+    _ensure_finding_mutable(session, finding)
 
     agent = StrategicAgent(redis_client=redis_client)
     execution, suggestions = agent.analyze_finding(
@@ -300,6 +312,7 @@ def summarize_finding_chat_endpoint(
     finding = session.get(Finding, finding_id)
     if finding is None:
         raise HTTPException(status_code=404, detail="finding not found")
+    _ensure_finding_mutable(session, finding)
     conv = get_latest_conversation(session, finding_id=finding_id, user_id=user.id)
     if conv is None:
         raise HTTPException(status_code=400, detail="no conversation to summarize")
@@ -332,6 +345,7 @@ def clear_finding_chat(
     finding = session.get(Finding, finding_id)
     if finding is None:
         raise HTTPException(status_code=404, detail="finding not found")
+    _ensure_finding_mutable(session, finding)
     conversations = list(
         session.execute(
             select(Conversation).where(
@@ -384,6 +398,7 @@ def ask_finding_chat(
     finding = session.get(Finding, finding_id)
     if finding is None:
         raise HTTPException(status_code=404, detail="finding not found")
+    _ensure_finding_mutable(session, finding)
 
     text = body.message.strip()
     if not text:
@@ -476,6 +491,7 @@ def accept_finding_chat_action(
     finding = session.get(Finding, finding_id)
     if finding is None:
         raise HTTPException(status_code=404, detail="finding not found")
+    _ensure_finding_mutable(session, finding)
     message = session.get(ConversationMessage, message_id)
     if message is None:
         raise HTTPException(status_code=404, detail="message not found")
@@ -543,6 +559,7 @@ def deny_finding_chat_action(
     finding = session.get(Finding, finding_id)
     if finding is None:
         raise HTTPException(status_code=404, detail="finding not found")
+    _ensure_finding_mutable(session, finding)
     message = session.get(ConversationMessage, message_id)
     if message is None:
         raise HTTPException(status_code=404, detail="message not found")
@@ -613,6 +630,7 @@ def triage_finding(
     finding = session.get(Finding, finding_id)
     if finding is None:
         raise HTTPException(status_code=404, detail="finding not found")
+    _ensure_finding_mutable(session, finding)
 
     try:
         execution, summary = triage_finding_summary(
@@ -687,6 +705,7 @@ def rewrite_finding_summary_endpoint(
     finding = session.get(Finding, finding_id)
     if finding is None:
         raise HTTPException(status_code=404, detail="finding not found")
+    _ensure_finding_mutable(session, finding)
 
     try:
         execution, summary = rewrite_finding_summary(
@@ -815,6 +834,10 @@ def dismiss_suggestion(
     suggestion = session.get(Suggestion, suggestion_id)
     if suggestion is None:
         raise HTTPException(status_code=404, detail="suggestion not found")
+    engagement = session.get(Engagement, suggestion.engagement_id)
+    if engagement is None:
+        raise HTTPException(status_code=404, detail="engagement not found")
+    _ensure_mutable_engagement(engagement)
     if suggestion.status != SuggestionStatus.open:
         raise HTTPException(
             status_code=409,

@@ -151,9 +151,7 @@ class EngagementStrategyRevision(Base, TimestampMixin):
         ),
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid7
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid7)
     engagement_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("engagements.id", ondelete="CASCADE"),
@@ -173,9 +171,7 @@ class EngagementStrategyRevision(Base, TimestampMixin):
     )
     summary: Mapped[str | None] = mapped_column(String(300), nullable=True)
     body: Mapped[str] = mapped_column(Text, nullable=False)
-    structured: Mapped[dict[str, Any]] = mapped_column(
-        JSONB, default=dict, nullable=False
-    )
+    structured: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
     created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
     )
@@ -196,9 +192,7 @@ class EngagementObjective(Base, TimestampMixin):
         Index("ix_engagement_objectives_engagement_order", "engagement_id", "display_order"),
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid7
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid7)
     engagement_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("engagements.id", ondelete="CASCADE"),
@@ -239,9 +233,7 @@ class WorkItem(Base, TimestampMixin):
         Index("ix_work_items_assigned_user_id", "assigned_user_id"),
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid7
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid7)
     engagement_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("engagements.id", ondelete="CASCADE"),
@@ -259,9 +251,7 @@ class WorkItem(Base, TimestampMixin):
     title: Mapped[str] = mapped_column(String(300), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
-    acceptance_criteria: Mapped[list[Any]] = mapped_column(
-        JSONB, default=list, nullable=False
-    )
+    acceptance_criteria: Mapped[list[Any]] = mapped_column(JSONB, default=list, nullable=False)
     status: Mapped[WorkItemStatus] = mapped_column(
         Enum(WorkItemStatus, name="work_item_status"), nullable=False, index=True
     )
@@ -337,9 +327,7 @@ class WorkItemResult(Base):
         ),
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid7
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid7)
     work_item_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("work_items.id", ondelete="CASCADE"),
@@ -353,9 +341,7 @@ class WorkItemResult(Base):
         index=True,
     )
     summary: Mapped[str] = mapped_column(Text, nullable=False)
-    structured: Mapped[dict[str, Any]] = mapped_column(
-        JSONB, default=dict, nullable=False
-    )
+    structured: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
     evidence_refs: Mapped[list[Any]] = mapped_column(JSONB, default=list, nullable=False)
     proposed_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
@@ -387,15 +373,11 @@ class StrategySignal(Base, TimestampMixin):
             "source_work_item_result_id",
             "signal_type",
             unique=True,
-            postgresql_where=text(
-                "source_work_item_result_id IS NOT NULL AND status = 'open'"
-            ),
+            postgresql_where=text("source_work_item_result_id IS NOT NULL AND status = 'open'"),
         ),
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid7
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid7)
     engagement_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("engagements.id", ondelete="CASCADE"),
@@ -418,9 +400,7 @@ class StrategySignal(Base, TimestampMixin):
     summary: Mapped[str] = mapped_column(Text, nullable=False)
     confidence: Mapped[str] = mapped_column(String(20), nullable=False)
     evidence_refs: Mapped[list[Any]] = mapped_column(JSONB, default=list, nullable=False)
-    suggested_effect: Mapped[dict[str, Any]] = mapped_column(
-        JSONB, default=dict, nullable=False
-    )
+    suggested_effect: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
     dedup_key: Mapped[str] = mapped_column(String(200), nullable=False)
     status: Mapped[StrategySignalStatus] = mapped_column(
         Enum(StrategySignalStatus, name="strategy_signal_status"),
@@ -449,9 +429,7 @@ class CoverageItem(Base, TimestampMixin):
         ),
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid7
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid7)
     engagement_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("engagements.id", ondelete="CASCADE"),
@@ -487,9 +465,7 @@ class EngagementCheckpoint(Base):
         Index("ix_engagement_checkpoints_engagement_created", "engagement_id", "created_at"),
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid7
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid7)
     engagement_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("engagements.id", ondelete="CASCADE"),
@@ -506,9 +482,7 @@ class EngagementCheckpoint(Base):
     created_by_execution_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("agent_executions.id", ondelete="SET NULL")
     )
-    material_event_cursor: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
+    material_event_cursor: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     facts: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     narrative: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -539,9 +513,7 @@ class EngagementCompletionDecision(Base):
         ),
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid7
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid7)
     engagement_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("engagements.id", ondelete="CASCADE"),
@@ -560,10 +532,10 @@ class EngagementCompletionDecision(Base):
         Enum(EngagementWorkState, name="engagement_work_state"), nullable=False
     )
     readiness_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    readiness_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
-    accepted_exceptions: Mapped[list[Any]] = mapped_column(
-        JSONB, default=list, nullable=False
+    readiness_snapshot: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB(none_as_null=True), nullable=True
     )
+    accepted_exceptions: Mapped[list[Any]] = mapped_column(JSONB, default=list, nullable=False)
     strategy_revision_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("engagement_strategy_revisions.id", ondelete="SET NULL"),

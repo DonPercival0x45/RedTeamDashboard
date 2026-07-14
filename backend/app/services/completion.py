@@ -21,6 +21,14 @@ from app.models import (
     CoverageItem,
     CoverageStatus,
     Engagement,
+    EngagementObjective,
+    EngagementStrategyRevision,
+    ObjectiveStatus,
+    StrategyRevisionState,
+    StrategySignal,
+    StrategySignalStatus,
+    Suggestion,
+    SuggestionStatus,
     Task,
     TaskStatus,
     WorkItem,
@@ -82,6 +90,52 @@ def build_completion_readiness(
                 ),
             )
             .order_by(WorkItem.id)
+        ).scalars()
+    )
+    open_objectives = list(
+        session.execute(
+            select(EngagementObjective.id)
+            .where(
+                EngagementObjective.engagement_id == engagement.id,
+                EngagementObjective.status.in_(
+                    [
+                        ObjectiveStatus.planned,
+                        ObjectiveStatus.active,
+                        ObjectiveStatus.blocked,
+                    ]
+                ),
+            )
+            .order_by(EngagementObjective.id)
+        ).scalars()
+    )
+    open_suggestions = list(
+        session.execute(
+            select(Suggestion.id)
+            .where(
+                Suggestion.engagement_id == engagement.id,
+                Suggestion.status == SuggestionStatus.open,
+            )
+            .order_by(Suggestion.id)
+        ).scalars()
+    )
+    proposed_revisions = list(
+        session.execute(
+            select(EngagementStrategyRevision.id)
+            .where(
+                EngagementStrategyRevision.engagement_id == engagement.id,
+                EngagementStrategyRevision.state == StrategyRevisionState.proposed,
+            )
+            .order_by(EngagementStrategyRevision.id)
+        ).scalars()
+    )
+    open_signals = list(
+        session.execute(
+            select(StrategySignal.id)
+            .where(
+                StrategySignal.engagement_id == engagement.id,
+                StrategySignal.status == StrategySignalStatus.open,
+            )
+            .order_by(StrategySignal.id)
         ).scalars()
     )
     deferred_work = list(
@@ -155,6 +209,30 @@ def build_completion_readiness(
             count=len(remaining_work),
             refs=_refs("work_item", remaining_work),
             message=f"{len(remaining_work)} committed work items remain",
+        ),
+        _check(
+            "open_objectives",
+            count=len(open_objectives),
+            refs=_refs("objective", open_objectives),
+            message=f"{len(open_objectives)} objectives are not terminal",
+        ),
+        _check(
+            "open_suggestions",
+            count=len(open_suggestions),
+            refs=_refs("suggestion", open_suggestions),
+            message=f"{len(open_suggestions)} proposals await an analyst decision",
+        ),
+        _check(
+            "proposed_strategy_revisions",
+            count=len(proposed_revisions),
+            refs=_refs("strategy_revision", proposed_revisions),
+            message=f"{len(proposed_revisions)} strategy revisions await a decision",
+        ),
+        _check(
+            "open_strategy_signals",
+            count=len(open_signals),
+            refs=_refs("strategy_signal", open_signals),
+            message=f"{len(open_signals)} strategy signals await a decision",
         ),
         _check(
             "deferred_work",

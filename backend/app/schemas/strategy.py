@@ -207,6 +207,7 @@ class WorkItemResultCreate(BaseModel):
     summary: str = Field(min_length=1, max_length=100_000)
     structured: dict[str, Any] = Field(default_factory=dict)
     evidence_refs: list[dict[str, Any]] = Field(default_factory=list, max_length=100)
+    proposed_by_execution_id: UUID | None = None
 
 
 class WorkItemResultRead(BaseModel):

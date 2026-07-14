@@ -364,6 +364,7 @@ def deny_action(
 @router.post("/engagements/{slug}/strategy/chat/summarize", response_model=StrategistSummary)
 def summarize_chat(slug: str, session: DbSession, user: CurrentNonGuestUser) -> StrategistSummary:
     engagement = _engagement(session, slug)
+    _mutable(engagement)
     conversation = _latest_conversation(session, engagement.id, user.id)
     rows = _messages(session, conversation.id) if conversation else []
     proposed = accepted = denied = 0
@@ -399,6 +400,7 @@ def summarize_chat(slug: str, session: DbSession, user: CurrentNonGuestUser) -> 
 @router.delete("/engagements/{slug}/strategy/chat", status_code=204)
 def clear_chat(slug: str, session: DbSession, user: CurrentNonGuestUser) -> Response:
     engagement = _engagement(session, slug)
+    _mutable(engagement)
     conversations = list(
         session.execute(
             select(Conversation.id).where(

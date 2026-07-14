@@ -14,6 +14,7 @@ The Entities tab in the UI shows both: an "Imported" section sourced
 from the stored table, and a "Derived from findings" section sourced
 from the existing endpoint.
 """
+
 from __future__ import annotations
 
 import uuid
@@ -23,11 +24,13 @@ from fastapi import APIRouter, File, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from app.api.deps import CurrentUser, DbSession
+from app.api.deps import CurrentNonGuestUser, CurrentUser, DbSession
 from app.models import (
     ActorType,
     AuditLog,
     Engagement,
+    EngagementStatus,
+    EngagementWorkState,
     Entity,
     EntityFindingLink,
     Finding,
@@ -120,13 +123,9 @@ class DarkwebImportResult(BaseModel):
 
 
 def _engagement_by_slug(session, slug: str) -> Engagement:
-    eng = session.execute(
-        select(Engagement).where(Engagement.slug == slug)
-    ).scalar_one_or_none()
+    eng = session.execute(select(Engagement).where(Engagement.slug == slug)).scalar_one_or_none()
     if eng is None:
-        raise HTTPException(
-            status_code=404, detail=f"engagement '{slug}' not found"
-        )
+        raise HTTPException(status_code=404, detail=f"engagement '{slug}' not found")
     return eng
 
 
@@ -135,6 +134,15 @@ def _finding_or_404(session, finding_id: uuid.UUID) -> Finding:
     if finding is None or finding.deleted_at is not None:
         raise HTTPException(status_code=404, detail="finding not found")
     return finding
+
+
+def _ensure_mutable(engagement: Engagement) -> None:
+    if engagement.status == EngagementStatus.flushed:
+        raise HTTPException(status_code=404, detail="engagement not found")
+    if engagement.status == EngagementStatus.archived:
+        raise HTTPException(status_code=409, detail="archived engagement is read-only")
+    if engagement.work_state == EngagementWorkState.completed:
+        raise HTTPException(status_code=409, detail="completed engagement is read-only")
 
 
 def _context_candidates(session, finding: Finding) -> list[FindingContextCandidate]:
@@ -210,7 +218,7 @@ def promote_finding_context(
     finding_id: uuid.UUID,
     body: FindingContextPromotionRequest,
     session: DbSession,
-    user: CurrentUser,
+    user: CurrentNonGuestUser,
 ) -> FindingContextPromotionResult:
     """Persist analyst-selected finding context as entities and/or found scope.
 
@@ -222,6 +230,7 @@ def promote_finding_context(
     engagement = session.get(Engagement, finding.engagement_id)
     if engagement is None:
         raise HTTPException(status_code=404, detail="engagement not found")
+    _ensure_mutable(engagement)
 
     entities_created = 0
     links_created = 0
@@ -346,7 +355,7 @@ def promote_finding_context(
 def import_maltego(
     slug: str,
     session: DbSession,
-    user: CurrentUser,
+    user: CurrentNonGuestUser,
     file: Annotated[UploadFile, File(..., description="Maltego .mtgx export.")],
 ) -> MaltegoImportResult:
     """Import a Maltego ``.mtgx`` graph export into the stored entities table.
@@ -358,6 +367,7 @@ def import_maltego(
     preserved.
     """
     eng = _engagement_by_slug(session, slug)
+    _ensure_mutable(eng)
     raw = file.file.read()
     attribution = file.filename or "maltego.mtgx"
     try:
@@ -412,10 +422,8 @@ def import_maltego(
 def import_darkweb(
     slug: str,
     session: DbSession,
-    user: CurrentUser,
-    file: Annotated[
-        UploadFile, File(..., description="DarkWeb source export (JSON or CSV).")
-    ],
+    user: CurrentNonGuestUser,
+    file: Annotated[UploadFile, File(..., description="DarkWeb source export (JSON or CSV).")],
     source: Annotated[
         str,
         Query(
@@ -436,6 +444,7 @@ def import_darkweb(
       - ``.csv`` (or no recognized suffix on a Dehashed source) → CSV parser
     """
     eng = _engagement_by_slug(session, slug)
+    _ensure_mutable(eng)
     raw = file.file.read()
     attribution = file.filename or f"{source}.darkweb"
     filename_lower = attribution.lower()
@@ -449,24 +458,16 @@ def import_darkweb(
 
     try:
         if filename_lower.endswith(".json"):
-            result = darkweb_import.parse_dehashed_json(
-                raw, source_attribution=attribution
-            )
+            result = darkweb_import.parse_dehashed_json(raw, source_attribution=attribution)
         elif filename_lower.endswith(".csv"):
-            result = darkweb_import.parse_dehashed_csv(
-                raw, source_attribution=attribution
-            )
+            result = darkweb_import.parse_dehashed_csv(raw, source_attribution=attribution)
         else:
             # No clear suffix — try JSON first (Dehashed API responses
             # tend to come as raw JSON with no extension), fall back to CSV.
             try:
-                result = darkweb_import.parse_dehashed_json(
-                    raw, source_attribution=attribution
-                )
+                result = darkweb_import.parse_dehashed_json(raw, source_attribution=attribution)
             except ValueError:
-                result = darkweb_import.parse_dehashed_csv(
-                    raw, source_attribution=attribution
-                )
+                result = darkweb_import.parse_dehashed_csv(raw, source_attribution=attribution)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -519,9 +520,7 @@ def list_stored_entities_endpoint(
     slug: str,
     session: DbSession,
     type: Annotated[str | None, Query(description="Filter by type.")] = None,
-    q: Annotated[
-        str | None, Query(description="Substring match on the value.")
-    ] = None,
+    q: Annotated[str | None, Query(description="Substring match on the value.")] = None,
 ) -> list[StoredEntityRead]:
     """Stored entities for the engagement (Maltego imports + future sources).
 
@@ -530,7 +529,5 @@ def list_stored_entities_endpoint(
     layers as separate sections.
     """
     eng = _engagement_by_slug(session, slug)
-    rows = entity_store.list_stored_entities(
-        session, engagement=eng, type_filter=type, query=q
-    )
+    rows = entity_store.list_stored_entities(session, engagement=eng, type_filter=type, query=q)
     return [_entity_to_read(e) for e in rows]

@@ -38,6 +38,8 @@ from app.models import (
     ApprovalStatus,
     AuditLog,
     Engagement,
+    EngagementStatus,
+    EngagementWorkState,
     Finding,
     MCPLease,
     MCPLeaseStatus,
@@ -60,12 +62,20 @@ router = APIRouter()
 
 
 def _engagement_by_slug(session: Session, slug: str) -> Engagement:
-    eng = session.execute(
-        select(Engagement).where(Engagement.slug == slug)
-    ).scalar_one_or_none()
+    eng = session.execute(select(Engagement).where(Engagement.slug == slug)).scalar_one_or_none()
     if eng is None:
         raise HTTPException(status_code=404, detail=f"engagement '{slug}' not found")
     return eng
+
+
+def _ensure_mutable_engagement(session: Session, engagement_id: uuid.UUID) -> None:
+    engagement = session.get(Engagement, engagement_id)
+    if engagement is None or engagement.status == EngagementStatus.flushed:
+        raise HTTPException(status_code=404, detail="engagement not found")
+    if engagement.status == EngagementStatus.archived:
+        raise HTTPException(status_code=409, detail="archived engagement is read-only")
+    if engagement.work_state == EngagementWorkState.completed:
+        raise HTTPException(status_code=409, detail="completed engagement is read-only")
 
 
 # ── v1.2.0: run_slug + outcome + synopsis derivation ────────────────────
@@ -330,11 +340,7 @@ def _agent_to_entity(row: AgentExecution) -> StatusEntity:
     agent_label = row.agent.value.replace("_", " ").title()
     color = _agent_color(row.status)
     outcome = _agent_outcome(row)
-    thread_id = (
-        (row.input or {}).get("thread_id")
-        if isinstance(row.input, dict)
-        else None
-    )
+    thread_id = (row.input or {}).get("thread_id") if isinstance(row.input, dict) else None
     slug_source: str | uuid.UUID = thread_id if isinstance(thread_id, str) and thread_id else row.id
     return StatusEntity(
         id=row.id,
@@ -356,10 +362,7 @@ def _agent_to_entity(row: AgentExecution) -> StatusEntity:
         # and Tactical retry need richer per-kind dispatch — coming in a
         # follow-up commit. Planner has its own re-evaluate button on
         # /settings/feedback.
-        retryable=(
-            row.status == AgentExecutionStatus.failed
-            and row.agent == AgentName.triage
-        ),
+        retryable=(row.status == AgentExecutionStatus.failed and row.agent == AgentName.triage),
         log={
             "agent": row.agent.value,
             "trigger": row.trigger.value,
@@ -367,9 +370,7 @@ def _agent_to_entity(row: AgentExecution) -> StatusEntity:
             "model_name": row.model_name,
             "tokens_in": row.tokens_in,
             "tokens_out": row.tokens_out,
-            "cost_usd": (
-                str(row.cost_usd) if row.cost_usd is not None else None
-            ),
+            "cost_usd": (str(row.cost_usd) if row.cost_usd is not None else None),
             "input": row.input,
             "output": row.output,
             "error": row.error,
@@ -384,9 +385,7 @@ def _task_to_entity(row: Task) -> StatusEntity:
     target = payload.get("target")
     color = _task_color(row.status)
     outcome = _task_outcome(row)
-    task_slug_source: str | uuid.UUID = (
-        str(row.run_id) if row.run_id else row.id
-    )
+    task_slug_source: str | uuid.UUID = str(row.run_id) if row.run_id else row.id
     return StatusEntity(
         id=row.id,
         kind="task",
@@ -409,9 +408,7 @@ def _task_to_entity(row: Task) -> StatusEntity:
             "finding_id": str(row.finding_id) if row.finding_id else None,
             "work_item_id": str(row.work_item_id) if row.work_item_id else None,
             "run_id": str(row.run_id) if row.run_id else None,
-            "dispatched_at": (
-                row.dispatched_at.isoformat() if row.dispatched_at else None
-            ),
+            "dispatched_at": (row.dispatched_at.isoformat() if row.dispatched_at else None),
             "payload": payload,
         },
         history=_task_history(row),
@@ -421,9 +418,7 @@ def _task_to_entity(row: Task) -> StatusEntity:
 def _approval_to_entity(row: Approval) -> StatusEntity:
     color = _approval_color(row.status)
     outcome = _approval_outcome(row)
-    approval_slug_source: str | uuid.UUID = (
-        row.thread_id if row.thread_id else row.id
-    )
+    approval_slug_source: str | uuid.UUID = row.thread_id if row.thread_id else row.id
     return StatusEntity(
         id=row.id,
         kind="approval",
@@ -445,9 +440,7 @@ def _approval_to_entity(row: Approval) -> StatusEntity:
             "risk": row.risk.value,
             "scope_check": row.scope_check,
             "decision_args": row.decision_args,
-            "authorization_id": (
-                str(row.authorization_id) if row.authorization_id else None
-            ),
+            "authorization_id": (str(row.authorization_id) if row.authorization_id else None),
         },
         history=_approval_history(row),
     )
@@ -484,9 +477,7 @@ def _reconcile_stale_tasks(
         session.execute(
             select(Task).where(
                 Task.engagement_id == eng_id,
-                Task.status.in_(
-                    (TaskStatus.dispatched, TaskStatus.running)
-                ),
+                Task.status.in_((TaskStatus.dispatched, TaskStatus.running)),
                 Task.completed_at.is_(None),
                 Task.dispatched_at.isnot(None),
                 Task.dispatched_at < cutoff,
@@ -521,9 +512,7 @@ def _reconcile_running_tasks_from_stream(
         session.execute(
             select(Task).where(
                 Task.engagement_id == eng_id,
-                Task.status.in_(
-                    (TaskStatus.dispatched, TaskStatus.running)
-                ),
+                Task.status.in_((TaskStatus.dispatched, TaskStatus.running)),
                 Task.run_id.isnot(None),
             )
         ).scalars()
@@ -567,9 +556,7 @@ def _reconcile_running_tasks_from_stream(
         if rid and rid in terminal:
             event_type, err = terminal[rid]
             row.status = (
-                TaskStatus.completed
-                if event_type == "run.completed"
-                else TaskStatus.failed
+                TaskStatus.completed if event_type == "run.completed" else TaskStatus.failed
             )
             row.completed_at = now
             dirty = True
@@ -680,10 +667,7 @@ def _reconcile_running_runs(
             notify_status_event(
                 session,
                 kind="run",
-                title=(
-                    f"Run {'failed' if is_failed else 'completed'} "
-                    f"(thread {thread_short})"
-                ),
+                title=(f"Run {'failed' if is_failed else 'completed'} (thread {thread_short})"),
                 status="failed" if is_failed else "completed",
                 detail=(err or "")[:500] if is_failed else None,
                 engagement_slug=engagement_slug,
@@ -718,12 +702,8 @@ def get_engagement_status(
     # case where there's no stream event to match against.
     # v0.9.1: the two stream-match passes also fire Discord status-alert
     # pings on each transition (purpose='status_alerts' integration row).
-    _reconcile_running_runs(
-        session, redis_client, eng.id, engagement_slug=eng.slug
-    )
-    _reconcile_running_tasks_from_stream(
-        session, redis_client, eng.id, engagement_slug=eng.slug
-    )
+    _reconcile_running_runs(session, redis_client, eng.id, engagement_slug=eng.slug)
+    _reconcile_running_tasks_from_stream(session, redis_client, eng.id, engagement_slug=eng.slug)
     _reconcile_stale_tasks(session, eng.id)
 
     agents = list(
@@ -932,11 +912,7 @@ def _stream_step_events(
                 at=at,
                 kind=etype,
                 label=label,
-                detail={
-                    k: v
-                    for k, v in payload.items()
-                    if k not in ("type", "thread_id")
-                },
+                detail={k: v for k, v in payload.items() if k not in ("type", "thread_id")},
             )
         )
     return steps
@@ -968,9 +944,7 @@ def _summarize_stream_event(payload: dict[str, Any]) -> str:
         tcc = payload.get("tool_call_count") or 0
         tokens = f"in={payload.get('tokens_in')} out={payload.get('tokens_out')}"
         if tcc:
-            call_names = ", ".join(
-                c.get("name", "?") for c in (payload.get("tool_calls") or [])
-            )
+            call_names = ", ".join(c.get("name", "?") for c in (payload.get("tool_calls") or []))
             return f"LLM → {tcc} tool call(s): {call_names} [{tokens}]"
         preview = (payload.get("content_preview") or "").replace("\n", " ")[:120]
         return f"LLM → no tool calls [{tokens}] — {preview!r}"
@@ -1042,9 +1016,7 @@ def _steps_for_entity(
     ]
     stream_steps: list[StepEntry] = []
     if thread_id:
-        stream_steps = _stream_step_events(
-            redis_client, eng.id, thread_id=thread_id
-        )
+        stream_steps = _stream_step_events(redis_client, eng.id, thread_id=thread_id)
     # Merge + dedupe by (kind, iso timestamp) — audit rows land within
     # ~1s of the stream event they mirror, so dedupe on second precision.
     seen: set[tuple[str, str]] = set()
@@ -1176,6 +1148,8 @@ def retry_agent_execution(
     row = session.get(AgentExecution, execution_id)
     if row is None:
         raise HTTPException(status_code=404, detail="agent execution not found")
+    if row.engagement_id is not None:
+        _ensure_mutable_engagement(session, row.engagement_id)
     if row.status != AgentExecutionStatus.failed:
         raise HTTPException(
             status_code=400,
@@ -1250,9 +1224,7 @@ def retry_agent_execution(
             detail=str(exc)[:500],
             engagement_slug=eng.slug if eng else None,
         )
-        raise HTTPException(
-            status_code=502, detail=f"triage retry failed: {exc}"
-        ) from exc
+        raise HTTPException(status_code=502, detail=f"triage retry failed: {exc}") from exc
 
     session.commit()
     session.refresh(execution)
@@ -1327,11 +1299,7 @@ def cancel_agent_execution(
         )
 
     input_payload = row.input or {}
-    thread_id = (
-        input_payload.get("thread_id")
-        if isinstance(input_payload, dict)
-        else None
-    )
+    thread_id = input_payload.get("thread_id") if isinstance(input_payload, dict) else None
     removed = 0
     if row.engagement_id is not None and thread_id:
         removed = _remove_queued_thread_start(
@@ -1397,6 +1365,7 @@ def cancel_task(
     row = session.get(Task, task_id)
     if row is None:
         raise HTTPException(status_code=404, detail="task not found")
+    _ensure_mutable_engagement(session, row.engagement_id)
     if row.status not in (TaskStatus.pending, TaskStatus.dispatched, TaskStatus.running):
         raise HTTPException(
             status_code=400,
@@ -1444,6 +1413,7 @@ def retry_task(
     row = session.get(Task, task_id)
     if row is None:
         raise HTTPException(status_code=404, detail="task not found")
+    _ensure_mutable_engagement(session, row.engagement_id)
     if row.status not in (TaskStatus.failed, TaskStatus.cancelled):
         raise HTTPException(
             status_code=400,

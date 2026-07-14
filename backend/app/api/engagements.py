@@ -546,12 +546,33 @@ def _build_export_payload(
     }
 
 
-def _reject_flushed(eng: Engagement) -> None:
+def _reject_only_flushed(eng: Engagement) -> None:
     if eng.status is EngagementStatus.flushed:
         raise HTTPException(
             status_code=409,
             detail="engagement has been flushed; the row will be gone shortly",
         )
+
+
+def _reject_flushed(eng: Engagement) -> None:
+    """Reject data mutations in flushed, archived, or completed engagements."""
+    _reject_only_flushed(eng)
+    if eng.status is EngagementStatus.archived:
+        raise HTTPException(status_code=409, detail="archived engagement is read-only")
+    from app.models import EngagementWorkState
+
+    if eng.work_state is EngagementWorkState.completed:
+        raise HTTPException(
+            status_code=409,
+            detail="completed engagement is read-only; reopen it before making changes",
+        )
+
+
+def _reject_engagement_id(session: DbSession, engagement_id: uuid.UUID) -> None:
+    eng = session.get(Engagement, engagement_id)
+    if eng is None:
+        raise HTTPException(status_code=404, detail="engagement not found")
+    _reject_flushed(eng)
 
 
 def _finding_to_read(f: Finding) -> dict[str, Any]:
@@ -661,7 +682,21 @@ def update_engagement(
     _user: CurrentNonGuestUser,
 ) -> EngagementRead:
     eng = _get_engagement_or_404(session, slug)
-    _reject_flushed(eng)
+    _reject_only_flushed(eng)
+    from app.models import EngagementWorkState
+
+    if eng.status is EngagementStatus.archived and (
+        body.name is not None or body.status is not EngagementStatus.active
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="archived engagement is read-only; only unarchive is allowed",
+        )
+    if eng.work_state is EngagementWorkState.completed and body.name is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="completed engagement must be reopened before renaming",
+        )
 
     if body.name is not None:
         eng.name = body.name
@@ -720,7 +755,7 @@ def export_engagement(
 )
 def archive_engagement(slug: str, session: DbSession, _user: CurrentNonGuestUser) -> Engagement:
     eng = _get_engagement_or_404(session, slug)
-    _reject_flushed(eng)
+    _reject_only_flushed(eng)
     if eng.status is not EngagementStatus.archived:
         eng.status = EngagementStatus.archived
         eng.archived_at = datetime.now(tz=UTC)
@@ -777,6 +812,7 @@ def create_scope_item(
     slug: str,
     body: ScopeItemCreate,
     session: DbSession,
+    _user: CurrentNonGuestUser,
 ) -> ScopeItem:
     eng = _get_engagement_or_404(session, slug)
     _reject_flushed(eng)
@@ -828,7 +864,7 @@ def import_scope(
     slug: str,
     body: ScopeImportRequest,
     session: DbSession,
-    user: CurrentUser,
+    user: CurrentNonGuestUser,
     dry_run: bool = False,
 ) -> ScopeImportPreview | ScopeImportResult:
     """Bulk-import scope items from a free-form text blob.
@@ -840,7 +876,10 @@ def import_scope(
     tuples so re-running an import is safe.
     """
     eng = _get_engagement_or_404(session, slug)
-    _reject_flushed(eng)
+    if dry_run:
+        _reject_only_flushed(eng)
+    else:
+        _reject_flushed(eng)
     rows, errors = parse_scope_text(body.text)
 
     error_rows = [{"line": e.line, "raw": e.raw, "reason": e.reason} for e in errors]
@@ -936,6 +975,7 @@ def update_scope_item(
     scope_id: uuid.UUID,
     body: ScopeItemUpdate,
     session: DbSession,
+    _user: CurrentNonGuestUser,
 ) -> ScopeItem:
     eng = _get_engagement_or_404(session, slug)
     _reject_flushed(eng)
@@ -962,8 +1002,10 @@ def delete_scope_item(
     slug: str,
     scope_id: uuid.UUID,
     session: DbSession,
+    _user: CurrentNonGuestUser,
 ) -> Response:
     eng = _get_engagement_or_404(session, slug)
+    _reject_flushed(eng)
     item = session.get(ScopeItem, scope_id)
     if item is None or item.engagement_id != eng.id:
         raise HTTPException(status_code=404, detail="scope item not found")
@@ -1131,13 +1173,14 @@ def validate_finding(
     finding_id: uuid.UUID,
     body: FindingValidate,
     session: DbSession,
-    user: CurrentUser,
+    user: CurrentNonGuestUser,
 ) -> dict[str, Any]:
     """Promote/reject a pending finding. ``validated`` makes it report-eligible;
     ``rejected`` / ``false_positive`` keep it for audit but exclude it."""
     finding = session.get(Finding, finding_id)
     if finding is None:
         raise HTTPException(status_code=404, detail="finding not found")
+    _reject_engagement_id(session, finding.engagement_id)
 
     finding.status = body.decision
     if body.decision is FindingStatus.validated:
@@ -1227,7 +1270,7 @@ def create_observation(
     slug: str,
     body: ObservationCreate,
     session: DbSession,
-    user: CurrentUser,
+    user: CurrentNonGuestUser,
 ) -> dict[str, Any]:
     eng = _get_engagement_or_404(session, slug)
     _reject_flushed(eng)
@@ -1247,11 +1290,12 @@ def create_observation(
 def delete_observation(
     observation_id: uuid.UUID,
     session: DbSession,
-    _user: CurrentUser,
+    _user: CurrentNonGuestUser,
 ) -> Response:
     obs = session.get(Observation, observation_id)
     if obs is None:
         raise HTTPException(status_code=404, detail="observation not found")
+    _reject_engagement_id(session, obs.engagement_id)
     session.delete(obs)
     session.commit()
     return Response(status_code=204)
@@ -1278,11 +1322,12 @@ def link_observation_to_finding(
     observation_id: uuid.UUID,
     finding_id: uuid.UUID,
     session: DbSession,
-    _user: CurrentUser,
+    _user: CurrentNonGuestUser,
 ) -> dict[str, Any]:
     """Attach an observation to a finding it supports. Idempotent — a
     repeat call returns the observation with the link already present."""
     obs_eng = _engagement_for_observation(session, observation_id)
+    _reject_engagement_id(session, obs_eng)
     finding = session.get(Finding, finding_id)
     if finding is None:
         raise HTTPException(status_code=404, detail="finding not found")
@@ -1315,10 +1360,12 @@ def unlink_observation_from_finding(
     observation_id: uuid.UUID,
     finding_id: uuid.UUID,
     session: DbSession,
-    _user: CurrentUser,
+    _user: CurrentNonGuestUser,
 ) -> Response:
     """Remove an observation→finding reference. Idempotent — 204 whether or
     not the link existed."""
+    obs_eng = _engagement_for_observation(session, observation_id)
+    _reject_engagement_id(session, obs_eng)
     link = session.get(
         ObservationFindingLink,
         {"observation_id": observation_id, "finding_id": finding_id},
@@ -1893,7 +1940,7 @@ def preview_scanner_import(
     from app.services.scanner_import import build_scanner_preview
 
     eng = _get_engagement_or_404(session, slug)
-    _reject_flushed(eng)
+    _reject_only_flushed(eng)
     raw = _read_scanner_upload(file)
     scope_items = list(
         session.execute(select(ScopeItem).where(ScopeItem.engagement_id == eng.id)).scalars()
@@ -2066,7 +2113,7 @@ def update_finding(
     finding_id: uuid.UUID,
     body: FindingUpdate,
     session: DbSession,
-    user: CurrentUser,
+    user: CurrentNonGuestUser,
 ) -> dict[str, Any]:
     """Edit analyst-controlled fields on a finding. Only provided fields change;
     omitted fields are left as-is. ``summary`` accepts ``null`` to clear it.
@@ -2078,6 +2125,7 @@ def update_finding(
     finding = session.get(Finding, finding_id)
     if finding is None:
         raise HTTPException(status_code=404, detail="finding not found")
+    _reject_engagement_id(session, finding.engagement_id)
 
     changed: dict[str, Any] = {}
     if "title" in body.model_fields_set and body.title is not None:
@@ -2992,6 +3040,7 @@ def merge_findings(
     parent = session.get(Finding, parent_id)
     if parent is None or parent.deleted_at is not None:
         raise HTTPException(status_code=404, detail="parent finding not found")
+    _reject_engagement_id(session, parent.engagement_id)
 
     child_ids = list({cid for cid in body.child_ids if cid != parent_id})
     if not child_ids:
@@ -3207,6 +3256,7 @@ def bulk_delete_findings(
     audit surface stays scannable.
     """
     eng = _get_engagement_or_404(session, slug)
+    _reject_flushed(eng)
     ids = list({fid for fid in body.finding_ids})  # dedup within request
     rows = list(
         session.execute(
@@ -3276,6 +3326,7 @@ def delete_finding(
     finding = session.get(Finding, finding_id)
     if finding is None:
         raise HTTPException(status_code=404, detail="finding not found")
+    _reject_engagement_id(session, finding.engagement_id)
     if finding.deleted_at is None:
         finding.deleted_at = datetime.now(tz=UTC)
         finding.deleted_by_user_id = user.id
@@ -3334,6 +3385,7 @@ def create_finding_summary(
     finding = session.get(Finding, finding_id)
     if finding is None:
         raise HTTPException(status_code=404, detail="finding not found")
+    _reject_engagement_id(session, finding.engagement_id)
 
     entry = _record_finding_summary(session, finding, body.body, user.id)
     session.add(
@@ -3423,12 +3475,13 @@ async def upload_attachment(
     finding_id: uuid.UUID,
     file: Annotated[UploadFile, File()],
     session: DbSession,
-    user: CurrentUser,
+    user: CurrentNonGuestUser,
 ) -> Attachment:
     """Upload a screenshot or evidence file and attach it to the finding."""
     finding = session.get(Finding, finding_id)
     if finding is None:
         raise HTTPException(status_code=404, detail="finding not found")
+    _reject_engagement_id(session, finding.engagement_id)
 
     data = await file.read()
     if len(data) > _MAX_ATTACHMENT_BYTES:
@@ -3511,12 +3564,13 @@ def serve_attachment(
 def delete_attachment(
     attachment_id: uuid.UUID,
     session: DbSession,
-    user: CurrentUser,
+    user: CurrentNonGuestUser,
 ) -> Response:
     """Delete an attachment."""
     attachment = session.get(Attachment, attachment_id)
     if attachment is None:
         raise HTTPException(status_code=404, detail="attachment not found")
+    _reject_engagement_id(session, attachment.engagement_id)
     session.add(
         AuditLog(
             engagement_id=attachment.engagement_id,

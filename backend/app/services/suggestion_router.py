@@ -168,7 +168,10 @@ def _accept_strategy_revision(
         .with_for_update()
     ).scalar_one_or_none()
     based_on = payload.get("based_on_revision_id")
-    based_on_id = uuid.UUID(str(based_on)) if based_on else None
+    try:
+        based_on_id = uuid.UUID(str(based_on)) if based_on else None
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="invalid based_on_revision_id") from exc
     if (current.id if current else None) != based_on_id:
         raise HTTPException(
             status_code=409,
@@ -269,8 +272,32 @@ def _accept_execution_task(
     session.add(task)
     session.flush()
     suggestion.task_id = task.id
+    should_dispatch = owner in {OwnerEligibility.agent, OwnerEligibility.either}
+
+    # Tactical's lease policy and dispatcher commit internally. Stage the
+    # suggestion decision, task link, and audit *before* entering Tactical so
+    # its first commit cannot leave an open suggestion with a committed Task.
+    suggestion.status = SuggestionStatus.accepted
+    suggestion.decided_by = user_id
+    suggestion.decided_at = datetime.now(tz=UTC)
+    session.add(
+        AuditLog(
+            engagement_id=suggestion.engagement_id,
+            actor_type=ActorType.user,
+            actor_id=str(user_id),
+            event_type="suggestion.accepted",
+            payload={
+                "suggestion_id": str(suggestion.id),
+                "kind": suggestion.kind.value,
+                "task_id": str(task.id),
+                "work_item_id": str(linked.id) if linked else None,
+                "strategy_revision_id": None,
+                "dispatched": should_dispatch,
+            },
+        )
+    )
     dispatched = False
-    if owner in {OwnerEligibility.agent, OwnerEligibility.either}:
+    if should_dispatch:
         try:
             TacticalAgent(redis_client).dispatch(
                 session,
@@ -321,6 +348,7 @@ def accept_suggestion(
         raise HTTPException(status_code=409, detail=f"suggestion is {suggestion.status.value}")
     _mutable_engagement(session, suggestion.engagement_id)
     result = SuggestionAcceptance(suggestion=suggestion)
+    task_route = suggestion.kind == SuggestionKind.task
     if suggestion.kind == SuggestionKind.work_item:
         result.work_item = _accept_work_item(session, suggestion, user_id=user_id)
     elif suggestion.kind == SuggestionKind.strategy_revision:
@@ -333,27 +361,28 @@ def accept_suggestion(
         result.task, result.dispatched = _accept_execution_task(
             session, redis_client, suggestion, user_id=user_id
         )
-    suggestion.status = SuggestionStatus.accepted
-    suggestion.decided_by = user_id
-    suggestion.decided_at = datetime.now(tz=UTC)
-    session.add(
-        AuditLog(
-            engagement_id=suggestion.engagement_id,
-            actor_type=ActorType.user,
-            actor_id=str(user_id),
-            event_type="suggestion.accepted",
-            payload={
-                "suggestion_id": str(suggestion.id),
-                "kind": suggestion.kind.value,
-                "task_id": str(result.task.id) if result.task else None,
-                "work_item_id": str(result.work_item.id) if result.work_item else None,
-                "strategy_revision_id": str(result.strategy_revision.id)
-                if result.strategy_revision
-                else None,
-                "dispatched": result.dispatched,
-            },
+    if not task_route:
+        suggestion.status = SuggestionStatus.accepted
+        suggestion.decided_by = user_id
+        suggestion.decided_at = datetime.now(tz=UTC)
+        session.add(
+            AuditLog(
+                engagement_id=suggestion.engagement_id,
+                actor_type=ActorType.user,
+                actor_id=str(user_id),
+                event_type="suggestion.accepted",
+                payload={
+                    "suggestion_id": str(suggestion.id),
+                    "kind": suggestion.kind.value,
+                    "task_id": None,
+                    "work_item_id": (str(result.work_item.id) if result.work_item else None),
+                    "strategy_revision_id": (
+                        str(result.strategy_revision.id) if result.strategy_revision else None
+                    ),
+                    "dispatched": False,
+                },
+            )
         )
-    )
     if commit:
         session.commit()
         session.refresh(suggestion)

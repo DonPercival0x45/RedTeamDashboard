@@ -1129,6 +1129,14 @@ def create_work_item_result(
     _ensure_mutable(eng)
     if work.status in _TERMINAL_WORK:
         raise HTTPException(status_code=409, detail="terminal work does not accept new results")
+    source_execution = None
+    if body.proposed_by_execution_id is not None:
+        source_execution = session.get(AgentExecution, body.proposed_by_execution_id)
+        if source_execution is None or source_execution.engagement_id != work.engagement_id:
+            raise HTTPException(
+                status_code=400,
+                detail="agent execution does not belong to the work-item engagement",
+            )
     revision = (
         int(
             session.execute(
@@ -1147,7 +1155,8 @@ def create_work_item_result(
         summary=body.summary,
         structured=body.structured,
         evidence_refs=body.evidence_refs,
-        proposed_by_user_id=user.id,
+        proposed_by_user_id=None if source_execution else user.id,
+        proposed_by_execution_id=source_execution.id if source_execution else None,
     )
     session.add(result)
     session.flush()
@@ -1156,7 +1165,12 @@ def create_work_item_result(
         work.engagement_id,
         user.id,
         "work_item.agent_result_proposed",
-        {"work_item_id": str(work.id), "result_id": str(result.id), "revision": revision},
+        {
+            "work_item_id": str(work.id),
+            "result_id": str(result.id),
+            "revision": revision,
+            "proposed_by_execution_id": (str(source_execution.id) if source_execution else None),
+        },
     )
     session.commit()
     session.refresh(result)
@@ -1358,6 +1372,11 @@ def _create_signal(
         result = session.get(WorkItemResult, body.source_work_item_result_id)
         if result is None:
             raise HTTPException(status_code=400, detail="work item result not found")
+        if result.state != WorkItemResultState.accepted:
+            raise HTTPException(
+                status_code=409,
+                detail="only an accepted work-item result may be shared with strategy",
+            )
         result_work = session.get(WorkItem, result.work_item_id)
         if (
             result_work is None
