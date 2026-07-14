@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { ApprovalsModal, type PendingApproval } from "@/components/approvals-modal";
 import { usePendingApprovals } from "@/lib/hooks";
 import type { ApprovalInboxItem } from "@/lib/types";
+import { cn } from "@/lib/utils";
 
 function toPending(row: ApprovalInboxItem): PendingApproval {
   return {
@@ -30,7 +31,17 @@ function age(value: string): string {
   return `${Math.floor(hours / 24)}d ago`;
 }
 
-export function ApprovalInbox() {
+// v2.0.0: the sidebar variant renders as a labeled row ("Notifications"
+// + icon + badge) that matches Settings and the nav items. Setting
+// `variant="sidebar"` also collapses the label + border, matching
+// the sidebar's own collapsed state via the `collapsed` prop.
+export function ApprovalInbox({
+  variant = "icon",
+  collapsed = false,
+}: {
+  variant?: "icon" | "sidebar";
+  collapsed?: boolean;
+} = {}) {
   const { data, error, isLoading } = usePendingApprovals();
   const approvals = data ?? [];
   const [open, setOpen] = useState(false);
@@ -53,25 +64,61 @@ export function ApprovalInbox() {
     };
   }, [open, selected]);
 
-  return (
-    <div ref={wrapperRef} className="relative">
-      <button
-        type="button"
-        onClick={() => setOpen((value) => !value)}
-        aria-label={`${approvals.length} pending approvals`}
-        aria-expanded={open}
-        className="relative rounded border border-border p-1.5 text-muted-foreground transition-colors hover:border-foreground/40 hover:text-foreground"
-      >
+  const isSidebar = variant === "sidebar";
+  const badgeCount = approvals.length;
+
+  const button = isSidebar ? (
+    <button
+      type="button"
+      onClick={() => setOpen((value) => !value)}
+      aria-label={`Notifications — ${badgeCount} pending`}
+      aria-expanded={open}
+      title={collapsed ? `Notifications (${badgeCount})` : undefined}
+      className={cn(
+        "flex w-full items-center gap-3 rounded-md text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground",
+        collapsed ? "justify-center px-0 py-2" : "px-3 py-2",
+      )}
+    >
+      <span className="relative shrink-0">
         <Bell className="h-4 w-4" />
-        {approvals.length > 0 && (
+        {badgeCount > 0 && (
           <span className="absolute -right-1.5 -top-1.5 min-w-4 rounded-full bg-amber-500 px-1 text-center text-[9px] font-semibold leading-4 text-black">
-            {approvals.length > 99 ? "99+" : approvals.length}
+            {badgeCount > 99 ? "99+" : badgeCount}
           </span>
         )}
-      </button>
+      </span>
+      {!collapsed && <span className="flex-1 text-left">Notifications</span>}
+    </button>
+  ) : (
+    <button
+      type="button"
+      onClick={() => setOpen((value) => !value)}
+      aria-label={`${badgeCount} pending approvals`}
+      aria-expanded={open}
+      className="relative rounded border border-border p-1.5 text-muted-foreground transition-colors hover:border-foreground/40 hover:text-foreground"
+    >
+      <Bell className="h-4 w-4" />
+      {badgeCount > 0 && (
+        <span className="absolute -right-1.5 -top-1.5 min-w-4 rounded-full bg-amber-500 px-1 text-center text-[9px] font-semibold leading-4 text-black">
+          {badgeCount > 99 ? "99+" : badgeCount}
+        </span>
+      )}
+    </button>
+  );
+
+  return (
+    <div ref={wrapperRef} className={isSidebar ? "w-full" : "relative"}>
+      {button}
 
       {open && (
-        <div className="absolute right-0 top-10 z-50 w-[min(28rem,calc(100vw-2rem))] overflow-hidden rounded-lg border border-border bg-popover shadow-2xl">
+        <>
+          {/* v2.0.0: dim scrim behind the centered popup so it reads
+              as a modal window rather than a floating dropdown. */}
+          <div
+            aria-hidden
+            className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm"
+          />
+          <div className="fixed left-1/2 top-1/2 z-50 w-[min(32rem,calc(100vw-2rem))] max-h-[80vh] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-lg border border-border bg-popover shadow-2xl">
           <div className="flex items-center justify-between border-b border-border px-4 py-3">
             <div>
               <h2 className="text-sm font-semibold">Pending approvals</h2>
@@ -124,6 +171,7 @@ export function ApprovalInbox() {
             </div>
           )}
         </div>
+        </>
       )}
 
       <ApprovalsModal
