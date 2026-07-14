@@ -63,7 +63,9 @@ def test_preview_exposes_mixed_scope_and_existing_items() -> None:
         source="defined",
     )
     duplicates = DuplicateIndex(
-        group_targets={"nessus:100": frozenset({"allowed.example.test:443"})}
+        group_dedup_keys={
+            "nessus:100": frozenset({"allowed.example.test:443"})
+        }
     )
 
     preview = build_scanner_preview(
@@ -141,6 +143,87 @@ def test_preview_supports_each_scanner_source(
 
     assert preview.groups[0].selection_key == expected_key
     assert preview.groups[0].scope_decision == "empty_scope_allowed"
+
+
+def test_nessus_scope_uses_bare_report_host_when_host_properties_are_missing() -> None:
+    raw = b"""<NessusClientData_v2><Report name="test">
+      <ReportHost name="bare.example.test"><ReportItem port="443" protocol="tcp"
+      severity="2" pluginID="6001" pluginName="Bare host" pluginFamily="General" />
+      </ReportHost></Report></NessusClientData_v2>"""
+    scope = ScopeItem(
+        kind=ScopeKind.domain,
+        value="example.test",
+        is_exclusion=False,
+        source="defined",
+    )
+
+    preview = build_scanner_preview("nessus", raw, scope_items=[scope])
+
+    assert preview.groups[0].scope_decision == "included_parent_domain"
+    assert preview.groups[0].default_selected is True
+
+
+def test_repeated_rows_in_one_upload_are_counted_as_duplicates() -> None:
+    raw = _nessus_xml(
+        ("app.example.test", "192.0.2.10", "7001", "Repeated", 3),
+        ("app.example.test", "192.0.2.10", "7001", "Repeated", 3),
+    )
+    preview = build_scanner_preview("nessus", raw, scope_items=[])
+
+    group = preview.groups[0]
+    assert group.item_count == 2
+    assert group.duplicate_state == "partial"
+    assert group.duplicate_item_count == 1
+
+    prepared = prepare_scanner_commit(
+        "nessus",
+        raw,
+        expected_sha256=preview.file_sha256,
+        selected_group_keys={group.selection_key},
+        scope_items=[],
+    )
+    assert prepared.selected_item_count == 1
+    assert prepared.skipped_duplicate == 1
+
+
+def test_long_parser_group_key_is_replaced_with_bounded_stable_hash() -> None:
+    plugin_id = "x" * 250
+    raw = _nessus_xml(
+        ("app.example.test", "192.0.2.10", plugin_id, "Long key", 3),
+    )
+
+    first = build_scanner_preview("nessus", raw, scope_items=[])
+    second = build_scanner_preview("nessus", raw, scope_items=[])
+
+    assert first.groups[0].selection_key == second.groups[0].selection_key
+    assert first.groups[0].selection_key.startswith("nessus:group:")
+    assert len(first.groups[0].selection_key) <= 200
+
+
+def test_blocked_soft_deleted_group_cannot_be_selected_for_commit() -> None:
+    raw = _nessus_xml(
+        ("app.example.test", "192.0.2.10", "8001", "Deleted group", 3),
+    )
+    duplicates = DuplicateIndex(blocked_group_keys=frozenset({"nessus:8001"}))
+    preview = build_scanner_preview(
+        "nessus",
+        raw,
+        scope_items=[],
+        duplicate_index=duplicates,
+    )
+
+    assert preview.groups[0].duplicate_state == "existing"
+    assert preview.groups[0].default_selected is False
+    prepared = prepare_scanner_commit(
+        "nessus",
+        raw,
+        expected_sha256=preview.file_sha256,
+        selected_group_keys={"nessus:8001"},
+        scope_items=[],
+        duplicate_index=duplicates,
+    )
+    assert prepared.items == ()
+    assert prepared.skipped_duplicate == 1
 
 
 def test_commit_rejects_changed_file_and_unknown_selection() -> None:

@@ -1227,7 +1227,9 @@ class ScannerPreviewGroupRead(BaseModel):
     severity: Severity
     phase: FindingPhase
     item_count: int
+    target_count: int
     targets: list[str]
+    targets_truncated: bool
     scope_decision: str
     scope_reasons: list[ScannerScopeReasonRead]
     in_scope_item_count: int
@@ -1313,7 +1315,10 @@ def _create_findings_from_imports(
             if row[0]
         }
 
-    from app.services.finding_grouping import upsert_grouped_import_item
+    from app.services.finding_grouping import (
+        canonical_import_group_key,
+        upsert_grouped_import_item,
+    )
 
     created: list[Finding] = []
     seen_created_ids: set[uuid.UUID] = set()
@@ -1332,6 +1337,7 @@ def _create_findings_from_imports(
         # separate Finding.
         group_key = getattr(item, "group_key", None)
         if group_key:
+            group_key = canonical_import_group_key(item.source_tool or source, group_key)
             row, _added = upsert_grouped_import_item(
                 session,
                 engagement_id=eng.id,
@@ -1346,6 +1352,7 @@ def _create_findings_from_imports(
                 validated_by=user.id
                 if status == FindingStatus.validated
                 else None,
+                burp_serial_number=serial,
             )
             if row.id not in seen_created_ids:
                 created.append(row)
@@ -1430,7 +1437,7 @@ def import_findings(
 def import_nessus(
     slug: str,
     session: DbSession,
-    user: CurrentUser,
+    user: CurrentNonGuestUser,
     file: Annotated[UploadFile, File(..., description="Nessus .nessus v2 XML export.")],
     include_info: Annotated[
         bool,
@@ -1449,7 +1456,7 @@ def import_nessus(
     eng = _get_engagement_or_404(session, slug)
     _reject_flushed(eng)
 
-    raw = file.file.read()
+    raw = _read_scanner_upload(file)
     scope_items = list(
         session.execute(
             select(ScopeItem).where(ScopeItem.engagement_id == eng.id)
@@ -1485,7 +1492,7 @@ def import_nessus(
 def import_nmap(
     slug: str,
     session: DbSession,
-    user: CurrentUser,
+    user: CurrentNonGuestUser,
     file: Annotated[UploadFile, File(..., description="Nmap -oX XML export.")],
 ) -> dict[str, Any]:
     """Import open services from an analyst-supplied Nmap XML export."""
@@ -1493,9 +1500,7 @@ def import_nmap(
 
     eng = _get_engagement_or_404(session, slug)
     _reject_flushed(eng)
-    raw = file.file.read(20 * 1024 * 1024 + 1)
-    if len(raw) > 20 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="Nmap XML exceeds the 20 MB limit")
+    raw = _read_scanner_upload(file)
     scope_items = list(
         session.execute(
             select(ScopeItem).where(ScopeItem.engagement_id == eng.id)
@@ -1552,7 +1557,7 @@ def import_burp(
     eng = _get_engagement_or_404(session, slug)
     _reject_flushed(eng)
 
-    raw = file.file.read()
+    raw = _read_scanner_upload(file)
     scope_items = list(
         session.execute(
             select(ScopeItem).where(ScopeItem.engagement_id == eng.id)
@@ -1599,30 +1604,49 @@ def _scanner_duplicate_index(
     engagement_id: uuid.UUID,
     source: ScannerSourceParam,
 ) -> Any:
+    from app.services.finding_grouping import import_item_dedup_key
     from app.services.scanner_import import DuplicateIndex
 
     rows = session.execute(
-        select(Finding.group_key, Finding.details, Finding.burp_serial_number).where(
+        select(
+            Finding.group_key,
+            Finding.details,
+            Finding.burp_serial_number,
+            Finding.deleted_at,
+        ).where(
             Finding.engagement_id == engagement_id,
             Finding.source_tool == f"{source}_import",
-            Finding.deleted_at.is_(None),
         )
     ).all()
-    group_targets: dict[str, set[str]] = {}
+    group_dedup_keys: dict[str, set[str]] = {}
     burp_serials: set[str] = set()
-    for group_key, details, serial in rows:
+    blocked_group_keys: set[str] = set()
+    for group_key, details, serial, deleted_at in rows:
+        if deleted_at is not None:
+            if group_key:
+                # The current partial unique index includes soft-deleted groups.
+                # Treat them as unavailable instead of allowing a commit-time 500.
+                blocked_group_keys.add(group_key)
+            continue
         if serial:
             burp_serials.add(serial)
         if not group_key:
             continue
-        targets = group_targets.setdefault(group_key, set())
+        dedup_keys = group_dedup_keys.setdefault(group_key, set())
         payload = details if isinstance(details, dict) else {}
         for item in payload.get("items") or []:
-            if isinstance(item, dict) and item.get("target"):
-                targets.add(str(item["target"]))
+            if not isinstance(item, dict):
+                continue
+            dedup_keys.add(import_item_dedup_key(f"{source}_import", item))
+            item_serial = item.get("burp_serial_number")
+            if source == "burp" and item_serial:
+                burp_serials.add(str(item_serial))
     return DuplicateIndex(
-        group_targets={key: frozenset(values) for key, values in group_targets.items()},
+        group_dedup_keys={
+            key: frozenset(values) for key, values in group_dedup_keys.items()
+        },
         burp_serials=frozenset(burp_serials),
+        blocked_group_keys=frozenset(blocked_group_keys),
     )
 
 
@@ -1638,7 +1662,9 @@ def _scanner_preview_to_dict(preview: Any) -> dict[str, Any]:
                 "severity": group.severity,
                 "phase": group.phase,
                 "item_count": group.item_count,
+                "target_count": group.target_count,
                 "targets": list(group.targets),
+                "targets_truncated": group.targets_truncated,
                 "scope_decision": group.scope_decision,
                 "scope_reasons": [
                     {"code": reason.code, "count": reason.count, "message": reason.message}
@@ -1715,11 +1741,18 @@ def commit_scanner_import(
     ],
 ) -> dict[str, Any]:
     """Reparse a previewed file and persist only explicitly selected groups."""
-    from app.services.scanner_import import prepare_scanner_commit
+    from app.services.scanner_import import (
+        MAX_SCANNER_GROUPS,
+        MAX_SELECTION_FORM_BYTES,
+        prepare_scanner_commit,
+        scanner_file_sha256,
+    )
 
     eng = _get_engagement_or_404(session, slug)
     _reject_flushed(eng)
     raw = _read_scanner_upload(file)
+    if len(selected_group_keys.encode()) > MAX_SELECTION_FORM_BYTES:
+        raise HTTPException(status_code=413, detail="scanner selection metadata is too large")
     try:
         decoded_keys = json.loads(selected_group_keys)
     except json.JSONDecodeError as exc:
@@ -1733,6 +1766,11 @@ def commit_scanner_import(
         raise HTTPException(
             status_code=400,
             detail="selected_group_keys must be a JSON array of strings",
+        )
+    if len(decoded_keys) > MAX_SCANNER_GROUPS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"selected_group_keys exceeds the {MAX_SCANNER_GROUPS:,}-group limit",
         )
     selected_keys = set(decoded_keys)
     if len(selected_keys) != len(decoded_keys):
@@ -1766,6 +1804,31 @@ def commit_scanner_import(
         user,
         source=f"{source}_import",
     )
+    if prepared.items:
+        sorted_selection = sorted(selected_keys)
+        selection_digest = scanner_file_sha256(
+            json.dumps(sorted_selection, separators=(",", ":")).encode()
+        )
+        session.add(
+            AuditLog(
+                engagement_id=eng.id,
+                actor_type=ActorType.user,
+                actor_id=str(user.id),
+                event_type="scanner_import.committed",
+                payload={
+                    "source": source,
+                    "file_sha256": prepared.file_sha256,
+                    "selected_group_keys": sorted_selection[:100],
+                    "selected_group_keys_truncated": len(sorted_selection) > 100,
+                    "selection_sha256": selection_digest,
+                    "selected_group_count": prepared.selected_group_count,
+                    "selected_item_count": prepared.selected_item_count,
+                    "skipped_out_of_scope": prepared.skipped_out_of_scope,
+                    "skipped_duplicate": prepared.skipped_duplicate + race_duplicates,
+                    "affected_finding_count": len(created),
+                },
+            )
+        )
     session.commit()
     for finding in created:
         session.refresh(finding)

@@ -70,6 +70,14 @@ def _nessus_xml(*items: str) -> bytes:
 </NessusClientData_v2>""".encode()
 
 
+def _burp_xml(path: str) -> bytes:
+    return f"""<issues exportTime="Mon, 30 Jun 2026 14:22:01 GMT">
+      <issue><serialNumber>stable-42</serialNumber><type>1001</type>
+      <name>Reflected input</name><host ip="192.0.2.10">https://scanner.example.test</host>
+      <path>{path}</path><severity>Medium</severity></issue>
+    </issues>""".encode()
+
+
 def _preview(client: TestClient, engagement: Engagement, raw: bytes):
     return client.post(
         f"/engagements/{engagement.slug}/findings/import/nessus/preview",
@@ -214,6 +222,15 @@ def test_nessus_commit_persists_only_selected_group(
     ).one()
     assert audit.payload["count"] == 1
     assert audit.payload["source"] == "nessus_import"
+    scanner_audit = db.scalars(
+        select(AuditLog).where(
+            AuditLog.engagement_id == engagement.id,
+            AuditLog.event_type == "scanner_import.committed",
+        )
+    ).one()
+    assert scanner_audit.payload["file_sha256"] == body["file_sha256"]
+    assert scanner_audit.payload["selected_group_keys"] == ["nessus:3001"]
+    assert scanner_audit.payload["selected_item_count"] == 1
 
 
 def test_nessus_commit_unknown_key_rejects_atomically(
@@ -267,6 +284,44 @@ def test_nessus_preview_marks_committed_group_existing_and_unselected(
     assert group["duplicate_item_count"] == 1
     assert group["default_selected"] is False
     assert _write_counts(db, engagement) == before_repreview
+
+
+def test_burp_grouped_serial_dedup_survives_changed_target(
+    client: TestClient,
+    db: Session,
+    engagement: Engagement,
+) -> None:
+    first_raw = _burp_xml("/first")
+    first_preview = client.post(
+        f"/engagements/{engagement.slug}/findings/import/burp/preview",
+        files={"file": ("burp.xml", first_raw, "application/xml")},
+        headers=_HEADERS,
+    )
+    assert first_preview.status_code == 200, first_preview.text
+    first_body = first_preview.json()
+    first_commit = client.post(
+        f"/engagements/{engagement.slug}/findings/import/burp/commit",
+        files={"file": ("burp.xml", first_raw, "application/xml")},
+        data={
+            "file_sha256": first_body["file_sha256"],
+            "selected_group_keys": json.dumps(["burp:1001"]),
+        },
+        headers=_HEADERS,
+    )
+    assert first_commit.status_code == 201, first_commit.text
+
+    changed_raw = _burp_xml("/changed")
+    changed_preview = client.post(
+        f"/engagements/{engagement.slug}/findings/import/burp/preview",
+        files={"file": ("burp.xml", changed_raw, "application/xml")},
+        headers=_HEADERS,
+    )
+
+    assert changed_preview.status_code == 200, changed_preview.text
+    group = changed_preview.json()["groups"][0]
+    assert group["duplicate_state"] == "existing"
+    assert group["duplicate_item_count"] == 1
+    assert group["default_selected"] is False
 
 
 def test_scanner_preview_rejects_oversized_file_before_parsing(

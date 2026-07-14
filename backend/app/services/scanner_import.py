@@ -14,10 +14,23 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, cast
 
 from app.models import FindingPhase, ScopeItem, Severity
-from app.services.scope_matcher import ScopeMatch, evaluate_scope_candidates, infer_scope_kind
+from app.services.finding_grouping import (
+    canonical_import_group_key,
+    import_item_dedup_key,
+)
+from app.services.scope_matcher import (
+    ScopeMatch,
+    evaluate_scope_candidates,
+    extract_host,
+    infer_scope_kind,
+)
 
 ScannerSource = Literal["nessus", "burp", "nmap"]
 MAX_SCANNER_EXPORT_BYTES = 20 * 1024 * 1024
+MAX_SCANNER_ITEMS = 50_000
+MAX_SCANNER_GROUPS = 5_000
+MAX_SELECTION_FORM_BYTES = 1024 * 1024
+MAX_PREVIEW_TARGETS_PER_GROUP = 100
 
 
 class ScannerImportItem(Protocol):
@@ -45,8 +58,9 @@ class ScannerImportParser(Protocol):
 class DuplicateIndex:
     """Existing persistence keys used to label preview groups."""
 
-    group_targets: Mapping[str, frozenset[str]] = field(default_factory=dict)
+    group_dedup_keys: Mapping[str, frozenset[str]] = field(default_factory=dict)
     burp_serials: frozenset[str] = frozenset()
+    blocked_group_keys: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,7 +77,9 @@ class PreviewGroup:
     severity: Severity
     phase: FindingPhase
     item_count: int
+    target_count: int
     targets: tuple[str, ...]
+    targets_truncated: bool
     scope_decision: str
     scope_reasons: tuple[ScopeReasonCount, ...]
     in_scope_item_count: int
@@ -141,6 +157,11 @@ def parse_scanner_export(
     parser, options = _parser_for(source)
     result = parser(raw, scope_items=[], **options)
     items = list(cast(Sequence[ScannerImportItem], result.items))
+    if len(items) > MAX_SCANNER_ITEMS:
+        raise ValueError(f"scanner export exceeds the {MAX_SCANNER_ITEMS:,}-item limit")
+    for item in items:
+        if item.group_key:
+            item.group_key = canonical_import_group_key(source, item.group_key)
 
     count_names = (
         "total_items",
@@ -154,6 +175,9 @@ def parse_scanner_export(
         for name in count_names
         if isinstance((value := getattr(result, name, None)), int)
     }
+    source_rows = counts.get("total_items", counts.get("total_ports", len(items)))
+    if source_rows > MAX_SCANNER_ITEMS:
+        raise ValueError(f"scanner export exceeds the {MAX_SCANNER_ITEMS:,}-item limit")
     return items, counts
 
 
@@ -180,6 +204,9 @@ def _scope_candidates(source: ScannerSource, item: ScannerImportItem) -> list[st
     candidates: list[str] = []
 
     if source == "nessus":
+        host_name = details.get("host_name")
+        if host_name:
+            candidates.append(str(host_name))
         props = details.get("host_properties")
         if isinstance(props, dict):
             candidates.extend(
@@ -198,20 +225,11 @@ def _scope_candidates(source: ScannerSource, item: ScannerImportItem) -> list[st
             candidates.append(str(host))
 
     candidates.append(item.target)
+    target_host = extract_host(item.target)
+    if target_host:
+        candidates.append(target_host)
     # Preserve order for deterministic primary reason text while removing repeats.
     return list(dict.fromkeys(value.strip() for value in candidates if value and value.strip()))
-
-
-def _is_duplicate(
-    source: ScannerSource,
-    item: ScannerImportItem,
-    selection_key: str,
-    duplicate_index: DuplicateIndex,
-) -> bool:
-    serial = getattr(item, "burp_serial_number", None)
-    if source == "burp" and serial and serial in duplicate_index.burp_serials:
-        return True
-    return item.target in duplicate_index.group_targets.get(selection_key, frozenset())
 
 
 def _evaluate_items(
@@ -221,6 +239,10 @@ def _evaluate_items(
     duplicate_index: DuplicateIndex,
 ) -> list[_EvaluatedItem]:
     evaluated: list[_EvaluatedItem] = []
+    seen_by_group = {
+        key: set(values) for key, values in duplicate_index.group_dedup_keys.items()
+    }
+    seen_burp_serials = set(duplicate_index.burp_serials)
     for item in items:
         selection_key = _selection_key(source, item)
         candidates = _scope_candidates(source, item)
@@ -229,12 +251,24 @@ def _evaluate_items(
             scope_items,
             empty_scope_allowed=True,
         )
+        serial = getattr(item, "burp_serial_number", None)
+        dedup_record = {"target": item.target, "burp_serial_number": serial}
+        dedup_key = import_item_dedup_key(item.source_tool, dedup_record)
+        group_seen = seen_by_group.setdefault(selection_key, set())
+        duplicate = (
+            selection_key in duplicate_index.blocked_group_keys
+            or dedup_key in group_seen
+            or (source == "burp" and serial and serial in seen_burp_serials)
+        )
+        group_seen.add(dedup_key)
+        if source == "burp" and serial:
+            seen_burp_serials.add(serial)
         evaluated.append(
             _EvaluatedItem(
                 item=item,
                 selection_key=selection_key,
                 scope=scope,
-                duplicate=_is_duplicate(source, item, selection_key, duplicate_index),
+                duplicate=bool(duplicate),
             )
         )
     return evaluated
@@ -265,6 +299,8 @@ def _group_preview(
     else:
         duplicate_state = "partial"
     severity = max((row.item.severity for row in rows), key=_SEVERITY_RANK.__getitem__)
+    all_targets = sorted({row.item.target for row in rows})
+    preview_targets = tuple(all_targets[:MAX_PREVIEW_TARGETS_PER_GROUP])
 
     return PreviewGroup(
         selection_key=first.selection_key,
@@ -272,7 +308,9 @@ def _group_preview(
         severity=severity,
         phase=first.item.phase,
         item_count=len(rows),
-        targets=tuple(sorted({row.item.target for row in rows})),
+        target_count=len(all_targets),
+        targets=preview_targets,
+        targets_truncated=len(preview_targets) < len(all_targets),
         scope_decision=scope_decision,
         scope_reasons=reason_counts,
         in_scope_item_count=allowed_count,
@@ -304,6 +342,8 @@ def build_scanner_preview(
     grouped: dict[str, list[_EvaluatedItem]] = {}
     for row in evaluated:
         grouped.setdefault(row.selection_key, []).append(row)
+    if len(grouped) > MAX_SCANNER_GROUPS:
+        raise ValueError(f"scanner export exceeds the {MAX_SCANNER_GROUPS:,}-group limit")
     groups = tuple(
         _group_preview(rows, include_info_by_default=include_info_by_default)
         for _, rows in sorted(grouped.items())
