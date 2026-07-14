@@ -200,30 +200,37 @@ def test_long_parser_group_key_is_replaced_with_bounded_stable_hash() -> None:
     assert len(first.groups[0].selection_key) <= 200
 
 
-def test_blocked_soft_deleted_group_cannot_be_selected_for_commit() -> None:
-    raw = _nessus_xml(
-        ("app.example.test", "192.0.2.10", "8001", "Deleted group", 3),
+def test_out_of_scope_row_does_not_claim_later_allowed_burp_serial() -> None:
+    raw = b"""<issues>
+      <issue><serialNumber>same-serial</serialNumber><type>1001</type>
+      <name>Repeated issue</name><host ip="198.51.100.10">https://outside.test</host>
+      <path>/first</path><severity>Medium</severity></issue>
+      <issue><serialNumber>same-serial</serialNumber><type>1001</type>
+      <name>Repeated issue</name><host ip="192.0.2.10">https://allowed.test</host>
+      <path>/second</path><severity>Medium</severity></issue>
+    </issues>"""
+    scope = ScopeItem(
+        kind=ScopeKind.cidr,
+        value="192.0.2.0/24",
+        is_exclusion=False,
+        source="defined",
     )
-    duplicates = DuplicateIndex(blocked_group_keys=frozenset({"nessus:8001"}))
-    preview = build_scanner_preview(
-        "nessus",
-        raw,
-        scope_items=[],
-        duplicate_index=duplicates,
-    )
+    preview = build_scanner_preview("burp", raw, scope_items=[scope])
 
-    assert preview.groups[0].duplicate_state == "existing"
-    assert preview.groups[0].default_selected is False
+    group = preview.groups[0]
+    assert group.in_scope_item_count == 1
+    assert group.out_of_scope_item_count == 1
+    assert group.duplicate_item_count == 0
+    assert group.default_selected is True
     prepared = prepare_scanner_commit(
-        "nessus",
+        "burp",
         raw,
         expected_sha256=preview.file_sha256,
-        selected_group_keys={"nessus:8001"},
-        scope_items=[],
-        duplicate_index=duplicates,
+        selected_group_keys={"burp:1001"},
+        scope_items=[scope],
     )
-    assert prepared.items == ()
-    assert prepared.skipped_duplicate == 1
+    assert prepared.selected_item_count == 1
+    assert prepared.items[0].target == "https://allowed.test/second"
 
 
 def test_commit_rejects_changed_file_and_unknown_selection() -> None:

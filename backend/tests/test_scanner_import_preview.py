@@ -5,6 +5,7 @@ import hashlib
 import json
 import uuid
 from collections.abc import Iterator
+from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
@@ -284,6 +285,48 @@ def test_nessus_preview_marks_committed_group_existing_and_unselected(
     assert group["duplicate_item_count"] == 1
     assert group["default_selected"] is False
     assert _write_counts(db, engagement) == before_repreview
+
+
+def test_commit_revives_soft_deleted_group_parent(
+    client: TestClient,
+    db: Session,
+    engagement: Engagement,
+) -> None:
+    raw = _nessus_xml(_nessus_item("5501", "Revived issue"))
+    preview = _preview(client, engagement, raw).json()
+    first_commit = _commit(
+        client,
+        engagement,
+        raw,
+        file_sha256=preview["file_sha256"],
+        selected_keys=["nessus:5501"],
+    )
+    assert first_commit.status_code == 201, first_commit.text
+    row = db.scalars(
+        select(Finding).where(
+            Finding.engagement_id == engagement.id,
+            Finding.group_key == "nessus:5501",
+        )
+    ).one()
+    row.deleted_at = datetime.now(tz=UTC)
+    db.commit()
+
+    revived_preview = _preview(client, engagement, raw)
+    assert revived_preview.status_code == 200, revived_preview.text
+    revived_group = revived_preview.json()["groups"][0]
+    assert revived_group["duplicate_state"] == "new"
+    assert revived_group["default_selected"] is True
+    revived_commit = _commit(
+        client,
+        engagement,
+        raw,
+        file_sha256=revived_preview.json()["file_sha256"],
+        selected_keys=["nessus:5501"],
+    )
+
+    assert revived_commit.status_code == 201, revived_commit.text
+    db.refresh(row)
+    assert row.deleted_at is None
 
 
 def test_burp_grouped_serial_dedup_survives_changed_target(

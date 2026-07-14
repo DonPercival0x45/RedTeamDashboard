@@ -1338,7 +1338,7 @@ def _create_findings_from_imports(
         group_key = getattr(item, "group_key", None)
         if group_key:
             group_key = canonical_import_group_key(item.source_tool or source, group_key)
-            row, _added = upsert_grouped_import_item(
+            row, added = upsert_grouped_import_item(
                 session,
                 engagement_id=eng.id,
                 group_key=group_key,
@@ -1354,6 +1354,8 @@ def _create_findings_from_imports(
                 else None,
                 burp_serial_number=serial,
             )
+            if not added:
+                skipped_duplicate += 1
             if row.id not in seen_created_ids:
                 created.append(row)
                 seen_created_ids.add(row.id)
@@ -1620,13 +1622,10 @@ def _scanner_duplicate_index(
     ).all()
     group_dedup_keys: dict[str, set[str]] = {}
     burp_serials: set[str] = set()
-    blocked_group_keys: set[str] = set()
     for group_key, details, serial, deleted_at in rows:
+        # Persistence revives a soft-deleted grouped parent. Treat its old
+        # observations as importable so a selected commit reaches that path.
         if deleted_at is not None:
-            if group_key:
-                # The current partial unique index includes soft-deleted groups.
-                # Treat them as unavailable instead of allowing a commit-time 500.
-                blocked_group_keys.add(group_key)
             continue
         if serial:
             burp_serials.add(serial)
@@ -1646,7 +1645,6 @@ def _scanner_duplicate_index(
             key: frozenset(values) for key, values in group_dedup_keys.items()
         },
         burp_serials=frozenset(burp_serials),
-        blocked_group_keys=frozenset(blocked_group_keys),
     )
 
 

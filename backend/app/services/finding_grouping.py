@@ -605,10 +605,14 @@ def upsert_grouped_import_item(
         .where(
             Finding.engagement_id == engagement_id,
             Finding.group_key == group_key,
-            Finding.deleted_at.is_(None),
         )
         .with_for_update()
     ).scalar_one_or_none()
+    if row is not None and row.deleted_at is not None:
+        # The group-key unique index includes deleted rows. Re-import is an
+        # explicit analyst action, so revive the canonical parent rather than
+        # racing into a uniqueness failure or creating a second authority.
+        row.deleted_at = None
 
     # Build the item record — target + selected detail fields.
     item_record: dict[str, Any] = {"target": item_target, "first_seen_at": now}
