@@ -43,6 +43,7 @@ from app.api.releases import router as releases_router
 from app.api.reports import router as reports_router
 from app.api.roadmap_suggestions import router as roadmap_suggestions_router
 from app.api.status import router as status_router
+from app.api.strategy import router as strategy_router
 from app.api.tool_invocations import router as tool_invocations_router
 from app.api.tools import router as tools_router
 from app.core.config import settings
@@ -89,6 +90,7 @@ app.include_router(roadmap_suggestions_router)
 app.include_router(integrations_router)
 app.include_router(admin_users_router)
 app.include_router(status_router)
+app.include_router(strategy_router)
 app.include_router(contributions_router)
 app.include_router(tools_router)
 app.include_router(releases_router)
