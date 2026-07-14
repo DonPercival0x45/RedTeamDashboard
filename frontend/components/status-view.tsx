@@ -391,7 +391,8 @@ export function StatusView({
     failed: all.filter((e) => e.color === "failed").length,
   };
 
-  // Bulk-cancel targets: every in-flight task + every running agent.
+  // Bulk-cancel targets: in-flight tasks + running agents. Deferred work needs
+  // an explicit per-card disposition so it is never swept away accidentally.
   const activeForBulkCancel = all.filter(
     (e) =>
       (e.kind === "task" &&
@@ -803,7 +804,7 @@ function StatusBox({
   const OutcomeIcon = entity.outcome ? OUTCOME_ICON[entity.outcome] : null;
   const cancellable =
     (entity.kind === "task" &&
-      ["pending", "dispatched", "running"].includes(entity.raw_status)) ||
+      ["pending", "deferred", "dispatched", "running"].includes(entity.raw_status)) ||
     (entity.kind === "agent" && entity.raw_status === "running");
   return (
     <div
@@ -887,7 +888,11 @@ function StatusBox({
             disabled={retrying}
           >
             <RefreshCcw className="mr-1.5 h-3.5 w-3.5" />
-            {retrying ? "Retrying…" : "Retry"}
+            {retrying
+              ? "Dispatching…"
+              : entity.raw_status === "deferred"
+                ? "Run now"
+                : "Retry"}
           </Button>
         )}
         <Button size="sm" variant="ghost" onClick={onExpand}>
