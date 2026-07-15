@@ -225,6 +225,21 @@ export function StatusView({
   // section below is visible without a long scroll. Expanding switches
   // to a bounded scroll container that shows the full filtered list.
   const [showAllRuns, setShowAllRuns] = useState(false);
+
+  // v2.5.1: close the ExpandedDetail modal AND strip the ``?run=<id>``
+  // query param that opened it. Without the strip, the deep-link
+  // effect below re-runs on the next render (its ``expanded`` dep flips
+  // back to null) and immediately re-opens the modal — bug reported
+  // from the Automation running-jobs hyperlink flow.
+  const closeExpanded = useCallback(() => {
+    setExpanded(null);
+    if (searchParams?.get("run")) {
+      const next = new URLSearchParams(searchParams.toString());
+      next.delete("run");
+      const query = next.toString();
+      router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
+    }
+  }, [pathname, router, searchParams]);
   const [dateRange, setDateRange] = useState<DateRange>(
     initialRange && ["24h", "7d", "14d", "30d"].includes(initialRange)
       ? (initialRange as DateRange)
@@ -698,7 +713,7 @@ export function StatusView({
         <ExpandedDetail
           slug={slug}
           entity={expanded}
-          onClose={() => setExpanded(null)}
+          onClose={closeExpanded}
         />
       )}
     </div>
