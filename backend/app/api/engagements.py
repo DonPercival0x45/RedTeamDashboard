@@ -1931,7 +1931,11 @@ def _read_scanner_upload(file: UploadFile) -> bytes:
 
     raw = file.file.read(MAX_SCANNER_EXPORT_BYTES + 1)
     if len(raw) > MAX_SCANNER_EXPORT_BYTES:
-        raise HTTPException(status_code=413, detail="scanner export exceeds the 20 MB limit")
+        mb = MAX_SCANNER_EXPORT_BYTES // (1024 * 1024)
+        raise HTTPException(
+            status_code=413,
+            detail=f"scanner export exceeds the {mb} MB limit",
+        )
     return raw
 
 

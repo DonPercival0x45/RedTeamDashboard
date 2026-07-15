@@ -33,13 +33,18 @@ const KINDS: ScopeKind[] = ["domain", "cidr", "ip", "url"];
 // preserved as an ISO stamp in the description so the analyst sees it
 // on the workspace header until we ship a first-class scheduled_at
 // column.
-type Frequency = "one_time" | "daily" | "weekly" | "monthly";
+// v2.6.1 — cadence options aligned to how engagements actually get
+// scheduled: Once, Monthly, Quarterly, or an analyst-defined Custom
+// window. Recurring cadences (monthly / quarterly) are metadata-only
+// today — the scheduler + workflow-template that actually fire the
+// runs land in a later phase (see roadmap tasks).
+type Frequency = "once" | "monthly" | "quarterly" | "custom";
 
 const FREQUENCIES: { value: Frequency; label: string }[] = [
-  { value: "one_time", label: "One time" },
-  { value: "daily", label: "Recurring — daily" },
-  { value: "weekly", label: "Recurring — weekly" },
+  { value: "once", label: "Once" },
   { value: "monthly", label: "Recurring — monthly" },
+  { value: "quarterly", label: "Recurring — quarterly" },
+  { value: "custom", label: "Custom window" },
 ];
 
 interface ScopeDraft {
@@ -60,7 +65,7 @@ export default function NewEngagementPage() {
   const [isExclusion, setIsExclusion] = useState(false);
 
   // v2.4.0 Nessus-style schedule state
-  const [frequency, setFrequency] = useState<Frequency>("one_time");
+  const [frequency, setFrequency] = useState<Frequency>("once");
   const [startDate, setStartDate] = useState("");
   const [startTime, setStartTime] = useState("09:00");
   const [endDate, setEndDate] = useState("");
@@ -106,25 +111,32 @@ export default function NewEngagementPage() {
       return;
     }
 
-    // Map Nessus-style schedule state onto the existing
-    // EngagementTimeFrame enum so we don't need a schema migration:
-    //   - recurring (any cadence) → 'repeatable'
-    //   - one-time WITH end date  → 'custom' (fixed window)
-    //   - one-time WITHOUT end    → 'point_in_time'
+    // Map schedule state onto the existing EngagementTimeFrame enum
+    // (no schema migration):
+    //   - monthly / quarterly    → 'repeatable' (metadata cadence)
+    //   - custom                 → 'custom' (analyst-picked window)
+    //   - once WITH end date     → 'custom' (bounded single pass)
+    //   - once WITHOUT end       → 'point_in_time'
     // The exact HH:MM + cadence gets appended to description as a
     // human-readable "Scheduled: …" line so the analyst still sees it
     // in the engagement header until we ship a first-class schedule
-    // column.
+    // column + scheduler service.
     let timeFrame: EngagementTimeFrame;
-    if (frequency !== "one_time") {
+    if (frequency === "monthly" || frequency === "quarterly") {
       timeFrame = "repeatable";
+    } else if (frequency === "custom") {
+      timeFrame = "custom";
     } else if (endDate) {
       timeFrame = "custom";
     } else {
       timeFrame = "point_in_time";
     }
     const cadenceLabel =
-      frequency === "one_time" ? "one time" : `recurring ${frequency}`;
+      frequency === "once"
+        ? "once"
+        : frequency === "custom"
+          ? "custom window"
+          : `recurring ${frequency}`;
     const scheduleLine = `Scheduled: ${startDate} ${startTime} · ${cadenceLabel}${
       endDate ? ` · through ${endDate}` : ""
     }`;
@@ -239,7 +251,9 @@ export default function NewEngagementPage() {
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-2">
               <Label htmlFor="start_date">
-                {frequency === "one_time" ? "Start date" : "First run date"}
+                {frequency === "once" || frequency === "custom"
+                  ? "Start date"
+                  : "First run date"}
               </Label>
               <Input
                 id="start_date"
@@ -263,9 +277,11 @@ export default function NewEngagementPage() {
 
           <div className="space-y-2">
             <Label htmlFor="end_date">
-              {frequency === "one_time"
-                ? "End date (optional — leave blank for a single-day pass)"
-                : "End date (optional — leave blank for open-ended)"}
+              {frequency === "custom"
+                ? "End date"
+                : frequency === "once"
+                  ? "End date (optional — leave blank for a single-day pass)"
+                  : "End date (optional — leave blank for open-ended)"}
             </Label>
             <Input
               id="end_date"
@@ -277,11 +293,13 @@ export default function NewEngagementPage() {
           </div>
 
           <p className="text-xs text-muted-foreground">
-            {frequency === "one_time"
+            {frequency === "once"
               ? endDate
                 ? `Single pass window ${startDate || "?"} → ${endDate}.`
                 : `Single-day pass on ${startDate || "?"}.`
-              : `Recurs ${frequency}${endDate ? ` until ${endDate}` : " (open-ended)"} starting ${startDate || "?"}.`}
+              : frequency === "custom"
+                ? `Custom window ${startDate || "?"} → ${endDate || "?"}.`
+                : `Recurs ${frequency}${endDate ? ` until ${endDate}` : " (open-ended)"} starting ${startDate || "?"}.`}
           </p>
         </CardContent>
       </Card>
