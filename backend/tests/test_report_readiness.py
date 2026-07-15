@@ -17,9 +17,13 @@ from app.models import (
     Finding,
     FindingPhase,
     FindingStatus,
+    OwnerEligibility,
     ScopeItem,
     ScopeKind,
     Severity,
+    Task,
+    TaskKind,
+    TaskStatus,
 )
 
 
@@ -75,6 +79,31 @@ def test_readiness_reports_blocking_finding_ids(
     assert checks["pending_validation"]["finding_ids"] == [str(pending.id)]
     assert checks["formal_scope"]["count"] == 1
     assert checks["reportable_findings"]["count"] == 1
+
+
+def test_deferred_task_has_specific_resolution_blocker(
+    client: TestClient, db: Session, engagement: Engagement
+) -> None:
+    db.add(
+        Task(
+            engagement_id=engagement.id,
+            title="Deferred enumeration",
+            kind=TaskKind.enum,
+            owner_eligibility=OwnerEligibility.agent,
+            status=TaskStatus.deferred,
+            payload={"tool": "portscan", "target": "203.0.113.20"},
+        )
+    )
+    db.commit()
+
+    response = client.get(
+        f"/engagements/{engagement.slug}/report/readiness", headers=headers()
+    )
+    assert response.status_code == 200, response.text
+    checks = {check["key"]: check for check in response.json()["checks"]}
+    assert checks["deferred_work"]["count"] == 1
+    assert checks["deferred_work"]["target_view"].startswith("status")
+    assert checks["active_work"]["count"] == 0
 
 
 def test_complete_finding_with_scope_and_evidence_is_ready(

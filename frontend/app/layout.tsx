@@ -1,14 +1,13 @@
 import type { Metadata } from "next";
-import Link from "next/link";
 import { AuthGate } from "@/components/auth-gate";
-import { IdentityMenu } from "@/components/identity-menu";
-import { WhatsNewBanner } from "@/components/whats-new-banner";
 import { QueryProvider } from "@/components/query-provider";
 import { RunToastProvider } from "@/components/run-toast-provider";
 import { AuthProvider } from "@/lib/auth";
 import { readServerConfig, RUNTIME_CONFIG_WINDOW_KEY } from "@/lib/config";
 import { themePreHydrationScript } from "@/lib/theme-preflight";
 import { A11Y_PRE_HYDRATION_SCRIPT } from "@/lib/accessibility";
+import { AppShell } from "@/components/app-shell/app-shell";
+import pkg from "../package.json";
 import "./globals.css";
 
 // Force per-request rendering so the runtime env is read fresh on every load
@@ -41,11 +40,13 @@ export default function RootLayout({
   // switches to light or high-contrast; the CSS variables win).
   //
   // v1.25.3: `suppressHydrationWarning` on <html> so React 19 doesn't
-  // reconcile the pre-hydration script's attribute mutations. Without
-  // it, refreshing the page reverts to the SSR-hard-coded dark theme
-  // even though localStorage says otherwise. The a11y attrs
-  // (data-reduced-motion, data-cb-severity, data-sr-hints) benefit
-  // from the same suppression.
+  // reconcile the pre-hydration script's attribute mutations.
+  //
+  // v2.0.0: the sticky top header is gone — LeftSidebar (rendered inside
+  // AppShell below) owns brand + navigation + identity. Existing routes
+  // (/e/*, /settings/*, /new) render inside AppShell's main region
+  // unchanged; new top-level routes /engagements, /automation,
+  // /analytics, /infrastructure live in app/*/page.tsx.
   return (
     <html
       lang="en"
@@ -71,25 +72,12 @@ export default function RootLayout({
           dangerouslySetInnerHTML={{ __html: runtimeConfigScript }}
         />
       </head>
-      <body className="min-h-screen bg-background font-sans text-foreground antialiased">
+      <body className="bg-background font-sans text-foreground antialiased">
         <QueryProvider>
           <AuthProvider>
             <RunToastProvider>
-              <header className="sticky top-0 z-40 border-b border-border bg-background/80 backdrop-blur">
-                <div className="container flex h-14 items-center justify-between">
-                  <Link href="/" className="group flex items-center gap-2.5">
-                    {/* The lone accent in the chrome — a single ember mark. */}
-                    <span className="h-3.5 w-1 rounded-full bg-critical" />
-                    <span className="text-sm font-semibold tracking-tight">
-                      Project XR@Y
-                    </span>
-                  </Link>
-                  <IdentityMenu />
-                </div>
-              </header>
-              <WhatsNewBanner />
               <AuthGate>
-                <main className="container py-8">{children}</main>
+                <AppShell version={pkg.version}>{children}</AppShell>
               </AuthGate>
             </RunToastProvider>
           </AuthProvider>

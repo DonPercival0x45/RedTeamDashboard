@@ -66,6 +66,7 @@ from fastapi import (
 )
 from pydantic import BaseModel, Field
 from sqlalchemy import case, func, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import object_session
 
 from app.api.deps import (
@@ -384,6 +385,7 @@ def _build_export_payload(
             }
             for f in findings
         ],
+        "export_profile": "client" if omit_excluded else "internal",
         "omit_excluded": omit_excluded,
         "excluded_count": excluded_count,
         "observations": [
@@ -652,10 +654,62 @@ def create_engagement(
         created_by=user.id,
     )
     session.add(eng)
-    session.commit()
+    try:
+        session.flush()
+    except IntegrityError as exc:
+        constraint_name = getattr(
+            getattr(exc.orig, "diag", None), "constraint_name", None
+        )
+        session.rollback()
+        if constraint_name in {"ix_engagements_slug", "engagements_slug_key"}:
+            raise HTTPException(
+                status_code=409,
+                detail="engagement slug was claimed concurrently; retry creation",
+            ) from exc
+        raise
+
+    # Persist staged scope in the same transaction as the engagement. The
+    # request schema rejects exact duplicates before this endpoint runs.
+    scope_items: list[ScopeItem] = []
+    for draft in body.initial_scope:
+        scope_item = ScopeItem(
+            engagement_id=eng.id,
+            kind=draft.kind,
+            value=draft.value,
+            is_exclusion=draft.is_exclusion,
+            note=draft.note,
+            source="defined",
+        )
+        session.add(scope_item)
+        scope_items.append(scope_item)
+
+    include_count = sum(not item.is_exclusion for item in scope_items)
+    exclusion_count = len(scope_items) - include_count
+    session.add(
+        AuditLog(
+            engagement_id=eng.id,
+            actor_type=ActorType.user,
+            actor_id=str(user.id),
+            event_type="engagement.created",
+            payload={
+                "name": eng.name,
+                "slug": eng.slug,
+                "initial_scope_count": len(scope_items),
+                "include_count": include_count,
+                "exclusion_count": exclusion_count,
+            },
+        )
+    )
+    try:
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
     session.refresh(eng)
-    # Newly created engagement has no scope items yet — counts are 0.
-    return EngagementRead.model_validate(eng)
+    read = EngagementRead.model_validate(eng)
+    read.scope_count = include_count
+    read.exclusion_count = exclusion_count
+    return read
 
 
 @router.get("/engagements", response_model=list[EngagementRead])
@@ -3455,9 +3509,9 @@ def get_engagement_export(
         Query(
             description=(
                 "Drop findings marked out_of_scope / outside_roe from the "
-                "returned payload. Default false — the analyst usually "
-                "wants the whole record. The Report tab toggle sets this "
-                "to true when the operator wants a client-ready export."
+                "returned payload. Defaults false because this endpoint is a "
+                "full-fidelity snapshot; the Report workspace explicitly sends "
+                "true for a client-safe download."
             ),
         ),
     ] = False,

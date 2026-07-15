@@ -12,6 +12,7 @@
 // look identical to the Status "Live events" tail.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { Loader2, Sparkles, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
@@ -81,7 +82,7 @@ export function RunPanel({
           findingsCount === 1 ? "" : "s"
         }`,
         sublabel: run.label,
-        openHref: `/e/${run.slug}`,
+        openHref: `/e?slug=${encodeURIComponent(run.slug)}&view=findings`,
       });
     }
   }, [ended, findingsCount, fireToast, run.runSlug, run.slug, run.label]);
@@ -239,9 +240,19 @@ export function RunPanel({
               >
                 {entry.event.type}
               </Badge>
-              <span className="break-all text-muted-foreground">
-                {summarizeEvent(entry.event)}
-              </span>
+              {entry.event.type === "finding.created" ? (
+                <Link
+                  href={`/e/findings/${entry.event.finding_id}?slug=${encodeURIComponent(run.slug)}`}
+                  onClick={onClose}
+                  className="break-all rounded-sm text-muted-foreground hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  {summarizeEvent(entry.event)}
+                </Link>
+              ) : (
+                <span className="break-all text-muted-foreground">
+                  {summarizeEvent(entry.event)}
+                </span>
+              )}
             </li>
           ))}
         </ul>
@@ -258,13 +269,14 @@ export function RunPanel({
             {findingsCount > 0 ? (
               <>
                 <Sparkles className="h-3.5 w-3.5" />
-                <span className="font-medium">
-                  {findingsCount} new finding{findingsCount === 1 ? "" : "s"}{" "}
-                  added
-                </span>
-                <span className="text-muted-foreground">
-                  — review them on the Findings tab.
-                </span>
+                <Link
+                  href={`/e?slug=${encodeURIComponent(run.slug)}&view=findings`}
+                  onClick={onClose}
+                  className="rounded-sm font-medium hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  {findingsCount} new finding{findingsCount === 1 ? "" : "s"} added
+                </Link>
+                <span className="text-muted-foreground">— review them on the Findings tab.</span>
               </>
             ) : (
               <span>Run complete — no new findings.</span>

@@ -17,7 +17,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { ScopeImporter } from "@/components/scope-importer";
-import { createEngagement, createScopeItem } from "@/lib/api";
+import { createEngagement } from "@/lib/api";
 import type { EngagementTimeFrame, ScopeKind } from "@/lib/types";
 
 // Nessus-style engagement setup (CHARTER Idea 3): name, details, time frame,
@@ -75,10 +75,27 @@ export default function NewEngagementPage() {
   const [error, setError] = useState<string | null>(null);
 
   const addScope = () => {
-    if (!value.trim()) return;
-    setScope((s) => [...s, { kind, value: value.trim(), isExclusion }]);
+    const candidate = value.trim();
+    if (!candidate) return;
+    const duplicate = scope.some(
+      (item) =>
+        item.kind === kind &&
+        item.value === candidate &&
+        item.isExclusion === isExclusion,
+    );
+    if (duplicate) {
+      setError(
+        `${kind}:${candidate} is already staged as ${isExclusion ? "an exclusion" : "an included target"}.`,
+      );
+      return;
+    }
+    setScope((items) => [
+      ...items,
+      { kind, value: candidate, isExclusion },
+    ]);
     setValue("");
     setIsExclusion(false);
+    setError(null);
   };
 
   const submit = async () => {
@@ -105,14 +122,12 @@ export default function NewEngagementPage() {
         time_frame: timeFrame,
         start_date: timeFrame === "custom" ? startDate : null,
         end_date: timeFrame === "custom" ? endDate : null,
-      });
-      for (const item of scope) {
-        await createScopeItem(eng.slug, {
+        initial_scope: scope.map((item) => ({
           kind: item.kind,
           value: item.value,
           is_exclusion: item.isExclusion,
-        });
-      }
+        })),
+      });
       router.push(`/e?slug=${encodeURIComponent(eng.slug)}&view=scope`);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -240,14 +255,36 @@ export default function NewEngagementPage() {
         <CardContent className="space-y-4">
           <ScopeImporter
             onCommit={(_text, preview) => {
-              setScope((s) => [
-                ...s,
-                ...preview.preview.map((row) => ({
+              const seen = new Set(
+                scope.map(
+                  (item) => `${item.kind}\u0000${item.value}\u0000${item.isExclusion}`,
+                ),
+              );
+              const additions: ScopeDraft[] = [];
+              const duplicates: ScopeDraft[] = [];
+              for (const row of preview.preview) {
+                const draft = {
                   kind: row.kind,
                   value: row.value,
                   isExclusion: row.is_exclusion,
-                })),
-              ]);
+                };
+                const key = `${draft.kind}\u0000${draft.value}\u0000${draft.isExclusion}`;
+                if (seen.has(key)) {
+                  duplicates.push(draft);
+                } else {
+                  seen.add(key);
+                  additions.push(draft);
+                }
+              }
+              setScope((items) => [...items, ...additions]);
+              if (duplicates.length > 0) {
+                const first = duplicates[0];
+                setError(
+                  `${first.kind}:${first.value} is already staged${duplicates.length > 1 ? `; ${duplicates.length} duplicate entries were skipped` : ""}.`,
+                );
+              } else {
+                setError(null);
+              }
             }}
           />
           <div className="grid gap-3 sm:grid-cols-[7rem_1fr_auto] sm:items-end">

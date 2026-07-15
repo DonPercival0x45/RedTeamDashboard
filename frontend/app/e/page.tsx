@@ -73,11 +73,10 @@ function ReportView({ slug }: { slug: string }) {
   const readiness = readinessQuery.data;
   const [exportBusy, setExportBusy] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
-  // v1.4.0: analyst toggles whether findings marked out_of_scope /
-  // outside_roe show up in the exported PDF + JSON. Kept local — this
-  // isn't a per-user preference, it's a per-download choice the analyst
-  // makes each time they cut a deliverable.
-  const [omitExcluded, setOmitExcluded] = useState(false);
+  // Export mode is an explicit per-download choice. Client-safe is the
+  // default; the analyst must deliberately choose the full internal record.
+  const [exportProfile, setExportProfile] = useState<"client" | "internal">("client");
+  const omitExcluded = exportProfile === "client";
 
   const onExportJSON = async () => {
     setExportBusy(true);
@@ -103,7 +102,11 @@ function ReportView({ slug }: { slug: string }) {
               disabled={exportBusy}
               className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border px-3 text-xs hover:bg-secondary disabled:opacity-50"
             >
-              {exportBusy ? "Exporting…" : "Export JSON"}
+              {exportBusy
+                ? "Exporting…"
+                : exportProfile === "client"
+                  ? "Export client JSON"
+                  : "Export internal JSON"}
             </button>
             {exportError && (
               <p className="text-xs text-destructive">{exportError}</p>
@@ -183,28 +186,51 @@ function ReportView({ slug }: { slug: string }) {
           )}
         </section>
 
-        <label className="flex cursor-pointer items-start gap-2 rounded-md border border-border bg-background/40 p-3 text-sm">
-          <input
-            type="checkbox"
-            checked={omitExcluded}
-            onChange={(e) => setOmitExcluded(e.target.checked)}
-            className="mt-0.5 cursor-pointer accent-critical"
-          />
-          <div>
-            <span className="font-medium">Omit excluded findings</span>
-            <p className="mt-0.5 text-xs text-muted-foreground">
-              Drop findings marked <em>Out of scope</em> or <em>Outside ROE</em>{" "}
-              from the PDF and JSON export. Use this when cutting a
-              client-ready deliverable; leave it off for the internal
-              full-record archive.
-            </p>
-          </div>
-        </label>
+        <fieldset className="space-y-2">
+          <legend className="text-sm font-medium">Export profile</legend>
+          <label className="flex cursor-pointer items-start gap-2 rounded-md border border-emerald-500/40 bg-emerald-500/5 p-3 text-sm">
+            <input
+              type="radio"
+              name="export-profile"
+              value="client"
+              checked={exportProfile === "client"}
+              onChange={() => setExportProfile("client")}
+              className="mt-0.5 cursor-pointer accent-emerald-600"
+            />
+            <div>
+              <span className="font-medium">Client deliverable</span>
+              <span className="ml-2 rounded-full bg-emerald-500/15 px-1.5 py-0.5 text-[10px] uppercase text-emerald-700 dark:text-emerald-300">
+                Recommended
+              </span>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                Excludes findings marked <em>Out of scope</em> or <em>Outside ROE</em>.
+                This is the default for both PDF and JSON downloads.
+              </p>
+            </div>
+          </label>
+          <label className="flex cursor-pointer items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 p-3 text-sm">
+            <input
+              type="radio"
+              name="export-profile"
+              value="internal"
+              checked={exportProfile === "internal"}
+              onChange={() => setExportProfile("internal")}
+              className="mt-0.5 cursor-pointer accent-amber-600"
+            />
+            <div>
+              <span className="font-medium">Internal full record</span>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                Includes excluded findings for audit and archival use. Do not send
+                this profile to the client without reviewing the contents.
+              </p>
+            </div>
+          </label>
+        </fieldset>
         <p className="text-xs text-muted-foreground/70">
-          <span className="text-critical">●</span> PDF includes the engagement&apos;s{" "}
-          <strong>validated</strong> findings across every phase — including any
-          summaries written in finding detail panels. JSON export includes the
-          full snapshot (findings, scope, observations, audit summary).
+          PDF includes <strong>validated</strong> findings across every phase.
+          JSON remains a full engagement snapshot of all validation states; the
+          selected profile controls whether excluded findings are present.
+          Filenames identify the profile.
         </p>
       </CardContent>
     </Card>

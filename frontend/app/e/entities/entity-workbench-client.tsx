@@ -81,7 +81,12 @@ export function EntityWorkbenchPage() {
   const slug = params.get("slug") ?? "";
   const type = params.get("type") ?? "";
   const value = params.get("value") ?? "";
-  const [tab, setTab] = useState<Tab>("overview");
+  const requestedTab = params.get("tab") as Tab | null;
+  const [tab, setTab] = useState<Tab>(
+    requestedTab && TABS.some((item) => item.id === requestedTab)
+      ? requestedTab
+      : "overview",
+  );
   const [entities, setEntities] = useState<Entity[] | null>(null);
   const [stored, setStored] = useState<StoredEntity[] | null>(null);
   const [findings, setFindings] = useState<Finding[] | null>(null);
@@ -126,8 +131,8 @@ export function EntityWorkbenchPage() {
     [stored, type, value],
   );
   const relatedFindings = useMemo(
-    () => relatedForEntity(value, entity, findings ?? []),
-    [entity, findings, value],
+    () => relatedForEntity(value, entity, storedMatches, findings ?? []),
+    [entity, findings, storedMatches, value],
   );
   const relatedTasks = useMemo(
     () => (tasks ?? []).filter((t) => taskTouchesEntity(t, value)),
@@ -197,15 +202,15 @@ export function EntityWorkbenchPage() {
           {loading ? (
             <p className="text-sm text-muted-foreground">Loading entity context…</p>
           ) : tab === "overview" ? (
-            <OverviewPanel entity={entity} value={value} scopeMatches={scopeMatches} storedMatches={storedMatches} relatedFindings={relatedFindings} relatedTasks={relatedTasks} />
+            <OverviewPanel entity={entity} value={value} scopeMatches={scopeMatches} storedMatches={storedMatches} relatedFindings={relatedFindings} relatedTasks={relatedTasks} slug={slug} />
           ) : tab === "findings" ? (
             <FindingsPanel findings={relatedFindings} slug={slug} />
           ) : tab === "tools" ? (
-            <ToolsPanel type={type} value={value} tasks={relatedTasks} />
+            <ToolsPanel type={type} value={value} tasks={relatedTasks} slug={slug} />
           ) : tab === "evidence" ? (
-            <EvidencePanel storedMatches={storedMatches} entity={entity} />
+            <EvidencePanel storedMatches={storedMatches} entity={entity} slug={slug} />
           ) : (
-            <ActivityPanel entity={entity} findings={relatedFindings} tasks={relatedTasks} storedMatches={storedMatches} />
+            <ActivityPanel entity={entity} findings={relatedFindings} tasks={relatedTasks} storedMatches={storedMatches} slug={slug} />
           )}
         </div>
       </section>
@@ -213,7 +218,7 @@ export function EntityWorkbenchPage() {
   );
 }
 
-function OverviewPanel({ entity, value, scopeMatches, storedMatches, relatedFindings, relatedTasks }: { entity: Entity | null; value: string; scopeMatches: ScopeItem[]; storedMatches: StoredEntity[]; relatedFindings: Finding[]; relatedTasks: Task[] }) {
+function OverviewPanel({ entity, value, scopeMatches, storedMatches, relatedFindings, relatedTasks, slug }: { entity: Entity | null; value: string; scopeMatches: ScopeItem[]; storedMatches: StoredEntity[]; relatedFindings: Finding[]; relatedTasks: Task[]; slug: string }) {
   const scopeState = scopeMatches.some((s) => s.is_exclusion) ? "excluded" : scopeMatches.some((s) => s.source === "found") ? "found scope" : scopeMatches.length ? "declared scope" : "unknown";
   return (
     <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
@@ -225,7 +230,7 @@ function OverviewPanel({ entity, value, scopeMatches, storedMatches, relatedFind
         <p className="mt-2 text-sm text-muted-foreground">
           <span className="font-mono text-foreground">{value}</span> appears in {entity?.count ?? relatedFindings.length} finding reference(s) and {storedMatches.length} imported record(s).
         </p>
-        {scopeMatches.length > 0 && <ul className="mt-3 space-y-2 text-xs">{scopeMatches.map((s) => <li key={s.id} className="rounded border border-border p-2">Matched scope <span className="font-mono">{s.kind}:{s.value}</span> · {s.is_exclusion ? "exclusion" : s.source ?? "defined"}</li>)}</ul>}
+        {scopeMatches.length > 0 && <ul className="mt-3 space-y-2 text-xs">{scopeMatches.map((s) => <li key={s.id}><Link href={`/e?slug=${encodeURIComponent(slug)}&view=scope`} className="block rounded border border-border p-2 hover:border-foreground/30 hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">Matched scope <span className="font-mono">{s.kind}:{s.value}</span> · {s.is_exclusion ? "exclusion" : s.source ?? "defined"}</Link></li>)}</ul>}
       </section>
     </div>
   );
@@ -233,10 +238,10 @@ function OverviewPanel({ entity, value, scopeMatches, storedMatches, relatedFind
 
 function FindingsPanel({ findings, slug }: { findings: Finding[]; slug: string }) {
   if (findings.length === 0) return <p className="text-sm text-muted-foreground">No related findings.</p>;
-  return <ul className="space-y-2">{findings.map((f) => <li key={f.id} className="rounded-md border border-border bg-background p-3"><div className="flex flex-wrap items-center justify-between gap-2"><p className="font-medium">{f.title}</p><Badge variant="outline" className={SEVERITY_CLASS[f.severity]}>{f.severity}</Badge></div><p className="mt-1 text-xs text-muted-foreground">{f.status} · {f.phase} · {f.target ?? "no target"}</p><Link className="mt-2 inline-block text-xs text-muted-foreground hover:text-foreground" href={`/e/findings/${f.id}?slug=${encodeURIComponent(slug)}`}>Open finding →</Link></li>)}</ul>;
+  return <ul className="space-y-2">{findings.map((f) => <li key={f.id} className="rounded-md border border-border bg-background p-3"><div className="flex flex-wrap items-center justify-between gap-2"><Link className="rounded-sm font-medium hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" href={`/e/findings/${f.id}?slug=${encodeURIComponent(slug)}`}>{f.title}</Link><Badge variant="outline" className={SEVERITY_CLASS[f.severity]}>{f.severity}</Badge></div><p className="mt-1 text-xs text-muted-foreground">{f.status} · {f.phase} · {f.target ?? "no target"}</p></li>)}</ul>;
 }
 
-function ToolsPanel({ type, value, tasks }: { type: string; value: string; tasks: Task[] }) {
+function ToolsPanel({ type, value, tasks, slug }: { type: string; value: string; tasks: Task[]; slug: string }) {
   const [copied, setCopied] = useState<string | null>(null);
   const actions = ACTIONS[type] ?? [];
   return (
@@ -246,31 +251,142 @@ function ToolsPanel({ type, value, tasks }: { type: string; value: string; tasks
         <p className="mt-1 text-xs text-muted-foreground">Copy a prompt into the engagement runner, or use it as input for the finding/entity AI workflow.</p>
         {actions.length === 0 ? <p className="mt-3 text-xs text-muted-foreground">No action chain defined for this entity type.</p> : <div className="mt-3 space-y-2">{actions.map((a) => { const prompt = a.prompt(value); return <div key={a.label} className="rounded-md border border-amber-400/30 bg-background p-3"><div className="flex items-start justify-between gap-2"><div><p className="text-sm font-medium">{a.label}</p><p className="mt-1 font-mono text-xs text-muted-foreground">{a.tool ?? "manual investigation"}</p><p className="mt-2 text-xs text-muted-foreground">{prompt}</p></div><button type="button" className="rounded border border-border px-2 py-1 text-xs" onClick={() => { void navigator.clipboard.writeText(prompt); setCopied(a.label); }}><Clipboard className="mr-1 inline h-3 w-3" />Copy</button></div>{copied === a.label && <p className="mt-1 text-[10px] text-emerald-600">Copied</p>}</div>; })}</div>}
       </section>
-      <ActionHistory tasks={tasks} />
+      <ActionHistory tasks={tasks} slug={slug} />
     </div>
   );
 }
 
-function EvidencePanel({ storedMatches, entity }: { storedMatches: StoredEntity[]; entity: Entity | null }) {
-  return <div className="space-y-4"><section className="rounded-lg border border-border bg-background p-4"><h2 className="text-sm font-medium">Imported records</h2>{storedMatches.length === 0 ? <p className="mt-2 text-sm text-muted-foreground">No imported records for this exact entity.</p> : <ul className="mt-3 space-y-2">{storedMatches.map((s) => <li key={s.id} className="rounded border border-border p-3 text-xs"><p className="font-mono">{s.type}:{s.value}</p><p className="mt-1 text-muted-foreground">{s.source_attribution ?? s.source_tool} · <DateTime value={s.created_at} /></p><pre className="mt-2 max-h-44 overflow-auto rounded bg-muted/40 p-2">{JSON.stringify(s.properties, null, 2)}</pre></li>)}</ul>}</section><section className="rounded-lg border border-border bg-background p-4"><h2 className="text-sm font-medium">Finding provenance</h2>{entity ? <ul className="mt-3 space-y-2">{entity.findings.map((f) => <li key={f.id} className="rounded border border-border p-2 text-xs">{f.title} · {f.tool ?? "manual"} · {f.phase}</li>)}</ul> : <p className="mt-2 text-sm text-muted-foreground">No derived finding provenance.</p>}</section></div>;
+function EvidencePanel({ storedMatches, entity, slug }: { storedMatches: StoredEntity[]; entity: Entity | null; slug: string }) {
+  return (
+    <div className="space-y-4">
+      <section className="rounded-lg border border-border bg-background p-4">
+        <h2 className="text-sm font-medium">Imported records</h2>
+        {storedMatches.length === 0 ? (
+          <p className="mt-2 text-sm text-muted-foreground">No imported records for this exact entity.</p>
+        ) : (
+          <ul className="mt-3 space-y-2">
+            {storedMatches.map((stored) => (
+              <li key={stored.id} className="rounded border border-border p-3 text-xs">
+                <p className="font-mono">{stored.type}:{stored.value}</p>
+                <p className="mt-1 text-muted-foreground">
+                  {stored.finding_refs.length > 0 ? (
+                    <>
+                      Promoted from{" "}
+                      {stored.finding_refs.map((finding, index) => (
+                        <span key={finding.id}>
+                          {index > 0 && ", "}
+                          <Link
+                            href={`/e/findings/${finding.id}?slug=${encodeURIComponent(slug)}`}
+                            className="font-medium text-foreground hover:underline"
+                          >
+                            {finding.title}
+                          </Link>
+                        </span>
+                      ))}
+                    </>
+                  ) : (
+                    stored.source_attribution ?? stored.source_tool
+                  )}{" "}· <DateTime value={stored.created_at} />
+                </p>
+                <pre className="mt-2 max-h-44 overflow-auto rounded bg-muted/40 p-2">{JSON.stringify(stored.properties, null, 2)}</pre>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+      <section className="rounded-lg border border-border bg-background p-4">
+        <h2 className="text-sm font-medium">Finding provenance</h2>
+        {entity && entity.findings.length > 0 ? (
+          <ul className="mt-3 space-y-2">
+            {entity.findings.map((finding) => (
+              <li key={finding.id}>
+                <Link
+                  href={`/e/findings/${finding.id}?slug=${encodeURIComponent(slug)}`}
+                  className="block rounded border border-border p-2 text-xs hover:border-foreground/30 hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <span className="font-medium">{finding.title}</span> · {finding.tool ?? "manual"} · {finding.phase}
+                </Link>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="mt-2 text-sm text-muted-foreground">No derived finding provenance.</p>
+        )}
+      </section>
+    </div>
+  );
 }
 
-function ActivityPanel({ entity, findings, tasks, storedMatches }: { entity: Entity | null; findings: Finding[]; tasks: Task[]; storedMatches: StoredEntity[] }) {
+function ActivityPanel({ entity, findings, tasks, storedMatches, slug }: { entity: Entity | null; findings: Finding[]; tasks: Task[]; storedMatches: StoredEntity[]; slug: string }) {
   const rows = [
-    ...findings.map((f) => ({ ts: f.created_at, label: `Finding: ${f.title}`, detail: `${f.severity} · ${f.status}` })),
-    ...tasks.map((t) => ({ ts: t.dispatched_at ?? t.created_at, label: `Tool action: ${t.title}`, detail: `${t.status} · ${String(t.payload.tool ?? "?")}` })),
-    ...storedMatches.map((s) => ({ ts: s.created_at, label: `Imported from ${s.source_tool}`, detail: s.source_attribution ?? s.type })),
+    ...findings.map((finding) => ({
+      ts: finding.created_at,
+      label: `Finding: ${finding.title}`,
+      detail: `${finding.severity} · ${finding.status}`,
+      href: `/e/findings/${finding.id}?slug=${encodeURIComponent(slug)}`,
+    })),
+    ...tasks.map((task) => ({
+      ts: task.dispatched_at ?? task.created_at,
+      label: `Tool action: ${task.title}`,
+      detail: `${task.status} · ${String(task.payload.tool ?? "?")}`,
+      href: `/e?slug=${encodeURIComponent(slug)}&view=status&run=${encodeURIComponent(task.id)}`,
+    })),
+    ...storedMatches.map((stored) => ({
+      ts: stored.created_at,
+      label: `Imported from ${stored.source_tool}`,
+      detail: stored.source_attribution ?? stored.type,
+      href: null,
+    })),
   ].sort((a, b) => String(b.ts).localeCompare(String(a.ts)));
   if (!entity && rows.length === 0) return <p className="text-sm text-muted-foreground">No activity for this entity yet.</p>;
-  return <ol className="space-y-3 border-l border-border pl-4">{rows.map((r, i) => <li key={`${r.ts}-${i}`} className="relative"><span className="absolute -left-[1.4rem] flex h-5 w-5 items-center justify-center rounded-full bg-card"><Network className="h-3.5 w-3.5 text-muted-foreground" /></span><p className="text-sm font-medium">{r.label}</p><p className="text-xs text-muted-foreground"><DateTime value={r.ts} /> · {r.detail}</p></li>)}</ol>;
+  return (
+    <ol className="space-y-3 border-l border-border pl-4">
+      {rows.map((row, index) => (
+        <li key={`${row.ts}-${index}`} className="relative">
+          <span className="absolute -left-[1.4rem] flex h-5 w-5 items-center justify-center rounded-full bg-card"><Network className="h-3.5 w-3.5 text-muted-foreground" /></span>
+          {row.href ? (
+            <Link href={row.href} className="rounded-sm text-sm font-medium hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{row.label}</Link>
+          ) : (
+            <p className="text-sm font-medium">{row.label}</p>
+          )}
+          <p className="text-xs text-muted-foreground"><DateTime value={row.ts} /> · {row.detail}</p>
+        </li>
+      ))}
+    </ol>
+  );
 }
 
 function Metric({ label, value, tone, icon }: { label: string; value: string; tone?: "good" | "bad" | "warn"; icon?: ReactNode }) {
   return <div className="rounded-lg border border-border bg-background p-4"><div className="flex items-center gap-1.5"><span className="text-muted-foreground">{icon}</span><p className="text-xs uppercase tracking-wide text-muted-foreground">{label}</p></div><p className={cn("mt-2 text-lg font-semibold", tone === "good" && "text-emerald-600", tone === "bad" && "text-rose-600", tone === "warn" && "text-amber-600")}>{value}</p></div>;
 }
 
-function ActionHistory({ tasks }: { tasks: Task[] }) {
-  return <section className="rounded-lg border border-border bg-card/40 p-4"><h2 className="text-sm font-medium">Tool action history</h2>{tasks.length === 0 ? <p className="mt-2 text-sm text-muted-foreground">No matching task history.</p> : <ul className="mt-3 space-y-2">{tasks.map((t) => <li key={t.id} className="rounded border border-border bg-background p-3 text-xs"><div className="flex justify-between gap-2"><p className="font-medium">{t.title}</p><span className="rounded-full bg-muted px-2 py-0.5 text-[10px] uppercase text-muted-foreground">{t.status}</span></div><p className="mt-1 font-mono text-muted-foreground">{String(t.payload.tool ?? "?")} → {String(t.payload.target ?? "?")}</p><p className="mt-1 text-muted-foreground">run: {t.run_id ?? "not dispatched"}</p></li>)}</ul>}</section>;
+function ActionHistory({ tasks, slug }: { tasks: Task[]; slug: string }) {
+  return (
+    <section className="rounded-lg border border-border bg-card/40 p-4">
+      <h2 className="text-sm font-medium">Tool action history</h2>
+      {tasks.length === 0 ? (
+        <p className="mt-2 text-sm text-muted-foreground">No matching task history.</p>
+      ) : (
+        <ul className="mt-3 space-y-2">
+          {tasks.map((task) => (
+            <li key={task.id} className="rounded border border-border bg-background p-3 text-xs">
+              <div className="flex justify-between gap-2">
+                <Link
+                  href={`/e?slug=${encodeURIComponent(slug)}&view=status&run=${encodeURIComponent(task.id)}`}
+                  className="rounded-sm font-medium hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  {task.title}
+                </Link>
+                <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] uppercase text-muted-foreground">{task.status}</span>
+              </div>
+              <p className="mt-1 font-mono text-muted-foreground">{String(task.payload.tool ?? "?")} → {String(task.payload.target ?? "?")}</p>
+              <p className="mt-1 text-muted-foreground">run: {task.run_id ?? "not dispatched"}</p>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
 }
 
 function pick<T>(
@@ -283,8 +399,11 @@ function pick<T>(
   return [];
 }
 
-function relatedForEntity(value: string, entity: Entity | null, findings: Finding[]) {
-  const ids = new Set((entity?.findings ?? []).map((f) => f.id));
+function relatedForEntity(value: string, entity: Entity | null, storedMatches: StoredEntity[], findings: Finding[]) {
+  const ids = new Set([
+    ...(entity?.findings ?? []).map((finding) => finding.id),
+    ...storedMatches.flatMap((stored) => stored.finding_refs.map((finding) => finding.id)),
+  ]);
   const lower = value.toLowerCase();
   return findings.filter((f) => ids.has(f.id) || JSON.stringify({ target: f.target, title: f.title, summary: f.summary, data: f.data }).toLowerCase().includes(lower));
 }

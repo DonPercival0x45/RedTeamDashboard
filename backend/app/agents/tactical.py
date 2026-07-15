@@ -24,6 +24,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import structlog
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -39,7 +40,7 @@ from app.models import (
 from app.orchestrator.llm import default_provider_model
 from app.orchestrator.tools import get_tool
 from app.runs.events import encode_command
-from app.runs.streams import inbound_stream, store_run_model
+from app.runs.streams import inbound_stream, run_model_key, store_run_model
 from app.services.agent_model_resolver import resolve_agent_model
 
 logger = structlog.get_logger(__name__)
@@ -186,9 +187,38 @@ class TacticalAgent:
         )
         session.add(execution)
 
-        task.status = TaskStatus.dispatched
-        task.dispatched_at = now
-        task.run_id = thread_id
+        # Strategic policy selection may commit its AgentExecution while the
+        # LLM call is visible in Status. A concurrent analyst cancellation can
+        # therefore change the Task after our initial pending check. Use a
+        # compare-and-set transition so stale dispatch work can never overwrite
+        # that cancellation.
+        transitioned = session.execute(
+            update(Task)
+            .where(
+                Task.id == task.id,
+                Task.status == TaskStatus.pending,
+            )
+            .values(
+                status=TaskStatus.dispatched,
+                dispatched_at=now,
+                completed_at=None,
+                run_id=thread_id,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        if transitioned.rowcount != 1:
+            session.rollback()
+            try:
+                self._redis.delete(run_model_key(thread_id))
+            except Exception:  # noqa: BLE001 — TTL is the final cleanup fallback
+                logger.warning(
+                    "tactical.superseded_run_model_cleanup_failed",
+                    task_id=str(task.id),
+                    thread_id=str(thread_id),
+                )
+            raise ValueError(
+                f"task {task.id} changed state during dispatch; refusing to enqueue"
+            )
 
         # Commit lease + execution + task state BEFORE enqueueing on Redis.
         # The worker reads the envelope in another process within ~2ms; if
@@ -199,6 +229,7 @@ class TacticalAgent:
         # orphan lease that the periodic sweeper reclaims and a task in
         # ``dispatched`` state with no run on the queue — recoverable.
         session.commit()
+        session.refresh(task)
 
         self._redis.xadd(
             inbound_stream(task.engagement_id),

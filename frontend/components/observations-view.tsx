@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { Link as LinkIcon, Trash2, X } from "lucide-react";
 import { DateTime } from "@/components/date-time";
 import { Button } from "@/components/ui/button";
@@ -149,10 +150,15 @@ export function ObservationsView({ slug }: { slug: string }) {
                         className="inline-flex items-center gap-1 rounded-full border border-sky-500/40 bg-sky-500/10 px-2 py-0.5 text-xs text-sky-700 dark:text-sky-200"
                         title={linked?.title ?? fid}
                       >
-                        <LinkIcon className="h-3 w-3" />
-                        <span className="max-w-[14rem] truncate">
-                          {linked?.title ?? fid.slice(0, 8)}
-                        </span>
+                        <Link
+                          href={`/e/findings/${fid}?slug=${encodeURIComponent(slug)}`}
+                          className="inline-flex min-w-0 items-center gap-1 rounded-sm hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        >
+                          <LinkIcon className="h-3 w-3 shrink-0" />
+                          <span className="max-w-[14rem] truncate">
+                            {linked?.title ?? fid.slice(0, 8)}
+                          </span>
+                        </Link>
                         <button
                           type="button"
                           aria-label="Unlink finding"

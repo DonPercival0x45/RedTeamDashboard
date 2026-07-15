@@ -179,6 +179,24 @@ def test_finding_context_can_promote_entity_and_found_scope(
     assert scope.source == "found"
     assert db.query(EntityFindingLink).filter_by(finding_id=finding.id).count() == 1
 
+    stored = client.get(
+        f"/engagements/{engagement.slug}/entities/stored", headers=headers
+    )
+    assert stored.status_code == 200, stored.text
+    promoted_entity = next(
+        row for row in stored.json() if row["value"] == "api.acme.com"
+    )
+    assert promoted_entity["finding_refs"] == [
+        {
+            "id": str(finding.id),
+            "title": finding.title,
+            "tool": "manual",
+            "severity": "info",
+            "phase": "osint",
+            "status": "validated",
+        }
+    ]
+
     repeated = client.post(
         f"/findings/{finding.id}/context/promote", json=body, headers=headers
     )

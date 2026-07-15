@@ -15,6 +15,7 @@
 // "Live events" panel below the boxes.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   Activity,
@@ -391,7 +392,8 @@ export function StatusView({
     failed: all.filter((e) => e.color === "failed").length,
   };
 
-  // Bulk-cancel targets: every in-flight task + every running agent.
+  // Bulk-cancel targets: in-flight tasks + running agents. Deferred work needs
+  // an explicit per-card disposition so it is never swept away accidentally.
   const activeForBulkCancel = all.filter(
     (e) =>
       (e.kind === "task" &&
@@ -707,9 +709,18 @@ export function StatusView({
                       >
                         {entry.event.type}
                       </Badge>
-                      <span className="break-all text-muted-foreground">
-                        {summarizeEvent(entry.event)}
-                      </span>
+                      {entry.event.type === "finding.created" ? (
+                        <Link
+                          href={`/e/findings/${entry.event.finding_id}?slug=${encodeURIComponent(slug)}`}
+                          className="break-all rounded-sm text-muted-foreground hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        >
+                          {summarizeEvent(entry.event)}
+                        </Link>
+                      ) : (
+                        <span className="break-all text-muted-foreground">
+                          {summarizeEvent(entry.event)}
+                        </span>
+                      )}
                     </li>
                   ))}
               </ul>
@@ -803,7 +814,7 @@ function StatusBox({
   const OutcomeIcon = entity.outcome ? OUTCOME_ICON[entity.outcome] : null;
   const cancellable =
     (entity.kind === "task" &&
-      ["pending", "dispatched", "running"].includes(entity.raw_status)) ||
+      ["pending", "deferred", "dispatched", "running"].includes(entity.raw_status)) ||
     (entity.kind === "agent" && entity.raw_status === "running");
   return (
     <div
@@ -887,7 +898,11 @@ function StatusBox({
             disabled={retrying}
           >
             <RefreshCcw className="mr-1.5 h-3.5 w-3.5" />
-            {retrying ? "Retrying…" : "Retry"}
+            {retrying
+              ? "Dispatching…"
+              : entity.raw_status === "deferred"
+                ? "Run now"
+                : "Retry"}
           </Button>
         )}
         <Button size="sm" variant="ghost" onClick={onExpand}>

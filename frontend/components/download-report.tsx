@@ -7,7 +7,7 @@ import { downloadEngagementReport } from "@/lib/api";
 
 export function DownloadReport({
   slug,
-  omitExcluded = false,
+  omitExcluded = true,
 }: {
   slug: string;
   omitExcluded?: boolean;
@@ -31,7 +31,11 @@ export function DownloadReport({
     <div className="flex flex-col items-end gap-1">
       <Button variant="outline" size="sm" onClick={onClick} disabled={busy}>
         <Download className="mr-2 h-4 w-4" />
-        {busy ? "Generating…" : "Download report"}
+        {busy
+          ? "Generating…"
+          : omitExcluded
+            ? "Download client PDF"
+            : "Download internal PDF"}
       </Button>
       {error && <p className="text-xs text-destructive">{error}</p>}
     </div>
