@@ -44,6 +44,10 @@ export default function AutomationPage() {
         </p>
       </div>
 
+      {/* v2.5.0: Running Jobs pinned to the top so switching tabs
+          (Recon ↔ Reporting) doesn't hide currently-active work. */}
+      <RunningJobsBanner />
+
       <div className="flex flex-wrap items-center gap-1 border-b border-border">
         {TABS.map((t) => {
           const active = tab === t.id;
@@ -67,8 +71,6 @@ export default function AutomationPage() {
       </div>
 
       {tab === "reporting" ? <ReportingTab /> : <ComingSoonTab />}
-
-      <RunningJobsBanner />
     </div>
   );
 }
