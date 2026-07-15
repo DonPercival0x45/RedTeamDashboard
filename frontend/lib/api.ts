@@ -189,6 +189,12 @@ export function createEngagement(body: {
   time_frame?: EngagementTimeFrame;
   start_date?: string | null;
   end_date?: string | null;
+  initial_scope?: Array<{
+    kind: ScopeKind;
+    value: string;
+    is_exclusion?: boolean;
+    note?: string | null;
+  }>;
 }): Promise<Engagement> {
   return request<Engagement>("/engagements", {
     method: "POST",
