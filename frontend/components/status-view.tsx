@@ -221,6 +221,10 @@ export function StatusView({
   // v1.2.0 — typed search over title / subtitle / synopsis / run_slug,
   // plus a date-range chip over started_at.
   const [search, setSearch] = useState(initialSearch);
+  // v2.5.1: show the first N runs on Status entry so the Attribution
+  // section below is visible without a long scroll. Expanding switches
+  // to a bounded scroll container that shows the full filtered list.
+  const [showAllRuns, setShowAllRuns] = useState(false);
   const [dateRange, setDateRange] = useState<DateRange>(
     initialRange && ["24h", "7d", "14d", "30d"].includes(initialRange)
       ? (initialRange as DateRange)
@@ -579,66 +583,109 @@ export function StatusView({
             ? "Try clearing filters."
             : "Run an agent or kick off a task to populate the timeline."}
         </p>
-      ) : viewMode === "cards" ? (
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          {visible.map((entity) => (
-            <StatusBox
-              key={`${entity.kind}-${entity.id}`}
-              entity={entity}
-              onExpand={() => setExpanded(entity)}
-              onRetry={() => onRetry(entity)}
-              onCancel={() => onCancel(entity)}
-              retrying={retryingId === entity.id}
-              cancelling={cancellingId === entity.id}
-            />
-          ))}
-        </div>
       ) : (
-        <div className="overflow-x-auto rounded-lg border border-border bg-card/40">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-border text-left text-[10px] uppercase tracking-wide text-muted-foreground">
-                <th className="px-3 py-2">Run</th>
-                <th className="px-3 py-2">Kind / role</th>
-                <th className="px-3 py-2">Status</th>
-                <th className="px-3 py-2">Outcome</th>
-                <th className="px-3 py-2">Started</th>
-                <th className="px-3 py-2">Synopsis</th>
-              </tr>
-            </thead>
-            <tbody>
-              {visible.map((entity) => (
-                <tr
-                  key={`${entity.kind}-${entity.id}`}
-                  onClick={() => setExpanded(entity)}
-                  className="cursor-pointer border-b border-border/50 last:border-0 hover:bg-muted/30"
+        // v2.5.1: cap the primary run list to the first 8 rows so the
+        // Attribution panel below is visible on Status entry. Analyst
+        // can click Show all to see the full filtered list inside a
+        // bounded scroll container.
+        (() => {
+          const INITIAL_RUN_CAP = 8;
+          const shown = showAllRuns ? visible : visible.slice(0, INITIAL_RUN_CAP);
+          const hidden = Math.max(0, visible.length - shown.length);
+          const listWrapperClass = showAllRuns
+            ? "max-h-[36rem] overflow-y-auto pr-1"
+            : "";
+          return (
+            <div className="space-y-2">
+              {viewMode === "cards" ? (
+                <div className={cn(listWrapperClass)}>
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    {shown.map((entity) => (
+                      <StatusBox
+                        key={`${entity.kind}-${entity.id}`}
+                        entity={entity}
+                        onExpand={() => setExpanded(entity)}
+                        onRetry={() => onRetry(entity)}
+                        onCancel={() => onCancel(entity)}
+                        retrying={retryingId === entity.id}
+                        cancelling={cancellingId === entity.id}
+                      />
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div
+                  className={cn(
+                    "overflow-x-auto rounded-lg border border-border bg-card/40",
+                    showAllRuns && "max-h-[36rem] overflow-y-auto",
+                  )}
                 >
-                  <td className="px-3 py-2">
-                    <p className="font-medium">{entity.title}</p>
-                    <p className="font-mono text-[10px] text-muted-foreground">{entity.run_slug}</p>
-                  </td>
-                  <td className="px-3 py-2 text-xs text-muted-foreground">
-                    {entity.kind === "agent" ? String(entity.log.agent ?? "agent") : entity.kind}
-                  </td>
-                  <td className="px-3 py-2">
-                    <Badge variant="outline" className={COLOR_BADGE[entity.color]}>
-                      {COLOR_LABEL[entity.color]}
-                    </Badge>
-                  </td>
-                  <td className="px-3 py-2">
-                    {entity.outcome ? (
-                      <Badge variant="outline" className={OUTCOME_CLASS[entity.outcome]}>
-                        {OUTCOME_LABEL[entity.outcome]}
-                      </Badge>
-                    ) : "—"}
-                  </td>
-                  <td className="whitespace-nowrap px-3 py-2 text-xs text-muted-foreground"><DateTime value={entity.started_at} /></td>
-                  <td className="max-w-md px-3 py-2 text-xs text-muted-foreground">{entity.synopsis ?? entity.subtitle ?? "—"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-border text-left text-[10px] uppercase tracking-wide text-muted-foreground">
+                        <th className="px-3 py-2">Run</th>
+                        <th className="px-3 py-2">Kind / role</th>
+                        <th className="px-3 py-2">Status</th>
+                        <th className="px-3 py-2">Outcome</th>
+                        <th className="px-3 py-2">Started</th>
+                        <th className="px-3 py-2">Synopsis</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {shown.map((entity) => (
+                        <tr
+                          key={`${entity.kind}-${entity.id}`}
+                          onClick={() => setExpanded(entity)}
+                          className="cursor-pointer border-b border-border/50 last:border-0 hover:bg-muted/30"
+                        >
+                          <td className="px-3 py-2">
+                            <p className="font-medium">{entity.title}</p>
+                            <p className="font-mono text-[10px] text-muted-foreground">{entity.run_slug}</p>
+                          </td>
+                          <td className="px-3 py-2 text-xs text-muted-foreground">
+                            {entity.kind === "agent" ? String(entity.log.agent ?? "agent") : entity.kind}
+                          </td>
+                          <td className="px-3 py-2">
+                            <Badge variant="outline" className={COLOR_BADGE[entity.color]}>
+                              {COLOR_LABEL[entity.color]}
+                            </Badge>
+                          </td>
+                          <td className="px-3 py-2">
+                            {entity.outcome ? (
+                              <Badge variant="outline" className={OUTCOME_CLASS[entity.outcome]}>
+                                {OUTCOME_LABEL[entity.outcome]}
+                              </Badge>
+                            ) : "—"}
+                          </td>
+                          <td className="whitespace-nowrap px-3 py-2 text-xs text-muted-foreground"><DateTime value={entity.started_at} /></td>
+                          <td className="max-w-md px-3 py-2 text-xs text-muted-foreground">{entity.synopsis ?? entity.subtitle ?? "—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              {(hidden > 0 || showAllRuns) && (
+                <div className="flex items-center justify-between text-xs text-muted-foreground">
+                  <span>
+                    {showAllRuns
+                      ? `Showing all ${visible.length} runs (scrollable)`
+                      : `Showing first ${shown.length} of ${visible.length} runs`}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setShowAllRuns((prev) => !prev)}
+                    className="rounded border border-border px-2 py-1 text-xs hover:bg-secondary/60"
+                  >
+                    {showAllRuns
+                      ? `Show first ${INITIAL_RUN_CAP}`
+                      : `Show all ${visible.length}`}
+                  </button>
+                </div>
+              )}
+            </div>
+          );
+        })()
       )}
 
       {/* v2.4.0: attribution — who used what (agent × model × user)
