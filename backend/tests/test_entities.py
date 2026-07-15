@@ -314,8 +314,12 @@ def test_duplicate_grouping_and_reversible_suppression_preserve_provenance(
     db.refresh(canonical)
     assert canonical.properties["fresh"] is True
     assert canonical.row_version == 2
-    assert canonical.source_tool == "legacy"
-    assert canonical.source_attribution == "legacy-two.json"
+    assert canonical.source_tool == "test_import"
+    assert canonical.source_attribution == "new.json"
+    assert canonical.properties["_rtd_source_history"] == [
+        {"source_tool": "legacy", "source_attribution": "legacy-two.json"},
+        {"source_tool": "test_import", "source_attribution": "new.json"},
+    ]
     assert older.properties == {"legacy": True}
 
     grouped_remove = client.post(

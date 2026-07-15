@@ -25,6 +25,8 @@ from sqlalchemy.orm import Session
 from app.models import Engagement, Entity, EntityGroup, EntityGroupMember
 from app.services.entity_identity import normalize_entity_type, normalize_entity_value
 
+_SOURCE_HISTORY_KEY = "_rtd_source_history"
+
 
 class EntityIdentityConflict(ValueError):
     """Existing legacy variants require an analyst grouping decision."""
@@ -53,7 +55,8 @@ def find_semantic_entity(
     safely reused; multiple variants require an explicit analyst decision.
     """
     type_value = normalize_entity_type(entity_type)
-    value_str = normalize_entity_value(type_value, value)
+    raw_value = str(value or "").strip()
+    value_str = normalize_entity_value(type_value, raw_value)
     available = candidates
     if available is None:
         available = list(
@@ -69,7 +72,7 @@ def find_semantic_entity(
         for row in type_candidates
         if normalize_entity_value(type_value, row.value) == value_str
     ]
-    exact_matches = [row for row in matches if row.value == value_str]
+    exact_matches = [row for row in matches if row.value == raw_value]
     if len(exact_matches) == 1:
         exact = exact_matches[0]
         canonical_id = session.execute(
@@ -150,6 +153,21 @@ def persist_entities(
             continue
         props = dict(getattr(item, "properties", {}) or {})
         existing_id = existing.id if existing else None
+        if existing is not None:
+            history = list((existing.properties or {}).get(_SOURCE_HISTORY_KEY, []))
+            for entry in (
+                {
+                    "source_tool": existing.source_tool,
+                    "source_attribution": existing.source_attribution,
+                },
+                {
+                    "source_tool": source_tool,
+                    "source_attribution": source_attribution,
+                },
+            ):
+                if entry not in history:
+                    history.append(entry)
+            props[_SOURCE_HISTORY_KEY] = history
         # A single legacy representation is reused without rewriting its raw
         # value. New rows use the conservative canonical representation.
         persisted_type = existing.type if existing else type_value
@@ -169,9 +187,12 @@ def persist_entities(
             constraint="uq_entities_engagement_type_value",
             set_={
                 # JSONB concat — incoming keys override existing on collision,
-                # but prior keys not in the new payload are preserved. First-seen
-                # source columns remain intact instead of losing legacy provenance.
+                # but prior keys not in the new payload are preserved. Source
+                # columns stay latest-compatible while the reserved history key
+                # retains prior attribution instead of erasing provenance.
                 "properties": Entity.properties.op("||")(stmt.excluded.properties),
+                "source_tool": stmt.excluded.source_tool,
+                "source_attribution": stmt.excluded.source_attribution,
                 "row_version": Entity.row_version + 1,
                 "updated_at": now,
             },
