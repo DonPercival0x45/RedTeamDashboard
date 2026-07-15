@@ -947,6 +947,20 @@ export function createEntityGroup(
   );
 }
 
+export function mergeDeleteEntityGroup(
+  groupId: string,
+  expectedRowVersion: number,
+  reason: string,
+): Promise<import("@/lib/types").EntityGroupMergeDeleteResult> {
+  return request<import("@/lib/types").EntityGroupMergeDeleteResult>(
+    `/entity-groups/${groupId}/merge-delete`,
+    {
+      method: "POST",
+      body: JSON.stringify({ expected_row_version: expectedRowVersion, reason }),
+    },
+  );
+}
+
 export function dissolveEntityGroup(
   groupId: string,
   expectedRowVersion: number,

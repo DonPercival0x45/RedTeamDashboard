@@ -513,6 +513,16 @@ export interface EntityGroup {
   updated_at: string;
 }
 
+export interface EntityGroupMergeDeleteResult {
+  status: string;
+  group_id: string;
+  canonical_entity_id: string;
+  suppressed_entity_ids: string[];
+  transferred_link_count: number;
+  merged_property_keys: string[];
+  canonical_entity: StoredEntity;
+}
+
 export interface FindingContextCandidate {
   type: string;
   value: string;

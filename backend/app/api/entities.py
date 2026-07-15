@@ -131,6 +131,16 @@ class EntityDispositionRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=2000)
 
 
+class EntityGroupMergeDeleteResult(BaseModel):
+    status: str
+    group_id: uuid.UUID
+    canonical_entity_id: uuid.UUID
+    suppressed_entity_ids: list[uuid.UUID]
+    transferred_link_count: int
+    merged_property_keys: list[str]
+    canonical_entity: StoredEntityRead
+
+
 class MaltegoImportResult(BaseModel):
     """Response shape for the .mtgx upload endpoint."""
 
@@ -891,6 +901,132 @@ def create_entity_group(
         ) from exc
     session.refresh(group)
     return _group_read(session, group)
+
+
+@router.post(
+    "/entity-groups/{group_id}/merge-delete",
+    response_model=EntityGroupMergeDeleteResult,
+)
+def merge_delete_entity_group(
+    group_id: uuid.UUID,
+    body: EntityDispositionRequest,
+    session: DbSession,
+    user: CurrentNonGuestUser,
+) -> EntityGroupMergeDeleteResult:
+    """Merge duplicate-group provenance into canonical and hide duplicates.
+
+    This is intentionally non-destructive: duplicate rows, raw source
+    properties, and original finding links remain in the database, but
+    non-canonical members are suppressed from active views. Canonical keeps
+    analyst-selected identity and gains missing finding links/properties.
+    """
+    initial = session.get(EntityGroup, group_id)
+    if initial is None:
+        raise HTTPException(status_code=404, detail="entity group not found")
+    engagement = _mutable_engagement(session, initial.engagement_id)
+    group = session.execute(
+        select(EntityGroup).where(EntityGroup.id == group_id).with_for_update()
+    ).scalar_one_or_none()
+    if group is None or group.engagement_id != engagement.id:
+        raise HTTPException(status_code=404, detail="entity group not found")
+    if group.row_version != body.expected_row_version:
+        raise HTTPException(status_code=409, detail="entity group changed; refresh and retry")
+    if group.canonical_entity_id is None:
+        raise HTTPException(status_code=409, detail="duplicate group has no canonical entity")
+
+    members = list(
+        session.execute(
+            select(Entity)
+            .join(EntityGroupMember, EntityGroupMember.entity_id == Entity.id)
+            .where(EntityGroupMember.group_id == group.id)
+            .order_by(Entity.id)
+            .with_for_update()
+        ).scalars()
+    )
+    canonical = next((row for row in members if row.id == group.canonical_entity_id), None)
+    if canonical is None:
+        raise HTTPException(status_code=409, detail="canonical entity is not a group member")
+    if canonical.suppressed_at is not None:
+        raise HTTPException(status_code=409, detail="restore the canonical entity before merging")
+    duplicates = [row for row in members if row.id != canonical.id]
+    if not duplicates:
+        raise HTTPException(status_code=409, detail="duplicate group has no duplicate members")
+
+    now = datetime.now(tz=UTC)
+    reason = body.reason.strip()
+    canonical_properties = dict(canonical.properties or {})
+    merged_property_keys: set[str] = set()
+    for duplicate in duplicates:
+        for key, value in dict(duplicate.properties or {}).items():
+            if key not in canonical_properties:
+                canonical_properties[key] = value
+                merged_property_keys.add(key)
+    canonical.properties = canonical_properties
+
+    existing_finding_ids = set(
+        session.execute(
+            select(EntityFindingLink.finding_id).where(EntityFindingLink.entity_id == canonical.id)
+        ).scalars()
+    )
+    duplicate_links = list(
+        session.execute(
+            select(EntityFindingLink.finding_id).where(
+                EntityFindingLink.entity_id.in_([row.id for row in duplicates])
+            )
+        ).scalars()
+    )
+    transferred_link_count = 0
+    for finding_id in sorted(set(duplicate_links), key=str):
+        if finding_id in existing_finding_ids:
+            continue
+        session.add(
+            EntityFindingLink(
+                entity_id=canonical.id,
+                finding_id=finding_id,
+                created_by=user.id,
+            )
+        )
+        existing_finding_ids.add(finding_id)
+        transferred_link_count += 1
+
+    suppressed_ids: list[uuid.UUID] = []
+    for duplicate in duplicates:
+        if duplicate.suppressed_at is None:
+            duplicate.suppressed_at = now
+            duplicate.suppressed_by_user_id = user.id
+            duplicate.suppression_reason = reason
+            duplicate.row_version += 1
+        suppressed_ids.append(duplicate.id)
+    canonical.row_version += 1
+    group.row_version += 1
+    session.add(
+        AuditLog(
+            engagement_id=engagement.id,
+            actor_type=ActorType.user,
+            actor_id=str(user.id),
+            event_type="entities.group_merged_deleted",
+            payload={
+                "group_id": str(group.id),
+                "canonical_entity_id": str(canonical.id),
+                "suppressed_entity_ids": [str(item) for item in suppressed_ids],
+                "transferred_link_count": transferred_link_count,
+                "merged_property_keys": sorted(merged_property_keys),
+                "reason": reason,
+            },
+        )
+    )
+    session.commit()
+    session.refresh(canonical)
+    session.refresh(group)
+    return EntityGroupMergeDeleteResult(
+        status="merged_deleted",
+        group_id=group.id,
+        canonical_entity_id=canonical.id,
+        suppressed_entity_ids=suppressed_ids,
+        transferred_link_count=transferred_link_count,
+        merged_property_keys=sorted(merged_property_keys),
+        canonical_entity=_entities_to_read(session, [canonical])[0],
+    )
 
 
 @router.post("/entity-groups/{group_id}/dissolve", response_model=dict[str, str])

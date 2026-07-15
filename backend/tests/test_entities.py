@@ -391,6 +391,106 @@ def test_duplicate_grouping_and_reversible_suppression_preserve_provenance(
     assert db.query(EntityGroup).filter_by(engagement_id=engagement.id).count() == 0
 
 
+def test_group_merge_delete_suppresses_duplicates_and_transfers_provenance(
+    client: TestClient, db: Session, engagement: Engagement
+) -> None:
+    canonical_finding = Finding(
+        engagement_id=engagement.id,
+        title="Canonical source",
+        severity=Severity.info,
+        details={},
+        source_tool="manual",
+        target="example.com",
+        phase=FindingPhase.osint,
+        status=FindingStatus.validated,
+    )
+    legacy_finding = Finding(
+        engagement_id=engagement.id,
+        title="Legacy source",
+        severity=Severity.low,
+        details={},
+        source_tool="manual",
+        target="Example.COM.",
+        phase=FindingPhase.osint,
+        status=FindingStatus.validated,
+    )
+    canonical = Entity(
+        engagement_id=engagement.id,
+        type="domain",
+        value="example.com",
+        source_tool="legacy",
+        properties={"canonical": True},
+    )
+    legacy = Entity(
+        engagement_id=engagement.id,
+        type="domain",
+        value="Example.COM.",
+        source_tool="legacy",
+        properties={"legacy": True, "canonical": False},
+    )
+    db.add_all([canonical_finding, legacy_finding, canonical, legacy])
+    db.flush()
+    db.add_all(
+        [
+            EntityFindingLink(entity_id=canonical.id, finding_id=canonical_finding.id),
+            EntityFindingLink(entity_id=legacy.id, finding_id=legacy_finding.id),
+        ]
+    )
+    db.commit()
+    headers = {"X-User-Id": "entity-merge-delete@example.com"}
+
+    grouped = client.post(
+        f"/engagements/{engagement.slug}/entity-groups",
+        headers=headers,
+        json={
+            "entity_ids": [str(legacy.id), str(canonical.id)],
+            "canonical_entity_id": str(canonical.id),
+            "reason": "Same domain identity",
+        },
+    )
+    assert grouped.status_code == 201, grouped.text
+
+    merged = client.post(
+        f"/entity-groups/{grouped.json()['id']}/merge-delete",
+        headers=headers,
+        json={
+            "expected_row_version": grouped.json()["row_version"],
+            "reason": "Keep canonical active and remove duplicate representation",
+        },
+    )
+    assert merged.status_code == 200, merged.text
+    body = merged.json()
+    assert body["status"] == "merged_deleted"
+    assert body["canonical_entity_id"] == str(canonical.id)
+    assert body["suppressed_entity_ids"] == [str(legacy.id)]
+    assert body["transferred_link_count"] == 1
+    assert body["merged_property_keys"] == ["legacy"]
+    assert {ref["id"] for ref in body["canonical_entity"]["finding_refs"]} == {
+        str(canonical_finding.id),
+        str(legacy_finding.id),
+    }
+
+    db.refresh(canonical)
+    db.refresh(legacy)
+    assert canonical.properties == {"canonical": True, "legacy": True}
+    assert legacy.suppressed_at is not None
+    assert db.query(EntityFindingLink).filter_by(entity_id=legacy.id).count() == 1
+    assert db.query(EntityFindingLink).filter_by(entity_id=canonical.id).count() == 2
+
+    active = client.get(
+        f"/engagements/{engagement.slug}/entities/stored",
+        headers=headers,
+    )
+    assert active.status_code == 200, active.text
+    active_ids = {row["id"] for row in active.json()}
+    assert str(canonical.id) in active_ids
+    assert str(legacy.id) not in active_ids
+    assert db.query(AuditLog).filter_by(
+        engagement_id=engagement.id,
+        event_type="entities.group_merged_deleted",
+    ).count() == 1
+
+
 def test_entity_disposition_requires_analyst_current_version_and_mutable_engagement(
     client: TestClient, db: Session, engagement: Engagement
 ) -> None:

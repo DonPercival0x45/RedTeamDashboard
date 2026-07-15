@@ -12,6 +12,7 @@ import {
   dissolveEntityGroup,
   importEntitiesDarkweb,
   importEntitiesMaltego,
+  mergeDeleteEntityGroup,
   restoreStoredEntity,
   suppressStoredEntity,
 } from "@/lib/api";
@@ -411,6 +412,25 @@ function ImportedEntitiesSection({ slug }: { slug: string }) {
     }
   };
 
+  const mergeDeleteGroup = async (entity: StoredEntity) => {
+    if (!entity.group) return;
+    const reason = window.prompt(
+      "Merge provenance into the canonical entity and remove duplicate members from active views. Why is this safe?",
+      "Canonical entity confirmed; duplicate representations no longer need separate active rows",
+    );
+    if (!reason?.trim()) return;
+    setManaging(`merge:${entity.group.id}`);
+    setUploadError(null);
+    try {
+      await mergeDeleteEntityGroup(entity.group.id, entity.group.row_version, reason.trim());
+      await refreshManagement();
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setManaging(null);
+    }
+  };
+
   const dissolveGroup = async (entity: StoredEntity) => {
     if (!entity.group) return;
     const reason = window.prompt("Why should this duplicate group be dissolved?");
@@ -722,15 +742,26 @@ function ImportedEntitiesSection({ slug }: { slug: string }) {
                   </td>
                   <td className="px-3 py-2.5 text-right">
                     {e.group?.canonical_entity_id === e.id ? (
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="ghost"
-                        disabled={managing === e.group.id}
-                        onClick={() => void dissolveGroup(e)}
-                      >
-                        Dissolve group
-                      </Button>
+                      <div className="flex justify-end gap-1">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          disabled={managing === `merge:${e.group.id}`}
+                          onClick={() => void mergeDeleteGroup(e)}
+                        >
+                          <Trash2 className="mr-1.5 h-3.5 w-3.5" /> Merge & remove
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          disabled={managing === e.group.id}
+                          onClick={() => void dissolveGroup(e)}
+                        >
+                          Dissolve
+                        </Button>
+                      </div>
                     ) : e.group ? (
                       <span className="text-[11px] text-muted-foreground">Grouped member</span>
                     ) : (
