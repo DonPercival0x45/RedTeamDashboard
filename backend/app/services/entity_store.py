@@ -44,6 +44,7 @@ def find_semantic_entity(
     engagement_id: Any,
     entity_type: object,
     value: object,
+    candidates: list[Entity] | None = None,
 ) -> tuple[Entity | None, str, str]:
     """Resolve an exact or single conservative semantic match.
 
@@ -53,16 +54,19 @@ def find_semantic_entity(
     """
     type_value = normalize_entity_type(entity_type)
     value_str = normalize_entity_value(type_value, value)
-    candidates = [
-        row
-        for row in session.execute(
-            select(Entity).where(Entity.engagement_id == engagement_id)
-        ).scalars()
-        if normalize_entity_type(row.type) == type_value
+    available = candidates
+    if available is None:
+        available = list(
+            session.execute(
+                select(Entity).where(Entity.engagement_id == engagement_id)
+            ).scalars()
+        )
+    type_candidates = [
+        row for row in available if normalize_entity_type(row.type) == type_value
     ]
     matches = [
         row
-        for row in candidates
+        for row in type_candidates
         if normalize_entity_value(type_value, row.value) == value_str
     ]
     exact_matches = [row for row in matches if row.value == value_str]
@@ -127,6 +131,12 @@ def persist_entities(
     inserted = 0
     merged = 0
     now = datetime.now(tz=UTC)
+    # Load once so large imports do not rescan the engagement for every item.
+    identity_candidates = list(
+        session.execute(
+            select(Entity).where(Entity.engagement_id == engagement.id)
+        ).scalars()
+    )
 
     for item in items:
         existing, type_value, value_str = find_semantic_entity(
@@ -134,6 +144,7 @@ def persist_entities(
             engagement_id=engagement.id,
             entity_type=item.type,
             value=item.value,
+            candidates=identity_candidates,
         )
         if not type_value or not value_str:
             continue
@@ -161,12 +172,14 @@ def persist_entities(
                 # but prior keys not in the new payload are preserved. First-seen
                 # source columns remain intact instead of losing legacy provenance.
                 "properties": Entity.properties.op("||")(stmt.excluded.properties),
+                "row_version": Entity.row_version + 1,
                 "updated_at": now,
             },
         )
-        session.execute(stmt)
+        persisted = session.execute(stmt.returning(Entity)).scalar_one()
 
         if existing_id is None:
+            identity_candidates.append(persisted)
             inserted += 1
         else:
             merged += 1

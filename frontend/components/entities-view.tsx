@@ -415,7 +415,7 @@ function ImportedEntitiesSection({ slug }: { slug: string }) {
   const mergeDeleteGroup = async (entity: StoredEntity) => {
     if (!entity.group) return;
     const reason = window.prompt(
-      "Copy missing provenance to the canonical entity and remove duplicates from active views. Original records, properties, and links remain stored and can be restored after dissolving the group. Why is this safe?",
+      "Copy missing provenance to the canonical entity and remove duplicates from active views. The identity group and all original records, properties, and links remain stored; removed members can be restored from Show removed. Why is this safe?",
       "Canonical entity confirmed; duplicate representations no longer need separate active rows",
     );
     if (!reason?.trim()) return;
@@ -768,6 +768,16 @@ function ImportedEntitiesSection({ slug }: { slug: string }) {
                           Dissolve
                         </Button>
                       </div>
+                    ) : e.suppressed ? (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        disabled={managing === e.id}
+                        onClick={() => void disposeEntity(e)}
+                      >
+                        <RotateCcw className="mr-1.5 h-3.5 w-3.5" /> Restore
+                      </Button>
                     ) : e.group ? (
                       <span className="text-[11px] text-muted-foreground">Grouped member</span>
                     ) : (
@@ -778,11 +788,7 @@ function ImportedEntitiesSection({ slug }: { slug: string }) {
                         disabled={managing === e.id}
                         onClick={() => void disposeEntity(e)}
                       >
-                        {e.suppressed ? (
-                          <><RotateCcw className="mr-1.5 h-3.5 w-3.5" /> Restore</>
-                        ) : (
-                          <><Trash2 className="mr-1.5 h-3.5 w-3.5" /> Remove</>
-                        )}
+                        <Trash2 className="mr-1.5 h-3.5 w-3.5" /> Remove
                       </Button>
                     )}
                   </td>

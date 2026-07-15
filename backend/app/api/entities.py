@@ -22,7 +22,7 @@ from datetime import UTC, datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
@@ -114,6 +114,13 @@ class EntityGroupCreate(BaseModel):
     label: str | None = Field(default=None, max_length=300)
     reason: str = Field(min_length=1, max_length=2000)
 
+    @field_validator("reason")
+    @classmethod
+    def validate_reason(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("reason must not be blank")
+        return value.strip()
+
 
 class EntityGroupRead(BaseModel):
     id: uuid.UUID
@@ -130,6 +137,13 @@ class EntityGroupRead(BaseModel):
 class EntityDispositionRequest(BaseModel):
     expected_row_version: int = Field(ge=1)
     reason: str = Field(min_length=1, max_length=2000)
+
+    @field_validator("reason")
+    @classmethod
+    def validate_reason(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("reason must not be blank")
+        return value.strip()
 
 
 class EntityGroupMergeDeleteResult(BaseModel):
@@ -229,6 +243,27 @@ def _mutable_engagement(session, engagement_id: uuid.UUID) -> Engagement:
 def _finding_or_404(session, finding_id: uuid.UUID) -> Finding:
     finding = session.get(Finding, finding_id)
     if finding is None or finding.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="finding not found")
+    return finding
+
+
+def _locked_finding_for_mutation(session, finding_id: uuid.UUID) -> Finding:
+    engagement_id = session.execute(
+        select(Finding.engagement_id).where(
+            Finding.id == finding_id,
+            Finding.deleted_at.is_(None),
+        )
+    ).scalar_one_or_none()
+    if engagement_id is None:
+        raise HTTPException(status_code=404, detail="finding not found")
+    _mutable_engagement(session, engagement_id)
+    finding = session.execute(
+        select(Finding)
+        .where(Finding.id == finding_id, Finding.deleted_at.is_(None))
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
+    if finding is None:
         raise HTTPException(status_code=404, detail="finding not found")
     return finding
 
@@ -425,8 +460,7 @@ def promote_finding_context(
     enumeration and scan actions, so the UI presents an explicit confirmation.
     Every mutation is provenance-linked and audit logged here.
     """
-    finding = _finding_or_404(session, finding_id)
-    _mutable_engagement(session, finding.engagement_id)
+    finding = _locked_finding_for_mutation(session, finding_id)
 
     entities_created = 0
     links_created = 0
@@ -1034,7 +1068,14 @@ def merge_delete_entity_group(
             },
         )
     )
-    session.commit()
+    try:
+        session.commit()
+    except IntegrityError as exc:
+        session.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="entity provenance changed; refresh the group and retry",
+        ) from exc
     session.refresh(canonical)
     session.refresh(group)
     return EntityGroupMergeDeleteResult(

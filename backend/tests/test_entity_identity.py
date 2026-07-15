@@ -30,6 +30,9 @@ def test_preserves_wildcard_and_url_identity_boundaries() -> None:
     assert normalize_entity_value("domain", "*.Example.com") != normalize_entity_value(
         "domain", "Example.com"
     )
+    assert normalize_entity_value("domain", "faß.de") != normalize_entity_value(
+        "domain", "fass.de"
+    )
     assert normalize_entity_value("url", "http://example.com/a") != normalize_entity_value(
         "url", "https://example.com/a"
     )
@@ -41,4 +44,5 @@ def test_preserves_wildcard_and_url_identity_boundaries() -> None:
 def test_type_normalization_does_not_coalesce_type_boundaries() -> None:
     assert normalize_entity_type(" Domain ") == "domain"
     assert normalize_entity_type("hostname") == "host"
+    assert normalize_entity_type("fqdn") == "domain"
     assert normalize_entity_type("domain") != normalize_entity_type("subdomain")

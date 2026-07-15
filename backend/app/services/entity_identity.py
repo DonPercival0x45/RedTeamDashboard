@@ -21,6 +21,7 @@ _HASH_LENGTHS = {32, 40, 64, 128}
 _HEX_RE = re.compile(r"^[0-9a-fA-F]+$")
 _ASN_RE = re.compile(r"^(?:AS)?0*(\d+)$", re.IGNORECASE)
 _TYPE_ALIASES = {
+    "fqdn": "domain",
     "hostname": "host",
     "email_address": "email",
     "mailbox": "email",
@@ -91,11 +92,10 @@ def entity_identity_key(entity_type: object, value: object) -> tuple[str, str]:
 def _normalize_domain(value: str) -> str:
     wildcard = value.startswith("*.")
     raw = value[2:] if wildcard else value
-    raw = raw.rstrip(".").casefold()
-    try:
-        canonical = raw.encode("idna").decode("ascii")
-    except UnicodeError:
-        canonical = raw
+    # DNS labels are ASCII case-insensitive. Preserve non-ASCII code points
+    # rather than applying IDNA2003/casefold rules that can coalesce distinct
+    # internationalized names (for example, sharp-s versus "ss").
+    canonical = raw.rstrip(".").lower()
     return f"*.{canonical}" if wildcard else canonical
 
 

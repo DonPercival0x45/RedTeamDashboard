@@ -313,6 +313,7 @@ def test_duplicate_grouping_and_reversible_suppression_preserve_provenance(
     assert (inserted, merged) == (0, 1)
     db.refresh(canonical)
     assert canonical.properties["fresh"] is True
+    assert canonical.row_version == 2
     assert canonical.source_tool == "legacy"
     assert canonical.source_attribution == "legacy-two.json"
     assert older.properties == {"legacy": True}
@@ -369,11 +370,27 @@ def test_duplicate_grouping_and_reversible_suppression_preserve_provenance(
     assert older.suppressed_at is not None
     assert older.properties["seen"] == 2
 
-    restored = client.post(
+    stale_restore = client.post(
         f"/entities/{older.id}/restore",
         headers=headers,
         json={
             "expected_row_version": removed.json()["row_version"],
+            "reason": "Stale version must not restore",
+        },
+    )
+    assert stale_restore.status_code == 409
+    refreshed_rows = client.get(
+        f"/engagements/{engagement.slug}/entities/stored?include_suppressed=true",
+        headers=headers,
+    )
+    refreshed_older = next(
+        row for row in refreshed_rows.json() if row["id"] == str(older.id)
+    )
+    restored = client.post(
+        f"/entities/{older.id}/restore",
+        headers=headers,
+        json={
+            "expected_row_version": refreshed_older["row_version"],
             "reason": "Analyst confirmed this representation is still useful",
         },
     )
@@ -501,6 +518,27 @@ def test_group_merge_delete_suppresses_duplicates_and_transfers_provenance(
         },
     )
     assert repeated.status_code == 409
+    assert db.query(EntityGroup).filter_by(engagement_id=engagement.id).count() == 1
+
+    removed_rows = client.get(
+        f"/engagements/{engagement.slug}/entities/stored?include_suppressed=true",
+        headers=headers,
+    )
+    removed_legacy = next(
+        row for row in removed_rows.json() if row["id"] == str(legacy.id)
+    )
+    restored = client.post(
+        f"/entities/{legacy.id}/restore",
+        headers=headers,
+        json={
+            "expected_row_version": removed_legacy["row_version"],
+            "reason": "Analyst needs the grouped representation active again",
+        },
+    )
+    assert restored.status_code == 200, restored.text
+    assert restored.json()["suppressed"] is False
+    assert restored.json()["group"]["id"] == grouped.json()["id"]
+    assert restored.json()["group"]["suppressed_member_count"] == 0
 
 
 def test_entity_disposition_requires_analyst_current_version_and_mutable_engagement(
