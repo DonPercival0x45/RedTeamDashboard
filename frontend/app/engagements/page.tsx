@@ -200,8 +200,8 @@ export default function EngagementListPage() {
             </span>
           </div>
           <p className="mt-1 text-xs text-muted-foreground">
-            Read-only. Reopen from the engagement page's Unarchive control
-            to move back into the workspace.
+            Read-only. Reopen from the engagement page&apos;s Unarchive
+            control to move back into the workspace.
           </p>
           {archived.length === 0 ? (
             <p className="mt-3 text-sm text-muted-foreground">
