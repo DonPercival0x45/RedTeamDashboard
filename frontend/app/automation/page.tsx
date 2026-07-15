@@ -8,7 +8,11 @@
 // build a PDF for without navigating in and out. The Running jobs
 // banner lives at the bottom of every sub-tab and surfaces
 // pending/dispatched/running Tasks across every engagement.
+//
+// v2.5.0 — Running jobs rows are now hyperlinks that jump straight to
+// the referenced task in the engagement's Status view.
 
+import Link from "next/link";
 import { useMemo, useState } from "react";
 import { cn } from "@/lib/utils";
 import {
@@ -172,25 +176,35 @@ function RunningJobRow({ task }: { task: RunningTask }) {
       : task.status === "dispatched"
         ? 25
         : 10;
+  // v2.5.0: clicking the row jumps into the engagement's Status view
+  // scrolled to the referenced task. Uses `run=<task_id>` — same query
+  // shape the finding-pane task history uses so the Status view
+  // handles it identically.
+  const href = `/e?slug=${encodeURIComponent(task.engagement_slug)}&view=status&run=${encodeURIComponent(task.id)}`;
   return (
     <li>
-      <div className="flex items-center justify-between gap-2 text-xs">
-        <div className="min-w-0 flex-1 truncate">
-          <span className="font-medium">{task.title}</span>
-          <span className="ml-2 text-muted-foreground">
-            · {task.engagement_slug}
+      <Link
+        href={href}
+        className="block rounded-md px-2 py-1.5 -mx-2 hover:bg-secondary/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        <div className="flex items-center justify-between gap-2 text-xs">
+          <div className="min-w-0 flex-1 truncate">
+            <span className="font-medium">{task.title}</span>
+            <span className="ml-2 text-muted-foreground">
+              · {task.engagement_slug}
+            </span>
+          </div>
+          <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
+            {task.status}
           </span>
         </div>
-        <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
-          {task.status}
-        </span>
-      </div>
-      <div className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-secondary/60">
-        <div
-          className="h-full rounded-full bg-critical transition-[width] duration-500"
-          style={{ width: `${percent}%` }}
-        />
-      </div>
+        <div className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-secondary/60">
+          <div
+            className="h-full rounded-full bg-critical transition-[width] duration-500"
+            style={{ width: `${percent}%` }}
+          />
+        </div>
+      </Link>
     </li>
   );
 }
