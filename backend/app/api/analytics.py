@@ -28,7 +28,6 @@ from app.models import (
     AuditLog,
     Engagement,
     Finding,
-    FindingStatus,
     ScopeItem,
     Severity,
     User,
@@ -173,40 +172,122 @@ def findings_over_time(
     session: DbSession,
     _user: CurrentUser,
     engagement: Annotated[str | None, Query(description="Slug or 'all'.")] = None,
-    weeks: Annotated[int, Query(ge=1, le=52)] = 12,
+    period: Annotated[
+        str,
+        Query(description="'day' | 'week' | 'month' | 'custom'."),
+    ] = "week",
+    points: Annotated[int, Query(ge=1, le=180)] = 12,
+    start: Annotated[str | None, Query(description="ISO date, custom mode.")] = None,
+    end: Annotated[str | None, Query(description="ISO date, custom mode.")] = None,
 ) -> list[WeekBucket]:
-    """Weekly bucket count of findings created in the last N weeks.
-    Buckets align to the current-week Monday so week boundaries are
-    stable across renders. Empty weeks are returned as zero (not
-    omitted) so the chart renders a flat line rather than gaps."""
+    """v2.5.2 — daily/weekly/monthly buckets or a custom window.
+
+    * ``period=day``   → last ``points`` days (default 30 elsewhere,
+      12 here to keep the response small).
+    * ``period=week``  → last ``points`` weeks, Monday-aligned (v2.5.0
+      default; ``points`` alias for the old ``weeks`` param).
+    * ``period=month`` → last ``points`` months, month-start-aligned.
+    * ``period=custom`` → ``start`` + ``end`` required. Bucket size
+      auto-picks: ≤45 days → day, ≤52 weeks → week, else month.
+
+    Empty buckets are returned as zero so charts render a flat line
+    instead of gapping.
+    """
     eng_id = _resolve_engagement_filter(session, engagement)
-    now = datetime.now(tz=UTC)
-    # Anchor the newest bucket to the START of the current week (Monday
-    # 00:00 UTC) so bucket boundaries are deterministic.
-    today = now.date()
-    current_monday = today - timedelta(days=today.weekday())
-    start_monday = current_monday - timedelta(weeks=weeks - 1)
-    start_dt = datetime.combine(start_monday, datetime.min.time()).replace(tzinfo=UTC)
+    today = datetime.now(tz=UTC).date()
+
+    def _month_add(d, months):
+        # Simple month arithmetic without a calendar dep; clamps day
+        # to the target month's length.
+        m = d.month - 1 + months
+        year = d.year + m // 12
+        month = m % 12 + 1
+        # Snap to the 1st of the month — we bucket by month-start.
+        return d.replace(year=year, month=month, day=1)
+
+    # Compute (unit, bucket_starts[]) for the requested range.
+    if period == "custom":
+        if not start or not end:
+            raise HTTPException(
+                status_code=400, detail="custom period requires start + end"
+            )
+        try:
+            start_d = datetime.fromisoformat(start).date()
+            end_d = datetime.fromisoformat(end).date()
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"bad ISO date: {exc}") from exc
+        if end_d < start_d:
+            raise HTTPException(status_code=400, detail="end < start")
+        span_days = (end_d - start_d).days
+        if span_days <= 45:
+            unit = "day"
+        elif span_days <= 52 * 7:
+            unit = "week"
+        else:
+            unit = "month"
+        bucket_starts = []
+        cursor = start_d
+        if unit == "day":
+            while cursor <= end_d:
+                bucket_starts.append(cursor)
+                cursor += timedelta(days=1)
+        elif unit == "week":
+            cursor -= timedelta(days=cursor.weekday())
+            while cursor <= end_d:
+                bucket_starts.append(cursor)
+                cursor += timedelta(weeks=1)
+        else:
+            cursor = cursor.replace(day=1)
+            while cursor <= end_d:
+                bucket_starts.append(cursor)
+                cursor = _month_add(cursor, 1)
+    elif period == "day":
+        unit = "day"
+        first = today - timedelta(days=points - 1)
+        bucket_starts = [first + timedelta(days=i) for i in range(points)]
+    elif period == "month":
+        unit = "month"
+        first = today.replace(day=1)
+        first = _month_add(first, -(points - 1))
+        bucket_starts = [_month_add(first, i) for i in range(points)]
+    else:  # week (default)
+        unit = "week"
+        current_monday = today - timedelta(days=today.weekday())
+        first = current_monday - timedelta(weeks=points - 1)
+        bucket_starts = [first + timedelta(weeks=i) for i in range(points)]
+
+    start_dt = datetime.combine(bucket_starts[0], datetime.min.time()).replace(tzinfo=UTC)
 
     stmt = select(Finding.created_at).where(Finding.created_at >= start_dt)
     if eng_id is not None:
         stmt = stmt.where(Finding.engagement_id == eng_id)
     rows = list(session.execute(stmt).scalars())
 
-    buckets: dict[str, int] = {}
-    for i in range(weeks):
-        monday = start_monday + timedelta(weeks=i)
-        buckets[monday.isoformat()] = 0
+    counts = {bs.isoformat(): 0 for bs in bucket_starts}
+
+    def _bucket_key(created_date):
+        if unit == "day":
+            return created_date.isoformat()
+        if unit == "week":
+            monday = created_date - timedelta(days=created_date.weekday())
+            return monday.isoformat()
+        return created_date.replace(day=1).isoformat()
+
     for created in rows:
-        created_date = created.date()
-        wk_monday = created_date - timedelta(days=created_date.weekday())
-        key = wk_monday.isoformat()
-        if key in buckets:
-            buckets[key] += 1
+        key = _bucket_key(created.date())
+        if key in counts:
+            counts[key] += 1
+
+    def _label(i, bs):
+        if unit == "day":
+            return bs.strftime("%b %d")
+        if unit == "week":
+            return f"W{i + 1}"
+        return bs.strftime("%b %Y")
 
     return [
-        WeekBucket(label=f"W{i + 1}", week_start=iso, count=count)
-        for i, (iso, count) in enumerate(sorted(buckets.items()))
+        WeekBucket(label=_label(i, bs), week_start=bs.isoformat(), count=counts[bs.isoformat()])
+        for i, bs in enumerate(bucket_starts)
     ]
 
 
@@ -223,7 +304,7 @@ def severity_breakdown(
     eng_id = _resolve_engagement_filter(session, engagement)
     stmt = (
         select(Finding.severity, func.count(Finding.id))
-        .where(Finding.status != FindingStatus.deleted)
+        .where(Finding.deleted_at.is_(None))
         .group_by(Finding.severity)
     )
     if eng_id is not None:
@@ -294,7 +375,7 @@ def top_findings(
     stmt = (
         select(Finding, Engagement.slug)
         .join(Engagement, Engagement.id == Finding.engagement_id)
-        .where(Finding.status != FindingStatus.deleted)
+        .where(Finding.deleted_at.is_(None))
         .order_by(
             # Severity enum stores string values; we can't ORDER BY on the
             # enum directly and get semantic order, so filter to top

@@ -818,14 +818,29 @@ function analyticsQuery(engagement: string | null | undefined): string {
   return `?engagement=${encodeURIComponent(engagement)}`;
 }
 
+// v2.5.2: period/points/start/end params drive daily/weekly/monthly/custom
+// bucketing. Legacy callers passing just `weeks` still get weekly buckets
+// via the `points` alias.
+export type AnalyticsPeriod = "day" | "week" | "month" | "custom";
+export interface FindingsOverTimeOpts {
+  period?: AnalyticsPeriod;
+  points?: number;
+  start?: string;
+  end?: string;
+}
 export function fetchFindingsOverTime(
   engagement: string | null,
-  weeks = 12,
+  opts: FindingsOverTimeOpts = {},
 ): Promise<WeekBucket[]> {
-  const base = analyticsQuery(engagement);
-  const sep = base ? "&" : "?";
+  const params = new URLSearchParams();
+  if (engagement && engagement !== "all") params.set("engagement", engagement);
+  if (opts.period) params.set("period", opts.period);
+  if (opts.points) params.set("points", String(opts.points));
+  if (opts.start) params.set("start", opts.start);
+  if (opts.end) params.set("end", opts.end);
+  const qs = params.toString();
   return request<WeekBucket[]>(
-    `/analytics/findings-over-time${base}${sep}weeks=${weeks}`,
+    `/analytics/findings-over-time${qs ? `?${qs}` : ""}`,
   );
 }
 export function fetchSeverityBreakdown(

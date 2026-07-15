@@ -42,7 +42,9 @@ import {
   useEngagements,
 } from "@/lib/hooks";
 import type {
+  AnalyticsPeriod,
   EngagementLogRow,
+  FindingsOverTimeOpts,
   SeverityBreakdownRow,
   TopFindingRow,
   WeekBucket,
@@ -72,7 +74,21 @@ export default function AnalyticsPage() {
   const [selected, setSelected] = useState<string>("all");
   const filter = selected === "all" ? null : selected;
 
-  const overTimeQuery = useAnalyticsFindingsOverTime(filter);
+  // v2.5.2: time-range picker for Findings-over-time. Daily/weekly/
+  // monthly are fixed windows (last N buckets). Custom collects a
+  // start/end date pair; backend picks bucket size automatically.
+  const [period, setPeriod] = useState<AnalyticsPeriod>("week");
+  const [customStart, setCustomStart] = useState<string>("");
+  const [customEnd, setCustomEnd] = useState<string>("");
+  const overTimeOpts: FindingsOverTimeOpts = useMemo(() => {
+    if (period === "custom") {
+      return customStart && customEnd
+        ? { period: "custom", start: customStart, end: customEnd }
+        : { period: "week", points: 12 };
+    }
+    return { period, points: period === "day" ? 30 : 12 };
+  }, [period, customStart, customEnd]);
+  const overTimeQuery = useAnalyticsFindingsOverTime(filter, overTimeOpts);
   const severityQuery = useAnalyticsSeverityBreakdown(filter);
   const coverageQuery = useAnalyticsScanCoverage(filter);
   const topFindingsQuery = useAnalyticsTopFindings(filter);
@@ -136,6 +152,12 @@ export default function AnalyticsPage() {
         engagementLabel={selected === "all" ? "All engagements" : selected}
         data={overTimeQuery.data ?? []}
         loading={overTimeQuery.isLoading}
+        period={period}
+        setPeriod={setPeriod}
+        customStart={customStart}
+        setCustomStart={setCustomStart}
+        customEnd={customEnd}
+        setCustomEnd={setCustomEnd}
       />
 
       <div className="grid gap-4 lg:grid-cols-[2fr_1fr]">
@@ -167,28 +189,89 @@ function FindingsOverTimePanel({
   engagementLabel,
   data,
   loading,
+  period,
+  setPeriod,
+  customStart,
+  setCustomStart,
+  customEnd,
+  setCustomEnd,
 }: {
   engagementLabel: string;
   data: WeekBucket[];
   loading: boolean;
+  period: AnalyticsPeriod;
+  setPeriod: (p: AnalyticsPeriod) => void;
+  customStart: string;
+  setCustomStart: (v: string) => void;
+  customEnd: string;
+  setCustomEnd: (v: string) => void;
 }) {
   const [mode, setMode] = useState<ChartMode>("line");
+  const rangeLabel =
+    period === "day"
+      ? "last 30 days"
+      : period === "week"
+        ? "last 12 weeks"
+        : period === "month"
+          ? "last 12 months"
+          : customStart && customEnd
+            ? `${customStart} → ${customEnd}`
+            : "custom (pick start + end)";
+  // Explicit `color` — otherwise Recharts inherits the default text
+  // color which is black, invisible against `--card` on dark mode. Also
+  // used by labelStyle + itemStyle below so both the key and value are
+  // visible regardless of theme.
   const tooltipStyle = {
     background: "hsl(var(--card))",
     border: "1px solid hsl(var(--border))",
     borderRadius: "6px",
     fontSize: "12px",
+    color: "hsl(var(--foreground))",
   } as const;
+  const tooltipTextStyle = { color: "hsl(var(--foreground))" } as const;
   return (
     <section className="rounded-lg border border-border bg-card/40 p-5">
-      <div className="flex items-start justify-between gap-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="text-sm font-semibold">Findings over time</h2>
           <p className="mt-1 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
-            {engagementLabel} · last 12 weeks
+            {engagementLabel} · {rangeLabel}
           </p>
         </div>
-        <ModeToggle mode={mode} setMode={setMode} />
+        <div className="flex flex-wrap items-center gap-2">
+          <select
+            value={period}
+            onChange={(e) => setPeriod(e.target.value as AnalyticsPeriod)}
+            className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+            aria-label="Time range"
+          >
+            <option value="day">Daily</option>
+            <option value="week">Weekly</option>
+            <option value="month">Monthly</option>
+            <option value="custom">Custom</option>
+          </select>
+          {period === "custom" && (
+            <div className="flex items-center gap-1">
+              <input
+                type="date"
+                value={customStart}
+                onChange={(e) => setCustomStart(e.target.value)}
+                className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+                aria-label="Custom start date"
+              />
+              <span className="text-xs text-muted-foreground">→</span>
+              <input
+                type="date"
+                value={customEnd}
+                onChange={(e) => setCustomEnd(e.target.value)}
+                min={customStart || undefined}
+                className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+                aria-label="Custom end date"
+              />
+            </div>
+          )}
+          <ModeToggle mode={mode} setMode={setMode} />
+        </div>
       </div>
       <div className="mt-4 h-64 w-full">
         {loading ? (
@@ -200,7 +283,7 @@ function FindingsOverTimePanel({
                 <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="3 3" />
                 <XAxis dataKey="label" stroke="hsl(var(--muted-foreground))" fontSize={10} />
                 <YAxis stroke="hsl(var(--muted-foreground))" fontSize={10} allowDecimals={false} />
-                <Tooltip contentStyle={tooltipStyle} />
+                <Tooltip contentStyle={tooltipStyle} labelStyle={tooltipTextStyle} itemStyle={tooltipTextStyle} />
                 <Line
                   type="monotone"
                   dataKey="count"
@@ -214,12 +297,12 @@ function FindingsOverTimePanel({
                 <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="3 3" />
                 <XAxis dataKey="label" stroke="hsl(var(--muted-foreground))" fontSize={10} />
                 <YAxis stroke="hsl(var(--muted-foreground))" fontSize={10} allowDecimals={false} />
-                <Tooltip contentStyle={tooltipStyle} />
+                <Tooltip contentStyle={tooltipStyle} labelStyle={tooltipTextStyle} itemStyle={tooltipTextStyle} />
                 <Bar dataKey="count" fill="hsl(var(--critical))" />
               </BarChart>
             ) : (
               <PieChart>
-                <Tooltip contentStyle={tooltipStyle} />
+                <Tooltip contentStyle={tooltipStyle} labelStyle={tooltipTextStyle} itemStyle={tooltipTextStyle} />
                 <Pie
                   data={data.filter((d) => d.count > 0)}
                   dataKey="count"
@@ -257,12 +340,18 @@ function SeverityBreakdownPanel({
       fill: SEVERITY_HEX[sev],
     }));
   }, [data]);
+  // Explicit `color` — otherwise Recharts inherits the default text
+  // color which is black, invisible against `--card` on dark mode. Also
+  // used by labelStyle + itemStyle below so both the key and value are
+  // visible regardless of theme.
   const tooltipStyle = {
     background: "hsl(var(--card))",
     border: "1px solid hsl(var(--border))",
     borderRadius: "6px",
     fontSize: "12px",
+    color: "hsl(var(--foreground))",
   } as const;
+  const tooltipTextStyle = { color: "hsl(var(--foreground))" } as const;
 
   return (
     <section className="rounded-lg border border-border bg-card/40 p-5">
@@ -280,7 +369,7 @@ function SeverityBreakdownPanel({
                 <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="3 3" />
                 <XAxis dataKey="label" stroke="hsl(var(--muted-foreground))" fontSize={10} />
                 <YAxis stroke="hsl(var(--muted-foreground))" fontSize={10} allowDecimals={false} />
-                <Tooltip contentStyle={tooltipStyle} />
+                <Tooltip contentStyle={tooltipStyle} labelStyle={tooltipTextStyle} itemStyle={tooltipTextStyle} />
                 <Line type="monotone" dataKey="count" stroke="hsl(var(--critical))" strokeWidth={2} />
               </LineChart>
             ) : mode === "bar" ? (
@@ -288,7 +377,7 @@ function SeverityBreakdownPanel({
                 <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="3 3" />
                 <XAxis dataKey="label" stroke="hsl(var(--muted-foreground))" fontSize={10} />
                 <YAxis stroke="hsl(var(--muted-foreground))" fontSize={10} allowDecimals={false} />
-                <Tooltip contentStyle={tooltipStyle} />
+                <Tooltip contentStyle={tooltipStyle} labelStyle={tooltipTextStyle} itemStyle={tooltipTextStyle} />
                 <Bar dataKey="count">
                   {ordered.map((row) => (
                     <Cell key={row.severity} fill={row.fill} />
@@ -297,7 +386,7 @@ function SeverityBreakdownPanel({
               </BarChart>
             ) : (
               <PieChart>
-                <Tooltip contentStyle={tooltipStyle} />
+                <Tooltip contentStyle={tooltipStyle} labelStyle={tooltipTextStyle} itemStyle={tooltipTextStyle} />
                 <Pie
                   data={ordered.filter((row) => row.count > 0)}
                   dataKey="count"

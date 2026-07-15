@@ -167,8 +167,19 @@ export const qk = {
   runningTasks: () => ["running-tasks"] as const,
   engagementAttribution: (slug: string) =>
     ["engagement-attribution", slug] as const,
-  analyticsFindingsOverTime: (engagement: string | null, weeks: number) =>
-    ["analytics", "findings-over-time", engagement ?? "all", weeks] as const,
+  analyticsFindingsOverTime: (
+    engagement: string | null,
+    opts: import("@/lib/api").FindingsOverTimeOpts,
+  ) =>
+    [
+      "analytics",
+      "findings-over-time",
+      engagement ?? "all",
+      opts.period ?? "week",
+      opts.points ?? 12,
+      opts.start ?? null,
+      opts.end ?? null,
+    ] as const,
   analyticsSeverityBreakdown: (engagement: string | null) =>
     ["analytics", "severity-breakdown", engagement ?? "all"] as const,
   analyticsScanCoverage: (engagement: string | null) =>
@@ -246,13 +257,15 @@ export function useEngagementAttribution(slug: string) {
 
 // v2.5.0 — Analytics page hooks. All accept `engagement` as null | "all"
 // | <slug>. Window-focus revalidate; no polling.
+// v2.5.2 — findings-over-time takes an opts bag so the panel can pick
+// day/week/month/custom buckets.
 export function useAnalyticsFindingsOverTime(
   engagement: string | null,
-  weeks = 12,
+  opts: import("@/lib/api").FindingsOverTimeOpts = {},
 ) {
   return useQuery({
-    queryKey: qk.analyticsFindingsOverTime(engagement, weeks),
-    queryFn: () => fetchFindingsOverTime(engagement, weeks),
+    queryKey: qk.analyticsFindingsOverTime(engagement, opts),
+    queryFn: () => fetchFindingsOverTime(engagement, opts),
   });
 }
 export function useAnalyticsSeverityBreakdown(engagement: string | null) {
