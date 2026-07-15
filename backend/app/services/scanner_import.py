@@ -26,7 +26,10 @@ from app.services.scope_matcher import (
 )
 
 ScannerSource = Literal["nessus", "burp", "nmap"]
-MAX_SCANNER_EXPORT_BYTES = 100 * 1024 * 1024  # v2.6.1: bumped 20 → 100 MB; real Burp Pro exports on prod-sized targets easily clear 30 MB.
+# v2.6.1: bumped 20 → 100 MB. Real Burp Pro exports on prod-sized
+# targets easily clear 30 MB (analyst hit the old cap with a 30 MB
+# XML).
+MAX_SCANNER_EXPORT_BYTES = 100 * 1024 * 1024
 MAX_SCANNER_ITEMS = 50_000
 MAX_SCANNER_GROUPS = 5_000
 MAX_SELECTION_FORM_BYTES = 1024 * 1024
