@@ -83,11 +83,18 @@ def build_report_readiness(
                 Task.status.in_(
                     [
                         TaskStatus.pending,
-                        TaskStatus.deferred,
                         TaskStatus.dispatched,
                         TaskStatus.running,
                     ]
                 ),
+            )
+        ).scalars()
+    )
+    deferred_tasks = list(
+        session.execute(
+            select(Task.id).where(
+                Task.engagement_id == engagement.id,
+                Task.status == TaskStatus.deferred,
             )
         ).scalars()
     )
@@ -161,6 +168,17 @@ def build_report_readiness(
             count=len(active_tasks) + len(active_agents),
             message=(
                 f"{len(active_tasks) + len(active_agents)} tasks or agent runs are still active"
+            ),
+            target_view="status",
+        ),
+        ReadinessCheck(
+            key="deferred_work",
+            level="blocker",
+            count=len(deferred_tasks),
+            message=(
+                f"{len(deferred_tasks)} deferred "
+                f"task{'s' if len(deferred_tasks) != 1 else ''} "
+                f"{'need' if len(deferred_tasks) != 1 else 'needs'} retry or cancellation"
             ),
             target_view="status",
         ),

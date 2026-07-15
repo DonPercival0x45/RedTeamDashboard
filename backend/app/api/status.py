@@ -28,20 +28,25 @@ from fastapi import APIRouter, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.agents import TacticalAgent
 from app.api.deps import CurrentNonGuestUser, CurrentUser, DbSession, RedisClient
 from app.models import (
     ActorType,
     AgentExecution,
     AgentExecutionStatus,
     AgentName,
+    AgentTrigger,
     Approval,
     ApprovalStatus,
     AuditLog,
     Engagement,
+    EngagementStatus,
     Finding,
     MCPLease,
     MCPLeaseStatus,
+    OwnerEligibility,
     Task,
+    TaskKind,
     TaskStatus,
 )
 from app.runs.events import decode_envelope
@@ -133,7 +138,9 @@ def _task_outcome(row: Task) -> StatusOutcome | None:
         TaskStatus.running,
     ):
         return None
-    if row.status in (TaskStatus.failed, TaskStatus.cancelled):
+    if row.status == TaskStatus.cancelled:
+        return None
+    if row.status == TaskStatus.failed:
         return "errored"
     # completed — check if the payload's expected output landed.
     payload = row.payload or {}
@@ -191,6 +198,18 @@ def _task_synopsis(row: Task, outcome: StatusOutcome | None) -> str:
     tool = payload.get("tool") or payload.get("tool_name") or "task"
     target = payload.get("target")
     tool_target = f"{tool} → {target}" if tool and target else tool
+    if row.status == TaskStatus.deferred:
+        retryable = (
+            row.kind in (TaskKind.scan, TaskKind.enum)
+            and row.owner_eligibility
+            in (OwnerEligibility.agent, OwnerEligibility.either)
+        )
+        action = "Retry when ready or cancel" if retryable else "Cancel"
+        return f"Deferred: {tool_target}. {action} to resolve it."
+    if row.status == TaskStatus.pending:
+        return f"Awaiting dispatch: {tool_target}."
+    if row.status == TaskStatus.cancelled:
+        return f"Cancelled by analyst: {tool_target}."
     if outcome is None:
         return f"Running {tool_target}…"
     if outcome == "errored":
@@ -396,7 +415,12 @@ def _task_to_entity(row: Task) -> StatusEntity:
         raw_status=row.status.value,
         started_at=row.dispatched_at,
         completed_at=row.completed_at,
-        retryable=color == "failed",
+        retryable=(
+            row.status in (TaskStatus.failed, TaskStatus.deferred)
+            and row.kind in (TaskKind.scan, TaskKind.enum)
+            and row.owner_eligibility
+            in (OwnerEligibility.agent, OwnerEligibility.either)
+        ),
         run_slug=_run_slug(task_slug_source),
         outcome=outcome,
         synopsis=_task_synopsis(row, outcome),
@@ -1384,7 +1408,7 @@ def cancel_task(
     redis_client: RedisClient,
     user: CurrentNonGuestUser,
 ) -> StatusEntity:
-    """Cancel a pending/dispatched/running task and any queued worker command.
+    """Cancel a pending/deferred/dispatched/running task and queued command.
 
     This is best-effort for work already consumed by the worker, but it always
     marks the task cancelled, releases active MCP leases, and removes any queued
@@ -1393,12 +1417,18 @@ def cancel_task(
     row = session.get(Task, task_id)
     if row is None:
         raise HTTPException(status_code=404, detail="task not found")
-    if row.status not in (TaskStatus.pending, TaskStatus.dispatched, TaskStatus.running):
+    if row.status not in (
+        TaskStatus.pending,
+        TaskStatus.deferred,
+        TaskStatus.dispatched,
+        TaskStatus.running,
+    ):
         raise HTTPException(
             status_code=400,
-            detail="only pending, dispatched, or running tasks can be cancelled",
+            detail="only pending, deferred, dispatched, or running tasks can be cancelled",
         )
 
+    previous_status = row.status
     removed = _remove_queued_run_start(redis_client, row)
     released = _release_task_leases(session, row)
     row.status = TaskStatus.cancelled
@@ -1411,6 +1441,7 @@ def cancel_task(
             event_type="task.cancelled",
             payload={
                 "task_id": str(row.id),
+                "previous_status": previous_status.value,
                 "run_id": str(row.run_id) if row.run_id else None,
                 "queued_commands_removed": removed,
                 "leases_released": released,
@@ -1429,27 +1460,135 @@ def cancel_task(
 def retry_task(
     task_id: uuid.UUID,
     session: DbSession,
+    redis_client: RedisClient,
     user: CurrentNonGuestUser,
 ) -> StatusEntity:
-    """Reset a failed task back to ``pending`` so Tactical re-dispatches it.
+    """Re-dispatch a failed or deferred agent-eligible task.
 
-    The status flip alone doesn't re-run the worker — Tactical's queue
-    consumer picks pending tasks; the simplest possible retry just bumps
-    status and lets the existing pipeline run again.
+    Retry crosses the same Tactical service boundary as first dispatch, so
+    scope/approval gating and the analyst's provider/model selection still
+    apply. Merely resetting to pending is insufficient: there is no background
+    consumer that automatically discovers pending Task rows.
     """
-    row = session.get(Task, task_id)
+    row = session.execute(
+        select(Task).where(Task.id == task_id).with_for_update()
+    ).scalar_one_or_none()
     if row is None:
         raise HTTPException(status_code=404, detail="task not found")
-    if row.status not in (TaskStatus.failed, TaskStatus.cancelled):
+    engagement = session.get(Engagement, row.engagement_id)
+    if engagement is None:
+        raise HTTPException(status_code=404, detail="engagement not found")
+    if engagement.status != EngagementStatus.active:
+        raise HTTPException(
+            status_code=409,
+            detail="tasks can only be retried while the engagement is active",
+        )
+    if row.status not in (
+        TaskStatus.failed,
+        TaskStatus.deferred,
+    ):
         raise HTTPException(
             status_code=400,
-            detail="only failed or cancelled tasks can be retried",
+            detail="only failed or deferred tasks can be retried",
+        )
+    if row.kind not in (TaskKind.scan, TaskKind.enum) or row.owner_eligibility not in (
+        OwnerEligibility.agent,
+        OwnerEligibility.either,
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="only agent-eligible enumeration or scan tasks can be retried",
         )
 
+    previous_status = row.status
+    previous_run_id = row.run_id
+    previous_dispatched_at = row.dispatched_at
+    previous_completed_at = row.completed_at
+    removed = _remove_queued_run_start(redis_client, row)
+    released = _release_task_leases(session, row)
+    # Leave prior run timestamps/ID intact until Tactical atomically swaps the
+    # pending row to dispatched. If cancellation wins during policy selection,
+    # it retains the old lineage needed for cleanup and audit.
     row.status = TaskStatus.pending
-    row.dispatched_at = None
-    row.completed_at = None
-    row.run_id = None
+    try:
+        TacticalAgent(redis_client).dispatch(
+            session,
+            task=row,
+            acting_user_id=user.id,
+            trigger=AgentTrigger.manual,
+        )
+    except Exception as exc:
+        # Tactical commits the new lease/task state before Redis XADD to avoid
+        # a worker-vs-DB race. If enqueue then fails, restore the prior terminal
+        # state and release the new lease so retry cannot leave phantom work.
+        session.rollback()
+        session.expire_all()
+        failed_row = session.get(Task, task_id)
+        if failed_row is None:
+            raise HTTPException(status_code=404, detail="task not found") from exc
+        failed_run_id = failed_row.run_id
+        if failed_row.status == TaskStatus.cancelled:
+            session.add(
+                AuditLog(
+                    engagement_id=failed_row.engagement_id,
+                    actor_type=ActorType.user,
+                    actor_id=str(user.id),
+                    event_type="task.retry_superseded",
+                    payload={
+                        "task_id": str(failed_row.id),
+                        "previous_status": previous_status.value,
+                        "winning_status": TaskStatus.cancelled.value,
+                    },
+                )
+            )
+            session.commit()
+            raise HTTPException(
+                status_code=409,
+                detail="task was cancelled while retry dispatch was preparing",
+            ) from exc
+        if failed_run_id is not None and failed_run_id != previous_run_id:
+            _remove_queued_run_start(redis_client, failed_row)
+            _release_task_leases(session, failed_row)
+        failed_row.status = previous_status
+        failed_row.run_id = previous_run_id
+        failed_row.dispatched_at = previous_dispatched_at
+        failed_row.completed_at = previous_completed_at
+        session.add(
+            AuditLog(
+                engagement_id=failed_row.engagement_id,
+                actor_type=ActorType.user,
+                actor_id=str(user.id),
+                event_type="task.retry_failed",
+                payload={
+                    "task_id": str(failed_row.id),
+                    "previous_status": previous_status.value,
+                    "failed_run_id": str(failed_run_id) if failed_run_id else None,
+                    "error": str(exc)[:500],
+                },
+            )
+        )
+        session.commit()
+        status_code = 400 if isinstance(exc, ValueError) else 502
+        raise HTTPException(
+            status_code=status_code,
+            detail=f"task retry dispatch failed: {exc}",
+        ) from exc
+
+    session.add(
+        AuditLog(
+            engagement_id=row.engagement_id,
+            actor_type=ActorType.user,
+            actor_id=str(user.id),
+            event_type="task.retried",
+            payload={
+                "task_id": str(row.id),
+                "previous_status": previous_status.value,
+                "run_id": str(row.run_id) if row.run_id else None,
+                "old_queued_commands_removed": removed,
+                "old_leases_released": released,
+            },
+        )
+    )
     session.commit()
     session.refresh(row)
     return _task_to_entity(row)
