@@ -66,6 +66,11 @@ import {
   listProviderKeys,
   listOrchestratorTools,
   listPendingApprovals,
+  fetchEngagementLog,
+  fetchFindingsOverTime,
+  fetchScanCoverage,
+  fetchSeverityBreakdown,
+  fetchTopFindings,
   listEngagementAttribution,
   listRoadmapSuggestions,
   listRunningTasks,
@@ -162,6 +167,16 @@ export const qk = {
   runningTasks: () => ["running-tasks"] as const,
   engagementAttribution: (slug: string) =>
     ["engagement-attribution", slug] as const,
+  analyticsFindingsOverTime: (engagement: string | null, weeks: number) =>
+    ["analytics", "findings-over-time", engagement ?? "all", weeks] as const,
+  analyticsSeverityBreakdown: (engagement: string | null) =>
+    ["analytics", "severity-breakdown", engagement ?? "all"] as const,
+  analyticsScanCoverage: (engagement: string | null) =>
+    ["analytics", "scan-coverage", engagement ?? "all"] as const,
+  analyticsTopFindings: (engagement: string | null, limit: number) =>
+    ["analytics", "top-findings", engagement ?? "all", limit] as const,
+  analyticsEngagementLog: (engagement: string | null, limit: number) =>
+    ["analytics", "engagement-log", engagement ?? "all", limit] as const,
 };
 
 export function useEngagements() {
@@ -226,6 +241,45 @@ export function useEngagementAttribution(slug: string) {
     queryKey: qk.engagementAttribution(slug),
     queryFn: () => listEngagementAttribution(slug),
     enabled: Boolean(slug),
+  });
+}
+
+// v2.5.0 — Analytics page hooks. All accept `engagement` as null | "all"
+// | <slug>. Window-focus revalidate; no polling.
+export function useAnalyticsFindingsOverTime(
+  engagement: string | null,
+  weeks = 12,
+) {
+  return useQuery({
+    queryKey: qk.analyticsFindingsOverTime(engagement, weeks),
+    queryFn: () => fetchFindingsOverTime(engagement, weeks),
+  });
+}
+export function useAnalyticsSeverityBreakdown(engagement: string | null) {
+  return useQuery({
+    queryKey: qk.analyticsSeverityBreakdown(engagement),
+    queryFn: () => fetchSeverityBreakdown(engagement),
+  });
+}
+export function useAnalyticsScanCoverage(engagement: string | null) {
+  return useQuery({
+    queryKey: qk.analyticsScanCoverage(engagement),
+    queryFn: () => fetchScanCoverage(engagement),
+  });
+}
+export function useAnalyticsTopFindings(engagement: string | null, limit = 3) {
+  return useQuery({
+    queryKey: qk.analyticsTopFindings(engagement, limit),
+    queryFn: () => fetchTopFindings(engagement, limit),
+  });
+}
+export function useAnalyticsEngagementLog(
+  engagement: string | null,
+  limit = 100,
+) {
+  return useQuery({
+    queryKey: qk.analyticsEngagementLog(engagement, limit),
+    queryFn: () => fetchEngagementLog(engagement, limit),
   });
 }
 

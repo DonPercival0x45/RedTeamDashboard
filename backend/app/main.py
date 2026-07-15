@@ -27,6 +27,7 @@ from sqlalchemy import text
 
 from app.api.admin_users import router as admin_users_router
 from app.api.agent_configurations import router as agent_configurations_router
+from app.api.analytics import router as analytics_router
 from app.api.api_keys import router as api_keys_router
 from app.api.approvals import router as approvals_router
 from app.api.authorizations import router as authorizations_router
@@ -79,6 +80,7 @@ app.add_middleware(
     expose_headers=["Last-Event-ID"],
 )
 
+app.include_router(analytics_router)
 app.include_router(engagements_router)
 app.include_router(approvals_router)
 app.include_router(authorizations_router)

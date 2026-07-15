@@ -774,6 +774,95 @@ export function listEngagementAttribution(
   );
 }
 
+// v2.5.0 — Analytics page panels + Engagement Log. `engagement` param
+// accepts a slug for a specific engagement or the literal "all" (or
+// undefined) to aggregate across every engagement.
+export interface WeekBucket {
+  label: string;
+  week_start: string;
+  count: number;
+}
+export interface SeverityBreakdownRow {
+  severity: "critical" | "high" | "medium" | "low" | "info";
+  count: number;
+}
+export interface ScanCoverage {
+  percent: number;
+  covered: number;
+  total: number;
+}
+export interface TopFindingRow {
+  id: string;
+  engagement_slug: string;
+  title: string;
+  severity: "critical" | "high" | "medium" | "low" | "info";
+  created_at: string;
+}
+export interface EngagementLogRow {
+  id: string;
+  engagement_id: string | null;
+  engagement_slug: string | null;
+  engagement_name: string | null;
+  engagement_time_frame: string | null;
+  engagement_status: string | null;
+  actor_type: string;
+  actor_id: string | null;
+  actor_display: string | null;
+  event_type: string;
+  payload: Record<string, unknown>;
+  created_at: string;
+}
+
+function analyticsQuery(engagement: string | null | undefined): string {
+  if (!engagement || engagement === "all") return "";
+  return `?engagement=${encodeURIComponent(engagement)}`;
+}
+
+export function fetchFindingsOverTime(
+  engagement: string | null,
+  weeks = 12,
+): Promise<WeekBucket[]> {
+  const base = analyticsQuery(engagement);
+  const sep = base ? "&" : "?";
+  return request<WeekBucket[]>(
+    `/analytics/findings-over-time${base}${sep}weeks=${weeks}`,
+  );
+}
+export function fetchSeverityBreakdown(
+  engagement: string | null,
+): Promise<SeverityBreakdownRow[]> {
+  return request<SeverityBreakdownRow[]>(
+    `/analytics/severity-breakdown${analyticsQuery(engagement)}`,
+  );
+}
+export function fetchScanCoverage(
+  engagement: string | null,
+): Promise<ScanCoverage> {
+  return request<ScanCoverage>(
+    `/analytics/scan-coverage${analyticsQuery(engagement)}`,
+  );
+}
+export function fetchTopFindings(
+  engagement: string | null,
+  limit = 3,
+): Promise<TopFindingRow[]> {
+  const base = analyticsQuery(engagement);
+  const sep = base ? "&" : "?";
+  return request<TopFindingRow[]>(
+    `/analytics/top-findings${base}${sep}limit=${limit}`,
+  );
+}
+export function fetchEngagementLog(
+  engagement: string | null,
+  limit = 100,
+): Promise<EngagementLogRow[]> {
+  const base = analyticsQuery(engagement);
+  const sep = base ? "&" : "?";
+  return request<EngagementLogRow[]>(
+    `/analytics/engagement-log${base}${sep}limit=${limit}`,
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Costs (Phase 11)
 // ---------------------------------------------------------------------------
