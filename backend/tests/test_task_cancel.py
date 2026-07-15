@@ -1,10 +1,12 @@
 """Task cancellation endpoint tests."""
+
 from __future__ import annotations
 
 import json
 import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 import redis as redis_lib
@@ -13,6 +15,7 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.agents.strategic import StrategicAgent
+from app.api import status as status_api
 from app.core.config import settings
 from app.db.session import SessionLocal
 from app.main import app
@@ -62,6 +65,52 @@ def engagement(db: Session) -> Iterator[Engagement]:
     finally:
         db.execute(text("SELECT flush_engagement(:id)"), {"id": eng.id})
         db.commit()
+
+
+def test_mutable_task_lock_uses_engagement_then_task_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_id = uuid.uuid4()
+    engagement_id = uuid.uuid4()
+    task = SimpleNamespace(id=task_id, engagement_id=engagement_id)
+    events: list[tuple[str, bool, bool] | tuple[str, uuid.UUID]] = []
+
+    class Result:
+        def __init__(self, value: object) -> None:
+            self.value = value
+
+        def scalar_one_or_none(self) -> object:
+            return self.value
+
+    class RecordingSession:
+        def __init__(self) -> None:
+            self.values = iter((engagement_id, task))
+
+        def execute(self, statement: object) -> Result:
+            options = statement.get_execution_options()  # type: ignore[attr-defined]
+            events.append(
+                (
+                    "select",
+                    statement._for_update_arg is not None,  # type: ignore[attr-defined]
+                    options.get("populate_existing") is True,
+                )
+            )
+            return Result(next(self.values))
+
+    monkeypatch.setattr(
+        status_api,
+        "_ensure_mutable_engagement",
+        lambda _session, selected_id: events.append(("engagement", selected_id)),
+    )
+
+    locked = status_api._lock_mutable_task(RecordingSession(), task_id)  # type: ignore[arg-type]
+
+    assert locked is task
+    assert events == [
+        ("select", False, False),
+        ("engagement", engagement_id),
+        ("select", True, True),
+    ]
 
 
 def test_cancel_task_marks_cancelled_removes_queue_and_releases_lease(
@@ -431,9 +480,7 @@ def test_retry_enqueue_failure_restores_previous_state_and_audits(
     assert restored.status == TaskStatus.failed
     assert restored.run_id == previous_run_id
     assert restored.completed_at == previous_completed_at
-    lease = db.execute(
-        select(MCPLease).where(MCPLease.task_id == task.id)
-    ).scalar_one()
+    lease = db.execute(select(MCPLease).where(MCPLease.task_id == task.id)).scalar_one()
     assert lease.status == MCPLeaseStatus.released.value
     assert not redis_client.exists(run_model_key(failed_run_id))
     audit = db.execute(

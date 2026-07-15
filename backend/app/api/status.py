@@ -87,6 +87,26 @@ def _ensure_mutable_engagement(session: Session, engagement_id: uuid.UUID) -> No
         raise HTTPException(status_code=409, detail="completed engagement is read-only")
 
 
+def _lock_mutable_task(session: Session, task_id: uuid.UUID) -> Task:
+    """Lock a mutable Task using the global Engagement → child order."""
+    engagement_id = session.execute(
+        select(Task.engagement_id).where(Task.id == task_id)
+    ).scalar_one_or_none()
+    if engagement_id is None:
+        raise HTTPException(status_code=404, detail="task not found")
+
+    _ensure_mutable_engagement(session, engagement_id)
+    task = session.execute(
+        select(Task)
+        .where(Task.id == task_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
+    if task is None:
+        raise HTTPException(status_code=404, detail="task not found")
+    return task
+
+
 # ── v1.2.0: run_slug + outcome + synopsis derivation ────────────────────
 #
 # All three are derived from existing columns at read time — no schema
@@ -213,10 +233,9 @@ def _task_synopsis(row: Task, outcome: StatusOutcome | None) -> str:
     target = payload.get("target")
     tool_target = f"{tool} → {target}" if tool and target else tool
     if row.status == TaskStatus.deferred:
-        retryable = (
-            row.kind in (TaskKind.scan, TaskKind.enum)
-            and row.owner_eligibility
-            in (OwnerEligibility.agent, OwnerEligibility.either)
+        retryable = row.kind in (TaskKind.scan, TaskKind.enum) and row.owner_eligibility in (
+            OwnerEligibility.agent,
+            OwnerEligibility.either,
         )
         action = "Retry when ready or cancel" if retryable else "Cancel"
         return f"Deferred: {tool_target}. {action} to resolve it."
@@ -421,8 +440,7 @@ def _task_to_entity(row: Task) -> StatusEntity:
         retryable=(
             row.status in (TaskStatus.failed, TaskStatus.deferred)
             and row.kind in (TaskKind.scan, TaskKind.enum)
-            and row.owner_eligibility
-            in (OwnerEligibility.agent, OwnerEligibility.either)
+            and row.owner_eligibility in (OwnerEligibility.agent, OwnerEligibility.either)
         ),
         finding_id=row.finding_id,
         work_item_id=row.work_item_id,
@@ -1390,10 +1408,7 @@ def cancel_task(
     marks the task cancelled, releases active MCP leases, and removes any queued
     run.start envelope that has not yet been consumed.
     """
-    row = session.get(Task, task_id)
-    if row is None:
-        raise HTTPException(status_code=404, detail="task not found")
-    _ensure_mutable_engagement(session, row.engagement_id)
+    row = _lock_mutable_task(session, task_id)
     if row.status not in (
         TaskStatus.pending,
         TaskStatus.deferred,
@@ -1447,12 +1462,7 @@ def retry_task(
     apply. Merely resetting to pending is insufficient: there is no background
     consumer that automatically discovers pending Task rows.
     """
-    row = session.execute(
-        select(Task).where(Task.id == task_id).with_for_update()
-    ).scalar_one_or_none()
-    if row is None:
-        raise HTTPException(status_code=404, detail="task not found")
-    _ensure_mutable_engagement(session, row.engagement_id)
+    row = _lock_mutable_task(session, task_id)
     if row.status not in (
         TaskStatus.failed,
         TaskStatus.deferred,
