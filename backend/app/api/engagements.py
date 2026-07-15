@@ -297,6 +297,7 @@ def _build_export_payload(
             }
             for f in findings
         ],
+        "export_profile": "client" if omit_excluded else "internal",
         "omit_excluded": omit_excluded,
         "excluded_count": excluded_count,
         "observations": [
@@ -3187,9 +3188,9 @@ def get_engagement_export(
         Query(
             description=(
                 "Drop findings marked out_of_scope / outside_roe from the "
-                "returned payload. Default false — the analyst usually "
-                "wants the whole record. The Report tab toggle sets this "
-                "to true when the operator wants a client-ready export."
+                "returned payload. Defaults false because this endpoint is a "
+                "full-fidelity snapshot; the Report workspace explicitly sends "
+                "true for a client-safe download."
             ),
         ),
     ] = False,

@@ -70,11 +70,11 @@ def engagement_report(
         Query(
             description=(
                 "Drop findings marked out_of_scope / outside_roe from the "
-                "PDF. Default false; the Report tab toggle sets this to "
-                "true when the analyst wants a client-ready deliverable."
+                "PDF. Defaults true so an unqualified download is client-safe; "
+                "set false only for an explicit internal report."
             ),
         ),
-    ] = False,
+    ] = True,
 ) -> Response:
     eng = session.execute(
         select(Engagement).where(Engagement.slug == slug)
@@ -138,7 +138,11 @@ def engagement_report(
     from weasyprint import HTML  # deferred: needs GTK, not available on all hosts
 
     pdf_bytes = HTML(string=html).write_pdf()
-    filename = f"{eng.slug}-report-{datetime.now(tz=UTC).strftime('%Y%m%d')}.pdf"
+    profile = "client" if omit_excluded else "internal"
+    filename = (
+        f"{eng.slug}-{profile}-report-"
+        f"{datetime.now(tz=UTC).strftime('%Y%m%d')}.pdf"
+    )
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
