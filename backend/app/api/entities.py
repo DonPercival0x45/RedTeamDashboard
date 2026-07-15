@@ -31,8 +31,11 @@ from app.models import (
     Entity,
     EntityFindingLink,
     Finding,
+    FindingPhase,
+    FindingStatus,
     ScopeItem,
     ScopeKind,
+    Severity,
 )
 from app.services import darkweb_import, entity_store
 from app.services.entities import extract_finding_context
@@ -46,6 +49,15 @@ router = APIRouter()
 # ---------------------------------------------------------------------------
 
 
+class StoredEntityFindingRef(BaseModel):
+    id: uuid.UUID
+    title: str
+    tool: str | None = None
+    severity: Severity
+    phase: FindingPhase
+    status: FindingStatus
+
+
 class StoredEntityRead(BaseModel):
     id: uuid.UUID
     type: str
@@ -53,6 +65,7 @@ class StoredEntityRead(BaseModel):
     properties: dict[str, Any] = Field(default_factory=dict)
     source_tool: str
     source_attribution: str | None = None
+    finding_refs: list[StoredEntityFindingRef] = Field(default_factory=list)
     created_at: Any
     updated_at: Any
 
@@ -171,17 +184,56 @@ def _context_candidates(session, finding: Finding) -> list[FindingContextCandida
     return candidates
 
 
-def _entity_to_read(e: Entity) -> StoredEntityRead:
-    return StoredEntityRead(
-        id=e.id,
-        type=e.type,
-        value=e.value,
-        properties=dict(e.properties or {}),
-        source_tool=e.source_tool,
-        source_attribution=e.source_attribution,
-        created_at=e.created_at,
-        updated_at=e.updated_at,
-    )
+def _entities_to_read(session, entities: list[Entity]) -> list[StoredEntityRead]:
+    """Project stored entities with typed finding provenance in one query."""
+    if not entities:
+        return []
+    refs_by_entity: dict[uuid.UUID, list[StoredEntityFindingRef]] = {
+        entity.id: [] for entity in entities
+    }
+    rows = session.execute(
+        select(
+            EntityFindingLink.entity_id,
+            Finding.id,
+            Finding.title,
+            Finding.source_tool,
+            Finding.severity,
+            Finding.phase,
+            Finding.status,
+        )
+        .join(Finding, Finding.id == EntityFindingLink.finding_id)
+        .where(
+            EntityFindingLink.entity_id.in_(refs_by_entity),
+            Finding.engagement_id == entities[0].engagement_id,
+            Finding.deleted_at.is_(None),
+        )
+        .order_by(EntityFindingLink.created_at.asc())
+    ).all()
+    for entity_id, finding_id, title, tool, severity, phase, finding_status in rows:
+        refs_by_entity[entity_id].append(
+            StoredEntityFindingRef(
+                id=finding_id,
+                title=title,
+                tool=tool,
+                severity=severity,
+                phase=phase,
+                status=finding_status,
+            )
+        )
+    return [
+        StoredEntityRead(
+            id=entity.id,
+            type=entity.type,
+            value=entity.value,
+            properties=dict(entity.properties or {}),
+            source_tool=entity.source_tool,
+            source_attribution=entity.source_attribution,
+            finding_refs=refs_by_entity[entity.id],
+            created_at=entity.created_at,
+            updated_at=entity.updated_at,
+        )
+        for entity in entities
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -400,7 +452,7 @@ def import_maltego(
         skipped_empty=result.skipped_empty,
         skipped_unknown=result.skipped_unknown,
         total_nodes=result.total_nodes,
-        entities=[_entity_to_read(e) for e in fresh],
+        entities=_entities_to_read(session, fresh),
     )
 
 
@@ -507,7 +559,7 @@ def import_darkweb(
         skipped_malformed=result.skipped_malformed,
         total_rows=result.total_rows,
         databases=result.databases,
-        entities=[_entity_to_read(e) for e in fresh],
+        entities=_entities_to_read(session, fresh),
     )
 
 
@@ -533,4 +585,4 @@ def list_stored_entities_endpoint(
     rows = entity_store.list_stored_entities(
         session, engagement=eng, type_filter=type, query=q
     )
-    return [_entity_to_read(e) for e in rows]
+    return _entities_to_read(session, rows)

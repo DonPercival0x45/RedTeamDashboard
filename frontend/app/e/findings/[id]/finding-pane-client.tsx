@@ -946,7 +946,11 @@ function ContextPromotionPanel({ finding, slug }: { finding: Finding; slug: stri
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [manualType, setManualType] = useState("domain");
   const [manualValue, setManualValue] = useState("");
-  const [result, setResult] = useState<string | null>(null);
+  const [result, setResult] = useState<{
+    message: string;
+    showEntities: boolean;
+    showScope: boolean;
+  } | null>(null);
   const keyFor = (type: string, value: string) => `${type}:${value}`;
 
   function submit(items: Array<{ type: string; value: string; add_to_entities: boolean; add_to_scope: boolean }>) {
@@ -962,9 +966,11 @@ function ContextPromotionPanel({ finding, slug }: { finding: Finding; slug: stri
       onSuccess: (response) => {
         setSelected(new Set());
         setManualValue("");
-        setResult(
-          `Created ${response.entities_created} entities, ${response.entity_links_created} provenance links, and ${response.scope_items_created} scope items.`,
-        );
+        setResult({
+          message: `Created ${response.entities_created} entities, ${response.entity_links_created} provenance links, and ${response.scope_items_created} scope items.`,
+          showEntities: items.some((item) => item.add_to_entities),
+          showScope: items.some((item) => item.add_to_scope),
+        });
       },
     });
   }
@@ -1067,12 +1073,22 @@ function ContextPromotionPanel({ finding, slug }: { finding: Finding; slug: stri
                           }
                           className="shrink-0"
                         />
-                        <span
-                          className="min-w-0 flex-1 truncate font-mono text-xs"
-                          title={row.value}
-                        >
-                          {row.value}
-                        </span>
+                        {savedEntity ? (
+                          <Link
+                            href={`/e/entities?slug=${encodeURIComponent(slug)}&type=${encodeURIComponent(row.type)}&value=${encodeURIComponent(row.value)}`}
+                            className="min-w-0 flex-1 truncate rounded-sm font-mono text-xs hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                            title={`Open entity ${row.value}`}
+                          >
+                            {row.value}
+                          </Link>
+                        ) : (
+                          <span
+                            className="min-w-0 flex-1 truncate font-mono text-xs"
+                            title={row.value}
+                          >
+                            {row.value}
+                          </span>
+                        )}
                         <span className="flex shrink-0 items-center gap-1 text-[10px] text-muted-foreground">
                           {savedEntity && (
                             <span className="rounded bg-emerald-500/15 px-1 py-0.5 text-emerald-700 dark:text-emerald-300">
@@ -1080,9 +1096,13 @@ function ContextPromotionPanel({ finding, slug }: { finding: Finding; slug: stri
                             </span>
                           )}
                           {savedScope && (
-                            <span className="rounded bg-sky-500/15 px-1 py-0.5 text-sky-700 dark:text-sky-300">
+                            <Link
+                              href={`/e?slug=${encodeURIComponent(slug)}&view=scope`}
+                              className="rounded bg-sky-500/15 px-1 py-0.5 text-sky-700 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:text-sky-300"
+                              title={`Open Scope for ${row.value}`}
+                            >
                               {row.scope_source ?? "scope"}
-                            </span>
+                            </Link>
                           )}
                           {!savedEntity && (
                             <SmallButton
@@ -1169,7 +1189,21 @@ function ContextPromotionPanel({ finding, slug }: { finding: Finding; slug: stri
           </SmallButton>
         )}
       </div>
-      {result && <p className="mt-2 text-xs text-emerald-700 dark:text-emerald-200">{result}</p>}
+      {result && (
+        <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-emerald-700 dark:text-emerald-200">
+          <span>{result.message}</span>
+          {result.showEntities && (
+            <Link href={`/e?slug=${encodeURIComponent(slug)}&view=entities`} className="font-medium underline">
+              View Entities
+            </Link>
+          )}
+          {result.showScope && (
+            <Link href={`/e?slug=${encodeURIComponent(slug)}&view=scope`} className="font-medium underline">
+              View Scope
+            </Link>
+          )}
+        </div>
+      )}
       {promote.error && (
         <p className="mt-2 text-xs text-destructive">
           {promote.error instanceof Error ? promote.error.message : "Promotion failed"}
@@ -1211,9 +1245,16 @@ function ScopeStatusPanel({ finding, slug }: { finding: Finding; slug: string | 
     <section className="rounded-lg border border-border bg-card/40 p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-sm font-medium">Scope / ROE status</h2>
-        <span className={cn("rounded-full px-2 py-0.5 text-xs font-medium", scopeStateClass(state))}>
-          {state}
-        </span>
+        <div className="flex items-center gap-2">
+          {slug && (
+            <Link href={`/e?slug=${encodeURIComponent(slug)}&view=scope`} className="text-xs text-muted-foreground hover:text-foreground hover:underline">
+              Open Scope
+            </Link>
+          )}
+          <span className={cn("rounded-full px-2 py-0.5 text-xs font-medium", scopeStateClass(state))}>
+            {state}
+          </span>
+        </div>
       </div>
       <p className="mt-2 text-xs text-muted-foreground">
         Compares extracted IP/domain/URL indicators from this finding against
@@ -1248,6 +1289,7 @@ function ScopeStatusPanel({ finding, slug }: { finding: Finding; slug: string | 
 
 function RelatedPanel({ finding, slug }: { finding: Finding; slug: string | null }) {
   const [rows, setRows] = useState<Finding[] | null>(null);
+  const { data: contextCandidates } = useFindingContext(finding.id);
   const [loadError, setLoadError] = useState<string | null>(null);
   useEffect(() => {
     if (!slug) {
@@ -1279,11 +1321,24 @@ function RelatedPanel({ finding, slug }: { finding: Finding; slug: string | null
         {indicators.length === 0 ? (
           <span className="text-xs text-muted-foreground">No extracted entities.</span>
         ) : (
-          indicators.map((v) => (
-            <span key={v} className="rounded-full border border-border bg-muted/40 px-2 py-0.5 font-mono text-[10px]">
-              {v}
-            </span>
-          ))
+          indicators.map((value) => {
+            const candidate = (contextCandidates ?? []).find(
+              (row) => row.value === value && row.entity_id,
+            );
+            return candidate && slug ? (
+              <Link
+                key={value}
+                href={`/e/entities?slug=${encodeURIComponent(slug)}&type=${encodeURIComponent(candidate.type)}&value=${encodeURIComponent(candidate.value)}`}
+                className="rounded-full border border-border bg-muted/40 px-2 py-0.5 font-mono text-[10px] hover:border-foreground/30 hover:bg-muted hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                {value}
+              </Link>
+            ) : (
+              <span key={value} className="rounded-full border border-border bg-muted/40 px-2 py-0.5 font-mono text-[10px]">
+                {value}
+              </span>
+            );
+          })
         )}
       </div>
       {loadError ? (
@@ -1295,11 +1350,16 @@ function RelatedPanel({ finding, slug }: { finding: Finding; slug: string | null
       ) : (
         <ul className="mt-3 space-y-2">
           {related.map((row) => (
-            <li key={row.id} className="rounded-md border border-border bg-background p-2 text-xs">
-              <p className="font-medium">{row.title}</p>
-              <p className="mt-1 text-muted-foreground">
-                {row.severity} · {row.status} · {row.target ?? "no target"}
-              </p>
+            <li key={row.id}>
+              <Link
+                href={`/e/findings/${row.id}?slug=${encodeURIComponent(slug ?? "")}`}
+                className="block rounded-md border border-border bg-background p-2 text-xs hover:border-foreground/30 hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <p className="font-medium">{row.title}</p>
+                <p className="mt-1 text-muted-foreground">
+                  {row.severity} · {row.status} · {row.target ?? "no target"}
+                </p>
+              </Link>
             </li>
           ))}
         </ul>
@@ -1547,6 +1607,7 @@ function AgentToolsPanel({ findingId, slug }: { findingId: string; slug: string 
                 denyAction.mutate({ messageId, actionIndex: index })
               }
               denying={denyAction.isPending}
+              slug={slug}
             />
           ))}
         </div>
@@ -1559,7 +1620,7 @@ function AgentToolsPanel({ findingId, slug }: { findingId: string; slug: string 
           </p>
         )}
       </div>
-      <ActionHistoryPanel tasks={findingTasks} loading={tasks === null} />
+      <ActionHistoryPanel tasks={findingTasks} loading={tasks === null} slug={slug} />
     </section>
   );
 }
@@ -1567,9 +1628,11 @@ function AgentToolsPanel({ findingId, slug }: { findingId: string; slug: string 
 function ActionHistoryPanel({
   tasks,
   loading,
+  slug,
 }: {
   tasks: Task[];
   loading: boolean;
+  slug: string | null;
 }) {
   return (
     <section className="rounded-lg border border-border bg-card/40 p-4">
@@ -1588,7 +1651,16 @@ function ActionHistoryPanel({
           {tasks.map((task) => (
             <li key={task.id} className="rounded-md border border-border bg-background p-3 text-xs">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <p className="font-medium">{task.title}</p>
+                {slug ? (
+                  <Link
+                    href={`/e?slug=${encodeURIComponent(slug)}&view=status&run=${encodeURIComponent(task.id)}`}
+                    className="rounded-sm font-medium hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    {task.title}
+                  </Link>
+                ) : (
+                  <p className="font-medium">{task.title}</p>
+                )}
                 <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
                   {task.status}
                 </span>
@@ -1597,7 +1669,19 @@ function ActionHistoryPanel({
                 {String(task.payload.tool ?? "?")} → {String(task.payload.target ?? "?")}
               </p>
               <div className="mt-2 grid grid-cols-1 gap-2 text-[10px] text-muted-foreground sm:grid-cols-3">
-                <span>run: {task.run_id ?? "not dispatched"}</span>
+                <span>
+                  run:{" "}
+                  {slug ? (
+                    <Link
+                      href={`/e?slug=${encodeURIComponent(slug)}&view=status&run=${encodeURIComponent(task.id)}`}
+                      className="hover:underline"
+                    >
+                      {task.run_id ?? "open task"}
+                    </Link>
+                  ) : (
+                    task.run_id ?? "not dispatched"
+                  )}
+                </span>
                 <span>sent: <DateTime value={task.dispatched_at} /></span>
                 <span>done: <DateTime value={task.completed_at} /></span>
               </div>
@@ -1742,6 +1826,7 @@ function ChatRail({
               accepting={acceptAction.isPending}
               denying={denyAction.isPending}
               runOutcome={runOutcome}
+              slug={slug}
             />
           ))
         )}
@@ -1808,6 +1893,7 @@ function ChatBubble({
   accepting,
   denying,
   runOutcome,
+  slug,
 }: {
   message: FindingChatMessage;
   onAccept: (messageId: string, actionIndex: number) => void;
@@ -1815,6 +1901,7 @@ function ChatBubble({
   accepting: boolean;
   denying: boolean;
   runOutcome: (action: FindingChatAction) => string | null;
+  slug: string | null;
 }) {
   const mine = message.role === "user";
   const actions =
@@ -1850,6 +1937,7 @@ function ChatBubble({
               onDeny={() => onDeny(message.id, index)}
               denying={denying}
               runOutcome={runOutcome(action)}
+              slug={slug}
             />
           ))}
         </div>
@@ -1865,6 +1953,7 @@ function ActionCard({
   onDeny,
   denying,
   runOutcome,
+  slug,
 }: {
   action: FindingChatAction;
   onAccept: () => void;
@@ -1872,10 +1961,19 @@ function ActionCard({
   onDeny: () => void;
   denying: boolean;
   runOutcome?: string | null;
+  slug: string | null;
 }) {
   const accepted = action.status === "accepted";
   const denied = action.status === "denied";
   const isContext = action.type === "context";
+  const taskId = typeof action.result?.task_id === "string" ? action.result.task_id : null;
+  const resultFindingId = typeof action.result?.finding_id === "string" ? action.result.finding_id : null;
+  const resultHref = slug && taskId
+    ? `/e?slug=${encodeURIComponent(slug)}&view=status&run=${encodeURIComponent(taskId)}`
+    : slug && resultFindingId
+      ? `/e/findings/${resultFindingId}?slug=${encodeURIComponent(slug)}`
+      : null;
+  const resultLabel = runOutcome ?? (action.result ? summarizeResult(action.result) : null);
   return (
     <div className="rounded-md border border-amber-400/30 bg-amber-400/10 p-2">
       <div className="flex items-start justify-between gap-2">
@@ -1890,7 +1988,15 @@ function ActionCard({
           )}
           {accepted && (
             <p className="mt-1 text-[10px] text-emerald-600 dark:text-emerald-300">
-              Approved{runOutcome ? ` · ${runOutcome}` : action.result ? `: ${summarizeResult(action.result)}` : ""}
+              Approved
+              {resultLabel && (resultHref ? (
+                <>
+                  {runOutcome ? " · " : ": "}
+                  <Link href={resultHref} className="font-medium underline">
+                    {resultLabel}
+                  </Link>
+                </>
+              ) : runOutcome ? ` · ${resultLabel}` : `: ${resultLabel}`)}
             </p>
           )}
           {denied && (
