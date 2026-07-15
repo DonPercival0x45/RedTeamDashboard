@@ -50,6 +50,7 @@ from app.models.engagement_strategy import (
 )
 from app.models.entity import Entity
 from app.models.entity_finding_link import EntityFindingLink
+from app.models.entity_group import EntityGroup, EntityGroupMember
 from app.models.finding import (
     Finding,
     FindingExclusion,
@@ -116,6 +117,8 @@ __all__ = [
     "EngagementWorkState",
     "Entity",
     "EntityFindingLink",
+    "EntityGroup",
+    "EntityGroupMember",
     "Finding",
     "FindingExclusion",
     "FindingPhase",

@@ -3,19 +3,30 @@
 import { useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useQueryClient } from "@tanstack/react-query";
-import { Check, Search, Upload, X, Zap } from "lucide-react";
+import { Check, Layers, RotateCcw, Search, Trash2, Upload, X, Zap } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
+  createEntityGroup,
+  dissolveEntityGroup,
   importEntitiesDarkweb,
   importEntitiesMaltego,
+  restoreStoredEntity,
+  suppressStoredEntity,
 } from "@/lib/api";
-import { qk, useEntities, useFindings, useStoredEntities } from "@/lib/hooks";
+import {
+  qk,
+  useEntities,
+  useEntityDuplicateCandidates,
+  useFindings,
+  useStoredEntities,
+} from "@/lib/hooks";
 import { cn } from "@/lib/utils";
 import type {
   DarkwebImportResult,
   Entity,
+  EntityDuplicateCandidate,
   MaltegoImportResult,
   Severity,
   StoredEntity,
@@ -330,7 +341,12 @@ function ImportedEntitiesSection({ slug }: { slug: string }) {
   // v1.0.0: react-query owns the stored-entities fetch. Import mutations
   // patch the cache directly via qc.setQueryData.
   const qc = useQueryClient();
-  const { data: items, error: queryError } = useStoredEntities(slug);
+  const [showRemoved, setShowRemoved] = useState(false);
+  const { data: items, error: queryError } = useStoredEntities(slug, showRemoved);
+  const { data: duplicateCandidates = [] } = useEntityDuplicateCandidates(slug);
+  const [canonicalChoices, setCanonicalChoices] = useState<Record<string, string>>({});
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  const [managing, setManaging] = useState<string | null>(null);
   const loadError =
     queryError instanceof Error
       ? queryError.message
@@ -342,6 +358,81 @@ function ImportedEntitiesSection({ slug }: { slug: string }) {
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [lastImport, setLastImport] = useState<LastImport | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  const refreshManagement = async () => {
+    await Promise.all([
+      qc.invalidateQueries({ queryKey: ["stored-entities", slug] }),
+      qc.invalidateQueries({ queryKey: qk.entityDuplicateCandidates(slug) }),
+    ]);
+  };
+
+  const groupCandidate = async (candidate: EntityDuplicateCandidate) => {
+    const reason = window.prompt(
+      "Why should these stored entities be grouped? All records and provenance will be retained.",
+      "Equivalent representations of the same entity",
+    );
+    if (!reason?.trim()) return;
+    setManaging(`candidate:${candidate.type}:${candidate.normalized_value}`);
+    setUploadError(null);
+    try {
+      await createEntityGroup(slug, {
+        entity_ids: candidate.entities.map((item) => item.id),
+        canonical_entity_id:
+          canonicalChoices[`${candidate.type}:${candidate.normalized_value}`] ??
+          candidate.suggested_canonical_entity_id,
+        reason: reason.trim(),
+      });
+      await refreshManagement();
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setManaging(null);
+    }
+  };
+
+  const disposeEntity = async (entity: StoredEntity) => {
+    const restoring = entity.suppressed;
+    const reason = window.prompt(
+      restoring
+        ? "Why are you restoring this stored entity?"
+        : "Remove this stored entity from active views? The record, properties, links, and audit history will be retained.",
+    );
+    if (!reason?.trim()) return;
+    setManaging(entity.id);
+    setUploadError(null);
+    try {
+      if (restoring) await restoreStoredEntity(entity, reason.trim());
+      else await suppressStoredEntity(entity, reason.trim());
+      await refreshManagement();
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setManaging(null);
+    }
+  };
+
+  const dissolveGroup = async (entity: StoredEntity) => {
+    if (!entity.group) return;
+    const reason = window.prompt("Why should this duplicate group be dissolved?");
+    if (!reason?.trim()) return;
+    setManaging(entity.group.id);
+    setUploadError(null);
+    try {
+      await dissolveEntityGroup(entity.group.id, entity.group.row_version, reason.trim());
+      await refreshManagement();
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setManaging(null);
+    }
+  };
+
+  const visibleItems = (items ?? []).filter(
+    (entity) =>
+      !entity.group ||
+      entity.group.canonical_entity_id === entity.id ||
+      expandedGroups.has(entity.group.id),
+  );
 
   const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -371,7 +462,9 @@ function ImportedEntitiesSection({ slug }: { slug: string }) {
         setUploadError(
           "Unrecognized file type — upload .mtgx (Maltego), .json or .csv (Dehashed).",
         );
+        return;
       }
+      await refreshManagement();
     } catch (err) {
       setUploadError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -412,6 +505,74 @@ function ImportedEntitiesSection({ slug }: { slug: string }) {
           />
         </div>
       </div>
+
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <label className="flex items-center gap-2 text-xs text-muted-foreground">
+          <input
+            type="checkbox"
+            checked={showRemoved}
+            onChange={(event) => setShowRemoved(event.target.checked)}
+          />
+          Show removed records
+        </label>
+        <span className="text-[11px] text-muted-foreground">
+          Conservative domain, IP, URL, email, and hash variants reuse existing records.
+        </span>
+      </div>
+
+      {duplicateCandidates.length > 0 && (
+        <section className="space-y-2 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3">
+          <div>
+            <h3 className="text-sm font-medium">Possible duplicate entities</h3>
+            <p className="text-xs text-muted-foreground">
+              Grouping retains every row, property, source, and finding link.
+            </p>
+          </div>
+          {duplicateCandidates.map((candidate) => {
+            const key = `${candidate.type}:${candidate.normalized_value}`;
+            const selectedCanonical = canonicalChoices[key] ?? candidate.suggested_canonical_entity_id;
+            return (
+              <div key={key} className="rounded border border-border bg-background p-3 text-xs">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <span className="font-medium">{typeLabel(candidate.type)}</span>{" "}
+                    <span className="font-mono">{candidate.normalized_value}</span>
+                    <p className="mt-1 text-muted-foreground">
+                      {candidate.entities.map((item) => item.value).join(" · ")}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <label className="flex items-center gap-1">
+                      Canonical
+                      <select
+                        value={selectedCanonical}
+                        onChange={(event) => setCanonicalChoices((current) => ({
+                          ...current,
+                          [key]: event.target.value,
+                        }))}
+                        className="h-8 max-w-48 rounded border border-input bg-background px-2 font-mono"
+                      >
+                        {candidate.entities.map((item) => (
+                          <option key={item.id} value={item.id}>{item.value}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={managing === `candidate:${key}`}
+                      onClick={() => void groupCandidate(candidate)}
+                    >
+                      <Layers className="mr-1.5 h-3.5 w-3.5" /> Group duplicates
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </section>
+      )}
 
       {lastImport?.kind === "maltego" && (
         <div className="rounded border border-border bg-background p-2 text-xs">
@@ -489,7 +650,7 @@ function ImportedEntitiesSection({ slug }: { slug: string }) {
         <p className="text-sm text-muted-foreground">
           Loading imported entities…
         </p>
-      ) : items.length === 0 ? (
+      ) : visibleItems.length === 0 ? (
         <p className="text-sm text-muted-foreground">
           No imported entities yet — upload a Maltego .mtgx to populate.
         </p>
@@ -501,13 +662,17 @@ function ImportedEntitiesSection({ slug }: { slug: string }) {
                 <th className="px-3 py-2 w-28">Type</th>
                 <th className="px-3 py-2">Value</th>
                 <th className="px-3 py-2 w-40">Source</th>
+                <th className="px-3 py-2 w-40 text-right">Manage</th>
               </tr>
             </thead>
             <tbody>
-              {items.map((e) => (
+              {visibleItems.map((e) => (
                 <tr
                   key={e.id}
-                  className="border-b border-border/60 last:border-0"
+                  className={cn(
+                    "border-b border-border/60 last:border-0",
+                    e.suppressed && "opacity-60",
+                  )}
                 >
                   <td className="px-3 py-2.5 text-xs text-muted-foreground">
                     {typeLabel(e.type)}
@@ -519,6 +684,23 @@ function ImportedEntitiesSection({ slug }: { slug: string }) {
                     >
                       {e.value}
                     </Link>
+                    {e.suppressed && (
+                      <Badge variant="outline" className="ml-2 font-sans">Removed</Badge>
+                    )}
+                    {e.group?.canonical_entity_id === e.id && (
+                      <button
+                        type="button"
+                        className="ml-2 rounded-sm font-sans text-[11px] text-muted-foreground underline-offset-2 hover:underline"
+                        onClick={() => setExpandedGroups((current) => {
+                          const next = new Set(current);
+                          if (next.has(e.group!.id)) next.delete(e.group!.id);
+                          else next.add(e.group!.id);
+                          return next;
+                        })}
+                      >
+                        Grouped · {e.group.member_count} records
+                      </button>
+                    )}
                   </td>
                   <td className="px-3 py-2.5 text-xs text-muted-foreground">
                     {e.finding_refs.length > 0 ? (
@@ -536,6 +718,35 @@ function ImportedEntitiesSection({ slug }: { slug: string }) {
                       </span>
                     ) : (
                       e.source_attribution ?? e.source_tool
+                    )}
+                  </td>
+                  <td className="px-3 py-2.5 text-right">
+                    {e.group?.canonical_entity_id === e.id ? (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        disabled={managing === e.group.id}
+                        onClick={() => void dissolveGroup(e)}
+                      >
+                        Dissolve group
+                      </Button>
+                    ) : e.group ? (
+                      <span className="text-[11px] text-muted-foreground">Grouped member</span>
+                    ) : (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        disabled={managing === e.id}
+                        onClick={() => void disposeEntity(e)}
+                      >
+                        {e.suppressed ? (
+                          <><RotateCcw className="mr-1.5 h-3.5 w-3.5" /> Restore</>
+                        ) : (
+                          <><Trash2 className="mr-1.5 h-3.5 w-3.5" /> Remove</>
+                        )}
+                      </Button>
                     )}
                   </td>
                 </tr>

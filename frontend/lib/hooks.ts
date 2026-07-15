@@ -56,6 +56,7 @@ import {
   listAuthorizations,
   listEngagements,
   listEntities,
+  listEntityDuplicateCandidates,
   listFindings,
   getFinding,
   getFindingActivity,
@@ -130,7 +131,10 @@ export const qk = {
   observations: (slug: string) => ["observations", slug] as const,
   scope: (slug: string) => ["scope", slug] as const,
   entities: (slug: string) => ["entities", slug] as const,
-  storedEntities: (slug: string) => ["stored-entities", slug] as const,
+  storedEntities: (slug: string, includeSuppressed = false) =>
+    ["stored-entities", slug, { includeSuppressed }] as const,
+  entityDuplicateCandidates: (slug: string) =>
+    ["entity-duplicate-candidates", slug] as const,
   contributionsHeatmap: (
     slug: string,
     filters: { actorId: string | null; source: string | null },
@@ -471,10 +475,17 @@ export function useEntities(slug: string) {
   });
 }
 
-export function useStoredEntities(slug: string) {
+export function useStoredEntities(slug: string, includeSuppressed = false) {
   return useQuery({
-    queryKey: qk.storedEntities(slug),
-    queryFn: () => listStoredEntities(slug),
+    queryKey: qk.storedEntities(slug, includeSuppressed),
+    queryFn: () => listStoredEntities(slug, includeSuppressed),
+  });
+}
+
+export function useEntityDuplicateCandidates(slug: string) {
+  return useQuery({
+    queryKey: qk.entityDuplicateCandidates(slug),
+    queryFn: () => listEntityDuplicateCandidates(slug),
   });
 }
 

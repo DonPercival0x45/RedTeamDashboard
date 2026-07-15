@@ -462,14 +462,53 @@ export interface StoredEntityFindingRef {
   status: FindingValidationStatus;
 }
 
+export interface StoredEntityGroupRef {
+  id: string;
+  canonical_entity_id: string | null;
+  label: string | null;
+  member_count: number;
+  row_version: number;
+}
+
 export interface StoredEntity {
   id: string;
   type: string;
   value: string;
+  normalized_value: string;
   properties: Record<string, unknown>;
   source_tool: string;
   source_attribution: string | null;
   finding_refs: StoredEntityFindingRef[];
+  group: StoredEntityGroupRef | null;
+  suppressed: boolean;
+  suppression_reason: string | null;
+  row_version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EntityDuplicateCandidate {
+  type: string;
+  normalized_value: string;
+  suggested_canonical_entity_id: string;
+  entities: Array<{
+    id: string;
+    type: string;
+    value: string;
+    source_tool: string;
+    source_attribution: string | null;
+    finding_count: number;
+  }>;
+}
+
+export interface EntityGroup {
+  id: string;
+  engagement_id: string;
+  canonical_entity_id: string | null;
+  label: string | null;
+  reason: string;
+  entity_ids: string[];
+  row_version: number;
   created_at: string;
   updated_at: string;
 }
