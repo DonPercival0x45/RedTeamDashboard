@@ -21,9 +21,10 @@ Properties JSONB on conflict is patched in (new values win) by the
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from typing import Any
 
-from sqlalchemy import ForeignKey, Index, String, Text, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -43,6 +44,7 @@ class Entity(Base, TimestampMixin):
         ),
         Index("ix_entities_engagement_id", "engagement_id"),
         Index("ix_entities_type", "type"),
+        Index("ix_entities_suppressed_at", "suppressed_at"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -67,3 +69,11 @@ class Entity(Base, TimestampMixin):
     # source_tool="maltego_import", source_attribution="scan-2026-01-15.mtgx".
     source_tool: Mapped[str] = mapped_column(String(80), nullable=False)
     source_attribution: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Analyst removal is a reversible suppression rather than a hard delete, so
+    # EntityFindingLink provenance and source properties remain available.
+    suppressed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    suppressed_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    suppression_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    row_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)

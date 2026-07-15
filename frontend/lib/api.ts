@@ -1063,10 +1063,80 @@ export function promoteFindingContext(
 
 export function listStoredEntities(
   slug: string,
+  includeSuppressed = false,
 ): Promise<import("@/lib/types").StoredEntity[]> {
+  const suffix = includeSuppressed ? "?include_suppressed=true" : "";
   return request<import("@/lib/types").StoredEntity[]>(
-    `/engagements/${slug}/entities/stored`,
+    `/engagements/${slug}/entities/stored${suffix}`,
   );
+}
+
+export function listEntityDuplicateCandidates(
+  slug: string,
+): Promise<import("@/lib/types").EntityDuplicateCandidate[]> {
+  return request<import("@/lib/types").EntityDuplicateCandidate[]>(
+    `/engagements/${slug}/entities/duplicate-candidates`,
+  );
+}
+
+export function createEntityGroup(
+  slug: string,
+  body: {
+    entity_ids: string[];
+    canonical_entity_id?: string;
+    label?: string;
+    reason: string;
+  },
+): Promise<import("@/lib/types").EntityGroup> {
+  return request<import("@/lib/types").EntityGroup>(
+    `/engagements/${slug}/entity-groups`,
+    { method: "POST", body: JSON.stringify(body) },
+  );
+}
+
+export function mergeDeleteEntityGroup(
+  groupId: string,
+  expectedRowVersion: number,
+  reason: string,
+): Promise<import("@/lib/types").EntityGroupMergeDeleteResult> {
+  return request<import("@/lib/types").EntityGroupMergeDeleteResult>(
+    `/entity-groups/${groupId}/merge-delete`,
+    {
+      method: "POST",
+      body: JSON.stringify({ expected_row_version: expectedRowVersion, reason }),
+    },
+  );
+}
+
+export function dissolveEntityGroup(
+  groupId: string,
+  expectedRowVersion: number,
+  reason: string,
+): Promise<Record<string, string>> {
+  return request<Record<string, string>>(`/entity-groups/${groupId}/dissolve`, {
+    method: "POST",
+    body: JSON.stringify({ expected_row_version: expectedRowVersion, reason }),
+  });
+}
+
+export function suppressStoredEntity(
+  entity: import("@/lib/types").StoredEntity,
+  reason: string,
+): Promise<import("@/lib/types").StoredEntity> {
+  return request<import("@/lib/types").StoredEntity>(`/entities/${entity.id}/suppress`, {
+    method: "POST",
+    body: JSON.stringify({ expected_row_version: entity.row_version, reason }),
+  });
+}
+
+export function restoreStoredEntity(
+  entity: import("@/lib/types").StoredEntity,
+  reason: string,
+): Promise<import("@/lib/types").StoredEntity> {
+  return request<import("@/lib/types").StoredEntity>(`/entities/${entity.id}/restore`, {
+    method: "POST",
+    body: JSON.stringify({ expected_row_version: entity.row_version, reason }),
+  });
 }
 
 /**
