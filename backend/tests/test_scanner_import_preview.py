@@ -372,14 +372,26 @@ def test_scanner_preview_rejects_oversized_file_before_parsing(
     db: Session,
     engagement: Engagement,
 ) -> None:
+    # v2.6.1: cap raised to 100 MB; size the payload from the constant
+    # so future bumps only need one edit and the message assertion tracks
+    # the current limit.
+    from app.services.scanner_import import MAX_SCANNER_EXPORT_BYTES
+
     response = client.post(
         f"/engagements/{engagement.slug}/findings/import/nmap/preview",
-        files={"file": ("scan.xml", b"x" * (20 * 1024 * 1024 + 1), "application/xml")},
+        files={
+            "file": (
+                "scan.xml",
+                b"x" * (MAX_SCANNER_EXPORT_BYTES + 1),
+                "application/xml",
+            )
+        },
         headers=_HEADERS,
     )
 
+    mb = MAX_SCANNER_EXPORT_BYTES // (1024 * 1024)
     assert response.status_code == 413
-    assert "20 MB limit" in response.json()["detail"]
+    assert f"{mb} MB limit" in response.json()["detail"]
     assert _write_counts(db, engagement) == (0, 0)
 
 
