@@ -15,6 +15,7 @@ from app.models import (
     AuditLog,
     Engagement,
     EngagementStatus,
+    EngagementWorkState,
     Entity,
     EntityFindingLink,
     EntityGroup,
@@ -432,6 +433,19 @@ def test_entity_disposition_requires_analyst_current_version_and_mutable_engagem
     )
     assert stale.status_code == 409
 
+    engagement.work_state = EngagementWorkState.completed
+    db.commit()
+    completed = client.post(
+        f"/entities/{entity.id}/restore",
+        headers=analyst_headers,
+        json={
+            "expected_row_version": removed.json()["row_version"],
+            "reason": "Completed mutation",
+        },
+    )
+    assert completed.status_code == 409
+
+    engagement.work_state = EngagementWorkState.active
     engagement.status = EngagementStatus.archived
     db.commit()
     archived = client.post(

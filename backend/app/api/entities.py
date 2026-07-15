@@ -24,6 +24,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 
 from app.api.deps import CurrentNonGuestUser, CurrentUser, DbSession
 from app.models import (
@@ -196,7 +197,7 @@ class DarkwebImportResult(BaseModel):
 
 def _engagement_by_slug(session, slug: str) -> Engagement:
     eng = session.execute(select(Engagement).where(Engagement.slug == slug)).scalar_one_or_none()
-    if eng is None:
+    if eng is None or eng.status == EngagementStatus.flushed:
         raise HTTPException(status_code=404, detail=f"engagement '{slug}' not found")
     return eng
 
@@ -330,7 +331,7 @@ def _entities_to_read(session, entities: list[Entity]) -> list[StoredEntityRead]
         .join(EntityGroup, EntityGroup.id == EntityGroupMember.group_id)
         .where(EntityGroupMember.entity_id.in_(refs_by_entity))
     ).all()
-    group_ids = {group_id for _, group_id, _, _ in group_rows}
+    group_ids = {group_id for _, group_id, _, _, _ in group_rows}
     member_counts = dict(
         session.execute(
             select(EntityGroupMember.group_id, func.count(EntityGroupMember.entity_id))
@@ -716,6 +717,7 @@ def import_darkweb(
 def list_stored_entities_endpoint(
     slug: str,
     session: DbSession,
+    _user: CurrentUser,
     type: Annotated[str | None, Query(description="Filter by type.")] = None,
     q: Annotated[
         str | None, Query(description="Substring match on the value.")
@@ -879,7 +881,14 @@ def create_entity_group(
             },
         )
     )
-    session.commit()
+    try:
+        session.commit()
+    except IntegrityError as exc:
+        session.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="an entity is already in a duplicate group; refresh and retry",
+        ) from exc
     session.refresh(group)
     return _group_read(session, group)
 
@@ -891,12 +900,17 @@ def dissolve_entity_group(
     session: DbSession,
     user: CurrentNonGuestUser,
 ) -> dict[str, str]:
-    initial = session.get(EntityGroup, group_id)
-    if initial is None:
+    engagement_id = session.execute(
+        select(EntityGroup.engagement_id).where(EntityGroup.id == group_id)
+    ).scalar_one_or_none()
+    if engagement_id is None:
         raise HTTPException(status_code=404, detail="entity group not found")
-    engagement = _mutable_engagement(session, initial.engagement_id)
+    engagement = _mutable_engagement(session, engagement_id)
     group = session.execute(
-        select(EntityGroup).where(EntityGroup.id == group_id).with_for_update()
+        select(EntityGroup)
+        .where(EntityGroup.id == group_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
     ).scalar_one_or_none()
     if group is None or group.engagement_id != engagement.id:
         raise HTTPException(status_code=404, detail="entity group not found")
@@ -932,12 +946,17 @@ def suppress_entity(
     session: DbSession,
     user: CurrentNonGuestUser,
 ) -> StoredEntityRead:
-    initial = session.get(Entity, entity_id)
-    if initial is None:
+    engagement_id = session.execute(
+        select(Entity.engagement_id).where(Entity.id == entity_id)
+    ).scalar_one_or_none()
+    if engagement_id is None:
         raise HTTPException(status_code=404, detail="stored entity not found")
-    engagement = _mutable_engagement(session, initial.engagement_id)
+    engagement = _mutable_engagement(session, engagement_id)
     entity = session.execute(
-        select(Entity).where(Entity.id == entity_id).with_for_update()
+        select(Entity)
+        .where(Entity.id == entity_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
     ).scalar_one_or_none()
     if entity is None or entity.engagement_id != engagement.id:
         raise HTTPException(status_code=404, detail="stored entity not found")
@@ -974,12 +993,17 @@ def restore_entity(
     session: DbSession,
     user: CurrentNonGuestUser,
 ) -> StoredEntityRead:
-    initial = session.get(Entity, entity_id)
-    if initial is None:
+    engagement_id = session.execute(
+        select(Entity.engagement_id).where(Entity.id == entity_id)
+    ).scalar_one_or_none()
+    if engagement_id is None:
         raise HTTPException(status_code=404, detail="stored entity not found")
-    engagement = _mutable_engagement(session, initial.engagement_id)
+    engagement = _mutable_engagement(session, engagement_id)
     entity = session.execute(
-        select(Entity).where(Entity.id == entity_id).with_for_update()
+        select(Entity)
+        .where(Entity.id == entity_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
     ).scalar_one_or_none()
     if entity is None or entity.engagement_id != engagement.id:
         raise HTTPException(status_code=404, detail="stored entity not found")
