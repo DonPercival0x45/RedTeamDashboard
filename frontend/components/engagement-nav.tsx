@@ -4,38 +4,39 @@ import {
   Activity,
   CalendarDays,
   DollarSign,
-  FileText,
   ListChecks,
   MessageSquare,
   Network,
   Route,
   Target,
-  Wrench,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
+// v2.4.0: Tools tab removed (no longer needed). Report tab removed —
+// report generation moved to /automation?tab=reporting so an analyst
+// can pick which engagement to build the report for.
 export type EngagementView =
   | "findings"
   | "strategy"
   | "entities"
   | "observations"
-  | "report"
   | "costs"
   | "scope"
   | "status"
-  | "contributions"
-  | "tools";
+  | "contributions";
 
+// v2.4.0: reordered to put analyst-forward views first —
+// Scope > Strategy > Findings > Entities > Status is the workflow order
+// analysts move through; the rest (Contributions, Observations, Costs)
+// stack below.
 const ITEMS: { view: EngagementView; label: string; Icon: LucideIcon }[] = [
-  { view: "findings", label: "Findings", Icon: ListChecks },
-  { view: "strategy", label: "Strategy", Icon: Route },
-  { view: "entities", label: "Entities", Icon: Network },
   { view: "scope", label: "Scope", Icon: Target },
+  { view: "strategy", label: "Strategy", Icon: Route },
+  { view: "findings", label: "Findings", Icon: ListChecks },
+  { view: "entities", label: "Entities", Icon: Network },
   { view: "status", label: "Status", Icon: Activity },
-  { view: "tools", label: "Tools", Icon: Wrench },
   { view: "contributions", label: "Contributions", Icon: CalendarDays },
-  { view: "report", label: "Report", Icon: FileText },
   { view: "observations", label: "Observations", Icon: MessageSquare },
   { view: "costs", label: "Costs", Icon: DollarSign },
 ];

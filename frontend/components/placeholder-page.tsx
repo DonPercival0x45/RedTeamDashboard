@@ -45,9 +45,11 @@ export function PlaceholderPage({
 }) {
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
-      </div>
+      {title && (
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
+        </div>
+      )}
       <section className="rounded-lg border border-border bg-card/40 p-8">
         <div className="mx-auto flex max-w-md flex-col items-center gap-4 text-center">
           <pre

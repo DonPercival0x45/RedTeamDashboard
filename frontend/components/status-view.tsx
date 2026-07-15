@@ -33,6 +33,7 @@ import {
   XCircle,
   type LucideIcon,
 } from "lucide-react";
+import { AttributionTable } from "@/components/attribution-table";
 import { DateTime } from "@/components/date-time";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -165,10 +166,8 @@ export function summarizeEvent(event: RunEvent): string {
 
 export function StatusView({
   slug,
-  events = [],
 }: {
   slug: string;
-  events?: LoggedEvent[];
 }) {
   // v1.0.0: react-query owns the fetch + 2s polling + focus revalidation.
   // The old useEffect + setInterval + manual reload is gone; the useQuery
@@ -227,20 +226,6 @@ export function StatusView({
       ? (initialRange as DateRange)
       : "all",
   );
-  // v0.8.2: Live events panel (folded in from the standalone Event log).
-  // Default collapsed so the box grid stays the focus.
-  const [liveEventsOpen, setLiveEventsOpen] = useState(false);
-  const eventsScrollRef = useRef<HTMLUListElement | null>(null);
-
-  // Auto-scroll the events panel to the bottom whenever a new event lands
-  // and the panel is open. Doing this in an effect keeps the scroll
-  // logic out of the render path.
-  useEffect(() => {
-    if (!liveEventsOpen) return;
-    const el = eventsScrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [events.length, liveEventsOpen]);
-
   const onRetry = useCallback(
     async (entity: StatusEntity) => {
       setRetryingId(entity.id);
@@ -656,78 +641,10 @@ export function StatusView({
         </div>
       )}
 
-      {/* v0.8.2: Live events panel (replaces the standalone Event log
-          card at the bottom of the engagement page). Collapsed by
-          default; expand to see the SSE tail. */}
-      <div className="rounded-lg border border-border bg-card/40">
-        <button
-          type="button"
-          onClick={() => setLiveEventsOpen((v) => !v)}
-          className="flex w-full items-center justify-between gap-2 px-4 py-3 text-left"
-          aria-expanded={liveEventsOpen}
-        >
-          <div className="flex items-center gap-2">
-            {liveEventsOpen ? (
-              <ChevronDown className="h-4 w-4 text-muted-foreground" />
-            ) : (
-              <ChevronRight className="h-4 w-4 text-muted-foreground" />
-            )}
-            <span className="text-sm font-medium">Live events</span>
-            <span className="text-xs text-muted-foreground">
-              ({events.length})
-            </span>
-          </div>
-          <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
-            SSE tail · runs:&lt;eid&gt;:events
-          </span>
-        </button>
-        {liveEventsOpen && (
-          <div className="border-t border-border p-3">
-            {events.length === 0 ? (
-              <p className="text-sm text-muted-foreground">
-                Waiting for events. Start a run to populate.
-              </p>
-            ) : (
-              <ul
-                ref={eventsScrollRef}
-                className="max-h-72 space-y-1.5 overflow-y-auto font-mono text-xs"
-              >
-                {events
-                  .slice()
-                  .reverse()
-                  .map((entry) => (
-                    <li
-                      key={entry.sseId}
-                      className="flex items-start gap-2 rounded border-l-2 border-border bg-secondary/30 px-2 py-1.5"
-                    >
-                      <Badge
-                        variant="outline"
-                        className={cn(
-                          "shrink-0 text-[10px]",
-                          EVENT_COLORS[entry.event.type] ?? "",
-                        )}
-                      >
-                        {entry.event.type}
-                      </Badge>
-                      {entry.event.type === "finding.created" ? (
-                        <Link
-                          href={`/e/findings/${entry.event.finding_id}?slug=${encodeURIComponent(slug)}`}
-                          className="break-all rounded-sm text-muted-foreground hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                        >
-                          {summarizeEvent(entry.event)}
-                        </Link>
-                      ) : (
-                        <span className="break-all text-muted-foreground">
-                          {summarizeEvent(entry.event)}
-                        </span>
-                      )}
-                    </li>
-                  ))}
-              </ul>
-            )}
-          </div>
-        )}
-      </div>
+      {/* v2.4.0: attribution — who used what (agent × model × user)
+          for this engagement. Lives below the task/approval tables so
+          the primary Status content isn't pushed down. */}
+      <AttributionTable slug={slug} />
 
       {/* Detail popup */}
       {expanded && (

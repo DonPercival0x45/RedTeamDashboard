@@ -27,27 +27,19 @@ import type { EngagementTimeFrame, ScopeKind } from "@/lib/types";
 
 const KINDS: ScopeKind[] = ["domain", "cidr", "ip", "url"];
 
-const TIME_FRAMES: { value: EngagementTimeFrame; label: string; hint: string }[] = [
-  {
-    value: "point_in_time",
-    label: "Point in time",
-    hint: "Single one-shot pass. No recurring scans planned.",
-  },
-  {
-    value: "point_in_time_continuous",
-    label: "Point in time, continuous",
-    hint: "One window, but stays open for follow-up scans as findings accrue.",
-  },
-  {
-    value: "repeatable",
-    label: "Repeatable",
-    hint: "Ongoing engagement that re-runs on the analyst's cadence.",
-  },
-  {
-    value: "custom",
-    label: "Custom window",
-    hint: "Fixed start and end dates.",
-  },
+// v2.4.0: Nessus-style schedule picker. The UI collects frequency +
+// date + time + optional end; the submit path maps that onto the
+// existing EngagementTimeFrame enum (no migration). Chosen time is
+// preserved as an ISO stamp in the description so the analyst sees it
+// on the workspace header until we ship a first-class scheduled_at
+// column.
+type Frequency = "one_time" | "daily" | "weekly" | "monthly";
+
+const FREQUENCIES: { value: Frequency; label: string }[] = [
+  { value: "one_time", label: "One time" },
+  { value: "daily", label: "Recurring — daily" },
+  { value: "weekly", label: "Recurring — weekly" },
+  { value: "monthly", label: "Recurring — monthly" },
 ];
 
 interface ScopeDraft {
@@ -67,8 +59,10 @@ export default function NewEngagementPage() {
   const [value, setValue] = useState("");
   const [isExclusion, setIsExclusion] = useState(false);
 
-  const [timeFrame, setTimeFrame] = useState<EngagementTimeFrame>("point_in_time");
+  // v2.4.0 Nessus-style schedule state
+  const [frequency, setFrequency] = useState<Frequency>("one_time");
   const [startDate, setStartDate] = useState("");
+  const [startTime, setStartTime] = useState("09:00");
   const [endDate, setEndDate] = useState("");
 
   const [busy, setBusy] = useState(false);
@@ -103,25 +97,50 @@ export default function NewEngagementPage() {
       setError("Name is required.");
       return;
     }
-    if (timeFrame === "custom") {
-      if (!startDate || !endDate) {
-        setError("Custom window requires both start and end dates.");
-        return;
-      }
-      if (endDate < startDate) {
-        setError("End date can't be before start date.");
-        return;
-      }
+    if (!startDate) {
+      setError("Start date is required.");
+      return;
     }
+    if (endDate && endDate < startDate) {
+      setError("End date can't be before start date.");
+      return;
+    }
+
+    // Map Nessus-style schedule state onto the existing
+    // EngagementTimeFrame enum so we don't need a schema migration:
+    //   - recurring (any cadence) → 'repeatable'
+    //   - one-time WITH end date  → 'custom' (fixed window)
+    //   - one-time WITHOUT end    → 'point_in_time'
+    // The exact HH:MM + cadence gets appended to description as a
+    // human-readable "Scheduled: …" line so the analyst still sees it
+    // in the engagement header until we ship a first-class schedule
+    // column.
+    let timeFrame: EngagementTimeFrame;
+    if (frequency !== "one_time") {
+      timeFrame = "repeatable";
+    } else if (endDate) {
+      timeFrame = "custom";
+    } else {
+      timeFrame = "point_in_time";
+    }
+    const cadenceLabel =
+      frequency === "one_time" ? "one time" : `recurring ${frequency}`;
+    const scheduleLine = `Scheduled: ${startDate} ${startTime} · ${cadenceLabel}${
+      endDate ? ` · through ${endDate}` : ""
+    }`;
+    const bodyDescription = [description.trim(), scheduleLine]
+      .filter(Boolean)
+      .join("\n\n");
+
     setBusy(true);
     setError(null);
     try {
       const eng = await createEngagement({
         name: name.trim(),
-        description: description.trim() || undefined,
+        description: bodyDescription || undefined,
         time_frame: timeFrame,
-        start_date: timeFrame === "custom" ? startDate : null,
-        end_date: timeFrame === "custom" ? endDate : null,
+        start_date: startDate,
+        end_date: endDate || null,
         initial_scope: scope.map((item) => ({
           kind: item.kind,
           value: item.value,
@@ -192,55 +211,78 @@ export default function NewEngagementPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Time frame</CardTitle>
+          <CardTitle className="text-base">Schedule</CardTitle>
           <CardDescription>
-            How the engagement is scheduled. Metadata only — used in the
-            engagement header and report.
+            When the engagement is meant to run. If the start date is in the
+            future the engagement stays{" "}
+            <span className="font-medium text-amber-500">pending</span> until
+            that day.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="space-y-2">
-            <Label htmlFor="time_frame">Type</Label>
+            <Label htmlFor="frequency">Frequency</Label>
             <select
-              id="time_frame"
-              value={timeFrame}
-              onChange={(e) => setTimeFrame(e.target.value as EngagementTimeFrame)}
+              id="frequency"
+              value={frequency}
+              onChange={(e) => setFrequency(e.target.value as Frequency)}
               className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
-              {TIME_FRAMES.map((tf) => (
-                <option key={tf.value} value={tf.value}>
-                  {tf.label}
+              {FREQUENCIES.map((f) => (
+                <option key={f.value} value={f.value}>
+                  {f.label}
                 </option>
               ))}
             </select>
-            <p className="text-xs text-muted-foreground">
-              {TIME_FRAMES.find((tf) => tf.value === timeFrame)?.hint}
-            </p>
           </div>
-          {timeFrame === "custom" && (
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="space-y-2">
-                <Label htmlFor="start_date">Start date</Label>
-                <Input
-                  id="start_date"
-                  type="date"
-                  value={startDate}
-                  onChange={(e) => setStartDate(e.target.value)}
-                  required
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="end_date">End date</Label>
-                <Input
-                  id="end_date"
-                  type="date"
-                  value={endDate}
-                  onChange={(e) => setEndDate(e.target.value)}
-                  required
-                />
-              </div>
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-2">
+              <Label htmlFor="start_date">
+                {frequency === "one_time" ? "Start date" : "First run date"}
+              </Label>
+              <Input
+                id="start_date"
+                type="date"
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value)}
+                required
+              />
             </div>
-          )}
+            <div className="space-y-2">
+              <Label htmlFor="start_time">Time</Label>
+              <Input
+                id="start_time"
+                type="time"
+                value={startTime}
+                onChange={(e) => setStartTime(e.target.value)}
+                required
+              />
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="end_date">
+              {frequency === "one_time"
+                ? "End date (optional — leave blank for a single-day pass)"
+                : "End date (optional — leave blank for open-ended)"}
+            </Label>
+            <Input
+              id="end_date"
+              type="date"
+              value={endDate}
+              onChange={(e) => setEndDate(e.target.value)}
+              min={startDate || undefined}
+            />
+          </div>
+
+          <p className="text-xs text-muted-foreground">
+            {frequency === "one_time"
+              ? endDate
+                ? `Single pass window ${startDate || "?"} → ${endDate}.`
+                : `Single-day pass on ${startDate || "?"}.`
+              : `Recurs ${frequency}${endDate ? ` until ${endDate}` : " (open-ended)"} starting ${startDate || "?"}.`}
+          </p>
         </CardContent>
       </Card>
 

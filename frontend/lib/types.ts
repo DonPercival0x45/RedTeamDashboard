@@ -64,6 +64,9 @@ export interface Engagement {
   // payloads from before the field shipped don't break the type.
   scope_count?: number;
   exclusion_count?: number;
+  // v2.4.0: whether the engagement has a `state = current` strategy
+  // revision. Used to derive isPendingEngagement() on the frontend.
+  has_strategy?: boolean;
 }
 
 export interface ScopeItem {

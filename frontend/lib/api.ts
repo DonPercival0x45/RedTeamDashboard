@@ -731,6 +731,49 @@ export function listTasks(slug: string, status?: TaskStatus): Promise<Task[]> {
   return request<Task[]>(`/engagements/${encodeURIComponent(slug)}/tasks${query}`);
 }
 
+// v2.4.0 — cross-engagement view of in-flight tasks for the Automation
+// Running-jobs banner. Backend already filters to
+// pending/dispatched/running and joins in engagement slug + name so the
+// UI can label rows without a second fetch per task.
+export interface RunningTask {
+  id: string;
+  engagement_id: string;
+  engagement_slug: string;
+  engagement_name: string;
+  title: string;
+  kind: string;
+  status: string;
+  dispatched_at: string | null;
+  created_at: string;
+}
+
+export function listRunningTasks(): Promise<RunningTask[]> {
+  return request<RunningTask[]>("/tasks/running");
+}
+
+// v2.4.0 — Status-tab attribution table. Backend groups agent_executions
+// by (acting_user_id, agent, model) so the analyst can see who spent
+// what and on which model without opening the Costs tab.
+export interface AttributionRow {
+  user_id: string | null;
+  user_display: string | null;
+  agent: string;
+  model_provider: string | null;
+  model_name: string | null;
+  executions: number;
+  tokens_in: number;
+  tokens_out: number;
+  cost_usd: number;
+}
+
+export function listEngagementAttribution(
+  slug: string,
+): Promise<AttributionRow[]> {
+  return request<AttributionRow[]>(
+    `/engagements/${encodeURIComponent(slug)}/attribution`,
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Costs (Phase 11)
 // ---------------------------------------------------------------------------

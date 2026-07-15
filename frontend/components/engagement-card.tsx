@@ -26,7 +26,17 @@ function statusVariant(status: Engagement["status"]) {
   return "outline" as const;
 }
 
-export function EngagementCard({ eng }: { eng: Engagement }) {
+// v2.4.0: `hideStatusBadge` lets callers (Pending banner) suppress the
+// default status pill — pending engagements are `status = active` in
+// the DB but the pill would contradict the pending framing on the
+// card, and the surrounding banner already labels the group.
+export function EngagementCard({
+  eng,
+  hideStatusBadge = false,
+}: {
+  eng: Engagement;
+  hideStatusBadge?: boolean;
+}) {
   const qc = useQueryClient();
   const [expanded, setExpanded] = useState(false);
   const [kind, setKind] = useState<ScopeKind>("domain");
@@ -79,7 +89,9 @@ export function EngagementCard({ eng }: { eng: Engagement }) {
         <h2 className="font-medium leading-tight group-hover:text-foreground">
           {eng.name}
         </h2>
-        <Badge variant={statusVariant(eng.status)}>{eng.status}</Badge>
+        {!hideStatusBadge && (
+          <Badge variant={statusVariant(eng.status)}>{eng.status}</Badge>
+        )}
       </div>
       <p className="relative mt-2 font-mono text-xs text-muted-foreground">
         {eng.slug}

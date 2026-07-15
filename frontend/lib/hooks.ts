@@ -66,7 +66,9 @@ import {
   listProviderKeys,
   listOrchestratorTools,
   listPendingApprovals,
+  listEngagementAttribution,
   listRoadmapSuggestions,
+  listRunningTasks,
   listScope,
   listStoredEntities,
   listTasks,
@@ -157,6 +159,9 @@ export const qk = {
   orchestratorTools: () => ["orchestrator-tools"] as const,
   toolInvocations: (slug: string) =>
     ["tool-invocations", slug] as const,
+  runningTasks: () => ["running-tasks"] as const,
+  engagementAttribution: (slug: string) =>
+    ["engagement-attribution", slug] as const,
 };
 
 export function useEngagements() {
@@ -196,6 +201,31 @@ export function useTasks(slug: string, status?: TaskStatus) {
         ? 4000
         : false;
     },
+  });
+}
+
+// v2.4.0 — cross-engagement running tasks for the Automation running-jobs
+// banner. Polls at 4s while any in-flight tasks exist; drops to focus-only
+// refresh once the queue is empty.
+export function useRunningTasks() {
+  return useQuery({
+    queryKey: qk.runningTasks(),
+    queryFn: () => listRunningTasks(),
+    refetchInterval: (query) => {
+      const rows = query.state.data;
+      return Array.isArray(rows) && rows.length > 0 ? 4000 : false;
+    },
+  });
+}
+
+// v2.4.0 — Status-tab attribution table. Data is small (one row per
+// distinct user/agent/model tuple for the engagement) so we don't
+// bother with polling — window-focus refresh is enough.
+export function useEngagementAttribution(slug: string) {
+  return useQuery({
+    queryKey: qk.engagementAttribution(slug),
+    queryFn: () => listEngagementAttribution(slug),
+    enabled: Boolean(slug),
   });
 }
 
@@ -882,16 +912,6 @@ export function prefetchEngagementView(
         queryFn: () => getEngagementStatus(slug),
       });
       return;
-    case "tools":
-      void qc.prefetchQuery({
-        queryKey: qk.toolInvocations(slug),
-        queryFn: () => listToolInvocations(slug),
-      });
-      void qc.prefetchQuery({
-        queryKey: qk.tools({ status: "approved" }),
-        queryFn: () => listTools({ status: "approved" }),
-      });
-      return;
     case "costs":
       void qc.prefetchQuery({
         queryKey: qk.engagementCosts(slug),
@@ -900,9 +920,8 @@ export function prefetchEngagementView(
       return;
     case "strategy":
     case "contributions":
-    case "report":
       // Strategy loads a coordinated dossier; contributions depends on filter
-      // state; report has no standalone prefetch entry.
+      // state.
       return;
   }
 }

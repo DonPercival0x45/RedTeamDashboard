@@ -134,6 +134,11 @@ class EngagementRead(BaseModel):
     # cleanly).
     scope_count: int = 0
     exclusion_count: int = 0
+    # v2.4.0: whether the engagement has a `state = current` strategy
+    # revision. Frontend combines this with scope_count + start_date to
+    # decide whether the engagement should render as "pending" (setup
+    # not complete) rather than "active" on the list page.
+    has_strategy: bool = False
 
 
 class ScopeItemCreate(BaseModel):

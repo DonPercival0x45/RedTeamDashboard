@@ -207,6 +207,30 @@ def _populate_scope_counts(session: DbSession, reads: list[EngagementRead]) -> l
     return reads
 
 
+def _populate_has_strategy(session: DbSession, reads: list[EngagementRead]) -> list[EngagementRead]:
+    """v2.4.0: bulk fill ``has_strategy`` — true when the engagement has a
+    ``state = current`` row in ``engagement_strategy_revisions``. Frontend
+    combines this with ``scope_count`` + ``start_date`` to derive whether
+    the engagement should render as "pending" (setup incomplete) instead
+    of "active" on the list page. Single grouped query so this is cheap
+    on the list endpoint. Uses raw SQL against
+    ``engagement_strategy_revisions`` so the engagement schema doesn't
+    need to import the strategy model tree."""
+    if not reads:
+        return reads
+    engagement_ids = [str(r.id) for r in reads]
+    rows = session.execute(
+        text(
+            "SELECT engagement_id FROM engagement_strategy_revisions "
+            "WHERE state = 'current' AND engagement_id = ANY(:ids)"
+        ).bindparams(ids=engagement_ids)
+    ).all()
+    have = {row[0] for row in rows}
+    for r in reads:
+        r.has_strategy = r.id in have
+    return reads
+
+
 def _build_export_payload(
     session: DbSession,
     eng: Engagement,
@@ -709,6 +733,7 @@ def create_engagement(
     read = EngagementRead.model_validate(eng)
     read.scope_count = include_count
     read.exclusion_count = exclusion_count
+    _populate_has_strategy(session, [read])
     return read
 
 
@@ -726,7 +751,9 @@ def list_engagements(
     stmt = stmt.order_by(Engagement.created_at.desc())
     rows = list(session.execute(stmt).scalars())
     reads = [EngagementRead.model_validate(r) for r in rows]
-    return _populate_scope_counts(session, reads)
+    _populate_scope_counts(session, reads)
+    _populate_has_strategy(session, reads)
+    return reads
 
 
 @router.get("/engagements/{slug}", response_model=EngagementRead)
@@ -734,6 +761,7 @@ def get_engagement(slug: str, session: DbSession) -> EngagementRead:
     eng = _get_engagement_or_404(session, slug)
     read = EngagementRead.model_validate(eng)
     read.scope_count, read.exclusion_count = _scope_counts_for(session, eng.id)
+    _populate_has_strategy(session, [read])
     return read
 
 
@@ -780,6 +808,7 @@ def update_engagement(
     session.refresh(eng)
     read = EngagementRead.model_validate(eng)
     read.scope_count, read.exclusion_count = _scope_counts_for(session, eng.id)
+    _populate_has_strategy(session, [read])
     return read
 
 

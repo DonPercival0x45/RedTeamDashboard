@@ -30,6 +30,7 @@ from decimal import Decimal
 from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Query, Response
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.orm import Session, object_session
 
@@ -52,9 +53,11 @@ from app.models import (
     Suggestion,
     SuggestionStatus,
     Task,
+    TaskKind,
     TaskStatus,
     Tool,
     ToolInvocation,
+    User,
 )
 from app.schemas.cost import (
     AgentCost,
@@ -912,6 +915,66 @@ def list_tasks(
     return list(session.execute(stmt).scalars())
 
 
+class RunningTaskRead(BaseModel):
+    """Cross-engagement view of currently in-flight tasks for the Automation
+    Running-jobs banner. Includes engagement slug/name so the banner can
+    render without a second lookup per row.
+
+    NOTE: field types use `uuid.UUID` (not `UUID`) so pydantic's
+    forward-ref resolver can find the type in module globals under
+    `from __future__ import annotations`. Bare `UUID` fails openapi
+    build with `TypeAdapter[...] is not fully defined`.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    engagement_id: uuid.UUID
+    engagement_slug: str
+    engagement_name: str
+    title: str
+    kind: TaskKind
+    status: TaskStatus
+    dispatched_at: datetime | None
+    created_at: datetime
+
+
+@router.get("/tasks/running", response_model=list[RunningTaskRead])
+def list_running_tasks(
+    session: DbSession,
+    _user: CurrentUser,
+) -> list[RunningTaskRead]:
+    """All in-flight tasks across every engagement — powers the Automation
+    Running-jobs banner. Includes pending (awaiting dispatch), dispatched
+    (worker enqueued), and running (worker consumed) states."""
+
+    stmt = (
+        select(Task, Engagement.slug, Engagement.name)
+        .join(Engagement, Engagement.id == Task.engagement_id)
+        .where(
+            Task.status.in_(
+                (TaskStatus.pending, TaskStatus.dispatched, TaskStatus.running)
+            )
+        )
+        .order_by(Task.dispatched_at.desc().nulls_last(), Task.created_at.desc())
+    )
+    rows = session.execute(stmt).all()
+    return [
+        RunningTaskRead(
+            id=task.id,
+            engagement_id=task.engagement_id,
+            engagement_slug=slug,
+            engagement_name=name,
+            title=task.title,
+            kind=task.kind,
+            status=task.status,
+            dispatched_at=task.dispatched_at,
+            created_at=task.created_at,
+        )
+        for task, slug, name in rows
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Costs (Phase 11) — per-engagement LLM spend roll-up over agent_executions
 # ---------------------------------------------------------------------------
@@ -1003,6 +1066,97 @@ def engagement_costs(
         unpriced_models=sorted(unpriced),
         tools=tool_summary,
     )
+
+
+class AttributionRow(BaseModel):
+    """One (user, agent, model) bucket for the Status-tab attribution
+    table. `user_display` is `null` for system-triggered runs (planner,
+    scheduled tool-reviews, etc.) where no `acting_user_id` was stamped
+    on the AgentExecution input envelope."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    user_id: str | None
+    user_display: str | None
+    agent: AgentName
+    model_provider: str | None
+    model_name: str | None
+    executions: int
+    tokens_in: int
+    tokens_out: int
+    cost_usd: float
+
+
+@router.get(
+    "/engagements/{slug}/attribution",
+    response_model=list[AttributionRow],
+)
+def engagement_attribution(
+    slug: str,
+    session: DbSession,
+    _user: CurrentUser,
+) -> list[AttributionRow]:
+    """v2.4.0: 'Who used what' — group AgentExecution rows for this
+    engagement by (acting_user_id, agent, model_provider, model_name)
+    and sum tokens + cost. Powers the Status-tab attribution table.
+    Frontend does the sort so the analyst can pivot Model/Agent/User/Cost
+    without a round-trip."""
+    eng = _engagement_by_slug(session, slug)
+    rows = list(
+        session.execute(
+            select(AgentExecution).where(AgentExecution.engagement_id == eng.id)
+        ).scalars()
+    )
+
+    buckets: dict[tuple[str | None, AgentName, str | None, str | None], dict] = {}
+    user_ids: set[str] = set()
+    for ex in rows:
+        acting = (ex.input or {}).get("acting_user_id")
+        acting_str = str(acting) if acting else None
+        if acting_str:
+            user_ids.add(acting_str)
+        key = (acting_str, ex.agent, ex.model_provider, ex.model_name)
+        acc = buckets.setdefault(
+            key,
+            {"executions": 0, "tokens_in": 0, "tokens_out": 0, "cost": Decimal(0)},
+        )
+        used_in = ex.tokens_in or 0
+        used_out = ex.tokens_out or 0
+        derived = pricing.cost_usd(
+            ex.model_name, used_in, used_out, ex.model_provider
+        )
+        acc["executions"] += 1
+        acc["tokens_in"] += used_in
+        acc["tokens_out"] += used_out
+        acc["cost"] += derived if derived is not None else Decimal(0)
+
+    # Resolve user_id → display name in one query so we don't do N
+    # lookups per row.
+    display_by_id: dict[str, str] = {}
+    if user_ids:
+        for user_row in session.execute(
+            select(User).where(User.id.in_([uuid.UUID(u) for u in user_ids]))
+        ).scalars():
+            display_by_id[str(user_row.id)] = (
+                user_row.display_name or user_row.email or str(user_row.id)
+            )
+
+    return [
+        AttributionRow(
+            user_id=key[0],
+            user_display=display_by_id.get(key[0]) if key[0] else None,
+            agent=key[1],
+            model_provider=key[2],
+            model_name=key[3],
+            executions=acc["executions"],
+            tokens_in=acc["tokens_in"],
+            tokens_out=acc["tokens_out"],
+            cost_usd=float(acc["cost"]),
+        )
+        for key, acc in sorted(
+            buckets.items(), key=lambda kv: kv[1]["cost"], reverse=True
+        )
+    ]
 
 
 def _summarise_tool_invocations(
