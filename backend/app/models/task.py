@@ -63,6 +63,12 @@ class Task(Base, TimestampMixin):
         nullable=True,
         index=True,
     )
+    work_item_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("work_items.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     title: Mapped[str] = mapped_column(String(300), nullable=False)
     kind: Mapped[TaskKind] = mapped_column(
         Enum(TaskKind, name="task_kind"), nullable=False

@@ -88,6 +88,10 @@ class StatusEntity(BaseModel):
     started_at: datetime | None = None
     completed_at: datetime | None = None
     retryable: bool = False
+    # Typed lineage for navigation. Consumers must not parse generic log JSON.
+    finding_id: UUID | None = None
+    work_item_id: UUID | None = None
+    task_id: UUID | None = None
     log: dict[str, Any]
     history: list[StatusTransition] = []
     # v1.2.0: display-only short slug for cross-portal run tracking.

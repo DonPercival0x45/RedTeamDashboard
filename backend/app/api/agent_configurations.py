@@ -18,6 +18,7 @@ Per-user isolation is enforced at the query layer: every row is filtered
 by ``user_id = current_user.id``. Configs are never visible across
 analysts.
 """
+
 from __future__ import annotations
 
 from datetime import UTC, datetime
@@ -44,23 +45,20 @@ router = APIRouter()
 # Roles this bundle exposes. Storage type is the wider AgentName enum.
 _ROLES: tuple[AgentName, ...] = (
     AgentName.strategic,
+    AgentName.engagement_strategist,
     AgentName.tactical,
     AgentName.correlate,
 )
 
 
 def _engagement_by_slug(session: Session, slug: str) -> Engagement:
-    eng = session.execute(
-        select(Engagement).where(Engagement.slug == slug)
-    ).scalar_one_or_none()
+    eng = session.execute(select(Engagement).where(Engagement.slug == slug)).scalar_one_or_none()
     if eng is None:
         raise HTTPException(status_code=404, detail=f"engagement '{slug}' not found")
     return eng
 
 
-def _rows_for_user(
-    session: Session, user_id
-) -> dict[tuple[str, str], AgentModelPreference]:
+def _rows_for_user(session: Session, user_id) -> dict[tuple[str, str], AgentModelPreference]:
     """Map ``(engagement_slug, role) -> preference row`` for the user."""
     rows = session.execute(
         select(AgentModelPreference, Engagement.slug)
@@ -83,9 +81,7 @@ def _grouped(
     return out
 
 
-def _to_read(
-    slug: str, by_role: dict[str, AgentModelPreference]
-) -> AgentConfigRead:
+def _to_read(slug: str, by_role: dict[str, AgentModelPreference]) -> AgentConfigRead:
     latest = max(
         (r.updated_at for r in by_role.values() if r.updated_at),
         default=None,
@@ -94,15 +90,12 @@ def _to_read(
     return AgentConfigRead(
         engagement_id=first.engagement_id,
         engagement_slug=slug,
-        strategic=(
-            by_role["strategic"].model if "strategic" in by_role else None
+        strategic=(by_role["strategic"].model if "strategic" in by_role else None),
+        engagement_strategist=(
+            by_role["engagement_strategist"].model if "engagement_strategist" in by_role else None
         ),
-        tactical=(
-            by_role["tactical"].model if "tactical" in by_role else None
-        ),
-        correlate=(
-            by_role["correlate"].model if "correlate" in by_role else None
-        ),
+        tactical=(by_role["tactical"].model if "tactical" in by_role else None),
+        correlate=(by_role["correlate"].model if "correlate" in by_role else None),
         updated_at=latest,
     )
 
@@ -178,6 +171,7 @@ def upsert_agent_configuration(
     sent = body.model_fields_set
     mapping = {
         AgentName.strategic: body.strategic,
+        AgentName.engagement_strategist: body.engagement_strategist,
         AgentName.tactical: body.tactical,
         AgentName.correlate: body.correlate,
     }
@@ -207,6 +201,7 @@ def upsert_agent_configuration(
             engagement_id=eng.id,
             engagement_slug=slug,
             strategic=None,
+            engagement_strategist=None,
             tactical=None,
             correlate=None,
             updated_at=None,
@@ -237,9 +232,7 @@ def clear_agent_configuration(
 
 
 @router.get("/agent-configurations/export")
-def export_agent_configurations(
-    session: DbSession, user: CurrentNonGuestUser
-) -> Response:
+def export_agent_configurations(session: DbSession, user: CurrentNonGuestUser) -> Response:
     """Download every config for the current user as a JSON file."""
     rows = _rows_for_user(session, user.id)
     grouped = _grouped(rows)
@@ -247,7 +240,12 @@ def export_agent_configurations(
     configurations: dict[str, dict[str, str]] = {}
     for slug, by_role in grouped.items():
         payload: dict[str, str] = {}
-        for role_key in ("strategic", "tactical", "correlate"):
+        for role_key in (
+            "strategic",
+            "engagement_strategist",
+            "tactical",
+            "correlate",
+        ):
             if role_key in by_role:
                 payload[role_key] = by_role[role_key].model
         if payload:
@@ -258,8 +256,7 @@ def export_agent_configurations(
         exported_at=datetime.now(UTC),
         exported_by_user_id=user.id,
         configurations={
-            slug: AgentConfigRolePayload(**payload)
-            for slug, payload in configurations.items()
+            slug: AgentConfigRolePayload(**payload) for slug, payload in configurations.items()
         },
     )
     body = export.model_dump_json(indent=2)
@@ -267,16 +264,12 @@ def export_agent_configurations(
         content=body,
         media_type="application/json",
         headers={
-            "Content-Disposition": (
-                'attachment; filename="rtd-agent-configurations.json"'
-            ),
+            "Content-Disposition": ('attachment; filename="rtd-agent-configurations.json"'),
         },
     )
 
 
-@router.post(
-    "/agent-configurations/import", response_model=AgentConfigImportResult
-)
+@router.post("/agent-configurations/import", response_model=AgentConfigImportResult)
 def import_agent_configurations(
     session: DbSession,
     user: CurrentNonGuestUser,
@@ -287,9 +280,9 @@ def import_agent_configurations(
     engagements that don't exist locally."""
     # Look up every referenced slug once.
     slugs = list(payload.configurations.keys())
-    engagements = session.execute(
-        select(Engagement).where(Engagement.slug.in_(slugs))
-    ).scalars().all()
+    engagements = (
+        session.execute(select(Engagement).where(Engagement.slug.in_(slugs))).scalars().all()
+    )
     slug_to_eng = {e.slug: e for e in engagements}
 
     applied: list[str] = []
@@ -302,6 +295,7 @@ def import_agent_configurations(
 
         mapping = {
             AgentName.strategic: role_payload.strategic,
+            AgentName.engagement_strategist: role_payload.engagement_strategist,
             AgentName.tactical: role_payload.tactical,
             AgentName.correlate: role_payload.correlate,
         }

@@ -5,6 +5,7 @@ analyst's BYO LLM for a narrative response. It deliberately does NOT run tools,
 mutate findings, or create tasks. Phase 3 will add consent-gated action bubbles
 that route approvals through existing suggestion/task/finding APIs.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -215,9 +216,7 @@ def build_finding_dossier(session: Session, finding: Finding) -> dict[str, Any]:
             "details": finding.details,
             "tags": finding.tags or [],
             "created_at": finding.created_at.isoformat(),
-            "observed_at": finding.observed_at.isoformat()
-            if finding.observed_at
-            else None,
+            "observed_at": finding.observed_at.isoformat() if finding.observed_at else None,
         },
         "activity": build_finding_activity(session, finding.id)[:25],
         "scope": [
@@ -318,9 +317,7 @@ def _action_ledger_line(
     return f"  • [{status}{outcome}] {typ}: {title}"
 
 
-def _conversation_history_prompt(
-    session: Session, messages: list[ConversationMessage]
-) -> str:
+def _conversation_history_prompt(session: Session, messages: list[ConversationMessage]) -> str:
     clipped = messages[-12:]
 
     # Batch the Task + produced-findings lookups ONCE instead of per action
@@ -345,10 +342,7 @@ def _conversation_history_prompt(
     task_by_id: dict[uuid.UUID, Task] = {}
     if task_ids:
         task_by_id = {
-            t.id: t
-            for t in session.execute(
-                select(Task).where(Task.id.in_(task_ids))
-            ).scalars()
+            t.id: t for t in session.execute(select(Task).where(Task.id.in_(task_ids))).scalars()
         }
     findings_by_run: dict[str, int] = {}
     if run_ids:
@@ -367,17 +361,11 @@ def _conversation_history_prompt(
         if m.content.strip():
             lines.append(f"{m.role.upper()}: {m.content[:1500]}")
         payload = m.action_payload if isinstance(m.action_payload, dict) else {}
-        actions = (
-            payload.get("actions")
-            if isinstance(payload.get("actions"), list)
-            else []
-        )
+        actions = payload.get("actions") if isinstance(payload.get("actions"), list) else []
         for a in actions:
             if isinstance(a, dict):
                 lines.append(
-                    _action_ledger_line(
-                        a, task_by_id=task_by_id, findings_by_run=findings_by_run
-                    )
+                    _action_ledger_line(a, task_by_id=task_by_id, findings_by_run=findings_by_run)
                 )
     return "\n".join(lines)
 
@@ -438,13 +426,15 @@ def _parse_assistant_payload(
         # Model returned non-JSON (or an empty/array response like "[]").
         # Don't store a bare "[]"/empty string as the bubble — surface a
         # graceful note + still offer default actions on the first turn.
-        body = text if text and text not in ("[]", "{}") else (
-            "I couldn't generate a structured response that turn. "
-            "Try rephrasing, or ask me to suggest agent actions for this finding."
+        body = (
+            text
+            if text and text not in ("[]", "{}")
+            else (
+                "I couldn't generate a structured response that turn. "
+                "Try rephrasing, or ask me to suggest agent actions for this finding."
+            )
         )
-        return body, {
-            "actions": _default_agent_actions(finding) if allow_defaults else []
-        }
+        return body, {"actions": _default_agent_actions(finding) if allow_defaults else []}
 
     answer = str(parsed.get("answer") or "").strip() or text
     actions = _normalize_actions(parsed.get("actions"))
@@ -499,8 +489,7 @@ def _default_agent_actions(finding: Finding) -> list[dict[str, Any]]:
             "type": "run_tool",
             "title": "Probe HTTP surface",
             "description": (
-                "Dispatch the built-in httpx_probe agent tool against the "
-                "finding target."
+                "Dispatch the built-in httpx_probe agent tool against the finding target."
             ),
             "params": {
                 "tool": "httpx_probe",
@@ -652,16 +641,12 @@ def generate_finding_chat_reply(
         # next call almost always returns the full answer.
         if (first_tokens_out or 0) < 8:
             retry_count = 1
-            response = llm.invoke(
-                [("system", _SYSTEM_PROMPT), ("user", prompt)]
-            )
+            response = llm.invoke([("system", _SYSTEM_PROMPT), ("user", prompt)])
         # Defaults (deterministic tool proposals) only on the first turn;
         # once any action exists in the thread, respect an empty array so
         # the assistant isn't forced to re-propose.
         allow_defaults = not any(
-            isinstance(m.action_payload, dict)
-            and m.action_payload.get("actions")
-            for m in messages
+            isinstance(m.action_payload, dict) and m.action_payload.get("actions") for m in messages
         )
         content, action_payload = _parse_assistant_payload(
             response.content, finding, allow_defaults=allow_defaults
@@ -675,9 +660,7 @@ def generate_finding_chat_reply(
         execution.completed_at = datetime.now(tz=UTC)
         execution.tokens_in = tokens_in
         execution.tokens_out = tokens_out
-        execution.cost_usd = pricing.cost_usd(
-            model_name, tokens_in, tokens_out, provider=provider
-        )
+        execution.cost_usd = pricing.cost_usd(model_name, tokens_in, tokens_out, provider=provider)
         execution.output = {
             "message_chars": len(content),
             "retry_count": retry_count,
@@ -740,9 +723,7 @@ def summarize_finding_chat(
     summary = _fallback_summary(messages)
     try:
         provider, model_name = default_provider_model()
-        resolved = resolve_for_user(
-            redis_client, user_id=acting_user_id, provider=provider
-        )
+        resolved = resolve_for_user(redis_client, user_id=acting_user_id, provider=provider)
         llm = _make_chat_model(
             provider,
             model_name,
@@ -837,9 +818,33 @@ def accept_chat_action(
     elif typ == "run_tool":
         if redis_client is None:
             raise ValueError("run_tool action requires redis dispatch context")
-        result = _accept_run_tool(
-            session, finding, action, acting_user_id, redis_client
+        # Tactical commits while provisioning/dispatching. Persist the analyst's
+        # consent state in that same first commit so a Redis enqueue failure
+        # cannot leave a real Task behind a still-proposed chat action.
+        action["status"] = "accepted"
+        action["result"] = {"dispatch_pending": True}
+        actions[action_index] = action
+        message.action_payload = {"actions": actions}
+        flag_modified(message, "action_payload")
+        session.add(message)
+        from app.models import ActorType, AuditLog
+
+        session.add(
+            AuditLog(
+                engagement_id=finding.engagement_id,
+                actor_type=ActorType.user,
+                actor_id=str(acting_user_id),
+                event_type="finding.chat_action.consent_recorded",
+                payload={
+                    "finding_id": str(finding.id),
+                    "message_id": str(message.id),
+                    "action_index": action_index,
+                    "action_type": "run_tool",
+                },
+            )
         )
+        session.flush()
+        result = _accept_run_tool(session, finding, action, acting_user_id, redis_client)
     elif typ == "context":
         result = {"noop": True, "message": "Context acknowledged."}
     else:
@@ -879,6 +884,7 @@ def deny_chat_action(
     session.add(message)
     return str(action.get("type") or ""), {"denied": True}
 
+
 def _accept_add_scope(
     session: Session,
     finding: Finding,
@@ -912,7 +918,6 @@ def _accept_add_scope(
     }
 
 
-
 def _accept_tag_incident(finding: Finding, params: dict[str, Any]) -> dict[str, Any]:
     tags = params.get("tags") if isinstance(params.get("tags"), list) else []
     merged = _normalize_tags([*(finding.tags or []), *[str(t) for t in tags]])
@@ -930,9 +935,7 @@ def _accept_add_finding(
     severity = Severity(str(params.get("severity") or "info"))
     now = datetime.now(tz=UTC)
     status = (
-        FindingStatus.validated
-        if phase == FindingPhase.osint
-        else FindingStatus.pending_validation
+        FindingStatus.validated if phase == FindingPhase.osint else FindingStatus.pending_validation
     )
     created = Finding(
         engagement_id=finding.engagement_id,

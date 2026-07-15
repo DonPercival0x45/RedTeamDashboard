@@ -726,9 +726,9 @@ export function dismissSuggestion(suggestionId: string): Promise<Suggestion> {
   });
 }
 
-export function listTasks(slug: string, _status?: TaskStatus): Promise<Task[]> {
-  // status filter accepted for symmetry but currently always lists all
-  return request<Task[]>(`/engagements/${slug}/tasks`);
+export function listTasks(slug: string, status?: TaskStatus): Promise<Task[]> {
+  const query = status ? `?status=${encodeURIComponent(status)}` : "";
+  return request<Task[]>(`/engagements/${encodeURIComponent(slug)}/tasks${query}`);
 }
 
 // ---------------------------------------------------------------------------

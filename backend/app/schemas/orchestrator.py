@@ -4,6 +4,7 @@ Mirrors the SQLAlchemy models in ``app/models/{task,suggestion,agent_execution}.
 Kept in a single file because the three entities are read together (the slide-
 over surface shows suggestions + the tasks they spawned).
 """
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -23,6 +24,7 @@ class TaskRead(BaseModel):
     id: UUID
     engagement_id: UUID
     finding_id: UUID | None
+    work_item_id: UUID | None = None
     title: str
     kind: TaskKind
     owner_eligibility: OwnerEligibility
@@ -50,6 +52,10 @@ class SuggestionRead(BaseModel):
     decided_by: UUID | None
     decided_at: datetime | None
     task_id: UUID | None
+    proposal_key: str | None = None
+    context_hash: str | None = None
+    objective_id: UUID | None = None
+    work_item_id: UUID | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -90,6 +96,8 @@ class AcceptSuggestionResponse(BaseModel):
 
     suggestion: SuggestionRead
     task: TaskRead | None
+    work_item: dict[str, Any] | None = None
+    strategy_revision: dict[str, Any] | None = None
     dispatched: bool
 
 

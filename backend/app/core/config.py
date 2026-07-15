@@ -97,10 +97,7 @@ class Settings(BaseSettings):
 
     @property
     def entra_jwks_uri(self) -> str:
-        return (
-            f"https://login.microsoftonline.com/{self.entra_tenant_id}"
-            "/discovery/v2.0/keys"
-        )
+        return f"https://login.microsoftonline.com/{self.entra_tenant_id}/discovery/v2.0/keys"
 
     # Default LLM backend when a run doesn't specify one.
     # - "anthropic" → Claude API (paid, requires ANTHROPIC_API_KEY)
@@ -183,6 +180,19 @@ class Settings(BaseSettings):
     # Set to a positive value (seconds) to restore sliding-TTL behaviour;
     # ``_touch_ttl`` becomes a no-op when this is <= 0.
     provider_key_ttl_seconds: int = 0
+
+    # Engagement Strategist rollout. Manual deterministic state is enabled by
+    # default; unattended/event-driven model calls remain opt-in and are not
+    # scheduled by this release.
+    engagement_work_items_enabled: bool = True
+    engagement_strategy_enabled: bool = True
+    engagement_strategist_enabled: bool = True
+    engagement_coverage_enabled: bool = True
+    engagement_strategist_event_triggers_enabled: bool = False
+    engagement_strategist_scheduler_enabled: bool = False
+    engagement_strategist_max_proposals: int = 5
+    engagement_strategist_cooldown_seconds: int = 60
+    engagement_strategist_daily_cost_limit_usd: float = 10.0
 
 
 settings = Settings()

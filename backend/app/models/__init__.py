@@ -13,8 +13,41 @@ from app.models.approval import Approval, ApprovalStatus, RiskLevel
 from app.models.attachment import Attachment
 from app.models.audit_log import ActorType, AuditLog
 from app.models.authorization import Authorization
-from app.models.conversation import Conversation, ConversationMessage
-from app.models.engagement import Engagement, EngagementStatus, EngagementTimeFrame
+from app.models.conversation import (
+    Conversation,
+    ConversationContextType,
+    ConversationMessage,
+)
+from app.models.engagement import (
+    Engagement,
+    EngagementStatus,
+    EngagementTimeFrame,
+    EngagementWorkState,
+)
+from app.models.engagement_strategy import (
+    CoverageCategory,
+    CoverageItem,
+    CoverageStatus,
+    EngagementCheckpoint,
+    EngagementCompletionAction,
+    EngagementCompletionDecision,
+    EngagementObjective,
+    EngagementStrategyRevision,
+    ObjectivePriority,
+    ObjectiveStatus,
+    StrategyRevisionState,
+    StrategySignal,
+    StrategySignalStatus,
+    WorkItem,
+    WorkItemExecutor,
+    WorkItemFinding,
+    WorkItemFindingRelationship,
+    WorkItemPriority,
+    WorkItemResolution,
+    WorkItemResult,
+    WorkItemResultState,
+    WorkItemStatus,
+)
 from app.models.entity import Entity
 from app.models.entity_finding_link import EntityFindingLink
 from app.models.finding import (
@@ -66,11 +99,21 @@ __all__ = [
     "ApprovalStatus",
     "AuditLog",
     "Authorization",
+    "EngagementCompletionAction",
     "Conversation",
+    "ConversationContextType",
     "ConversationMessage",
+    "CoverageCategory",
+    "CoverageItem",
+    "CoverageStatus",
     "Engagement",
+    "EngagementCheckpoint",
+    "EngagementCompletionDecision",
+    "EngagementObjective",
     "EngagementStatus",
+    "EngagementStrategyRevision",
     "EngagementTimeFrame",
+    "EngagementWorkState",
     "Entity",
     "EntityFindingLink",
     "Finding",
@@ -83,6 +126,8 @@ __all__ = [
     "IntegrationType",
     "MCPLease",
     "MCPLeaseStatus",
+    "ObjectivePriority",
+    "ObjectiveStatus",
     "Observation",
     "ObservationFindingLink",
     "OwnerEligibility",
@@ -92,6 +137,9 @@ __all__ = [
     "ScopeItem",
     "ScopeKind",
     "Severity",
+    "StrategyRevisionState",
+    "StrategySignal",
+    "StrategySignalStatus",
     "Suggestion",
     "SuggestionKind",
     "SuggestionStatus",
@@ -107,5 +155,14 @@ __all__ = [
     "ToolTaskKind",
     "User",
     "UserRole",
+    "WorkItem",
+    "WorkItemExecutor",
+    "WorkItemFinding",
+    "WorkItemFindingRelationship",
+    "WorkItemPriority",
+    "WorkItemResolution",
+    "WorkItemResult",
+    "WorkItemResultState",
+    "WorkItemStatus",
     "scope_satisfies",
 ]

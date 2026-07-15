@@ -10,6 +10,7 @@ All non-guest. Charter task-kind gate lives in the orchestrator, not
 here — but the runtime infra failures are surfaced as 502 so the client
 can distinguish "your tool errored" from "we couldn't reach ACI".
 """
+
 from __future__ import annotations
 
 import uuid
@@ -21,6 +22,8 @@ from sqlalchemy import select
 from app.api.deps import CurrentNonGuestUser, CurrentUser, DbSession, RedisClient
 from app.models import (
     Engagement,
+    EngagementStatus,
+    EngagementWorkState,
     Tool,
     ToolInvocation,
     ToolInvocationStatus,
@@ -35,9 +38,7 @@ router = APIRouter()
 
 
 def _get_engagement_or_404(session: DbSession, slug: str) -> Engagement:
-    eng = session.execute(
-        select(Engagement).where(Engagement.slug == slug)
-    ).scalar_one_or_none()
+    eng = session.execute(select(Engagement).where(Engagement.slug == slug)).scalar_one_or_none()
     if eng is None:
         raise HTTPException(status_code=404, detail="engagement not found")
     return eng
@@ -82,20 +83,23 @@ async def create_tool_invocation(
     handed to the worker instead (v0.15 wiring).
     """
     eng = _get_engagement_or_404(session, slug)
+    session.refresh(eng, with_for_update=True)
+    if eng.status == EngagementStatus.archived:
+        raise HTTPException(status_code=409, detail="archived engagement is read-only")
+    if eng.status == EngagementStatus.flushed:
+        raise HTTPException(status_code=404, detail="engagement not found")
+    if eng.work_state == EngagementWorkState.completed:
+        raise HTTPException(status_code=409, detail="completed engagement is read-only")
     tool = session.get(Tool, body.tool_id)
     if tool is None:
         raise HTTPException(status_code=404, detail="tool not found")
 
     try:
-        row = await invoke_tool(
-            session, eng, tool, body.args, user, redis_client=redis
-        )
+        row = await invoke_tool(session, eng, tool, body.args, user, redis_client=redis)
     except ToolInvocationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    if row.status == ToolInvocationStatus.failed and row.error and "runner" in (
-        row.error or ""
-    ):
+    if row.status == ToolInvocationStatus.failed and row.error and "runner" in (row.error or ""):
         # Runner-layer infra failure — surface as 502 so the client can
         # tell "sandbox down" from "tool exited nonzero".
         raise HTTPException(status_code=502, detail=row.error)

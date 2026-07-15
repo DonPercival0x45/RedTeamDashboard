@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useQueryClient } from "@tanstack/react-query";
 import { qk, useMe } from "@/lib/hooks";
-import { Ban, Layers, Link2, Maximize2, Plus, Search, Sparkles, Trash2, Upload, Wand2, Wrench, X } from "lucide-react";
+import { Ban, Layers, Link2, ListChecks, Maximize2, Plus, Search, Sparkles, Trash2, Upload, Wand2, Wrench, X } from "lucide-react";
 import { DateTime } from "@/components/date-time";
 import { LoaderOverlay } from "@/components/loader";
 import { GroupedItemsView, extractItems } from "@/components/grouped-items-view";
@@ -23,6 +23,7 @@ import {
   repairFindingGroups,
   validateFinding,
 } from "@/lib/api";
+import { getWorkItemRollup } from "@/lib/strategy-api";
 import { cn } from "@/lib/utils";
 import { FindingImporter } from "@/components/finding-importer";
 import { BurpImporter } from "@/components/burp-importer";
@@ -36,6 +37,7 @@ import type {
   RegroupProposal,
   Severity,
 } from "@/lib/types";
+import type { WorkItemRollup } from "@/lib/strategy-types";
 
 // ── display helpers ────────────────────────────────────────────────────────
 
@@ -195,6 +197,28 @@ export function FindingsView({
   const [severityFilter, setSeverityFilter] = useState<Severity | "all">("all");
   // v1.4.7: tag filter set by clicking a tag chip on a row (null = off).
   const [tagFilter, setTagFilter] = useState<string | null>(null);
+  const [workFilter, setWorkFilter] = useState<"all" | "linked" | "active" | "completed" | "unlinked">("all");
+  const [workRollup, setWorkRollup] = useState<WorkItemRollup | null>(null);
+  const [workRollupError, setWorkRollupError] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setWorkRollup(null);
+    setWorkRollupError(false);
+    getWorkItemRollup(slug)
+      .then((rollup) => {
+        if (!cancelled) setWorkRollup(rollup);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setWorkRollup(null);
+          setWorkRollupError(true);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [slug]);
 
   const counts = {
     critical: findings.filter((f) => f.severity === "critical").length,
@@ -250,6 +274,14 @@ export function FindingsView({
     .filter((f) => status === "all" || f.status === status)
     .filter((f) => severityFilter === "all" || f.severity === severityFilter)
     .filter((f) => tagFilter === null || (f.tags ?? []).includes(tagFilter))
+    .filter((f) => {
+      if (workFilter === "all") return true;
+      const bucket = workRollup?.by_finding[f.id];
+      if (workFilter === "linked") return bucket !== undefined;
+      if (workFilter === "unlinked") return bucket === undefined;
+      if (workFilter === "active") return (bucket?.remaining ?? 0) > 0;
+      return bucket !== undefined && bucket.remaining === 0;
+    })
     .filter(matchesSearch)
     .slice()
     .sort(compareFindings);
@@ -390,6 +422,23 @@ export function FindingsView({
             v === "all" ? "All status" : STATUS_LABEL[v as FindingValidationStatus]
           }
         />
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <span className="hidden sm:inline">Work</span>
+          <select
+            value={workFilter}
+            disabled={workRollup === null}
+            onChange={(e) => setWorkFilter(e.target.value as typeof workFilter)}
+            className="rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50"
+            title={workRollupError ? "Work-item rollup could not be loaded" : "Filter findings by linked engagement work"}
+          >
+            <option value="all">All work states</option>
+            <option value="linked">Has linked work</option>
+            <option value="active">Has open work</option>
+            <option value="completed">Linked, no remaining work</option>
+            <option value="unlinked">No linked work</option>
+          </select>
+          {workRollupError && <span className="text-destructive">rollup unavailable</span>}
+        </div>
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <span className="hidden sm:inline">Sort by</span>
           <select
@@ -668,6 +717,20 @@ export function FindingsView({
                           <Layers className="mr-1 inline h-3 w-3" />
                           grouped
                         </span>
+                      )}
+                      {workRollup?.by_finding[f.id] && (
+                        <Link
+                          href={`/e/findings/${f.id}?slug=${encodeURIComponent(slug)}&tab=tasks`}
+                          onClick={(event) => event.stopPropagation()}
+                          className="inline-flex flex-wrap items-center gap-1 rounded border border-violet-500/40 bg-violet-500/10 px-1.5 py-0.5 text-[10px] text-violet-700 hover:bg-violet-500/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:text-violet-200"
+                          title="Open linked WorkItems and Tactical Tasks for this finding"
+                        >
+                          <ListChecks className="h-3 w-3" />
+                          {workRollup.by_finding[f.id].remaining > 0 ? <span>{workRollup.by_finding[f.id].remaining} remaining</span> : <span>no remaining work</span>}
+                          {workRollup.by_finding[f.id].blocked > 0 && <span>· {workRollup.by_finding[f.id].blocked} blocked</span>}
+                          {workRollup.by_finding[f.id].proposals > 0 && <span>· {workRollup.by_finding[f.id].proposals} proposals</span>}
+                          {workRollup.by_finding[f.id].deferred > 0 && <span>· {workRollup.by_finding[f.id].deferred} deferred</span>}
+                        </Link>
                       )}
                       {f.exclusion && (
                         <Badge

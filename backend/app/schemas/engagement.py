@@ -1,4 +1,5 @@
 """Wire-format models for engagements, scope items, and run kickoff."""
+
 from __future__ import annotations
 
 from datetime import date, datetime
@@ -7,7 +8,12 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.models import EngagementStatus, EngagementTimeFrame, ScopeKind
+from app.models import (
+    EngagementStatus,
+    EngagementTimeFrame,
+    EngagementWorkState,
+    ScopeKind,
+)
 
 LLMProvider = Literal[
     "anthropic",
@@ -73,9 +79,7 @@ class EngagementCreate(BaseModel):
     def _check_custom_dates(self) -> EngagementCreate:
         if self.time_frame is EngagementTimeFrame.custom:
             if self.start_date is None or self.end_date is None:
-                raise ValueError(
-                    "time_frame='custom' requires both start_date and end_date"
-                )
+                raise ValueError("time_frame='custom' requires both start_date and end_date")
             if self.end_date < self.start_date:
                 raise ValueError("end_date cannot be before start_date")
 
@@ -111,6 +115,8 @@ class EngagementRead(BaseModel):
     slug: str
     description: str | None = None
     status: EngagementStatus
+    work_state: EngagementWorkState = EngagementWorkState.active
+    work_state_version: int = 1
     time_frame: EngagementTimeFrame
     start_date: date | None
     end_date: date | None

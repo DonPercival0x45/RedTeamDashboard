@@ -20,6 +20,7 @@ Analyst workflow:
 Both paths (this MCP server + the autonomous LangGraph worker) write to the
 same Postgres database. The viewer shows findings from both.
 """
+
 from __future__ import annotations
 
 import uuid
@@ -30,6 +31,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from sqlalchemy import select
+from sqlalchemy.orm import object_session
 
 from app.mcp.auth import get_current_key, get_current_lease, get_current_user
 from app.models import (
@@ -39,6 +41,7 @@ from app.models import (
     AuditLog,
     Engagement,
     EngagementStatus,
+    EngagementWorkState,
     Finding,
     FindingPhase,
     FindingStatus,
@@ -113,9 +116,7 @@ CORE RULES — always follow these without exception:
 mcp = FastMCP(
     "Red Team Dashboard",
     instructions=INSTRUCTIONS,
-    transport_security=TransportSecuritySettings(
-        enable_dns_rebinding_protection=False
-    ),
+    transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
 )
 
 
@@ -136,19 +137,27 @@ def _session():
 
 
 def _resolve_engagement(session, slug: str) -> Engagement:
-    eng = session.execute(
-        select(Engagement).where(Engagement.slug == slug)
-    ).scalar_one_or_none()
+    eng = session.execute(select(Engagement).where(Engagement.slug == slug)).scalar_one_or_none()
     if eng is None:
         raise ValueError(f"engagement '{slug}' not found")
     return eng
 
 
+def _ensure_mutable_engagement(eng: Engagement) -> None:
+    session = object_session(eng)
+    if session is not None:
+        session.refresh(eng, with_for_update=True)
+    if eng.status == EngagementStatus.flushed:
+        raise ValueError("engagement has been flushed")
+    if eng.status == EngagementStatus.archived:
+        raise ValueError("archived engagement is read-only")
+    if eng.work_state == EngagementWorkState.completed:
+        raise ValueError("completed engagement is read-only; reopen it first")
+
+
 def _get_scope(session, eng: Engagement) -> list[ScopeSnapshot]:
     items = list(
-        session.execute(
-            select(ScopeItem).where(ScopeItem.engagement_id == eng.id)
-        ).scalars()
+        session.execute(select(ScopeItem).where(ScopeItem.engagement_id == eng.id)).scalars()
     )
     return normalize_scope_items(items)
 
@@ -218,9 +227,7 @@ def _store_findings(
                 phase=phase,
                 status=status,
                 validated_at=now if status == FindingStatus.validated else None,
-                validated_by=user.id
-                if status == FindingStatus.validated
-                else None,
+                validated_by=user.id if status == FindingStatus.validated else None,
             )
         )
         count += 1
@@ -302,6 +309,7 @@ def _run_osint(
     with _session() as session:
         try:
             eng = _resolve_engagement(session, engagement_slug)
+            _ensure_mutable_engagement(eng)
         except ValueError as exc:
             return {"error": str(exc)}
 
@@ -402,9 +410,7 @@ def list_engagements() -> list[dict]:
     """
     with _session() as session:
         engagements = list(
-            session.execute(
-                select(Engagement).order_by(Engagement.created_at.desc())
-            ).scalars()
+            session.execute(select(Engagement).order_by(Engagement.created_at.desc())).scalars()
         )
         return [
             {
@@ -436,9 +442,7 @@ def get_engagement(engagement_slug: str = "") -> dict:
             return {"error": str(exc)}
 
         scope_items = list(
-            session.execute(
-                select(ScopeItem).where(ScopeItem.engagement_id == eng.id)
-            ).scalars()
+            session.execute(select(ScopeItem).where(ScopeItem.engagement_id == eng.id)).scalars()
         )
         from sqlalchemy import func
 
@@ -535,19 +539,13 @@ def get_scope(engagement_slug: str = "") -> dict:
             return {"error": str(exc)}
 
         items = list(
-            session.execute(
-                select(ScopeItem).where(ScopeItem.engagement_id == eng.id)
-            ).scalars()
+            session.execute(select(ScopeItem).where(ScopeItem.engagement_id == eng.id)).scalars()
         )
         includes = [
-            {"kind": s.kind, "value": s.value, "note": s.note}
-            for s in items
-            if not s.is_exclusion
+            {"kind": s.kind, "value": s.value, "note": s.note} for s in items if not s.is_exclusion
         ]
         exclusions = [
-            {"kind": s.kind, "value": s.value, "note": s.note}
-            for s in items
-            if s.is_exclusion
+            {"kind": s.kind, "value": s.value, "note": s.note} for s in items if s.is_exclusion
         ]
         return {
             "engagement": engagement_slug,
@@ -590,6 +588,7 @@ def add_scope_item(
     with _session() as session:
         try:
             eng = _resolve_engagement(session, engagement_slug)
+            _ensure_mutable_engagement(eng)
         except ValueError as exc:
             return {"error": str(exc)}
 
@@ -727,6 +726,7 @@ def create_finding(
     with _session() as session:
         try:
             eng = _resolve_engagement(session, engagement_slug)
+            _ensure_mutable_engagement(eng)
         except ValueError as exc:
             return {"error": str(exc)}
 
@@ -749,12 +749,8 @@ def create_finding(
             target=target or None,
             phase=phase,
             status=status,
-            validated_at=datetime.now(tz=UTC)
-            if status == FindingStatus.validated
-            else None,
-            validated_by=user.id
-            if status == FindingStatus.validated
-            else None,
+            validated_at=datetime.now(tz=UTC) if status == FindingStatus.validated else None,
+            validated_by=user.id if status == FindingStatus.validated else None,
         )
         session.add(finding)
 
@@ -980,9 +976,7 @@ def resource_engagement(slug: str) -> str:
             return _json.dumps({"error": f"engagement '{slug}' not found"})
 
         scope_items = list(
-            session.execute(
-                select(ScopeItem).where(ScopeItem.engagement_id == eng.id)
-            ).scalars()
+            session.execute(select(ScopeItem).where(ScopeItem.engagement_id == eng.id)).scalars()
         )
 
         high_findings = list(
@@ -1257,7 +1251,6 @@ def export_engagement(engagement_slug: str) -> dict:
     if not scope_satisfies(key.scope, _Scope.admin):
         return {"error": "requires admin scope to export engagements"}
 
-
     from app.api.engagements import _build_export_payload
     from app.core.blob import upload_engagement_export
     from app.db.session import SessionLocal as _SL
@@ -1398,9 +1391,7 @@ def flush_engagement_data(engagement_slug: str, confirmed: bool = False) -> dict
             "flushed": True,
             "blob_url": blob_url,
             "note": (
-                "export stored in blob before flush"
-                if blob_url
-                else "no blob storage configured"
+                "export stored in blob before flush" if blob_url else "no blob storage configured"
             ),
         }
 
@@ -1446,9 +1437,7 @@ def get_finding_context(engagement_slug: str, finding_id: str) -> dict:
             return {"error": f"finding {finding_id} not found in {engagement_slug}"}
 
         scope_items = list(
-            session.execute(
-                select(ScopeItem).where(ScopeItem.engagement_id == eng.id)
-            ).scalars()
+            session.execute(select(ScopeItem).where(ScopeItem.engagement_id == eng.id)).scalars()
         )
 
         from app.orchestrator.tools import all_tools
@@ -1556,12 +1545,7 @@ def propose_strategic_suggestion(
     try:
         kind_enum = TaskKind(task_kind)
     except ValueError:
-        return {
-            "error": (
-                f"invalid task_kind {task_kind!r} — must be one of "
-                "scan/enum/exploit"
-            )
-        }
+        return {"error": (f"invalid task_kind {task_kind!r} — must be one of scan/enum/exploit")}
     if kind_enum not in _AGENT_TASK_KINDS:
         return {
             "error": (
@@ -1598,13 +1582,10 @@ def propose_strategic_suggestion(
             eng = _resolve_engagement(session, engagement_slug)
         except ValueError as exc:
             return {"error": str(exc)}
-        if eng.status is not EngagementStatus.active:
-            return {
-                "error": (
-                    f"engagement is {eng.status.value}; only active engagements"
-                    " accept new suggestions"
-                )
-            }
+        try:
+            _ensure_mutable_engagement(eng)
+        except ValueError as exc:
+            return {"error": str(exc)}
 
         finding = session.get(_Finding, fid)
         if finding is None or finding.engagement_id != eng.id:
@@ -1682,9 +1663,7 @@ def propose_strategic_suggestion(
 
 
 @mcp.tool()
-def list_open_suggestions(
-    engagement_slug: str, finding_id: str | None = None
-) -> list[dict]:
+def list_open_suggestions(engagement_slug: str, finding_id: str | None = None) -> list[dict]:
     """List open Strategic suggestions for an engagement.
 
     Call before proposing more suggestions to avoid duplicates. Optionally

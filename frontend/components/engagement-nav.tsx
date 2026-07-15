@@ -8,6 +8,7 @@ import {
   ListChecks,
   MessageSquare,
   Network,
+  Route,
   Target,
   Wrench,
   type LucideIcon,
@@ -16,6 +17,7 @@ import { cn } from "@/lib/utils";
 
 export type EngagementView =
   | "findings"
+  | "strategy"
   | "entities"
   | "observations"
   | "report"
@@ -27,6 +29,7 @@ export type EngagementView =
 
 const ITEMS: { view: EngagementView; label: string; Icon: LucideIcon }[] = [
   { view: "findings", label: "Findings", Icon: ListChecks },
+  { view: "strategy", label: "Strategy", Icon: Route },
   { view: "entities", label: "Entities", Icon: Network },
   { view: "scope", label: "Scope", Icon: Target },
   { view: "status", label: "Status", Icon: Activity },
