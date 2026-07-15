@@ -313,6 +313,8 @@ def test_duplicate_grouping_and_reversible_suppression_preserve_provenance(
     assert (inserted, merged) == (0, 1)
     db.refresh(canonical)
     assert canonical.properties["fresh"] is True
+    assert canonical.source_tool == "legacy"
+    assert canonical.source_attribution == "legacy-two.json"
     assert older.properties == {"legacy": True}
 
     grouped_remove = client.post(
@@ -490,6 +492,16 @@ def test_group_merge_delete_suppresses_duplicates_and_transfers_provenance(
         event_type="entities.group_merged_deleted",
     ).count() == 1
 
+    repeated = client.post(
+        f"/entity-groups/{grouped.json()['id']}/merge-delete",
+        headers=headers,
+        json={
+            "expected_row_version": body["canonical_entity"]["group"]["row_version"],
+            "reason": "Must not repeat a resolved merge",
+        },
+    )
+    assert repeated.status_code == 409
+
 
 def test_entity_disposition_requires_analyst_current_version_and_mutable_engagement(
     client: TestClient, db: Session, engagement: Engagement
@@ -620,3 +632,46 @@ def test_ambiguous_legacy_identity_blocks_promotion_until_grouped(
     assert promoted.status_code == 409
     assert len(promoted.json()["detail"]["entity_ids"]) == 2
     assert db.query(EntityFindingLink).filter_by(finding_id=finding.id).count() == 0
+
+
+def test_entity_group_rejects_cross_engagement_members(
+    client: TestClient, db: Session, engagement: Engagement
+) -> None:
+    other_engagement = Engagement(
+        name="Other entity engagement",
+        slug=f"other-entities-{uuid.uuid4().hex[:8]}",
+        status=EngagementStatus.active,
+    )
+    local = Entity(
+        engagement_id=engagement.id,
+        type="domain",
+        value="example.com",
+        source_tool="manual",
+        properties={},
+    )
+    db.add(other_engagement)
+    db.flush()
+    foreign = Entity(
+        engagement_id=other_engagement.id,
+        type="domain",
+        value="Example.COM.",
+        source_tool="manual",
+        properties={},
+    )
+    db.add_all([local, foreign])
+    db.commit()
+    try:
+        response = client.post(
+            f"/engagements/{engagement.slug}/entity-groups",
+            headers={"X-User-Id": "cross-engagement@example.com"},
+            json={
+                "entity_ids": [str(local.id), str(foreign.id)],
+                "canonical_entity_id": str(local.id),
+                "reason": "Must not cross engagement boundaries",
+            },
+        )
+        assert response.status_code == 422
+        assert db.query(EntityGroup).filter_by(engagement_id=engagement.id).count() == 0
+    finally:
+        db.execute(text("SELECT flush_engagement(:id)"), {"id": other_engagement.id})
+        db.commit()

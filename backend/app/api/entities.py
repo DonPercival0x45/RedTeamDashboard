@@ -71,6 +71,7 @@ class StoredEntityGroupRef(BaseModel):
     canonical_entity_id: uuid.UUID | None = None
     label: str | None = None
     member_count: int
+    suppressed_member_count: int
     row_version: int
 
 
@@ -342,19 +343,29 @@ def _entities_to_read(session, entities: list[Entity]) -> list[StoredEntityRead]
         .where(EntityGroupMember.entity_id.in_(refs_by_entity))
     ).all()
     group_ids = {group_id for _, group_id, _, _, _ in group_rows}
-    member_counts = dict(
+    count_rows = (
         session.execute(
-            select(EntityGroupMember.group_id, func.count(EntityGroupMember.entity_id))
+            select(
+                EntityGroupMember.group_id,
+                func.count(EntityGroupMember.entity_id),
+                func.count(EntityGroupMember.entity_id).filter(Entity.suppressed_at.is_not(None)),
+            )
+            .join(Entity, Entity.id == EntityGroupMember.entity_id)
             .where(EntityGroupMember.group_id.in_(group_ids))
             .group_by(EntityGroupMember.group_id)
         ).all()
-    ) if group_ids else {}
+        if group_ids
+        else []
+    )
+    member_counts = {group_id: count for group_id, count, _ in count_rows}
+    suppressed_counts = {group_id: count for group_id, _, count in count_rows}
     group_by_entity = {
         entity_id: StoredEntityGroupRef(
             id=group_id,
             canonical_entity_id=canonical_id,
             label=label,
             member_count=int(member_counts.get(group_id, 0)),
+            suppressed_member_count=int(suppressed_counts.get(group_id, 0)),
             row_version=row_version,
         )
         for entity_id, group_id, canonical_id, label, row_version in group_rows
@@ -920,12 +931,17 @@ def merge_delete_entity_group(
     non-canonical members are suppressed from active views. Canonical keeps
     analyst-selected identity and gains missing finding links/properties.
     """
-    initial = session.get(EntityGroup, group_id)
-    if initial is None:
+    engagement_id = session.execute(
+        select(EntityGroup.engagement_id).where(EntityGroup.id == group_id)
+    ).scalar_one_or_none()
+    if engagement_id is None:
         raise HTTPException(status_code=404, detail="entity group not found")
-    engagement = _mutable_engagement(session, initial.engagement_id)
+    engagement = _mutable_engagement(session, engagement_id)
     group = session.execute(
-        select(EntityGroup).where(EntityGroup.id == group_id).with_for_update()
+        select(EntityGroup)
+        .where(EntityGroup.id == group_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
     ).scalar_one_or_none()
     if group is None or group.engagement_id != engagement.id:
         raise HTTPException(status_code=404, detail="entity group not found")
@@ -941,6 +957,7 @@ def merge_delete_entity_group(
             .where(EntityGroupMember.group_id == group.id)
             .order_by(Entity.id)
             .with_for_update()
+            .execution_options(populate_existing=True)
         ).scalars()
     )
     canonical = next((row for row in members if row.id == group.canonical_entity_id), None)
@@ -951,6 +968,9 @@ def merge_delete_entity_group(
     duplicates = [row for row in members if row.id != canonical.id]
     if not duplicates:
         raise HTTPException(status_code=409, detail="duplicate group has no duplicate members")
+    active_duplicates = [row for row in duplicates if row.suppressed_at is None]
+    if not active_duplicates:
+        raise HTTPException(status_code=409, detail="duplicate members are already removed")
 
     now = datetime.now(tz=UTC)
     reason = body.reason.strip()
@@ -990,12 +1010,11 @@ def merge_delete_entity_group(
         transferred_link_count += 1
 
     suppressed_ids: list[uuid.UUID] = []
-    for duplicate in duplicates:
-        if duplicate.suppressed_at is None:
-            duplicate.suppressed_at = now
-            duplicate.suppressed_by_user_id = user.id
-            duplicate.suppression_reason = reason
-            duplicate.row_version += 1
+    for duplicate in active_duplicates:
+        duplicate.suppressed_at = now
+        duplicate.suppressed_by_user_id = user.id
+        duplicate.suppression_reason = reason
+        duplicate.row_version += 1
         suppressed_ids.append(duplicate.id)
     canonical.row_version += 1
     group.row_version += 1

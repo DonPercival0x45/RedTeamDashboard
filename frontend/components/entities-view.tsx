@@ -415,7 +415,7 @@ function ImportedEntitiesSection({ slug }: { slug: string }) {
   const mergeDeleteGroup = async (entity: StoredEntity) => {
     if (!entity.group) return;
     const reason = window.prompt(
-      "Merge provenance into the canonical entity and remove duplicate members from active views. Why is this safe?",
+      "Copy missing provenance to the canonical entity and remove duplicates from active views. Original records, properties, and links remain stored and can be restored after dissolving the group. Why is this safe?",
       "Canonical entity confirmed; duplicate representations no longer need separate active rows",
     );
     if (!reason?.trim()) return;
@@ -743,15 +743,21 @@ function ImportedEntitiesSection({ slug }: { slug: string }) {
                   <td className="px-3 py-2.5 text-right">
                     {e.group?.canonical_entity_id === e.id ? (
                       <div className="flex justify-end gap-1">
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="ghost"
-                          disabled={managing === `merge:${e.group.id}`}
-                          onClick={() => void mergeDeleteGroup(e)}
-                        >
-                          <Trash2 className="mr-1.5 h-3.5 w-3.5" /> Merge & remove
-                        </Button>
+                        {e.group.suppressed_member_count < e.group.member_count - 1 ? (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            disabled={managing === `merge:${e.group.id}`}
+                            onClick={() => void mergeDeleteGroup(e)}
+                          >
+                            <Trash2 className="mr-1.5 h-3.5 w-3.5" /> Merge & remove
+                          </Button>
+                        ) : (
+                          <span className="self-center text-[11px] text-muted-foreground">
+                            Duplicates removed
+                          </span>
+                        )}
                         <Button
                           type="button"
                           size="sm"

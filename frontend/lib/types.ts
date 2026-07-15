@@ -467,6 +467,7 @@ export interface StoredEntityGroupRef {
   canonical_entity_id: string | null;
   label: string | null;
   member_count: number;
+  suppressed_member_count: number;
   row_version: number;
 }
 
