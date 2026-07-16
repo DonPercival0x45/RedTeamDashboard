@@ -40,9 +40,11 @@ from app.models import (
     WorkItemPriority,
     WorkItemStatus,
 )
-from app.services.suggestion_router import _bootstrap_workspace_from_initial_strategy
 
 HDR = {"X-User-Id": "strategy-reset@example.com"}
+
+# _bootstrap_workspace_from_initial_strategy imported lazily below — see
+# test_strategy_work_targets.py for why (collection-time pollution).
 
 
 @pytest.fixture()
@@ -83,6 +85,8 @@ def _bootstrap(db: Session, engagement: Engagement) -> dict[str, int]:
     )
     db.add(suggestion)
     db.flush()
+    from app.services.suggestion_router import _bootstrap_workspace_from_initial_strategy
+
     counts = _bootstrap_workspace_from_initial_strategy(db, suggestion, user_id=user.id)
     db.commit()
     return counts

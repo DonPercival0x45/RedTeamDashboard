@@ -31,10 +31,14 @@ from app.models import (
     WorkItem,
     WorkItemExecutor,
 )
-from app.services.engagement_strategist import _fallback_initial_output
-from app.services.suggestion_router import _bootstrap_workspace_from_initial_strategy
 
 HDR = {"X-User-Id": "work-targets@example.com"}
+
+# engagement_strategist / suggestion_router are imported lazily inside the tests
+# below. Importing them at module level pollutes the scanner-import test suite
+# at collection time (their import chain pulls in app.orchestrator.tools /
+# app.agents.strategic, which has an env-specific side effect on scope
+# evaluation). Local imports keep that out of test collection.
 
 
 @pytest.fixture()
@@ -79,6 +83,8 @@ def test_fallback_proposes_discovery_work_targeting_scope_when_sparse() -> None:
             {"id": str(uuid.uuid4()), "kind": "domain", "value": "out.example", "excluded": True},
         ],
     }
+    from app.services.engagement_strategist import _fallback_initial_output
+
     output = _fallback_initial_output(dossier, "ctxhash", RuntimeError("truncated"))
 
     discovery = output.work_item_proposals
@@ -103,6 +109,8 @@ def test_fallback_skips_discovery_when_findings_present() -> None:
             }
         ],
     }
+    from app.services.engagement_strategist import _fallback_initial_output
+
     output = _fallback_initial_output(dossier, "ctxhash", RuntimeError("truncated"))
     assert output.work_item_proposals == []
 
@@ -127,6 +135,8 @@ def test_bootstrap_seeds_discovery_work_items_targeting_scope(
     )
     db.add(suggestion)
     db.flush()
+
+    from app.services.suggestion_router import _bootstrap_workspace_from_initial_strategy
 
     counts = _bootstrap_workspace_from_initial_strategy(db, suggestion, user_id=user.id)
     db.commit()
