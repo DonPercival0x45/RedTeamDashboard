@@ -95,7 +95,12 @@ def test_fallback_skips_discovery_when_findings_present() -> None:
         "finding_counts": {"validated:high:osint": 3},
         "selected_findings": [{"id": str(uuid.uuid4()), "severity": "high"} for _ in range(3)],
         "scope": [
-            {"id": str(uuid.uuid4()), "kind": "domain", "value": "loaded.example", "excluded": False}
+            {
+                "id": str(uuid.uuid4()),
+                "kind": "domain",
+                "value": "loaded.example",
+                "excluded": False,
+            }
         ],
     }
     output = _fallback_initial_output(dossier, "ctxhash", RuntimeError("truncated"))
