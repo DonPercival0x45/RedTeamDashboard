@@ -92,6 +92,12 @@ export function decideStrategyRevision(
   );
 }
 
+export function resetStrategyWorkspace(slug: string): Promise<void> {
+  return strategyRequest<void>(`/engagements/${encodeURIComponent(slug)}/strategy/reset`, {
+    method: "POST",
+  });
+}
+
 export function listObjectives(slug: string): Promise<Objective[]> {
   return strategyRequest<Objective[]>(
     `/engagements/${encodeURIComponent(slug)}/objectives`,

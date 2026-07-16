@@ -246,6 +246,22 @@ export interface Checkpoint {
   created_at: string;
 }
 
+export interface ResumeRecordRef {
+  type: string;
+  id: string;
+  title?: string;
+  summary?: string;
+  status?: string;
+  priority?: string;
+  severity?: string;
+  action?: string;
+  actor?: string;
+  href?: string;
+  updated_at?: string;
+  created_at?: string;
+  finding?: ResumeRecordRef | null;
+}
+
 export interface ResumeBriefing {
   current_focus: Record<string, unknown>;
   since_checkpoint: Record<string, unknown>;
@@ -256,6 +272,10 @@ export interface ResumeBriefing {
   coverage_summary: Record<string, unknown>;
   report_readiness: Record<string, unknown>;
   generated_at: string;
+  current_tasks: ResumeRecordRef[];
+  recent_findings: ResumeRecordRef[];
+  recently_closed: ResumeRecordRef[];
+  recent_activity: ResumeRecordRef[];
 }
 
 export type CoverageStatus =
