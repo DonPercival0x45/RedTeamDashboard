@@ -10,6 +10,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Dialog, DialogClose, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { StrategyMarkdown } from "@/components/strategy-markdown";
 import {
   approveCompletion,
   blockWorkItem,
@@ -234,6 +236,8 @@ export function StrategyView({
   const [notice, setNotice] = useState<string | null>(null);
   const [strategyBody, setStrategyBody] = useState("");
   const [strategySummary, setStrategySummary] = useState("");
+  const [strategyFlyoutOpen, setStrategyFlyoutOpen] = useState(false);
+  const [strategyFlyoutEditing, setStrategyFlyoutEditing] = useState(false);
   const [strategySectionDrafts, setStrategySectionDrafts] = useState(emptyStrategySections);
   const [objectiveTitle, setObjectiveTitle] = useState("");
   const [objectivePriority, setObjectivePriority] = useState<ObjectivePriority>("medium");
@@ -476,7 +480,7 @@ export function StrategyView({
         {error && <p role="alert" className="rounded-md border border-critical/40 bg-critical/10 p-3 text-sm text-critical">{error}</p>}
         {notice && <p role="status" className="rounded-md border border-emerald-500/40 bg-emerald-500/10 p-3 text-sm text-emerald-700 dark:text-emerald-200">{notice}</p>}
         <StrategistSection slug={slug} readOnly={readOnly} chat={data.chat} message={strategistMessage} setMessage={setStrategistMessage} lastRun={lastStrategistRun} setLastRun={setLastStrategistRun} busy={busy} mutate={mutate} hasCurrentStrategy={false} />
-        <NeedsDecisionSection slug={slug} readOnly={readOnly} openSignals={[]} openSuggestions={openSuggestions} proposedRevisions={proposedRevisions} currentRevisionId={null} busy={busy} mutate={mutate} />
+        {decisionCount > 0 && <NeedsDecisionSection slug={slug} readOnly={readOnly} openSignals={[]} openSuggestions={openSuggestions} proposedRevisions={proposedRevisions} currentRevisionId={null} busy={busy} mutate={mutate} />}
         <InitialStrategyBuilder slug={slug} readOnly={readOnly} summary={strategySummary} setSummary={setStrategySummary} sections={strategySectionDrafts} setSections={setStrategySectionDrafts} busy={busy} mutate={mutate} />
         <StrategyRequiredGate findingCount={Number(data.resume.current_focus.finding_count ?? 0)} />
         <ResumeSection resume={data.resume} slug={slug} />
@@ -493,7 +497,7 @@ export function StrategyView({
       {error && <p role="alert" className="rounded-md border border-critical/40 bg-critical/10 p-3 text-sm text-critical">{error}</p>}
       {notice && <p role="status" className="rounded-md border border-emerald-500/40 bg-emerald-500/10 p-3 text-sm text-emerald-700 dark:text-emerald-200">{notice}</p>}
 
-      <NeedsDecisionSection slug={slug} readOnly={readOnly} openSignals={openSignals} openSuggestions={openSuggestions} proposedRevisions={proposedRevisions} currentRevisionId={data.current?.id ?? null} busy={busy} mutate={mutate} />
+      {decisionCount > 0 && <NeedsDecisionSection slug={slug} readOnly={readOnly} openSignals={openSignals} openSuggestions={openSuggestions} proposedRevisions={proposedRevisions} currentRevisionId={data.current?.id ?? null} busy={busy} mutate={mutate} />}
 
       <Tabs defaultValue={requestedWorkItemId ? "work" : "strategy"} className="space-y-4">
         {/* Sticky top chrome: analytics + tab bar persist at the top of the
@@ -528,6 +532,7 @@ export function StrategyView({
           </div>
           <div className="flex items-center gap-2">
             {data.current && <DateTime value={data.current.updated_at} />}
+            <Button size="sm" variant="outline" disabled={busy !== null} onClick={() => { setStrategyFlyoutEditing(false); setStrategyFlyoutOpen(true); }}>Expand ↗</Button>
             {!readOnly && data.current && (
               <Button
                 size="sm"
@@ -735,6 +740,42 @@ export function StrategyView({
           <StrategistSection slug={slug} readOnly={readOnly} chat={data.chat} message={strategistMessage} setMessage={setStrategistMessage} lastRun={lastStrategistRun} setLastRun={setLastStrategistRun} busy={busy} mutate={mutate} hasCurrentStrategy />
         </TabsContent>
       </Tabs>
+
+      <Dialog open={strategyFlyoutOpen} onOpenChange={setStrategyFlyoutOpen}>
+        <DialogContent className="max-w-5xl max-h-[88vh] w-[95vw] gap-0 overflow-hidden p-0">
+          <div className="flex items-center justify-between gap-3 border-b border-border p-4">
+            <div>
+              <DialogTitle className="text-base">Strategy {data.current ? `v${data.current.version}` : ""}</DialogTitle>
+              <DialogDescription className="text-xs">
+                {strategyFlyoutEditing ? "Edit the markdown body — Save writes a new revision." : "Rendered view of the current strategy body."}
+              </DialogDescription>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="flex overflow-hidden rounded-md border border-border">
+                <button type="button" disabled={readOnly} onClick={() => setStrategyFlyoutEditing(false)} className={cn("px-3 py-1 text-xs", !strategyFlyoutEditing ? "bg-muted text-foreground" : "text-muted-foreground")}>View</button>
+                <button type="button" disabled={readOnly} onClick={() => setStrategyFlyoutEditing(true)} className={cn("border-l border-border px-3 py-1 text-xs", strategyFlyoutEditing ? "bg-muted text-foreground" : "text-muted-foreground")}>Edit</button>
+              </div>
+              <DialogClose asChild>
+                <Button size="sm" variant="ghost">Close</Button>
+              </DialogClose>
+            </div>
+          </div>
+          <div className="max-h-[78vh] overflow-y-auto p-4">
+            {strategyFlyoutEditing ? (
+              <div className="space-y-3">
+                <Input value={strategySummary} onChange={(event) => setStrategySummary(event.target.value)} placeholder="Revision summary" disabled={readOnly} />
+                <Textarea value={strategyBody} onChange={(event) => setStrategyBody(event.target.value)} rows={26} placeholder="Mission, hypotheses, priorities, constraints, coverage expectations, and exit criteria…" disabled={readOnly} className="font-mono text-xs" />
+                <div className="flex justify-end gap-2">
+                  <Button size="sm" variant="outline" disabled={busy !== null} onClick={() => setStrategyFlyoutEditing(false)}>Done</Button>
+                  <Button size="sm" disabled={readOnly || !strategyBody.trim() || busy !== null} onClick={() => void mutate("strategy-save", () => createStrategyRevision(slug, { body: strategyBody.trim(), summary: strategySummary.trim() || null, state: "current", based_on_revision_id: data.current?.id ?? null }), "Current strategy saved as a new revision.").then((ok) => { if (ok) setStrategyFlyoutEditing(false); })}>{busy === "strategy-save" ? "Saving…" : "Save new revision"}</Button>
+                </div>
+              </div>
+            ) : (
+              <StrategyMarkdown body={strategyBody} />
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
