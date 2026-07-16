@@ -200,7 +200,13 @@ def test_long_parser_group_key_is_replaced_with_bounded_stable_hash() -> None:
     assert len(first.groups[0].selection_key) <= 200
 
 
-def test_out_of_scope_row_does_not_claim_later_allowed_burp_serial() -> None:
+def test_burp_commits_out_of_scope_rows_alongside_in_scope_twin() -> None:
+    # v2.7.0: Burp exports routinely include third-party hosts that
+    # aren't strictly in scope but are useful evidence. The wizard
+    # surfaces everything and lets the analyst delete post-import; the
+    # commit path no longer filters by scope for burp. Even when an
+    # out-of-scope row shares a serial with an in-scope twin, both land
+    # in the analyst's queue.
     raw = b"""<issues>
       <issue><serialNumber>same-serial</serialNumber><type>1001</type>
       <name>Repeated issue</name><host ip="198.51.100.10">https://outside.test</host>
@@ -217,11 +223,15 @@ def test_out_of_scope_row_does_not_claim_later_allowed_burp_serial() -> None:
     )
     preview = build_scanner_preview("burp", raw, scope_items=[scope])
 
+    assert preview.scope_enforced is False
     group = preview.groups[0]
+    # Preview counts stay factual — 1 literally in scope, 1 out — so
+    # the wizard can still surface the split to the analyst.
     assert group.in_scope_item_count == 1
     assert group.out_of_scope_item_count == 1
     assert group.duplicate_item_count == 0
     assert group.default_selected is True
+
     prepared = prepare_scanner_commit(
         "burp",
         raw,
@@ -229,8 +239,10 @@ def test_out_of_scope_row_does_not_claim_later_allowed_burp_serial() -> None:
         selected_group_keys={"burp:1001"},
         scope_items=[scope],
     )
-    assert prepared.selected_item_count == 1
-    assert prepared.items[0].target == "https://allowed.test/second"
+    assert prepared.selected_item_count == 2
+    assert prepared.skipped_out_of_scope == 0
+    targets = {item.target for item in prepared.items}
+    assert targets == {"https://outside.test/first", "https://allowed.test/second"}
 
 
 def test_commit_rejects_changed_file_and_unknown_selection() -> None:
