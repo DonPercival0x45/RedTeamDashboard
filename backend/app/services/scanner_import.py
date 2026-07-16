@@ -303,10 +303,7 @@ def _group_preview(
     new_allowed_count = sum(row.scope.allowed and not row.duplicate for row in rows)
     # Committable-count drives whether the group is default-on. When
     # scope isn't enforced (Burp) every non-duplicate row commits.
-    if scope_enforced:
-        committable_count = new_allowed_count
-    else:
-        committable_count = len(rows) - duplicate_count
+    committable_count = new_allowed_count if scope_enforced else len(rows) - duplicate_count
     if duplicate_count == 0:
         duplicate_state: Literal["new", "partial", "existing"] = "new"
     elif duplicate_count == len(rows):
