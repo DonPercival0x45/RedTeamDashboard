@@ -99,6 +99,11 @@ class ScannerPreview:
     groups: tuple[PreviewGroup, ...]
     counts: Mapping[str, int]
     parser_counts: Mapping[str, int]
+    # v2.7.0: Burp exports routinely include third-party hosts (CDN
+    # redirects, analytics beacons) that aren't strictly in scope but
+    # are useful evidence. For Burp we surface everything and let the
+    # analyst delete out-of-scope rows post-import.
+    scope_enforced: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -261,8 +266,9 @@ def _evaluate_items(
             source == "burp" and serial and serial in seen_burp_serials
         )
         # A rejected row must not claim the identity and suppress a later
-        # in-scope representation of the same scanner observation.
-        if scope.allowed:
+        # in-scope representation of the same scanner observation. Burp
+        # (v2.7.0) commits regardless of scope, so its rows always stamp.
+        if scope.allowed or source == "burp":
             group_seen.add(dedup_key)
             if source == "burp" and serial:
                 seen_burp_serials.add(serial)
@@ -281,6 +287,7 @@ def _group_preview(
     rows: Sequence[_EvaluatedItem],
     *,
     include_info_by_default: bool,
+    scope_enforced: bool = True,
 ) -> PreviewGroup:
     first = rows[0]
     reasons = Counter(row.scope.reason_code for row in rows)
@@ -293,8 +300,14 @@ def _group_preview(
     )
     scope_decision = reason_counts[0].code if len(reason_counts) == 1 else "mixed"
     duplicate_count = sum(row.duplicate for row in rows)
-    allowed_count = sum(row.scope.allowed for row in rows)
-    new_allowed_count = sum(row.scope.allowed and not row.duplicate for row in rows)
+    # When scope isn't enforced (Burp), treat every row as committable so
+    # the wizard doesn't disable groups whose targets fall outside scope.
+    if scope_enforced:
+        allowed_count = sum(row.scope.allowed for row in rows)
+        new_allowed_count = sum(row.scope.allowed and not row.duplicate for row in rows)
+    else:
+        allowed_count = len(rows)
+        new_allowed_count = len(rows) - duplicate_count
     if duplicate_count == 0:
         duplicate_state: Literal["new", "partial", "existing"] = "new"
     elif duplicate_count == len(rows):
@@ -347,8 +360,13 @@ def build_scanner_preview(
         grouped.setdefault(row.selection_key, []).append(row)
     if len(grouped) > MAX_SCANNER_GROUPS:
         raise ValueError(f"scanner export exceeds the {MAX_SCANNER_GROUPS:,}-group limit")
+    scope_enforced = source != "burp"
     groups = tuple(
-        _group_preview(rows, include_info_by_default=include_info_by_default)
+        _group_preview(
+            rows,
+            include_info_by_default=include_info_by_default,
+            scope_enforced=scope_enforced,
+        )
         for _, rows in sorted(grouped.items())
     )
     total_source_rows = parser_counts.get(
@@ -369,6 +387,7 @@ def build_scanner_preview(
         groups=groups,
         counts=counts,
         parser_counts=parser_counts,
+        scope_enforced=scope_enforced,
     )
 
 
@@ -398,14 +417,24 @@ def prepare_scanner_commit(
         raise ValueError(f"unknown scanner preview selection key(s): {', '.join(sorted(unknown))}")
 
     selected = [row for row in evaluated if row.selection_key in selected_group_keys]
-    commit_rows = [row for row in selected if row.scope.allowed and not row.duplicate]
+    scope_enforced = source != "burp"
+    if scope_enforced:
+        commit_rows = [row for row in selected if row.scope.allowed and not row.duplicate]
+        skipped_out_of_scope = sum(not row.scope.allowed for row in selected)
+        skipped_duplicate = sum(row.duplicate for row in selected if row.scope.allowed)
+    else:
+        # Burp: commit everything the analyst selected, regardless of
+        # scope; they filter post-import.
+        commit_rows = [row for row in selected if not row.duplicate]
+        skipped_out_of_scope = 0
+        skipped_duplicate = sum(row.duplicate for row in selected)
     return PreparedCommit(
         source=source,
         file_sha256=actual_sha256,
         selected_group_count=len(selected_group_keys),
         selected_item_count=len(commit_rows),
-        skipped_out_of_scope=sum(not row.scope.allowed for row in selected),
-        skipped_duplicate=sum(row.duplicate for row in selected if row.scope.allowed),
+        skipped_out_of_scope=skipped_out_of_scope,
+        skipped_duplicate=skipped_duplicate,
         items=tuple(row.item for row in commit_rows),
         parser_counts=parser_counts,
     )

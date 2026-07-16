@@ -441,6 +441,9 @@ export interface ScannerImportPreview {
   groups: ScannerPreviewGroup[];
   counts: Record<string, number>;
   parser_counts: Record<string, number>;
+  // v2.7.0: false for Burp — the wizard should let the analyst select
+  // out-of-scope groups and the backend will commit them anyway.
+  scope_enforced?: boolean;
 }
 
 export interface ScannerImportCommitResult {

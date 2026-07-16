@@ -16,6 +16,7 @@
 
 import { useMemo, useState } from "react";
 import { Download } from "lucide-react";
+import { CopyJsonButton } from "@/components/copy-json-button";
 import {
   Bar,
   BarChart,
@@ -603,9 +604,14 @@ function EngagementLogItem({ row }: { row: EngagementLogRow }) {
         </span>
       </button>
       {open && (
-        <pre className="max-h-64 overflow-auto border-t border-border/60 bg-background/60 px-3 py-2 font-mono text-[10px] leading-snug text-muted-foreground">
-          {JSON.stringify(row.payload, null, 2)}
-        </pre>
+        <div className="border-t border-border/60 bg-background/60">
+          <div className="flex justify-end px-3 pt-2">
+            <CopyJsonButton value={row.payload} />
+          </div>
+          <pre className="max-h-64 overflow-auto px-3 py-2 font-mono text-[10px] leading-snug text-muted-foreground">
+            {JSON.stringify(row.payload, null, 2)}
+          </pre>
+        </div>
       )}
     </li>
   );

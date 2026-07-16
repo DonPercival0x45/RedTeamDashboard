@@ -54,6 +54,7 @@ import { listWorkItems } from "@/lib/strategy-api";
 import { cn } from "@/lib/utils";
 import { LoaderOverlay } from "@/components/loader";
 import { GroupedItemsView, extractItems } from "@/components/grouped-items-view";
+import { CopyJsonButton } from "@/components/copy-json-button";
 import type {
   Attachment,
   Finding,
@@ -1511,7 +1512,10 @@ function DetailsPanel({ finding, slug }: { finding: Finding; slug: string | null
             below for legacy / manual inspection. */}
         <details className="mt-4 rounded-md border border-border bg-background">
           <summary className="cursor-pointer px-3 py-2 text-xs font-medium">Raw payload</summary>
-          <pre className="max-h-96 overflow-auto border-t border-border p-3 font-mono text-xs text-muted-foreground">
+          <div className="flex justify-end border-t border-border px-3 pt-2">
+            <CopyJsonButton value={{ args: finding.args, data: finding.data }} />
+          </div>
+          <pre className="max-h-96 overflow-auto p-3 font-mono text-xs text-muted-foreground">
             {JSON.stringify({ args: finding.args, data: finding.data }, null, 2)}
           </pre>
         </details>

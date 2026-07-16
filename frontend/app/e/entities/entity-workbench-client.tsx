@@ -6,6 +6,7 @@ import { useSearchParams } from "next/navigation";
 import { ArrowLeft, Boxes, Clipboard, Network, RefreshCcw, ShieldCheck } from "lucide-react";
 import { DateTime } from "@/components/date-time";
 import { Badge } from "@/components/ui/badge";
+import { CopyJsonButton } from "@/components/copy-json-button";
 import {
   listEntities,
   listFindings,
@@ -288,7 +289,10 @@ function EvidencePanel({ storedMatches, entity, slug }: { storedMatches: StoredE
                     stored.source_attribution ?? stored.source_tool
                   )}{" "}· <DateTime value={stored.created_at} />
                 </p>
-                <pre className="mt-2 max-h-44 overflow-auto rounded bg-muted/40 p-2">{JSON.stringify(stored.properties, null, 2)}</pre>
+                <div className="mt-2 flex justify-end">
+                  <CopyJsonButton value={stored.properties} />
+                </div>
+                <pre className="mt-1 max-h-44 overflow-auto rounded bg-muted/40 p-2">{JSON.stringify(stored.properties, null, 2)}</pre>
               </li>
             ))}
           </ul>

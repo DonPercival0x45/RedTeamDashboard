@@ -20,6 +20,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { DefaultToolsBanner } from "@/components/default-tools-banner";
 import { ToolUploader } from "@/components/tool-uploader";
+import { CopyJsonButton } from "@/components/copy-json-button";
 import {
   useApproveToolMutation,
   useDeleteToolMutation,
@@ -638,7 +639,10 @@ function ToolInspector({
         </div>
 
         <section className="mt-5">
-          <h3 className="text-sm font-medium">Manifest</h3>
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-medium">Manifest</h3>
+            <CopyJsonButton value={tool.manifest} />
+          </div>
           <pre className="mt-2 max-h-64 overflow-auto rounded-md border border-border bg-background p-3 font-mono text-[11px] text-muted-foreground">
             {JSON.stringify(tool.manifest, null, 2)}
           </pre>
@@ -647,7 +651,10 @@ function ToolInspector({
         <ValidationPanels tool={tool} />
 
         <section className="mt-5">
-          <h3 className="text-sm font-medium">Raw validation</h3>
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-medium">Raw validation</h3>
+            <CopyJsonButton value={tool.validation} />
+          </div>
           <pre className="mt-2 max-h-64 overflow-auto rounded-md border border-border bg-background p-3 font-mono text-[11px] text-muted-foreground">
             {JSON.stringify(tool.validation, null, 2)}
           </pre>

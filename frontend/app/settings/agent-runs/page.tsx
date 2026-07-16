@@ -33,6 +33,7 @@ import {
 import { DateTime } from "@/components/date-time";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { CopyJsonButton } from "@/components/copy-json-button";
 import {
   useCancelAgentExecutionMutation,
   useGlobalAgentRunSteps,
@@ -473,9 +474,14 @@ function ExpandedDetail({
                         ))}
                     </button>
                     {isOpen && hasDetail && (
-                      <pre className="mt-1.5 overflow-auto rounded bg-background p-2 font-mono text-[11px] text-muted-foreground">
-                        {JSON.stringify(s.detail, null, 2)}
-                      </pre>
+                      <div className="mt-1.5 rounded bg-background p-2">
+                        <div className="mb-1 flex justify-end">
+                          <CopyJsonButton value={s.detail} />
+                        </div>
+                        <pre className="overflow-auto font-mono text-[11px] text-muted-foreground">
+                          {JSON.stringify(s.detail, null, 2)}
+                        </pre>
+                      </div>
                     )}
                   </li>
                 );
@@ -487,6 +493,9 @@ function ExpandedDetail({
           <summary className="cursor-pointer select-none px-3 py-2 text-[10px] uppercase tracking-wide text-muted-foreground">
             Raw payload (JSON)
           </summary>
+          <div className="flex justify-end px-3 pb-1">
+            <CopyJsonButton value={entity.log} />
+          </div>
           <pre className="max-h-64 overflow-auto p-3 font-mono text-xs text-muted-foreground">
             {JSON.stringify(entity.log, null, 2)}
           </pre>

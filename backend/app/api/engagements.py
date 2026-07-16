@@ -1593,6 +1593,10 @@ class ScannerImportPreviewRead(BaseModel):
     groups: list[ScannerPreviewGroupRead]
     counts: dict[str, int]
     parser_counts: dict[str, int]
+    # v2.7.0: false for Burp — the commit accepts every selected row
+    # regardless of scope so third-party assets Burp trips over end up
+    # in the analyst's queue for manual review.
+    scope_enforced: bool = True
 
 
 class ScannerImportCommitResult(BaseModel):
@@ -2014,6 +2018,7 @@ def _scanner_preview_to_dict(preview: Any) -> dict[str, Any]:
         ],
         "counts": dict(preview.counts),
         "parser_counts": dict(preview.parser_counts),
+        "scope_enforced": preview.scope_enforced,
     }
 
 

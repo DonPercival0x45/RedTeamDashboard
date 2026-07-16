@@ -39,8 +39,12 @@ function scopeState(group: ScannerPreviewGroup): Exclude<ScopeFilter, "all"> {
   return "in_scope";
 }
 
-function disabledGroup(group: ScannerPreviewGroup): boolean {
-  return group.in_scope_item_count === 0 || group.duplicate_state === "existing";
+function disabledGroup(group: ScannerPreviewGroup, scopeEnforced: boolean): boolean {
+  if (group.duplicate_state === "existing") return true;
+  // When scope isn't enforced (Burp), even purely out-of-scope groups
+  // are importable — the analyst deletes bad rows post-import.
+  if (!scopeEnforced) return false;
+  return group.in_scope_item_count === 0;
 }
 
 export function ScannerImportWizard({
@@ -89,10 +93,15 @@ export function ScannerImportWizard({
     });
   }, [preview, scope, search, severity]);
 
-  const selectableVisible = visibleGroups.filter((group) => !disabledGroup(group));
+  const scopeEnforced = preview?.scope_enforced !== false;
+  const selectableVisible = visibleGroups.filter((group) => !disabledGroup(group, scopeEnforced));
   const selectedGroups = preview?.groups.filter((group) => selected.has(group.selection_key)) ?? [];
   const projectedItems = selectedGroups.reduce(
-    (total, group) => total + group.in_scope_item_count,
+    (total, group) =>
+      total +
+      (scopeEnforced
+        ? group.in_scope_item_count
+        : group.item_count - group.duplicate_item_count),
     0,
   );
 
@@ -105,10 +114,11 @@ export function ScannerImportWizard({
       const next = await previewScannerImport(slug, source, file);
       if (operation !== operationRef.current) return;
       setPreview(next);
+      const nextScopeEnforced = next.scope_enforced !== false;
       setSelected(
         new Set(
           next.groups
-            .filter((group) => group.default_selected && !disabledGroup(group))
+            .filter((group) => group.default_selected && !disabledGroup(group, nextScopeEnforced))
             .map((group) => group.selection_key),
         ),
       );
@@ -260,9 +270,15 @@ export function ScannerImportWizard({
             <span className="text-xs text-muted-foreground">{selected.size} groups selected</span>
           </div>
 
+          {!scopeEnforced && (
+            <p className="rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-xs text-amber-800 dark:text-amber-200">
+              Scope isn&apos;t enforced for {sourceLabel(source)} imports — every selected group commits regardless of scope. Review and delete any out-of-scope findings after import.
+            </p>
+          )}
+
           <ul className="max-h-[28rem] space-y-2 overflow-auto" aria-label="Scanner preview groups">
             {visibleGroups.map((group) => {
-              const disabled = disabledGroup(group);
+              const disabled = disabledGroup(group, scopeEnforced);
               const state = scopeState(group);
               return (
                 <li key={group.selection_key} className={cn("rounded border border-border p-3", disabled && "bg-secondary/30 opacity-75")}>
@@ -299,7 +315,13 @@ export function ScannerImportWizard({
           <h3 id={`${source}-confirm-title`} className="text-sm font-medium">Confirm scanner import</h3>
           <div className="rounded border border-border bg-secondary/30 p-3 text-sm">
             <p><strong>{selected.size}</strong> groups selected from <strong>{file?.name}</strong>.</p>
-            <p className="text-xs text-muted-foreground">Up to {projectedItems} in-scope items will be considered. The server will verify the file hash, reparse it, and remove current duplicates before applying changes.</p>
+            <p className="text-xs text-muted-foreground">
+              {scopeEnforced ? (
+                <>Up to {projectedItems} in-scope items will be considered. The server will verify the file hash, reparse it, and remove current duplicates before applying changes.</>
+              ) : (
+                <>Up to {projectedItems} items will be imported (scope not enforced for {sourceLabel(source)}). Delete any out-of-scope findings after review.</>
+              )}
+            </p>
           </div>
           <div className="flex justify-between">
             <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => setStep("preview")}>Back</Button>
@@ -314,7 +336,10 @@ export function ScannerImportWizard({
             <CheckCircle2 className="mt-0.5 h-5 w-5 text-emerald-600" />
             <div>
               <h3 id={`${source}-result-title`} className="text-sm font-medium">Import complete</h3>
-              <p className="text-xs text-muted-foreground">{result.imported.length} finding rows affected · {result.selected_item_count} new items · {result.skipped_duplicate} duplicates skipped · {result.skipped_out_of_scope} out of scope</p>
+              <p className="text-xs text-muted-foreground">
+                {result.imported.length} finding rows affected · {result.selected_item_count} new items · {result.skipped_duplicate} duplicates skipped
+                {scopeEnforced && ` · ${result.skipped_out_of_scope} out of scope`}
+              </p>
             </div>
           </div>
           {result.imported.length > 0 && (
