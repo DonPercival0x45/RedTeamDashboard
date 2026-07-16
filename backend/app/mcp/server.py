@@ -28,6 +28,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import Any
 
+import anyio
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from sqlalchemy import select
@@ -397,6 +398,38 @@ def _run_osint(
 
 
 # ---------------------------------------------------------------------------
+# Hard ceiling for a single OSINT tool call run via the threadpool. Each tool
+# already has its own internal timeout (crt.sh 30s, subfinder 90s, httpx 10s,
+# portscan ~1s/port); this backstops a tool whose own timeout fails to fire so
+# a wedged call can't hold a worker thread forever.
+_OSINT_THREAD_TIMEOUT_S = 180
+
+
+async def _run_osint_async(
+    tool_name: str,
+    engagement_slug: str | None,
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    """Run an OSINT tool off the event loop.
+
+    The tool implementations all do blocking I/O (sync ``httpx``, a
+    ``subprocess.run`` shell-out, and an ``asyncio.run`` in portscan).
+    FastMCP executes tool bodies on the event loop, so calling them directly
+    wedges the loop and takes ``/health`` (and every other request) down with
+    it. Offloading to the threadpool keeps the loop responsive; the hard
+    timeout is a backstop against a tool whose own timeout doesn't fire.
+    """
+    with anyio.move_on_after(_OSINT_THREAD_TIMEOUT_S):
+        return await anyio.to_thread.run_sync(
+            _run_osint, tool_name, engagement_slug, args, cancellable=True
+        )
+    return {
+        "error": (
+            f"{tool_name} exceeded {_OSINT_THREAD_TIMEOUT_S}s and was aborted"
+        )
+    }
+
+
 # Engagement management tools
 # ---------------------------------------------------------------------------
 
@@ -775,7 +808,7 @@ def create_finding(
 
 
 @mcp.tool()
-def dns_lookup(domain: str, engagement_slug: str = "") -> dict:
+async def dns_lookup(domain: str, engagement_slug: str = "") -> dict:
     """[PASSIVE] Resolve DNS records (A, AAAA, CNAME) for a domain.
 
     Makes no connections to the target — uses public DNS resolvers only.
@@ -784,11 +817,11 @@ def dns_lookup(domain: str, engagement_slug: str = "") -> dict:
     Returns resolved IPs, CNAME chains, and TTL values.
     Findings are automatically stored in the engagement.
     """
-    return _run_osint("dns_lookup", engagement_slug, {"domain": domain})
+    return await _run_osint_async("dns_lookup", engagement_slug, {"domain": domain})
 
 
 @mcp.tool()
-def whois_lookup(domain: str, engagement_slug: str = "") -> dict:
+async def whois_lookup(domain: str, engagement_slug: str = "") -> dict:
     """[PASSIVE] WHOIS registration lookup for a domain.
 
     Returns registrar, registration dates, name servers, and registrant
@@ -796,11 +829,11 @@ def whois_lookup(domain: str, engagement_slug: str = "") -> dict:
 
     Findings are automatically stored in the engagement.
     """
-    return _run_osint("whois_lookup", engagement_slug, {"domain": domain})
+    return await _run_osint_async("whois_lookup", engagement_slug, {"domain": domain})
 
 
 @mcp.tool()
-def crt_sh(domain: str, engagement_slug: str = "") -> dict:
+async def crt_sh(domain: str, engagement_slug: str = "") -> dict:
     """[PASSIVE] Certificate Transparency log search via crt.sh.
 
     Queries the public crt.sh database for all TLS certificates issued
@@ -809,11 +842,11 @@ def crt_sh(domain: str, engagement_slug: str = "") -> dict:
 
     Findings are automatically stored in the engagement.
     """
-    return _run_osint("crt_sh", engagement_slug, {"domain": domain})
+    return await _run_osint_async("crt_sh", engagement_slug, {"domain": domain})
 
 
 @mcp.tool()
-def httpx_probe(url: str, engagement_slug: str = "") -> dict:
+async def httpx_probe(url: str, engagement_slug: str = "") -> dict:
     """[PASSIVE] HTTP/HTTPS probe for status, title, and tech fingerprints.
 
     Sends a HEAD then GET request to the URL. Returns status code, page
@@ -822,11 +855,11 @@ def httpx_probe(url: str, engagement_slug: str = "") -> dict:
 
     Findings are automatically stored in the engagement.
     """
-    return _run_osint("httpx_probe", engagement_slug, {"url": url})
+    return await _run_osint_async("httpx_probe", engagement_slug, {"url": url})
 
 
 @mcp.tool()
-def subfinder(domain: str, engagement_slug: str = "") -> dict:
+async def subfinder(domain: str, engagement_slug: str = "") -> dict:
     """[PASSIVE] Subdomain enumeration via passive sources.
 
     Queries certificate transparency logs, DNS aggregators, and other
@@ -835,11 +868,11 @@ def subfinder(domain: str, engagement_slug: str = "") -> dict:
 
     Findings are automatically stored in the engagement.
     """
-    return _run_osint("subfinder", engagement_slug, {"domain": domain})
+    return await _run_osint_async("subfinder", engagement_slug, {"domain": domain})
 
 
 @mcp.tool()
-def reverse_dns(ip: str, engagement_slug: str = "") -> dict:
+async def reverse_dns(ip: str, engagement_slug: str = "") -> dict:
     """[PASSIVE] Reverse DNS (PTR) lookup for an IP address.
 
     Looks up the PTR record for an IP to identify the hostname. Useful
@@ -847,7 +880,7 @@ def reverse_dns(ip: str, engagement_slug: str = "") -> dict:
 
     Findings are automatically stored in the engagement.
     """
-    return _run_osint("reverse_dns", engagement_slug, {"ip": ip})
+    return await _run_osint_async("reverse_dns", engagement_slug, {"ip": ip})
 
 
 # ---------------------------------------------------------------------------
@@ -856,7 +889,7 @@ def reverse_dns(ip: str, engagement_slug: str = "") -> dict:
 
 
 @mcp.tool()
-def port_scan(target: str, ports: str = "", engagement_slug: str = "") -> dict:
+async def port_scan(target: str, ports: str = "", engagement_slug: str = "") -> dict:
     """[ACTIVE — confirm with analyst before calling] TCP connect port scan.
 
     Makes real TCP connections to the target. Always tell the analyst what
@@ -873,11 +906,11 @@ def port_scan(target: str, ports: str = "", engagement_slug: str = "") -> dict:
     args: dict[str, Any] = {"target": target}
     if ports:
         args["ports"] = ports
-    return _run_osint("portscan", engagement_slug, args)
+    return await _run_osint_async("portscan", engagement_slug, args)
 
 
 @mcp.tool()
-def subnet_sweep(cidr: str, ports: str = "", engagement_slug: str = "") -> dict:
+async def subnet_sweep(cidr: str, ports: str = "", engagement_slug: str = "") -> dict:
     """[ACTIVE — confirm with analyst before calling] TCP port sweep of a CIDR.
 
     Scans all hosts in the CIDR (up to a /24, 254 hosts). Scope-excluded
@@ -894,11 +927,11 @@ def subnet_sweep(cidr: str, ports: str = "", engagement_slug: str = "") -> dict:
     args: dict[str, Any] = {"cidr": cidr}
     if ports:
         args["ports"] = ports
-    return _run_osint("subnet_sweep", engagement_slug, args)
+    return await _run_osint_async("subnet_sweep", engagement_slug, args)
 
 
 @mcp.tool()
-def service_detect(target: str, ports: str = "", engagement_slug: str = "") -> dict:
+async def service_detect(target: str, ports: str = "", engagement_slug: str = "") -> dict:
     """[ACTIVE — confirm with analyst before calling] Service/version detection.
 
     Banner-grabs, HTTP-probes, and TLS handshakes on a host's open ports to
@@ -916,7 +949,7 @@ def service_detect(target: str, ports: str = "", engagement_slug: str = "") -> d
     args: dict[str, Any] = {"target": target}
     if ports:
         args["ports"] = ports
-    return _run_osint("service_detect", engagement_slug, args)
+    return await _run_osint_async("service_detect", engagement_slug, args)
 
 
 # ---------------------------------------------------------------------------
