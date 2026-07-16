@@ -6,6 +6,7 @@ from datetime import date, datetime
 from typing import Any
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     Date,
     DateTime,
@@ -220,6 +221,14 @@ class EngagementObjective(Base, TimestampMixin):
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # True only for starter rows seeded by
+    # _bootstrap_workspace_from_initial_strategy. Lets
+    # reset_strategy_workspace target seeds by provenance instead of magic
+    # title text, so analyst edits to a seeded objective never orphan it and
+    # analyst objectives that happen to share a seed title are never deleted.
+    is_bootstrap: Mapped[bool | None] = mapped_column(
+        Boolean, nullable=True, default=False, server_default="false"
+    )
     row_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
 
@@ -247,6 +256,17 @@ class WorkItem(Base, TimestampMixin):
     )
     parent_work_item_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("work_items.id", ondelete="SET NULL")
+    )
+    # Structured target so a WorkItem is actionable/dispatchable: it points at a
+    # concrete in-scope thing (a declared scope item, a stored entity, or a
+    # finding via WorkItemFinding). At least one of these should be set for
+    # executor_type=finding_agent/tactical work so the strategist's queue items
+    # reference real engagement records rather than prose only.
+    scope_item_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("scope_items.id", ondelete="SET NULL"), nullable=True
+    )
+    entity_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("entities.id", ondelete="SET NULL"), nullable=True
     )
     title: Mapped[str] = mapped_column(String(300), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -281,6 +301,12 @@ class WorkItem(Base, TimestampMixin):
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # True only for starter rows seeded by
+    # _bootstrap_workspace_from_initial_strategy. Lets reset_strategy_workspace
+    # target seeds by provenance instead of magic rationale text.
+    is_bootstrap: Mapped[bool | None] = mapped_column(
+        Boolean, nullable=True, default=False, server_default="false"
+    )
     row_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
 
@@ -456,6 +482,12 @@ class CoverageItem(Base, TimestampMixin):
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
     )
     accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # True only for starter rows seeded by
+    # _bootstrap_workspace_from_initial_strategy. Lets reset_strategy_workspace
+    # target seeds by provenance instead of magic reason text.
+    is_bootstrap: Mapped[bool | None] = mapped_column(
+        Boolean, nullable=True, default=False, server_default="false"
+    )
     row_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
 

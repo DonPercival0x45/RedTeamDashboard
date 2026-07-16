@@ -331,3 +331,7 @@ class ResumeResponse(BaseModel):
     coverage_summary: dict[str, Any]
     report_readiness: dict[str, Any]
     generated_at: datetime
+    current_tasks: list[dict[str, Any]] = Field(default_factory=list)
+    recent_findings: list[dict[str, Any]] = Field(default_factory=list)
+    recently_closed: list[dict[str, Any]] = Field(default_factory=list)
+    recent_activity: list[dict[str, Any]] = Field(default_factory=list)

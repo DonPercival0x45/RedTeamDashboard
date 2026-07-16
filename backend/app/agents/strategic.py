@@ -18,13 +18,14 @@ trust freeform text here.
 """
 from __future__ import annotations
 
+import hashlib
 import uuid
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Any
 
 import structlog
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -99,6 +100,16 @@ class _StrategicProposal(BaseModel):
         description="Concrete next-step tasks. Empty list = nothing to add right now.",
     )
 
+    @field_validator("tasks")
+    @classmethod
+    def _cap_tasks(cls, value: list[_ProposedTask]) -> list[_ProposedTask]:
+        # Backstop the QUANTITY guidance in the system prompt: even if the
+        # model over-produces, bound the analyst's hand-triage queue. The
+        # prompt asks for highest-value first, so keeping the head preserves
+        # the best proposals.
+        cap = 8
+        return value[:cap] if len(value) > cap else value
+
 
 STRATEGIC_SYSTEM_PROMPT = (
     """You are the Strategic watcher in a red-team orchestrator. \
@@ -116,6 +127,17 @@ outside scope, return an empty task list.
 Do not stack steps.
 - If the finding doesn't suggest a useful next step right now, return tasks=[]. \
 Empty is fine.
+
+QUANTITY (important — analysts triage this queue by hand):
+- Propose AT MOST 8 tasks, and only that many if each is genuinely distinct \
+and high-value. Two to five is typical; zero is correct when nothing materially \
+advances the finding.
+- Do NOT enumerate every applicable tool against every target. Name the single \
+highest-value next step first; add a second only if it develops a different, \
+non-redundant angle.
+- Never propose two tasks that run the same tool against the same target, or \
+redundant tools against the same target (e.g. subfinder AND crt_sh against one \
+apex are duplicates — pick one).
 
 You are a pure observer. Your output is a recommendation; nothing runs until \
 the analyst accepts.
@@ -303,6 +325,14 @@ def _extract_usage(response: Any) -> tuple[int | None, int | None]:
     structured-output wrapper hides the underlying message. We dig defensively
     and return ``(None, None)`` when we can't find anything — non-fatal.
     """
+    if isinstance(response, list):
+        totals = [_extract_usage(item) for item in response]
+        in_values = [value for value, _ in totals if value is not None]
+        out_values = [value for _, value in totals if value is not None]
+        return (
+            sum(in_values) if in_values else None,
+            sum(out_values) if out_values else None,
+        )
     meta = getattr(response, "response_metadata", None) or {}
     usage = meta.get("usage") or meta.get("token_usage") or {}
     return (
@@ -334,6 +364,7 @@ def _make_chat_model(
     *,
     api_key: str | None = None,
     endpoint: str | None = None,
+    max_tokens: int | None = None,
 ) -> Any:
     """Provider-agnostic chat model factory used by Strategic.
 
@@ -357,7 +388,7 @@ def _make_chat_model(
     if provider == "anthropic":
         from langchain_anthropic import ChatAnthropic
 
-        kwargs: dict[str, Any] = {"model": name, "max_tokens": 4096}
+        kwargs: dict[str, Any] = {"model": name, "max_tokens": max_tokens or 4096}
         if api_key:
             kwargs["api_key"] = api_key
         return ChatAnthropic(**kwargs)
@@ -365,6 +396,8 @@ def _make_chat_model(
         from langchain_openai import ChatOpenAI
 
         kwargs = {"model": name}
+        if max_tokens:
+            kwargs["max_tokens"] = max_tokens
         if api_key:
             kwargs["api_key"] = api_key
         if endpoint:
@@ -382,12 +415,15 @@ def _make_chat_model(
 
         from app.core.config import settings
 
-        return AzureChatOpenAI(
-            azure_endpoint=endpoint or settings.azure_openai_endpoint,
-            api_key=api_key or settings.azure_openai_api_key or None,
-            azure_deployment=name or settings.azure_openai_deployment,
-            api_version=settings.azure_openai_api_version,
-        )
+        kwargs = {
+            "azure_endpoint": endpoint or settings.azure_openai_endpoint,
+            "api_key": api_key or settings.azure_openai_api_key or None,
+            "azure_deployment": name or settings.azure_openai_deployment,
+            "api_version": settings.azure_openai_api_version,
+        }
+        if max_tokens:
+            kwargs["max_tokens"] = max_tokens
+        return AzureChatOpenAI(**kwargs)
     if provider in _OPENAI_COMPATIBLE_BASES:
         from langchain_openai import ChatOpenAI
 
@@ -398,6 +434,8 @@ def _make_chat_model(
                 "(re-upload at /settings/keys with the API base URL filled in)"
             )
         kwargs = {"model": name, "base_url": base}
+        if max_tokens:
+            kwargs["max_tokens"] = max_tokens
         if api_key:
             kwargs["api_key"] = api_key
         return ChatOpenAI(**kwargs)
@@ -855,12 +893,33 @@ class StrategicAgent:
         proposal: _StrategicProposal,
     ) -> list[Suggestion]:
         suggestions: list[Suggestion] = []
+        seen_keys: set[str] = set()
         for task in proposal.tasks:
             if task.kind not in _AGENT_TASK_KINDS:
                 # Defense in depth: even if the LLM tries to propose exploit,
                 # we silently drop it. The rejection count goes on the
                 # execution.output for visibility.
                 continue
+            # Stable key per (finding, tool, target, kind) so repeated Strategic
+            # runs on the same finding don't pile up duplicate open task
+            # suggestions. proposal_key also backs the
+            # uq_suggestions_open_proposal_key unique index as a backstop; we
+            # pre-check here to skip quietly rather than surface IntegrityErrors.
+            proposal_key = "strategic:" + hashlib.sha256(
+                f"{finding_id}|{task.tool}|{task.target}|{task.kind.value}".encode()
+            ).hexdigest()[:24]
+            if proposal_key in seen_keys:
+                continue
+            already_open = session.execute(
+                select(Suggestion.id).where(
+                    Suggestion.engagement_id == engagement_id,
+                    Suggestion.proposal_key == proposal_key,
+                    Suggestion.status == SuggestionStatus.open,
+                )
+            ).first()
+            if already_open:
+                continue
+            seen_keys.add(proposal_key)
             suggestion = Suggestion(
                 engagement_id=engagement_id,
                 finding_id=finding_id,
@@ -875,6 +934,7 @@ class StrategicAgent:
                 },
                 status=SuggestionStatus.open,
                 created_by_agent=AgentName.strategic,
+                proposal_key=proposal_key,
             )
             session.add(suggestion)
             session.flush()

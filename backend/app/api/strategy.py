@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Query, status
-from sqlalchemy import func, or_, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, object_session
 
@@ -523,6 +523,87 @@ def reject_strategy_revision(
     session.commit()
     session.refresh(target)
     return target
+
+
+@router.post("/engagements/{slug}/strategy/reset", status_code=status.HTTP_204_NO_CONTENT)
+def reset_strategy_workspace(slug: str, session: DbSession, user: CurrentNonGuestUser):
+    """Remove the current strategy so the engagement can be bootstrapped again.
+
+    This is intentionally explicit and analyst-driven. It clears current/proposed
+    strategy state and removes only starter workspace rows created by the initial
+    strategy bootstrap; it does not touch arbitrary analyst-created work.
+    """
+    eng = _engagement(session, slug)
+    _ensure_mutable(eng)
+    revisions = list(
+        session.execute(
+            select(EngagementStrategyRevision)
+            .where(EngagementStrategyRevision.engagement_id == eng.id)
+            .order_by(EngagementStrategyRevision.version)
+            .with_for_update()
+        ).scalars()
+    )
+    changed_revision_ids: list[str] = []
+    for revision in revisions:
+        if revision.state in (StrategyRevisionState.current, StrategyRevisionState.proposed):
+            revision.state = StrategyRevisionState.rejected
+            revision.decided_by_user_id = user.id
+            revision.decided_at = datetime.now(tz=UTC)
+            revision.proposal_reason = "Reset by analyst for strategy regeneration"
+            changed_revision_ids.append(str(revision.id))
+
+    open_strategy_suggestions = list(
+        session.execute(
+            select(Suggestion)
+            .where(
+                Suggestion.engagement_id == eng.id,
+                Suggestion.status == SuggestionStatus.open,
+                Suggestion.kind == SuggestionKind.strategy_revision,
+            )
+            .with_for_update()
+        ).scalars()
+    )
+    for suggestion in open_strategy_suggestions:
+        suggestion.status = SuggestionStatus.dismissed
+        suggestion.decided_by = user.id
+        suggestion.decided_at = datetime.now(tz=UTC)
+
+    seeded_work = session.execute(
+        select(WorkItem.id).where(
+            WorkItem.engagement_id == eng.id,
+            WorkItem.is_bootstrap.is_(True),
+        )
+    ).scalars().all()
+    if seeded_work:
+        session.execute(delete(WorkItem).where(WorkItem.id.in_(seeded_work)))
+
+    session.execute(
+        delete(CoverageItem).where(
+            CoverageItem.engagement_id == eng.id,
+            CoverageItem.is_bootstrap.is_(True),
+        )
+    )
+    session.execute(
+        delete(EngagementObjective).where(
+            EngagementObjective.engagement_id == eng.id,
+            EngagementObjective.is_bootstrap.is_(True),
+        )
+    )
+
+    _audit(
+        session,
+        eng.id,
+        user.id,
+        "strategy.reset",
+        {
+            "revision_ids": changed_revision_ids,
+            "dismissed_strategy_suggestions": [str(row.id) for row in open_strategy_suggestions],
+            "deleted_seeded_work_items": len(seeded_work),
+            "seed_match": "is_bootstrap",
+        },
+    )
+    session.commit()
+    return None
 
 
 @router.post(
@@ -1706,26 +1787,131 @@ def get_resume(slug: str, session: DbSession, _user: CurrentUser):
     coverage = list(
         session.execute(select(CoverageItem).where(CoverageItem.engagement_id == eng.id)).scalars()
     )
+    findings = list(
+        session.execute(
+            select(Finding)
+            .where(Finding.engagement_id == eng.id, Finding.deleted_at.is_(None))
+            .order_by(Finding.updated_at.desc())
+        ).scalars()
+    )
     readiness = build_report_readiness(session, engagement=eng)
+    facts = _checkpoint_facts(session, eng.id)
+
+    strategy_required = current is None
+    severity_rank = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
+    findings_by_id = {row.id: row for row in findings}
+    links_by_work_id: dict[uuid.UUID, list[Finding]] = {row.id: [] for row in work}
+    if work:
+        work_links = session.execute(
+            select(WorkItemFinding).where(
+                WorkItemFinding.work_item_id.in_([row.id for row in work])
+            )
+        ).scalars()
+        for link in work_links:
+            finding = findings_by_id.get(link.finding_id)
+            if finding is not None:
+                links_by_work_id.setdefault(link.work_item_id, []).append(finding)
+
+    def finding_ref(row: Finding) -> dict[str, Any]:
+        return {
+            "type": "finding",
+            "id": str(row.id),
+            "title": row.title,
+            "severity": row.severity.value,
+            "status": row.status.value,
+            "updated_at": row.updated_at.isoformat(),
+            "href": f"/e/findings/{row.id}?slug={slug}",
+        }
+
+    def linked_findings(row: WorkItem) -> list[Finding]:
+        return links_by_work_id.get(row.id, [])
+
     active = [
         row for row in work if row.status in (WorkItemStatus.ready, WorkItemStatus.in_progress)
     ]
     blocked = [row for row in work if row.status == WorkItemStatus.blocked]
-    recommended = sorted(
-        active + blocked,
-        key=lambda row: (
-            row.status != WorkItemStatus.blocked,
-            row.due_at or datetime.max.replace(tzinfo=UTC),
-            row.created_at,
-        ),
-    )[:10]
-    facts = _checkpoint_facts(session, eng.id)
+    closed = [row for row in work if row.status in _TERMINAL_WORK]
+
+    def work_ref(row: WorkItem) -> dict[str, Any]:
+        links = linked_findings(row)
+        top_finding = max(
+            links,
+            key=lambda item: severity_rank.get(item.severity.value, 0),
+            default=None,
+        )
+        return {
+            "type": "work_item",
+            "id": str(row.id),
+            "title": row.title,
+            "status": row.status.value,
+            "priority": row.priority.value,
+            "updated_at": row.updated_at.isoformat(),
+            "href": f"/e?slug={slug}&view=strategy&workItem={row.id}",
+            "finding": finding_ref(top_finding) if top_finding else None,
+        }
+
+    def work_rank(row: WorkItem) -> tuple[int, int, int, datetime]:
+        links = linked_findings(row)
+        max_severity = max(
+            (severity_rank.get(finding.severity.value, 0) for finding in links),
+            default=0,
+        )
+        priority_rank = {"critical": 4, "high": 3, "medium": 2, "low": 1}.get(
+            row.priority.value, 0
+        )
+        status_rank = 2 if row.status == WorkItemStatus.blocked else 1
+        return (max_severity, priority_rank, status_rank, row.updated_at)
+
+    recommended = sorted(active + blocked, key=work_rank, reverse=True)[:5]
+    recent_findings = [finding_ref(row) for row in findings[:5]]
+    recently_closed = [
+        work_ref(row)
+        for row in sorted(closed, key=lambda item: item.updated_at, reverse=True)[:5]
+    ]
+
+    def audit_ref(row: AuditLog) -> dict[str, Any]:
+        payload = row.payload if isinstance(row.payload, dict) else {}
+        finding_id: uuid.UUID | None = None
+        for key in ("finding_id", "source_finding_id"):
+            raw = payload.get(key)
+            if raw:
+                try:
+                    finding_id = uuid.UUID(str(raw))
+                    break
+                except ValueError:
+                    pass
+        finding = findings_by_id.get(finding_id) if finding_id else None
+        return {
+            "type": "activity",
+            "id": str(row.id),
+            "action": row.event_type.replace(".", " "),
+            "actor": row.actor_type.value,
+            "created_at": row.created_at.isoformat(),
+            "finding": finding_ref(finding) if finding else None,
+            "href": (
+                f"/e/findings/{finding.id}?slug={slug}"
+                if finding
+                else f"/e?slug={slug}&view=status"
+            ),
+        }
+
+    strategy_decisions = [
+        {"type": "strategy_revision", "id": str(row.id), "summary": row.summary}
+        for row in proposed_revisions
+    ] + [
+        {"type": "suggestion", "id": str(row.id), "summary": row.title, "kind": row.kind.value}
+        for row in open_suggestions
+        if row.kind == SuggestionKind.strategy_revision or not strategy_required
+    ]
+
     return ResumeResponse(
         current_focus={
+            "strategy_required": strategy_required,
+            "finding_count": len(findings),
             "strategy_revision_id": str(current.id) if current else None,
             "strategy_version": current.version if current else None,
             "strategy_summary": current.summary if current else None,
-            "rollup": facts["rollup"],
+            "rollup": facts["rollup"] if not strategy_required else {},
         },
         since_checkpoint={
             "checkpoint_id": str(checkpoint.id) if checkpoint else None,
@@ -1740,31 +1926,34 @@ def get_resume(slug: str, session: DbSession, _user: CurrentUser):
                 for row in audits
             ],
         },
-        active_work=[_work_read(session, row) for row in active],
-        blocked_work=[_work_read(session, row) for row in blocked],
+        active_work=[] if strategy_required else [_work_read(session, row) for row in active],
+        blocked_work=[] if strategy_required else [_work_read(session, row) for row in blocked],
         decisions_required=(
-            [
+            strategy_decisions
+            if strategy_required
+            else [
                 {"type": "strategy_signal", "id": str(row.id), "summary": row.summary}
                 for row in signals
             ]
-            + [
-                {"type": "strategy_revision", "id": str(row.id), "summary": row.summary}
-                for row in proposed_revisions
-            ]
-            + [
-                {"type": "suggestion", "id": str(row.id), "summary": row.title}
-                for row in open_suggestions
-            ]
+            + strategy_decisions
         ),
-        recommended_starting_records=[
-            {"type": "work_item", "id": str(row.id), "title": row.title, "status": row.status.value}
-            for row in recommended
-        ],
-        coverage_summary={
-            state.value: sum(row.status == state for row in coverage) for state in CoverageStatus
-        },
+        recommended_starting_records=(
+            [] if strategy_required else [work_ref(row) for row in recommended]
+        ),
+        coverage_summary=(
+            {}
+            if strategy_required
+            else {
+                state.value: sum(row.status == state for row in coverage)
+                for state in CoverageStatus
+            }
+        ),
         report_readiness=readiness.model_dump(mode="json"),
         generated_at=datetime.now(tz=UTC),
+        current_tasks=[] if strategy_required else [work_ref(row) for row in recommended],
+        recent_findings=[] if strategy_required else recent_findings,
+        recently_closed=[] if strategy_required else recently_closed,
+        recent_activity=[] if strategy_required else [audit_ref(row) for row in audits[:5]],
     )
 
 

@@ -16,12 +16,18 @@ from app.models import (
     ActorType,
     AgentTrigger,
     AuditLog,
+    CoverageCategory,
+    CoverageItem,
+    CoverageStatus,
     Engagement,
     EngagementObjective,
     EngagementStatus,
     EngagementStrategyRevision,
     EngagementWorkState,
+    Entity,
     Finding,
+    ObjectivePriority,
+    ObjectiveStatus,
     OwnerEligibility,
     ScopeItem,
     StrategyRevisionState,
@@ -117,6 +123,26 @@ def _accept_work_item(
         executor = WorkItemExecutor(str(payload.get("executor_type") or "unassigned"))
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    scope_item_id = None
+    raw_scope = payload.get("scope_item_id")
+    if raw_scope:
+        try:
+            scope_item_id = uuid.UUID(str(raw_scope))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="invalid scope item id") from exc
+        scope_item = session.get(ScopeItem, scope_item_id)
+        if scope_item is None or scope_item.engagement_id != suggestion.engagement_id:
+            raise HTTPException(status_code=422, detail="scope item is not in this engagement")
+    entity_id = None
+    raw_entity = payload.get("entity_id")
+    if raw_entity:
+        try:
+            entity_id = uuid.UUID(str(raw_entity))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="invalid entity id") from exc
+        linked_entity = session.get(Entity, entity_id)
+        if linked_entity is None or linked_entity.engagement_id != suggestion.engagement_id:
+            raise HTTPException(status_code=422, detail="entity is not in this engagement")
     title = str(payload.get("title") or suggestion.title).strip()[:300]
     if not title:
         raise HTTPException(status_code=422, detail="work item title is required")
@@ -126,6 +152,8 @@ def _accept_work_item(
     item = WorkItem(
         engagement_id=suggestion.engagement_id,
         objective_id=objective_id,
+        scope_item_id=scope_item_id,
+        entity_id=entity_id,
         title=title,
         description=str(payload.get("description") or "")[:4000] or None,
         rationale=str(payload.get("rationale") or "")[:4000] or None,
@@ -147,6 +175,233 @@ def _accept_work_item(
         )
     suggestion.work_item_id = item.id
     return item
+
+
+def _bootstrap_workspace_from_initial_strategy(
+    session: Session,
+    suggestion: Suggestion,
+    *,
+    user_id: uuid.UUID,
+) -> dict[str, int]:
+    """Populate first-pass objectives/work/coverage after accepting strategy.
+
+    This runs only for the initial-strategy bootstrap path. The analyst has just
+    accepted the strategy proposal, so these are committed starter records rather
+    than hidden agent actions.
+    """
+    if session.execute(
+        select(func.count(EngagementObjective.id)).where(
+            EngagementObjective.engagement_id == suggestion.engagement_id
+        )
+    ).scalar_one():
+        return {"objectives": 0, "work_items": 0, "coverage_items": 0}
+
+    objectives = [
+        EngagementObjective(
+            engagement_id=suggestion.engagement_id,
+            title="Validate highest-risk findings",
+            description=(
+                "Review the highest-severity findings for accuracy, scope, "
+                "evidence, and reportability."
+            ),
+            success_criteria=(
+                "High and critical findings have validation status, evidence "
+                "notes, and reportability decisions."
+            ),
+            status=ObjectiveStatus.active,
+            priority=ObjectivePriority.critical,
+            display_order=10,
+            created_by_user_id=user_id,
+            is_bootstrap=True,
+        ),
+        EngagementObjective(
+            engagement_id=suggestion.engagement_id,
+            title="Confirm scope and coverage",
+            description=(
+                "Confirm declared scope, scanner/import coverage, and any "
+                "accepted gaps before downstream work expands."
+            ),
+            success_criteria=(
+                "Scope targets have coverage rows and documented status or "
+                "accepted-gap rationale."
+            ),
+            status=ObjectiveStatus.active,
+            priority=ObjectivePriority.high,
+            display_order=20,
+            created_by_user_id=user_id,
+            is_bootstrap=True,
+        ),
+        EngagementObjective(
+            engagement_id=suggestion.engagement_id,
+            title="Prepare report-ready evidence",
+            description=(
+                "Organize evidence, validation outcomes, and client-safe "
+                "reporting decisions."
+            ),
+            success_criteria=(
+                "Reportable findings have evidence and unresolved gaps are "
+                "documented before completion review."
+            ),
+            status=ObjectiveStatus.planned,
+            priority=ObjectivePriority.medium,
+            display_order=30,
+            created_by_user_id=user_id,
+            is_bootstrap=True,
+        ),
+    ]
+    session.add_all(objectives)
+    session.flush()
+    validation_obj, coverage_obj, report_obj = objectives
+
+    severity_rank = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
+    priority_by_severity = {
+        "critical": WorkItemPriority.critical,
+        "high": WorkItemPriority.high,
+        "medium": WorkItemPriority.medium,
+        "low": WorkItemPriority.low,
+        "info": WorkItemPriority.low,
+    }
+    findings = list(
+        session.execute(
+            select(Finding)
+            .where(Finding.engagement_id == suggestion.engagement_id, Finding.deleted_at.is_(None))
+            .order_by(Finding.updated_at.desc())
+        ).scalars()
+    )
+    findings = sorted(
+        findings,
+        key=lambda row: (severity_rank.get(row.severity.value, 0), row.updated_at),
+        reverse=True,
+    )[:5]
+    work_count = 0
+    for finding in findings:
+        item = WorkItem(
+            engagement_id=suggestion.engagement_id,
+            objective_id=validation_obj.id,
+            title=f"Review and validate: {finding.title}"[:300],
+            description=(
+                "Confirm finding validity, affected target, supporting evidence, "
+                "and reportability."
+            ),
+            rationale=(
+                "Seeded from the accepted initial strategy so high-value findings "
+                "are reviewed first."
+            ),
+            acceptance_criteria=[
+                "Validation status is updated.",
+                "Evidence and analyst notes are sufficient for reporting decisions.",
+                "Scope or exclusion rationale is documented if applicable.",
+            ],
+            status=WorkItemStatus.ready,
+            priority=priority_by_severity.get(finding.severity.value, WorkItemPriority.medium),
+            executor_type=WorkItemExecutor.analyst,
+            created_by_user_id=user_id,
+            is_bootstrap=True,
+        )
+        session.add(item)
+        session.flush()
+        session.add(
+            WorkItemFinding(
+                work_item_id=item.id,
+                finding_id=finding.id,
+                relationship=WorkItemFindingRelationship.primary,
+            )
+        )
+        work_count += 1
+
+    for objective, title, description, priority in [
+        (
+            coverage_obj,
+            "Confirm coverage and accepted gaps",
+            "Review scope, imported scanner coverage, and any missing coverage rows.",
+            WorkItemPriority.high,
+        ),
+        (
+            report_obj,
+            "Prepare report readiness decisions",
+            "Collect evidence and document decisions needed before completion review.",
+            WorkItemPriority.medium,
+        ),
+    ]:
+        session.add(
+            WorkItem(
+                engagement_id=suggestion.engagement_id,
+                objective_id=objective.id,
+                title=title,
+                description=description,
+                rationale="Seeded from the accepted initial strategy.",
+                acceptance_criteria=[],
+                status=WorkItemStatus.ready,
+                priority=priority,
+                executor_type=WorkItemExecutor.analyst,
+                created_by_user_id=user_id,
+                is_bootstrap=True,
+            )
+        )
+        work_count += 1
+
+    coverage_count = 0
+    scope_items = list(
+        session.execute(
+            select(ScopeItem).where(ScopeItem.engagement_id == suggestion.engagement_id).limit(50)
+        ).scalars()
+    )
+    # Sparse-state discovery: if no findings were seeded for review, seed work
+    # that targets declared scope to *generate* findings, so a fresh engagement
+    # has an actionable queue. Each item points at a concrete scope_item and is
+    # executor_type=finding_agent so it can be dispatched to an agent run.
+    if not findings:
+        for scope in scope_items[:5]:
+            session.add(
+                WorkItem(
+                    engagement_id=suggestion.engagement_id,
+                    objective_id=validation_obj.id,
+                    scope_item_id=scope.id,
+                    title=f"Enumerate and triage {scope.value}"[:300],
+                    description=(
+                        "No findings exist yet for this in-scope target. Run "
+                        "reconnaissance to discover surfaces and generate initial "
+                        "findings for analyst validation. No exploitation."
+                    ),
+                    rationale=(
+                        "Seeded from the accepted initial strategy because no "
+                        "findings exist yet; prioritize generating findings against "
+                        "declared scope."
+                    ),
+                    acceptance_criteria=[
+                        "At least one finding or observation is recorded for this target."
+                    ],
+                    status=WorkItemStatus.ready,
+                    priority=WorkItemPriority.high,
+                    executor_type=WorkItemExecutor.finding_agent,
+                    created_by_user_id=user_id,
+                    is_bootstrap=True,
+                )
+            )
+            work_count += 1
+    for scope in scope_items:
+        for category in (CoverageCategory.scope_review, CoverageCategory.finding_review):
+            session.add(
+                CoverageItem(
+                    engagement_id=suggestion.engagement_id,
+                    objective_id=coverage_obj.id,
+                    scope_item_id=scope.id,
+                    target_kind=scope.kind.value,
+                    target_key=scope.value,
+                    activity_category=category,
+                    status=CoverageStatus.planned,
+                    supporting_refs=[],
+                    reason="Seeded from accepted initial strategy.",
+                    is_bootstrap=True,
+                )
+            )
+            coverage_count += 1
+
+    return {
+        "objectives": len(objectives),
+        "work_items": work_count,
+        "coverage_items": coverage_count,
+    }
 
 
 def _accept_strategy_revision(
@@ -365,10 +620,20 @@ def accept_suggestion(
         result.work_item = _accept_work_item(session, suggestion, user_id=user_id)
     elif suggestion.kind == SuggestionKind.strategy_revision:
         result.strategy_revision = _accept_strategy_revision(session, suggestion, user_id=user_id)
-        suggestion.payload = {
-            **(suggestion.payload or {}),
-            "accepted_strategy_revision_id": str(result.strategy_revision.id),
-        }
+        payload = dict(suggestion.payload or {})
+        payload["accepted_strategy_revision_id"] = str(result.strategy_revision.id)
+        revision_payload = payload.get("strategy_revision")
+        structured = (
+            revision_payload.get("structured", {}) if isinstance(revision_payload, dict) else {}
+        )
+        if isinstance(structured, dict) and structured.get("source") in {
+            "sectioned_ai_generation",
+            "deterministic_fallback",
+        }:
+            payload["workspace_bootstrap"] = _bootstrap_workspace_from_initial_strategy(
+                session, suggestion, user_id=user_id
+            )
+        suggestion.payload = payload
     elif suggestion.kind == SuggestionKind.task:
         result.task, result.dispatched = _accept_execution_task(
             session, redis_client, suggestion, user_id=user_id

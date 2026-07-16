@@ -49,6 +49,8 @@ class StrategistWorkProposal(BaseModel):
     description: str | None = Field(default=None, max_length=4000)
     rationale: str | None = Field(default=None, max_length=4000)
     objective_id: uuid.UUID | None = None
+    scope_item_id: uuid.UUID | None = None
+    entity_id: uuid.UUID | None = None
     priority: Literal["critical", "high", "medium", "low"] = "medium"
     executor_type: Literal[
         "analyst", "finding_agent", "engagement_strategist", "tactical", "unassigned"
