@@ -266,9 +266,8 @@ def _evaluate_items(
             source == "burp" and serial and serial in seen_burp_serials
         )
         # A rejected row must not claim the identity and suppress a later
-        # in-scope representation of the same scanner observation. Burp
-        # (v2.7.0) commits regardless of scope, so its rows always stamp.
-        if scope.allowed or source == "burp":
+        # in-scope representation of the same scanner observation.
+        if scope.allowed:
             group_seen.add(dedup_key)
             if source == "burp" and serial:
                 seen_burp_serials.add(serial)
@@ -300,14 +299,14 @@ def _group_preview(
     )
     scope_decision = reason_counts[0].code if len(reason_counts) == 1 else "mixed"
     duplicate_count = sum(row.duplicate for row in rows)
-    # When scope isn't enforced (Burp), treat every row as committable so
-    # the wizard doesn't disable groups whose targets fall outside scope.
+    allowed_count = sum(row.scope.allowed for row in rows)
+    new_allowed_count = sum(row.scope.allowed and not row.duplicate for row in rows)
+    # Committable-count drives whether the group is default-on. When
+    # scope isn't enforced (Burp) every non-duplicate row commits.
     if scope_enforced:
-        allowed_count = sum(row.scope.allowed for row in rows)
-        new_allowed_count = sum(row.scope.allowed and not row.duplicate for row in rows)
+        committable_count = new_allowed_count
     else:
-        allowed_count = len(rows)
-        new_allowed_count = len(rows) - duplicate_count
+        committable_count = len(rows) - duplicate_count
     if duplicate_count == 0:
         duplicate_state: Literal["new", "partial", "existing"] = "new"
     elif duplicate_count == len(rows):
@@ -334,7 +333,7 @@ def _group_preview(
         duplicate_state=duplicate_state,
         duplicate_item_count=duplicate_count,
         default_selected=(
-            new_allowed_count > 0
+            committable_count > 0
             and (severity is not Severity.info or include_info_by_default)
         ),
     )
