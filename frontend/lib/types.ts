@@ -707,7 +707,7 @@ export interface ProviderKeyProbeResult {
   error: string | null;
 }
 
-export type SuggestionKind = "task" | "ephemeral" | "note";
+export type SuggestionKind = "task" | "ephemeral" | "note" | "work_item" | "strategy_revision";
 export type SuggestionStatus = "open" | "accepted" | "dismissed";
 export type AgentName =
   | "strategic"

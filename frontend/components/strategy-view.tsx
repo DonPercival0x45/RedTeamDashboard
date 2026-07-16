@@ -4,10 +4,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { DateTime } from "@/components/date-time";
+import { acceptSuggestion, ApiError, dismissSuggestion, listSuggestions } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   approveCompletion,
   blockWorkItem,
@@ -34,10 +36,10 @@ import {
   reopenCompletion,
   resolveWorkItem,
   runEngagementStrategist,
+  resetStrategyWorkspace,
   startCompletionReview,
   summarizeStrategistChat,
   clearStrategistChat,
-  decideStrategistChatAction,
   transitionObjective,
   transitionWorkItem,
   updateCoverageItem,
@@ -59,6 +61,7 @@ import type {
   ObjectivePriority,
   ObjectiveStatus,
   ResumeBriefing,
+  ResumeRecordRef,
   StrategyRevision,
   StrategySignal,
   WorkItem,
@@ -67,7 +70,7 @@ import type {
   WorkItemResolution,
   WorkItemStatus,
 } from "@/lib/strategy-types";
-import type { EngagementStatus } from "@/lib/types";
+import type { EngagementStatus, Suggestion } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 type LoadState = {
@@ -82,6 +85,7 @@ type LoadState = {
   decisions: CompletionDecision[];
   resume: ResumeBriefing;
   chat: StrategistChatState;
+  suggestions: Suggestion[];
 };
 
 const WORK_STATUSES: Array<WorkItemStatus | "all"> = [
@@ -128,6 +132,83 @@ const COVERAGE_CATEGORIES = [
   "evidence_collection",
   "reporting",
 ];
+const STRATEGY_SECTIONS = [
+  "Situation and constraints",
+  "Priorities and hypotheses",
+  "Execution approach",
+  "Coverage and completion criteria",
+];
+
+function emptyStrategySections(): Record<string, string> {
+  return Object.fromEntries(STRATEGY_SECTIONS.map((section) => [section, ""]));
+}
+
+const SLICE_LABELS: Record<string, string> = {
+  current: "current strategy",
+  revisions: "revisions",
+  signals: "signals",
+  completion: "completion readiness",
+  resume: "resume briefing",
+  chat: "strategist chat",
+  suggestions: "proposals",
+  objectives: "objectives",
+  workItems: "work queue",
+  checkpoints: "checkpoints",
+  coverage: "coverage",
+  decisions: "completion decisions",
+};
+
+// A fully-shaped empty state so the view can render incrementally as slices
+// arrive. `data` is never null after first render, which removes the
+// all-or-nothing failure mode where one flaky endpoint blanks the workspace.
+function emptyLoadState(): LoadState {
+  return {
+    current: null,
+    revisions: [],
+    objectives: [],
+    workItems: [],
+    signals: [],
+    checkpoints: [],
+    coverage: [],
+    completion: {
+      work_state: "active",
+      work_state_version: 0,
+      ready: false,
+      readiness_hash: "",
+      checks: [],
+      accepted_gap_candidates: [],
+      generated_at: "",
+    },
+    decisions: [],
+    resume: {
+      current_focus: {},
+      since_checkpoint: {},
+      active_work: [],
+      blocked_work: [],
+      decisions_required: [],
+      recommended_starting_records: [],
+      coverage_summary: {},
+      report_readiness: {},
+      generated_at: "",
+      current_tasks: [],
+      recent_findings: [],
+      recently_closed: [],
+      recent_activity: [],
+    },
+    chat: { conversation_id: null, messages: [] },
+    suggestions: [],
+  };
+}
+
+function SliceErrorBanner({ failed, onRetry }: { failed: string[]; onRetry: () => void }) {
+  if (failed.length === 0) return null;
+  return (
+    <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-200">
+      <span>Some sections failed to load ({failed.map((k) => SLICE_LABELS[k] ?? k).join(", ")}). Other sections are still usable.</span>
+      <button type="button" onClick={onRetry} className="rounded border border-amber-500/40 px-2 py-1 text-xs hover:bg-amber-500/10">Retry</button>
+    </div>
+  );
+}
 
 export function StrategyView({
   slug,
@@ -139,13 +220,21 @@ export function StrategyView({
   const searchParams = useSearchParams();
   const requestedWorkItemId = searchParams?.get("workItem") ?? null;
   const handledWorkLink = useRef<string | null>(null);
-  const [data, setData] = useState<LoadState | null>(null);
-  const [loading, setLoading] = useState(true);
+  // Monotonic refresh sequence: only the latest refresh's data lands, so a slow
+  // or stale response can never overwrite newer state.
+  const seqRef = useRef(0);
+  // Mirror of `busy` so the background poll can skip an in-flight mutation
+  // without re-subscribing its interval.
+  const busyRef = useRef<string | null>(null);
+  const [data, setData] = useState<LoadState>(emptyLoadState());
+  const [bootstrapLoading, setBootstrapLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
+  const [sliceErrors, setSliceErrors] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [strategyBody, setStrategyBody] = useState("");
   const [strategySummary, setStrategySummary] = useState("");
+  const [strategySectionDrafts, setStrategySectionDrafts] = useState(emptyStrategySections);
   const [objectiveTitle, setObjectiveTitle] = useState("");
   const [objectivePriority, setObjectivePriority] = useState<ObjectivePriority>("medium");
   const [workTitle, setWorkTitle] = useState("");
@@ -167,61 +256,88 @@ export function StrategyView({
   const [lastStrategistRun, setLastStrategistRun] =
     useState<StrategistRunResponse | null>(null);
 
-  const refresh = useCallback(async () => {
-    setError(null);
-    const [
-      current,
-      revisions,
-      objectives,
-      workItems,
-      signals,
-      checkpoints,
-      coverage,
-      completion,
-      decisions,
-      resume,
-      chat,
-    ] = await Promise.all([
-      getCurrentStrategy(slug),
-      listStrategyRevisions(slug),
-      listObjectives(slug),
-      listWorkItems(slug),
-      listStrategySignals(slug),
-      listCheckpoints(slug),
-      listCoverage(slug),
-      getCompletionReadiness(slug),
-      listCompletionDecisions(slug),
-      getResumeBriefing(slug),
-      getStrategistChat(slug),
-    ]);
-    setData({
-      current,
-      revisions,
-      objectives,
-      workItems,
-      signals,
-      checkpoints,
-      coverage,
-      completion,
-      decisions,
-      resume,
-      chat,
+  const setSliceError = useCallback((key: string, message: string | null) => {
+    setSliceErrors((prev) => {
+      if (message === null && !(key in prev)) return prev;
+      const next = { ...prev };
+      if (message === null) delete next[key];
+      else next[key] = message;
+      return next;
     });
-    setStrategyBody((previous) => previous || current?.body || "");
-    setStrategySummary((previous) => previous || current?.summary || "");
-    setSelectedWorkId((previous) =>
-      previous && workItems.some((item) => item.id === previous)
-        ? previous
-        : workItems[0]?.id ?? null,
-    );
-  }, [slug]);
+  }, []);
+
+  // Load one slice independently. A failure records a per-slice error and
+  // never aborts the other slices, so a single flaky endpoint can't blank the
+  // whole workspace. Stale results (an older refresh still resolving) are
+  // discarded via the sequence guard.
+  const loadSlice = useCallback(
+    async function <K extends keyof LoadState>(
+      key: K,
+      seq: number,
+      loader: () => Promise<LoadState[K]>,
+    ): Promise<void> {
+      try {
+        const value = await loader();
+        if (seqRef.current !== seq) return;
+        setData((prev) => ({ ...prev, [key]: value }) as LoadState);
+        setSliceError(key, null);
+      } catch (reason) {
+        if (seqRef.current !== seq) return;
+        setSliceError(key, messageFor(reason));
+      }
+    },
+    [setSliceError],
+  );
+
+  const refresh = useCallback(async (): Promise<void> => {
+    setError(null);
+    const seq = ++seqRef.current;
+    // Core slices always load in parallel and never block each other.
+    void loadSlice("revisions", seq, () => listStrategyRevisions(slug));
+    void loadSlice("signals", seq, () => listStrategySignals(slug));
+    void loadSlice("completion", seq, () => getCompletionReadiness(slug));
+    void loadSlice("resume", seq, () => getResumeBriefing(slug));
+    void loadSlice("chat", seq, () => getStrategistChat(slug));
+    void loadSlice("suggestions", seq, () => listSuggestions(slug, "open"));
+    // The current strategy gates the workspace slice, so await it inline.
+    try {
+      const current = await getCurrentStrategy(slug);
+      if (seqRef.current !== seq) return;
+      setData((prev) => ({ ...prev, current }) as LoadState);
+      setSliceError("current", null);
+      if (current) {
+        setStrategyBody((previous) => previous || current.body || "");
+        setStrategySummary((previous) => previous || current.summary || "");
+        void loadSlice("objectives", seq, () => listObjectives(slug));
+        void loadSlice("workItems", seq, () => listWorkItems(slug));
+        void loadSlice("checkpoints", seq, () => listCheckpoints(slug));
+        void loadSlice("coverage", seq, () => listCoverage(slug));
+        void loadSlice("decisions", seq, () => listCompletionDecisions(slug));
+      } else {
+        setData((prev) => ({
+          ...prev,
+          current: null,
+          objectives: [],
+          workItems: [],
+          checkpoints: [],
+          coverage: [],
+          decisions: [],
+        }) as LoadState);
+        setStrategyBody("");
+        setStrategySummary("");
+      }
+    } catch (reason) {
+      if (seqRef.current !== seq) return;
+      setSliceError("current", messageFor(reason));
+    }
+  }, [loadSlice, setSliceError, slug]);
 
   useEffect(() => {
     if (requestedWorkItemId) setSelectedWorkId(requestedWorkItemId);
   }, [requestedWorkItemId]);
 
   useEffect(() => {
-    if (!requestedWorkItemId || handledWorkLink.current === requestedWorkItemId || !data?.workItems.some((item) => item.id === requestedWorkItemId)) return;
+    if (!requestedWorkItemId || handledWorkLink.current === requestedWorkItemId || !data.workItems.some((item) => item.id === requestedWorkItemId)) return;
     handledWorkLink.current = requestedWorkItemId;
     const frame = window.requestAnimationFrame(() => {
       const detail = document.getElementById("work-item-detail");
@@ -229,17 +345,39 @@ export function StrategyView({
       detail?.scrollIntoView({ behavior: "smooth", block: "center" });
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [data?.workItems, requestedWorkItemId]);
+  }, [data.workItems, requestedWorkItemId]);
+
+  // Validate the current selection against the latest work items (keep a valid
+  // id, else fall back to the first item). Moved out of refresh() so it also
+  // fires when the work queue is reloaded by an independent slice load.
+  useEffect(() => {
+    setSelectedWorkId((previous) =>
+      previous && data.workItems.some((item) => item.id === previous)
+        ? previous
+        : data.workItems[0]?.id ?? null,
+    );
+  }, [data.workItems]);
 
   useEffect(() => {
+    busyRef.current = busy;
+  }, [busy]);
+
+  // Reset stale cross-engagement state on slug change and bootstrap the view.
+  // Replaces the previous `key={slug}` full remount (which discarded local
+  // drafts on every engagement switch).
+  useEffect(() => {
     let active = true;
-    setLoading(true);
+    setData(emptyLoadState());
+    setSliceErrors({});
+    setError(null);
+    setNotice(null);
+    setBootstrapLoading(true);
     refresh()
       .catch((reason) => {
         if (active) setError(messageFor(reason));
       })
       .finally(() => {
-        if (active) setLoading(false);
+        if (active) setBootstrapLoading(false);
       });
     return () => {
       active = false;
@@ -248,8 +386,10 @@ export function StrategyView({
 
   // Shared strategy/work state can change in another analyst session. Until
   // typed SSE events ship, refresh on focus and at a modest visible-page tick.
+  // The poll yields while a mutation is in flight so it never races one.
   useEffect(() => {
     const refetch = () => {
+      if (busyRef.current) return;
       if (document.visibilityState === "visible") void refresh().catch(() => undefined);
     };
     window.addEventListener("focus", refetch);
@@ -263,6 +403,7 @@ export function StrategyView({
   const mutate = useCallback(
     async (key: string, action: () => Promise<unknown>, success: string) => {
       setBusy(key);
+      busyRef.current = key;
       setError(null);
       setNotice(null);
       try {
@@ -271,10 +412,18 @@ export function StrategyView({
         setNotice(success);
         return true;
       } catch (reason) {
-        setError(messageFor(reason));
+        // CAS (row_version) conflicts are common in multi-analyst sessions.
+        // Surface a targeted message and auto-refresh instead of a generic error.
+        if (reason instanceof ApiError && reason.status === 409) {
+          setError("This item changed in another session — refreshed automatically. Try again if needed.");
+          await refresh().catch(() => undefined);
+        } else {
+          setError(messageFor(reason));
+        }
         return false;
       } finally {
         setBusy(null);
+        busyRef.current = null;
       }
     },
     [refresh],
@@ -296,11 +445,8 @@ export function StrategyView({
     );
   }, [data?.workItems, workQuery, workStatusFilter]);
 
-  if (loading) {
+  if (bootstrapLoading) {
     return <p className="text-sm text-muted-foreground">Loading engagement strategy…</p>;
-  }
-  if (!data) {
-    return <p className="text-sm text-critical">{error ?? "Strategy workspace unavailable."}</p>;
   }
 
   // Completion review is a live remediation state: analysts must be able to
@@ -313,42 +459,63 @@ export function StrategyView({
   const blocked = data.workItems.filter((item) => item.status === "blocked").length;
   const deferred = data.workItems.filter((item) => item.status === "deferred").length;
   const openSignals = data.signals.filter((signal) => signal.status === "open");
-  const nonSignalDecisions = data.resume.decisions_required.filter(
-    (decision) => decision.type !== "strategy_signal",
-  );
+  const proposedRevisions = data.revisions.filter((revision) => revision.state === "proposed");
+  const strategyRequired = !data.current;
+  const openSuggestions = strategyRequired
+    ? data.suggestions.filter((suggestion) => suggestion.kind === "strategy_revision")
+    : data.suggestions;
+  const decisionCount = openSignals.length + openSuggestions.length + proposedRevisions.length;
+  const failedSlices = Object.keys(sliceErrors);
+
+  if (strategyRequired) {
+    return (
+      <div className="space-y-6">
+        <StrategyHeader busy={busy} refresh={refresh} />
+        <SliceErrorBanner failed={failedSlices} onRetry={() => void refresh()} />
+        {readOnly && <ReadOnlyNotice engagementStatus={engagementStatus} />}
+        {error && <p role="alert" className="rounded-md border border-critical/40 bg-critical/10 p-3 text-sm text-critical">{error}</p>}
+        {notice && <p role="status" className="rounded-md border border-emerald-500/40 bg-emerald-500/10 p-3 text-sm text-emerald-700 dark:text-emerald-200">{notice}</p>}
+        <StrategistSection slug={slug} readOnly={readOnly} chat={data.chat} message={strategistMessage} setMessage={setStrategistMessage} lastRun={lastStrategistRun} setLastRun={setLastStrategistRun} busy={busy} mutate={mutate} hasCurrentStrategy={false} />
+        <NeedsDecisionSection slug={slug} readOnly={readOnly} openSignals={[]} openSuggestions={openSuggestions} proposedRevisions={proposedRevisions} currentRevisionId={null} busy={busy} mutate={mutate} />
+        <InitialStrategyBuilder slug={slug} readOnly={readOnly} summary={strategySummary} setSummary={setStrategySummary} sections={strategySectionDrafts} setSections={setStrategySectionDrafts} busy={busy} mutate={mutate} />
+        <StrategyRequiredGate findingCount={Number(data.resume.current_focus.finding_count ?? 0)} />
+        <ResumeSection resume={data.resume} slug={slug} />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
-      <header className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h2 className="text-xl font-semibold">Strategy</h2>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Shared direction, committed work, coverage, decisions, and intentional closure.
-          </p>
-        </div>
-        <Button variant="outline" size="sm" onClick={() => void refresh()} disabled={busy !== null}>
-          Refresh
-        </Button>
-      </header>
+      <StrategyHeader busy={busy} refresh={refresh} />
+      <SliceErrorBanner failed={failedSlices} onRetry={() => void refresh()} />
 
-      {readOnly && (
-        <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-200">
-          {engagementStatus !== "active"
-            ? `This engagement is ${engagementStatus}. Strategy and work are read-only.`
-            : "This engagement is completed. Reopen it before changing strategy or work."}
-        </div>
-      )}
+      {readOnly && <ReadOnlyNotice engagementStatus={engagementStatus} />}
       {error && <p role="alert" className="rounded-md border border-critical/40 bg-critical/10 p-3 text-sm text-critical">{error}</p>}
       {notice && <p role="status" className="rounded-md border border-emerald-500/40 bg-emerald-500/10 p-3 text-sm text-emerald-700 dark:text-emerald-200">{notice}</p>}
 
-      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-        <Metric label="Strategy" value={data.current ? `v${data.current.version}` : "Not set"} />
-        <Metric label="Remaining work" value={String(remaining)} />
-        <Metric label="Blocked" value={String(blocked)} tone={blocked ? "warn" : undefined} />
-        <Metric label="Deferred" value={String(deferred)} />
-        <Metric label="Decisions" value={String(nonSignalDecisions.length + openSignals.length)} />
-      </section>
+      <NeedsDecisionSection slug={slug} readOnly={readOnly} openSignals={openSignals} openSuggestions={openSuggestions} proposedRevisions={proposedRevisions} currentRevisionId={data.current?.id ?? null} busy={busy} mutate={mutate} />
 
+      <Tabs defaultValue={requestedWorkItemId ? "work" : "strategy"} className="space-y-4">
+        {/* Sticky top chrome: analytics + tab bar persist at the top of the
+            scroll region (<main overflow-y-auto>) across every tab, so the
+            at-a-glance counts and tab navigation stay visible while scrolling. */}
+        <div className="sticky top-0 z-10 border-b border-border bg-background py-3">
+          <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+            <Metric label="Strategy" value={data.current ? `v${data.current.version}` : "Not set"} />
+            <Metric label="Remaining work" value={String(remaining)} />
+            <Metric label="Blocked" value={String(blocked)} tone={blocked ? "warn" : undefined} />
+            <Metric label="Deferred" value={String(deferred)} />
+            <Metric label="Decisions" value={String(decisionCount)} />
+          </section>
+          <TabsList className="mt-3 border-b-0">
+            <TabsTrigger value="strategy">Strategy</TabsTrigger>
+            <TabsTrigger value="objectives">Objectives</TabsTrigger>
+            <TabsTrigger value="work">Work queue</TabsTrigger>
+            <TabsTrigger value="coverage">Coverage &amp; Readiness</TabsTrigger>
+            <TabsTrigger value="strategist">Strategist</TabsTrigger>
+          </TabsList>
+        </div>
+        <TabsContent value="strategy" className="space-y-6">
       <ResumeSection resume={data.resume} slug={slug} />
 
       <section className="rounded-lg border border-border bg-card/40 p-4">
@@ -359,7 +526,27 @@ export function StrategyView({
               {data.current ? `Version ${data.current.version} · ${data.current.state}` : "Create the first shared revision."}
             </p>
           </div>
-          {data.current && <DateTime value={data.current.updated_at} />}
+          <div className="flex items-center gap-2">
+            {data.current && <DateTime value={data.current.updated_at} />}
+            {!readOnly && data.current && (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={busy !== null}
+                onClick={() => {
+                  if (window.confirm("Reset the current strategy and seeded workspace so you can regenerate it?")) {
+                    void mutate(
+                      "strategy-reset",
+                      () => resetStrategyWorkspace(slug),
+                      "Strategy reset. Generate or create a new initial strategy.",
+                    );
+                  }
+                }}
+              >
+                {busy === "strategy-reset" ? "Resetting…" : "Reset strategy"}
+              </Button>
+            )}
+          </div>
         </div>
         <Input
           value={strategySummary}
@@ -412,10 +599,7 @@ export function StrategyView({
                 </div>
                 <p className="mt-2 line-clamp-3 whitespace-pre-wrap text-muted-foreground">{revision.body}</p>
                 {!readOnly && revision.state === "proposed" && (
-                  <div className="mt-2 flex justify-end gap-2">
-                    <SmallAction onClick={() => void mutate(`revision-${revision.id}-reject`, () => decideStrategyRevision(slug, revision.id, "reject", { based_on_revision_id: data.current?.id ?? null }), `Revision v${revision.version} rejected.`)}>Reject</SmallAction>
-                    <SmallAction onClick={() => void mutate(`revision-${revision.id}-accept`, () => decideStrategyRevision(slug, revision.id, "accept", { based_on_revision_id: data.current?.id ?? null }), `Revision v${revision.version} accepted.`)}>Accept</SmallAction>
-                  </div>
+                  <p className="mt-2 text-right text-[10px] text-muted-foreground">Review this proposal in Needs decision.</p>
                 )}
                 {!readOnly && revision.state === "superseded" && (
                   <div className="mt-2 text-right">
@@ -427,7 +611,8 @@ export function StrategyView({
           </ul>
         </details>
       </section>
-
+        </TabsContent>
+        <TabsContent value="objectives" className="space-y-6">
       <section className="rounded-lg border border-border bg-card/40 p-4">
         <h3 className="text-sm font-semibold">Objectives</h3>
         {!readOnly && (
@@ -480,7 +665,8 @@ export function StrategyView({
           </ul>
         )}
       </section>
-
+        </TabsContent>
+        <TabsContent value="work" className="space-y-6">
       <section className="rounded-lg border border-border bg-card/40 p-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
@@ -521,66 +707,206 @@ export function StrategyView({
           </div>
         </div>
       </section>
+        </TabsContent>
+        <TabsContent value="coverage" className="space-y-6">
+      <details className="rounded-lg border border-border bg-card/40 p-4">
+        <summary className="cursor-pointer text-sm font-semibold">Checkpoints and activity snapshots</summary>
+        {!readOnly && <div className="mt-3 flex gap-2"><Input value={checkpointNarrative} onChange={(event) => setCheckpointNarrative(event.target.value)} placeholder="Optional end-of-session note" /><Button size="sm" onClick={() => void (async () => { if (await mutate("checkpoint-create", () => createCheckpoint(slug, checkpointNarrative.trim() || undefined), "Checkpoint created.")) setCheckpointNarrative(""); })()}>Create</Button></div>}
+        <ul className="mt-3 max-h-64 space-y-2 overflow-y-auto">
+          {data.checkpoints.map((checkpoint) => <li key={checkpoint.id} className="rounded border border-border bg-background p-3 text-xs"><div className="flex justify-between"><span className="font-medium">Checkpoint</span><DateTime value={checkpoint.created_at} /></div><p className="mt-1 text-muted-foreground">{checkpoint.narrative ?? "Deterministic state snapshot"}</p></li>)}
+          {data.checkpoints.length === 0 && <li className="text-sm text-muted-foreground">No checkpoints yet.</li>}
+        </ul>
+      </details>
 
-      <section className="grid gap-4 xl:grid-cols-2">
-        <div className="rounded-lg border border-border bg-card/40 p-4">
-          <h3 className="text-sm font-semibold">Needs decision</h3>
-          {nonSignalDecisions.length === 0 && openSignals.length === 0 ? (
-            <p className="mt-3 text-sm text-muted-foreground">No shared decisions are waiting.</p>
-          ) : (
-            <ul className="mt-3 space-y-2">
-              {nonSignalDecisions.map((decision, index) => (
-                <li key={String(decision.id ?? index)} className="rounded border border-border bg-background p-3 text-xs"><JsonSummary value={decision} /></li>
-              ))}
-              {openSignals.map((signal) => (
-                <li key={signal.id} className="rounded border border-border bg-background p-3 text-xs">
-                  <div className="flex items-start justify-between gap-2"><div><p className="font-medium">{signal.signal_type}</p><p className="mt-1 text-muted-foreground">{signal.summary}</p></div><Badge variant="outline">{signal.confidence}</Badge></div>
-                  {!readOnly && <div className="mt-2 flex justify-end gap-2"><SmallAction onClick={() => void mutate(`signal-${signal.id}-dismiss`, () => decideStrategySignal(signal.id, "dismiss", window.prompt("Dismissal reason") ?? undefined), "Signal dismissed.")}>Dismiss</SmallAction><SmallAction onClick={() => void mutate(`signal-${signal.id}-incorporate`, () => decideStrategySignal(signal.id, "incorporate", window.prompt("How was this incorporated?") ?? undefined), "Signal incorporated.")}>Incorporate</SmallAction></div>}
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-        <div className="rounded-lg border border-border bg-card/40 p-4">
-          <h3 className="text-sm font-semibold">Checkpoints</h3>
-          {!readOnly && <div className="mt-3 flex gap-2"><Input value={checkpointNarrative} onChange={(event) => setCheckpointNarrative(event.target.value)} placeholder="Optional end-of-session note" /><Button size="sm" onClick={() => void (async () => { if (await mutate("checkpoint-create", () => createCheckpoint(slug, checkpointNarrative.trim() || undefined), "Checkpoint created.")) setCheckpointNarrative(""); })()}>Create</Button></div>}
-          <ul className="mt-3 max-h-64 space-y-2 overflow-y-auto">
-            {data.checkpoints.map((checkpoint) => <li key={checkpoint.id} className="rounded border border-border bg-background p-3 text-xs"><div className="flex justify-between"><span className="font-medium">Checkpoint</span><DateTime value={checkpoint.created_at} /></div><p className="mt-1 text-muted-foreground">{checkpoint.narrative ?? "Deterministic state snapshot"}</p></li>)}
-            {data.checkpoints.length === 0 && <li className="text-sm text-muted-foreground">No checkpoints yet.</li>}
-          </ul>
-        </div>
-      </section>
-
-      <section className="rounded-lg border border-border bg-card/40 p-4">
-        <h3 className="text-sm font-semibold">Coverage</h3>
+      <details className="rounded-lg border border-border bg-card/40 p-4">
+        <summary className="cursor-pointer text-sm font-semibold">Coverage items</summary>
         {!readOnly && <div className="mt-3 grid gap-2 sm:grid-cols-[8rem_1fr_13rem_auto]"><Input value={coverageKind} onChange={(event) => setCoverageKind(event.target.value)} placeholder="Target kind" /><Input value={coverageTarget} onChange={(event) => setCoverageTarget(event.target.value)} placeholder="Target key" /><select value={coverageCategory} onChange={(event) => setCoverageCategory(event.target.value)} className="rounded border border-input bg-background px-2 text-sm">{COVERAGE_CATEGORIES.map((category) => <option key={category}>{category}</option>)}</select><Button size="sm" disabled={!coverageTarget.trim()} onClick={() => void (async () => { if (await mutate("coverage-create", () => createCoverageItem(slug, { target_kind: coverageKind.trim(), target_key: coverageTarget.trim(), activity_category: coverageCategory }), "Coverage item created.")) setCoverageTarget(""); })()}>Add</Button></div>}
         <div className="mt-3 overflow-x-auto"><table className="w-full text-left text-xs"><thead><tr className="border-b border-border text-muted-foreground"><th className="py-2">Target</th><th>Category</th><th>Status</th><th>Reason</th></tr></thead><tbody>{data.coverage.map((item) => <tr key={item.id} className="border-b border-border/60"><td className="py-2 font-mono">{item.target_kind}:{item.target_key}</td><td>{item.activity_category}</td><td>{readOnly ? <Badge variant="outline">{item.status}</Badge> : <select value={item.status} onChange={(event) => { const next = event.target.value as CoverageStatus; const reason = next === "accepted_gap" ? window.prompt("Accepted gap rationale (required)") ?? "" : item.reason ?? ""; if (next === "accepted_gap" && !reason.trim()) return; void mutate(`coverage-${item.id}`, () => updateCoverageItem(slug, item, next, reason), "Coverage updated."); }} className="h-8 rounded border border-input bg-background px-2">{COVERAGE_STATUSES.map((status) => <option key={status}>{status}</option>)}</select>}</td><td className="max-w-xs truncate">{item.reason ?? "—"}</td></tr>)}</tbody></table>{data.coverage.length === 0 && <p className="py-3 text-sm text-muted-foreground">No coverage rows yet.</p>}</div>
-      </section>
+      </details>
 
-      <StrategistSection
-        slug={slug}
-        readOnly={readOnly}
-        chat={data.chat}
-        message={strategistMessage}
-        setMessage={setStrategistMessage}
-        lastRun={lastStrategistRun}
-        setLastRun={setLastStrategistRun}
-        busy={busy}
-        mutate={mutate}
-      />
-
-      <CompletionSection slug={slug} engagementStatus={engagementStatus} readiness={data.completion} decisions={data.decisions} exceptions={completionExceptions} setExceptions={setCompletionExceptions} busy={busy} mutate={mutate} />
+      <details className="rounded-lg border border-border bg-card/40 p-4">
+        <summary className="cursor-pointer text-sm font-semibold">Completion readiness</summary>
+        <div className="mt-4">
+          <CompletionSection slug={slug} engagementStatus={engagementStatus} readiness={data.completion} decisions={data.decisions} exceptions={completionExceptions} setExceptions={setCompletionExceptions} busy={busy} mutate={mutate} />
+        </div>
+      </details>
+        </TabsContent>
+        <TabsContent value="strategist" className="space-y-6">
+          <StrategistSection slug={slug} readOnly={readOnly} chat={data.chat} message={strategistMessage} setMessage={setStrategistMessage} lastRun={lastStrategistRun} setLastRun={setLastStrategistRun} busy={busy} mutate={mutate} hasCurrentStrategy />
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }
 
+function InitialStrategyBuilder({ slug, readOnly, summary, setSummary, sections, setSections, busy, mutate }: { slug: string; readOnly: boolean; summary: string; setSummary: (value: string) => void; sections: Record<string, string>; setSections: (value: Record<string, string>) => void; busy: string | null; mutate: (key: string, action: () => Promise<unknown>, success: string) => Promise<boolean> }) {
+  const body = STRATEGY_SECTIONS.map((section) => `## ${section}\n${sections[section]?.trim() ?? ""}`).join("\n\n").trim();
+  const hasBody = STRATEGY_SECTIONS.some((section) => sections[section]?.trim());
+  return (
+    <section className="rounded-lg border border-border bg-card/40 p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-semibold">Create strategy manually</h3>
+          <p className="text-xs text-muted-foreground">Fill the same sections the AI generates. Saving makes this the current strategy.</p>
+        </div>
+        <Button size="sm" disabled={readOnly || !hasBody || busy !== null} onClick={() => void mutate("strategy-manual-create", () => createStrategyRevision(slug, { body, summary: summary.trim() || "Initial strategy", state: "current", based_on_revision_id: null }), "Initial strategy created.")}>{busy === "strategy-manual-create" ? "Saving…" : "Save strategy"}</Button>
+      </div>
+      <Input value={summary} onChange={(event) => setSummary(event.target.value)} placeholder="Strategy summary" disabled={readOnly} className="mt-3" />
+      <div className="mt-3 grid gap-3 lg:grid-cols-2">
+        {STRATEGY_SECTIONS.map((section) => (
+          <label key={section} className="block rounded border border-border bg-background/60 p-3 text-xs">
+            <span className="font-medium">{section}</span>
+            <Textarea value={sections[section] ?? ""} onChange={(event) => setSections({ ...sections, [section]: event.target.value })} placeholder={`Draft ${section.toLowerCase()}…`} rows={5} disabled={readOnly} className="mt-2" />
+          </label>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function StrategyHeader({ busy, refresh }: { busy: string | null; refresh: () => Promise<void> }) {
+  return (
+    <header className="flex flex-wrap items-start justify-between gap-3">
+      <div>
+        <h2 className="text-xl font-semibold">Strategy</h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Engagement Strategist, durable decisions, current focus, and completion readiness.
+        </p>
+      </div>
+      <Button variant="outline" size="sm" onClick={() => void refresh()} disabled={busy !== null}>Refresh</Button>
+    </header>
+  );
+}
+
+function ReadOnlyNotice({ engagementStatus }: { engagementStatus: EngagementStatus }) {
+  return (
+    <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-200">
+      {engagementStatus !== "active"
+        ? `This engagement is ${engagementStatus}. Strategy and work are read-only.`
+        : "This engagement is completed. Reopen it before changing strategy or work."}
+    </div>
+  );
+}
+
+function StrategyRequiredGate({ findingCount }: { findingCount: number }) {
+  return (
+    <section className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-4">
+      <h3 className="text-sm font-semibold">Initial strategy required</h3>
+      <p className="mt-1 text-sm text-muted-foreground">
+        This engagement has no accepted current strategy{findingCount ? ` and ${findingCount} finding${findingCount === 1 ? "" : "s"}` : ""}. Generate an initial strategy with the Engagement Strategist, then accept the durable proposal in Needs decision before work, coverage, checkpoint, or completion sections are populated.
+      </p>
+    </section>
+  );
+}
+
+function NeedsDecisionSection({ slug, readOnly, openSignals, openSuggestions, proposedRevisions, currentRevisionId, busy, mutate }: { slug: string; readOnly: boolean; openSignals: StrategySignal[]; openSuggestions: Suggestion[]; proposedRevisions: StrategyRevision[]; currentRevisionId: string | null; busy: string | null; mutate: (key: string, action: () => Promise<unknown>, success: string) => Promise<boolean> }) {
+  const total = openSignals.length + openSuggestions.length + proposedRevisions.length;
+  return (
+    <section className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-4">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-semibold">Needs decision</h3>
+          <p className="text-xs text-muted-foreground">Durable proposals live here, not only in personal chat.</p>
+        </div>
+        <Badge variant={total ? "secondary" : "outline"}>{total} open</Badge>
+      </div>
+      {total === 0 ? (
+        <p className="mt-3 text-sm text-muted-foreground">No shared decisions are waiting.</p>
+      ) : (
+        <ul className="mt-3 space-y-2">
+          {proposedRevisions.map((revision) => (
+            <li key={revision.id} className="rounded border border-border bg-background p-3 text-xs">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div>
+                  <p className="font-medium">Strategy revision v{revision.version}</p>
+                  <p className="mt-1 text-muted-foreground">{revision.summary ?? "Proposed strategy revision"}</p>
+                </div>
+                <Badge variant="outline">strategy</Badge>
+              </div>
+              {!readOnly && <div className="mt-2 flex justify-end gap-2"><SmallAction onClick={() => void mutate(`revision-${revision.id}-reject`, () => decideStrategyRevision(slug, revision.id, "reject", { based_on_revision_id: currentRevisionId }), `Revision v${revision.version} rejected.`)}>Reject</SmallAction><SmallAction onClick={() => void mutate(`revision-${revision.id}-accept`, () => decideStrategyRevision(slug, revision.id, "accept", { based_on_revision_id: currentRevisionId }), `Revision v${revision.version} accepted.`)}>Accept</SmallAction></div>}
+            </li>
+          ))}
+          {openSuggestions.map((suggestion) => (
+            <li key={suggestion.id} className="rounded border border-border bg-background p-3 text-xs">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div>
+                  <p className="font-medium">{suggestion.title}</p>
+                  <p className="mt-1 text-muted-foreground">{suggestion.body ?? labelSuggestionKind(suggestion.kind)}</p>
+                  {suggestion.finding_id && <Link href={`/e/findings/${suggestion.finding_id}?slug=${encodeURIComponent(slug)}&returnTo=${encodeURIComponent(`/e?slug=${slug}&view=strategy`)}`} className="mt-2 inline-block text-[10px] hover:underline">Open source finding →</Link>}
+                </div>
+                <Badge variant="outline">{labelSuggestionKind(suggestion.kind)}</Badge>
+              </div>
+              {!readOnly && <div className="mt-2 flex justify-end gap-2"><SmallAction onClick={() => void mutate(`suggestion-${suggestion.id}-dismiss`, () => dismissSuggestion(suggestion.id), `Proposal “${suggestion.title}” dismissed.`)}>Dismiss</SmallAction><SmallAction onClick={() => void mutate(`suggestion-${suggestion.id}-accept`, () => acceptSuggestion(suggestion.id), `Proposal “${suggestion.title}” accepted.`)}>Accept</SmallAction></div>}
+            </li>
+          ))}
+          {openSignals.map((signal) => (
+            <li key={signal.id} className="rounded border border-border bg-background p-3 text-xs">
+              <div className="flex items-start justify-between gap-2"><div><p className="font-medium">{signal.signal_type}</p><p className="mt-1 text-muted-foreground">{signal.summary}</p></div><Badge variant="outline">{signal.confidence}</Badge></div>
+              {!readOnly && <div className="mt-2 flex justify-end gap-2"><SmallAction onClick={() => void mutate(`signal-${signal.id}-dismiss`, () => decideStrategySignal(signal.id, "dismiss", window.prompt("Dismissal reason") ?? undefined), "Signal dismissed.")}>Dismiss</SmallAction><SmallAction onClick={() => void mutate(`signal-${signal.id}-incorporate`, () => decideStrategySignal(signal.id, "incorporate", window.prompt("How was this incorporated?") ?? undefined), "Signal incorporated.")}>Incorporate</SmallAction></div>}
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
 function ResumeSection({ resume, slug }: { resume: ResumeBriefing; slug: string }) {
+  const strategyRequired = Boolean(resume.current_focus.strategy_required);
   return (
     <section className="rounded-lg border border-sky-500/30 bg-sky-500/5 p-4">
       <div className="flex items-center justify-between gap-3"><div><h3 className="text-sm font-semibold">Resume engagement</h3><p className="text-xs text-muted-foreground">Deterministic briefing · <DateTime value={resume.generated_at} /></p></div><Link href={`/e?slug=${encodeURIComponent(slug)}&view=status`} className="text-xs hover:underline">Open execution Status →</Link></div>
-      <div className="mt-3 grid gap-3 lg:grid-cols-2"><FactCard title="Current focus" value={resume.current_focus} /><FactCard title="Since checkpoint" value={resume.since_checkpoint} /><FactCard title={`Active work (${resume.active_work.length})`} value={resume.active_work.slice(0, 5).map((item) => item.title)} /><FactCard title={`Blocked work (${resume.blocked_work.length})`} value={resume.blocked_work.slice(0, 5).map((item) => item.title)} /></div>
+      {strategyRequired ? (
+        <p className="mt-3 rounded border border-dashed border-sky-500/30 p-3 text-sm text-muted-foreground">Resume briefing is intentionally limited until an initial strategy is accepted.</p>
+      ) : (
+        <div className="mt-3 grid gap-3 lg:grid-cols-2">
+          <ResumeCard title="Recommended work" items={resume.current_tasks} empty="No recommended work focus." />
+          <ResumeCard title="Recent findings" items={resume.recent_findings} empty="No recent finding activity." />
+          <ResumeCard title="Recently closed work" items={resume.recently_closed} empty="No recently closed work." />
+          <ResumeCard title="Recent activity" items={resume.recent_activity} empty="No activity since checkpoint." />
+        </div>
+      )}
     </section>
   );
+}
+
+function ResumeCard({ title, items, empty }: { title: string; items?: ResumeRecordRef[]; empty: string }) {
+  const safeItems = items ?? [];
+  return (
+    <div className="rounded border border-sky-500/20 bg-background/60 p-3">
+      <p className="text-xs font-medium">{title}</p>
+      {safeItems.length === 0 ? (
+        <p className="mt-2 text-xs text-muted-foreground">{empty}</p>
+      ) : (
+        <ul className="mt-2 space-y-2 text-xs">
+          {safeItems.slice(0, 5).map((item) => (
+            <li key={`${item.type}-${item.id}`}>
+              <ResumeItem item={item} />
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function ResumeItem({ item }: { item: ResumeRecordRef }) {
+  const label = item.action
+    ? `${item.action}${item.finding?.title ? ` - ${item.finding.title}` : ""}${item.actor ? ` - ${item.actor}` : ""}`
+    : item.title ?? item.summary ?? item.id;
+  const body = (
+    <>
+      <span className="font-medium text-foreground">{label}</span>
+      <span className="ml-2 text-muted-foreground">
+        {[item.severity, item.priority, item.status].filter(Boolean).join(" · ")}
+      </span>
+    </>
+  );
+  return item.href ? <Link href={item.href} className="hover:underline">{body}</Link> : <span>{body}</span>;
+}
+
+function labelSuggestionKind(kind: Suggestion["kind"]): string {
+  return kind.replaceAll("_", " ");
 }
 
 function WorkDetail({ item, objectives, slug, readOnly, busy, resolution, setResolution, mutate }: { item: WorkItem | null; objectives: Objective[]; slug: string; readOnly: boolean; busy: string | null; resolution: WorkItemResolution; setResolution: (value: WorkItemResolution) => void; mutate: (key: string, action: () => Promise<unknown>, success: string) => Promise<boolean> }) {
@@ -590,13 +916,14 @@ function WorkDetail({ item, objectives, slug, readOnly, busy, resolution, setRes
   return <article className="rounded border border-border bg-background p-4"><div className="flex items-start justify-between gap-2"><div><h4 className="font-semibold">{item.title}</h4><p className="mt-1 text-xs text-muted-foreground">row v{item.row_version} · {item.executor_type}{objective ? ` · ${objective.title}` : ""}</p></div><Badge variant="outline">{item.status}</Badge></div>{item.description && <p className="mt-3 whitespace-pre-wrap text-sm">{item.description}</p>}{item.rationale && <p className="mt-3 text-xs text-muted-foreground">Rationale: {item.rationale}</p>}{item.acceptance_criteria.length > 0 && <div className="mt-3"><p className="text-xs font-medium">Acceptance criteria</p><ul className="mt-1 list-disc pl-5 text-xs text-muted-foreground">{item.acceptance_criteria.map((criterion, index) => <li key={index}>{criterion}</li>)}</ul></div>}{item.finding_links.length > 0 && <div className="mt-3 flex flex-wrap gap-2">{item.finding_links.map((link) => <Link key={`${link.finding_id}-${link.relationship}`} href={`/e/findings/${link.finding_id}?slug=${encodeURIComponent(slug)}&returnTo=${encodeURIComponent(`/e?slug=${slug}&view=strategy&workItem=${item.id}`)}`} className="rounded-full border border-border px-2 py-1 text-[10px] hover:underline">Finding · {link.relationship}</Link>)}</div>}{!readOnly && <div className="mt-4 space-y-2 border-t border-border pt-3"><div className="flex flex-wrap gap-2">{(item.status === "ready" || item.status === "blocked") && <SmallAction onClick={() => void mutate(`work-${item.id}-start`, () => transitionWorkItem(item.id, "start", item.row_version), "Work started.")}>Start</SmallAction>}{item.status === "in_progress" && <SmallAction onClick={() => { const reason = window.prompt("Blocking reason"); if (reason?.trim()) void mutate(`work-${item.id}-block`, () => blockWorkItem(item.id, item.row_version, reason.trim()), "Work blocked."); }}>Block</SmallAction>}{!terminal && item.status !== "deferred" && <SmallAction onClick={() => void mutate(`work-${item.id}-defer`, () => transitionWorkItem(item.id, "defer", item.row_version, window.prompt("Deferral reason") ?? undefined), "Work deferred.")}>Defer</SmallAction>}{(item.status === "deferred" || item.status === "completed") && <SmallAction onClick={() => void mutate(`work-${item.id}-reopen`, () => transitionWorkItem(item.id, "reopen", item.row_version), "Work reopened.")}>Reopen</SmallAction>}{!terminal && <SmallAction onClick={() => void mutate(`work-${item.id}-cancel`, () => transitionWorkItem(item.id, "cancel", item.row_version, window.prompt("Cancellation reason") ?? undefined), "Work cancelled.")}>Cancel</SmallAction>}<SmallAction onClick={() => { const title = window.prompt("Work item title", item.title); if (title?.trim()) void mutate(`work-${item.id}-edit`, () => updateWorkItem(item.id, { expected_row_version: item.row_version, title: title.trim() }), "Work item updated."); }}>Edit</SmallAction></div>{!terminal && <div className="flex gap-2"><select value={resolution} onChange={(event) => setResolution(event.target.value as WorkItemResolution)} className="h-8 rounded border border-input bg-background px-2 text-xs">{RESOLUTIONS.map((outcome) => <option key={outcome}>{outcome}</option>)}</select><Button size="sm" variant="outline" disabled={busy !== null} onClick={() => void mutate(`work-${item.id}-resolve`, () => resolveWorkItem(item.id, item.row_version, resolution, window.prompt("Resolution note") ?? undefined), "Work resolved.")}>Resolve</Button></div>}</div>}</article>;
 }
 
-function StrategistSection({ slug, readOnly, chat, message, setMessage, lastRun, setLastRun, busy, mutate }: { slug: string; readOnly: boolean; chat: StrategistChatState; message: string; setMessage: (value: string) => void; lastRun: StrategistRunResponse | null; setLastRun: (value: StrategistRunResponse | null) => void; busy: string | null; mutate: (key: string, action: () => Promise<unknown>, success: string) => Promise<boolean> }) {
+function StrategistSection({ slug, readOnly, chat, message, setMessage, lastRun, setLastRun, busy, mutate, hasCurrentStrategy }: { slug: string; readOnly: boolean; chat: StrategistChatState; message: string; setMessage: (value: string) => void; lastRun: StrategistRunResponse | null; setLastRun: (value: StrategistRunResponse | null) => void; busy: string | null; mutate: (key: string, action: () => Promise<unknown>, success: string) => Promise<boolean>; hasCurrentStrategy: boolean }) {
   const runModes = [
     ["generate-initial", "Generate initial"],
     ["recommend", "Recommend next"],
     ["reassess", "Reassess"],
     ["review-completion", "Review completion"],
   ] as const;
+  const runBusy = runModes.some(([mode]) => busy === `strategist-${mode}`);
   return (
     <section className="rounded-lg border border-violet-500/30 bg-violet-500/5 p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -612,7 +939,7 @@ function StrategistSection({ slug, readOnly, chat, message, setMessage, lastRun,
               key={mode}
               size="sm"
               variant="outline"
-              disabled={readOnly || busy !== null}
+              disabled={readOnly || busy !== null || (!hasCurrentStrategy && mode !== "generate-initial")}
               onClick={() =>
                 void mutate(
                   `strategist-${mode}`,
@@ -628,6 +955,13 @@ function StrategistSection({ slug, readOnly, chat, message, setMessage, lastRun,
           ))}
         </div>
       </div>
+
+      {runBusy && (
+        <div className="mt-4 rounded border border-violet-500/30 bg-background/70 p-3 text-sm">
+          <p className="font-medium">Engagement Strategist is working…</p>
+          <p className="mt-1 text-xs text-muted-foreground">Building context, checking current findings and work, and preparing durable proposals for Needs decision.</p>
+        </div>
+      )}
 
       {lastRun && (
         <details open className="mt-4 rounded border border-violet-500/20 bg-background/70 p-3">
@@ -646,7 +980,7 @@ function StrategistSection({ slug, readOnly, chat, message, setMessage, lastRun,
                 {lastRun.output.work_item_proposals.map((proposal) => <li key={proposal.proposal_key}>• Work: {proposal.title}</li>)}
                 {lastRun.output.strategy_revision_proposal && <li>• Strategy: {lastRun.output.strategy_revision_proposal.summary ?? "Proposed revision"}</li>}
               </ul>
-              <p className="mt-2">Open proposals appear in Needs decision or the chat action cards; generating output does not accept them.</p>
+              <p className="mt-2">Open proposals appear in Needs decision. Generating output does not accept them.</p>
             </div>
           )}
           {lastRun.output.warnings.length > 0 && <div className="mt-3"><FactCard title="Warnings" value={lastRun.output.warnings} /></div>}
@@ -678,21 +1012,15 @@ function StrategistSection({ slug, readOnly, chat, message, setMessage, lastRun,
                   <div className="flex justify-between gap-2 text-[10px] uppercase text-muted-foreground"><span>{row.role === "user" ? "Analyst" : "Strategist"}</span><DateTime value={row.created_at} /></div>
                   <p className="mt-1 whitespace-pre-wrap">{row.content}</p>
                   {actions.length > 0 && (
-                    <ul className="mt-3 space-y-2">
-                      {actions.map((action, index) => (
-                        <li key={`${action.suggestion_id}-${index}`} className="rounded border border-amber-500/30 bg-amber-500/5 p-2 text-xs">
-                          <div className="flex flex-wrap items-center justify-between gap-2">
-                            <div><p className="font-medium">{action.title}</p><p className="text-[10px] text-muted-foreground">{action.suggestion_kind} · {action.status}</p></div>
-                            {action.status === "proposed" && !readOnly && (
-                              <div className="flex gap-1">
-                                <SmallAction onClick={() => void mutate(`strategist-action-${row.id}-${index}-deny`, () => decideStrategistChatAction(slug, row.id, index, "deny"), `Proposal “${action.title}” denied.`)}>Deny</SmallAction>
-                                <SmallAction onClick={() => void mutate(`strategist-action-${row.id}-${index}-accept`, () => decideStrategistChatAction(slug, row.id, index, "accept"), `Proposal “${action.title}” accepted into shared state.`)}>Accept</SmallAction>
-                              </div>
-                            )}
-                          </div>
-                        </li>
-                      ))}
-                    </ul>
+                    <div className="mt-3 rounded border border-amber-500/30 bg-amber-500/5 p-2 text-xs">
+                      <p className="font-medium">Proposals created</p>
+                      <ul className="mt-1 space-y-1 text-muted-foreground">
+                        {actions.map((action, index) => (
+                          <li key={`${action.suggestion_id}-${index}`}>• {action.title} — {labelSuggestionKind(action.suggestion_kind as Suggestion["kind"])} · {action.status}</li>
+                        ))}
+                      </ul>
+                      <p className="mt-2 text-[10px] text-muted-foreground">Accept or dismiss these from Needs decision so they survive chat cleanup.</p>
+                    </div>
                   )}
                 </div>
               );
