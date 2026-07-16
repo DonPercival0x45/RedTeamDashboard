@@ -336,6 +336,39 @@ class WorkItemFinding(Base):
     )
 
 
+class WorkItemComment(Base, TimestampMixin):
+    """Analyst comment on a work item — the work-item discussion thread.
+
+    ``work_item_id`` is SET NULL on work-item deletion so the comment survives
+    as a tombstone (durable reference, per the cross-record-nav convention);
+    ``engagement_id`` is CASCADE and indexed for engagement-scoped reads + audit.
+    """
+
+    __tablename__ = "work_item_comments"
+    __table_args__ = (
+        Index("ix_work_item_comments_work_item_created", "work_item_id", "created_at"),
+        Index("ix_work_item_comments_engagement", "engagement_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid7)
+    engagement_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("engagements.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    work_item_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("work_items.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    author_user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id"),
+        nullable=False,
+    )
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+
+
 class WorkItemResult(Base):
     __tablename__ = "work_item_results"
     __table_args__ = (

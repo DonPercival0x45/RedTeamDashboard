@@ -158,6 +158,25 @@ class WorkItemResolve(BaseModel):
     evidence_refs: list[dict[str, Any]] = Field(default_factory=list, max_length=100)
 
 
+class WorkItemCommentAuthor(BaseModel):
+    id: str
+    label: str
+
+
+class WorkItemCommentCreate(BaseModel):
+    body: str = Field(min_length=1, max_length=20_000)
+
+
+class WorkItemCommentRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    work_item_id: UUID | None
+    author: WorkItemCommentAuthor
+    body: str
+    created_at: datetime
+
+
 class WorkItemFindingRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
