@@ -16,7 +16,7 @@ from sqlalchemy import delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, object_session
 
-from app.api.deps import CurrentNonGuestUser, CurrentUser, DbSession
+from app.api.deps import CurrentNonGuestUser, CurrentUser, DbSession, RedisClient
 from app.models import (
     ActorType,
     AgentExecution,
@@ -79,6 +79,7 @@ from app.schemas.strategy import (
     WorkItemRollupBucket,
     WorkItemUpdate,
 )
+from app.services.engagement_strategist import maybe_schedule_auto_reassess
 from app.services.report_readiness import build_report_readiness
 
 router = APIRouter(tags=["strategy"])
@@ -1190,7 +1191,11 @@ def cancel_work_item(
 
 @router.post("/work-items/{work_item_id}/resolve", response_model=WorkItemRead)
 def resolve_work_item(
-    work_item_id: uuid.UUID, body: WorkItemResolve, session: DbSession, user: CurrentNonGuestUser
+    work_item_id: uuid.UUID,
+    body: WorkItemResolve,
+    session: DbSession,
+    user: CurrentNonGuestUser,
+    redis_client: RedisClient,
 ):
     row = _work_item_locked(session, work_item_id)
     eng = _work_engagement(session, row)
@@ -1219,6 +1224,7 @@ def resolve_work_item(
     )
     session.commit()
     session.refresh(row)
+    maybe_schedule_auto_reassess(redis_client, row.engagement_id, user.id)
     return _work_read(session, row)
 
 
