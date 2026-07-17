@@ -20,11 +20,11 @@ refusal is by design, not by misconfiguration.
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import structlog
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -46,10 +46,29 @@ from app.services.agent_model_resolver import resolve_agent_model
 logger = structlog.get_logger(__name__)
 
 
+# Run-level dedup window: a completed Tactical run for the exact (tool,
+# target) within this window short-circuits a re-dispatch. Passive OSINT
+# results don't change minute-to-minute, so re-scanning the same target the
+# same day just burns tokens + stacks duplicate findings.
+_RESCAN_DEDUP_WINDOW = timedelta(hours=24)
+
+
 class TacticalRefusedExploit(Exception):
     """Tactical was asked to dispatch a kind=exploit task. Agents scan,
     analysts exploit (CHARTER invariant). The HTTP layer maps this to 400
     so the analyst sees a deliberate refusal, not a generic error."""
+
+
+class TacticalAlreadyScanned(Exception):
+    """Tactical was asked to dispatch a (tool, target) a completed run already
+    covered within the dedup window. Raised so the caller marks the task done
+    (deduped) against the prior run instead of re-dispatching — the guardrail
+    against "the same stuff over and over"."""
+
+    def __init__(self, prior_execution_id: uuid.UUID, prior_thread_id: str | None) -> None:
+        self.prior_execution_id = prior_execution_id
+        self.prior_thread_id = prior_thread_id
+        super().__init__(f"already scanned by run {prior_execution_id}")
 
 
 class TacticalAgent:
@@ -100,6 +119,28 @@ class TacticalAgent:
         spec = get_tool(tool_name)
         if spec is None:
             raise ValueError(f"task {task.id} references unknown tool {tool_name!r}")
+
+        # Run-level dedup: a completed run already covered this exact
+        # (tool, target) within the window. Re-scanning a passive probe
+        # minutes/hours apart just burns tokens + stacks duplicate findings —
+        # skip it and let the caller mark the task done against the prior run.
+        prior = session.execute(
+            select(AgentExecution)
+            .where(
+                AgentExecution.engagement_id == task.engagement_id,
+                AgentExecution.agent == AgentName.tactical,
+                AgentExecution.status == AgentExecutionStatus.completed,
+                AgentExecution.input["tool"].astext == tool_name,
+                AgentExecution.input["target"].astext == target,
+                AgentExecution.completed_at >= datetime.now(tz=UTC) - _RESCAN_DEDUP_WINDOW,
+            )
+            .order_by(AgentExecution.completed_at.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        if prior is not None:
+            raise TacticalAlreadyScanned(
+                prior.id, (prior.output or {}).get("thread_id")
+            )
 
         prompt = (
             f"Use the {tool_name} tool with {spec.target_arg}={target!r}. "

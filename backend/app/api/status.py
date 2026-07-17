@@ -28,7 +28,7 @@ from fastapi import APIRouter, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.agents import TacticalAgent
+from app.agents import TacticalAgent, TacticalAlreadyScanned
 from app.api.deps import CurrentNonGuestUser, CurrentUser, DbSession, RedisClient
 from app.models import (
     ActorType,
@@ -1514,6 +1514,13 @@ def _redispatch_task(
             acting_user_id=user.id,
             trigger=AgentTrigger.manual,
         )
+    except TacticalAlreadyScanned as dedup:
+        # A completed run already covered this (tool, target) within the dedup
+        # window — the retry is moot. Mark the task done against the prior run
+        # instead of re-dispatching (the duplicate-runs guardrail).
+        task.status = TaskStatus.completed
+        task.completed_at = datetime.now(tz=UTC)
+        task.run_id = dedup.prior_execution_id
     except Exception as exc:
         # Tactical commits the new lease/task state before Redis XADD to avoid
         # a worker-vs-DB race. If enqueue then fails, restore the prior terminal
