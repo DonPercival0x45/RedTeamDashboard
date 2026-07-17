@@ -1823,3 +1823,38 @@ export function importAgentConfigurations(
     body: JSON.stringify(payload),
   });
 }
+
+// v2.10.0 Infrastructure tab — admin-only VM inventory + power actions.
+// The backend expects the raw canonical ARM id (leading slash + slashes)
+// under a :path capture — we forward it verbatim; fetch handles encoding.
+export function getInfraStatus(): Promise<
+  import("@/lib/types").InfraStatus
+> {
+  return request("/infrastructure/status");
+}
+
+export function listInfraSubscriptions(): Promise<
+  import("@/lib/types").InfraSubscription[]
+> {
+  return request("/infrastructure/subscriptions");
+}
+
+export function listVms(): Promise<import("@/lib/types").VmSummary[]> {
+  return request("/infrastructure/vms");
+}
+
+export function getVm(armId: string): Promise<import("@/lib/types").VmSummary> {
+  return request(`/infrastructure/vms${armId}`);
+}
+
+export function startVm(armId: string): Promise<void> {
+  return request(`/infrastructure/vms${armId}/start`, { method: "POST" });
+}
+
+export function deallocateVm(armId: string): Promise<void> {
+  return request(`/infrastructure/vms${armId}/deallocate`, { method: "POST" });
+}
+
+export function restartVm(armId: string): Promise<void> {
+  return request(`/infrastructure/vms${armId}/restart`, { method: "POST" });
+}

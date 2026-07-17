@@ -65,6 +65,9 @@ param entraClientId string = ''
 @description('Comma-separated IPv4 CIDRs allowed inbound HTTPS across the entire Container Apps environment (frontend + backend + MCP). Empty → no restriction. v1.28.1: enforced by per-app ingress `ipSecurityRestrictions` on all three Container Apps (Envoy sees the real client IP via X-Forwarded-For). install.sh resolves + persists via the frontend Container App\'s ingress rules (RTD_VIEWER_ALLOWED_IPS in the shell env / help text).')
 param allowedIps string = ''
 
+@description('v2.10.0 Infrastructure tab — comma-separated Azure subscription IDs whose VMs the admin Infrastructure tab should surface + control. WARNING: the backend\'s managed identity gets Reader + Virtual Machine Contributor at each subscription\'s scope. A compromised backend token can start/stop/deallocate every VM in every listed sub. Empty → tab is inert.')
+param infraSubscriptions string = ''
+
 var namePrefix = 'rtd-${env}'
 var tags = {
   app: 'red-team-dashboard'
@@ -263,6 +266,7 @@ module apps 'modules/containerapps.bicep' = {
     acaMcpUrl: mcpApp.outputs.appUrl
     acaMcpAppEnabled: true
     allowedIps: allowedIps
+    infraSubscriptions: infraSubscriptions
   }
 }
 
@@ -293,6 +297,33 @@ module aciRoles 'modules/aci_roles.bicep' = {
     principalId: apps.outputs.appPrincipalId
   }
 }
+
+// v2.10.0 Infrastructure tab — grant the backend's managed identity
+// Reader + Virtual Machine Contributor at each configured subscription
+// so `GET /infrastructure/vms` and the start/stop/restart endpoints
+// can reach ARM. The role assignments run at subscription scope, which
+// is why main.bicep (already subscription-scoped) is the right home.
+//
+// BLAST RADIUS: a compromised backend token can control every VM in
+// every listed subscription. This is documented on the infraSubscriptions
+// param above and reiterated in install.sh's --infra-subscriptions help.
+var infraSubsList = empty(infraSubscriptions)
+  ? []
+  : split(infraSubscriptions, ',')
+var vmReaderRoleId = 'acdd72a7-3385-48ef-bd42-f606fba81ae7'
+var vmContributorRoleId = '9980e02c-c2be-4d73-94e8-173b1dc7cf3c'
+
+module vmMgmtRoles 'modules/vm_management_roles.bicep' = [
+  for subId in infraSubsList: {
+    name: 'vmMgmtRoles-${uniqueString(subId)}'
+    scope: subscription(subId)
+    params: {
+      principalId: apps.outputs.appPrincipalId
+      readerRoleId: vmReaderRoleId
+      contributorRoleId: vmContributorRoleId
+    }
+  }
+]
 
 output resourceGroupName string = rg.name
 output appFqdn string = apps.outputs.appFqdn

@@ -76,6 +76,11 @@ PLANNER_KEY="${PLANNER_API_KEY:-}"
 # 5qprod gotcha; source moved from SWA blade → Container App env in v1.10.0).
 ALLOWED_IPS="${RTD_VIEWER_ALLOWED_IPS:-}"
 ALLOWED_IPS_FROM_FLAG=false
+# v2.10.0 Infrastructure tab — CSV of Azure subscription IDs the admin
+# Infrastructure tab surfaces + controls. Same resolve precedence as
+# --allowed-ips: flag → live backend Container App env → shell env var.
+INFRA_SUBSCRIPTIONS="${RTD_INFRA_SUBSCRIPTIONS:-}"
+INFRA_SUBSCRIPTIONS_FROM_FLAG=false
 NON_INTERACTIVE=false
 
 usage() {
@@ -116,6 +121,15 @@ Options:
                           ingress rules (if already set), then shell
                           RTD_VIEWER_ALLOWED_IPS. Note: CLI + MCP clients
                           need to be in the allowlist too.
+  --infra-subscriptions CSV  v2.10.0 Infrastructure tab. Comma-separated
+                          Azure subscription IDs whose VMs the admin
+                          Infrastructure tab should surface + control.
+                          Grants the backend's managed identity Reader +
+                          Virtual Machine Contributor at EACH sub's scope.
+                          WARNING: a compromised backend can start / stop /
+                          deallocate every VM in every listed sub. Falls
+                          back to: live backend Container App env
+                          (RTD_INFRA_SUBSCRIPTIONS), then shell env.
   --yes                   Skip the confirmation prompt; useful in CI/automation.
   -h, --help              Show this help.
 EOF
@@ -135,6 +149,7 @@ while [[ $# -gt 0 ]]; do
         --entra-tenant-id)   ENTRA_TENANT_ID="$2"; ENTRA_TENANT_ID_FROM_FLAG=true; shift 2 ;;
         --entra-client-id)   ENTRA_CLIENT_ID="$2"; ENTRA_CLIENT_ID_FROM_FLAG=true; shift 2 ;;
         --allowed-ips)       ALLOWED_IPS="$2"; ALLOWED_IPS_FROM_FLAG=true; shift 2 ;;
+        --infra-subscriptions) INFRA_SUBSCRIPTIONS="$2"; INFRA_SUBSCRIPTIONS_FROM_FLAG=true; shift 2 ;;
         --yes)               NON_INTERACTIVE=true;     shift ;;
         -h|--help)           usage ;;
         *) echo "unknown arg: $1" >&2; usage ;;
@@ -260,6 +275,22 @@ if [[ "$ENTRA_CLIENT_ID_FROM_FLAG" != "true" ]]; then
     fi
 fi
 
+# v2.10.0 Infrastructure subscriptions — same live-env resolution pattern.
+# Source of truth is the RTD_INFRA_SUBSCRIPTIONS env var on the BACKEND
+# Container App (not the frontend, unlike the entra vars). Empty return
+# leaves whatever the CLI flag / shell env provided.
+BACKEND_APP_PREDICTED_NAME="rtd-${ENV_NAME}-app"
+if [[ "$INFRA_SUBSCRIPTIONS_FROM_FLAG" != "true" ]]; then
+    PRE_STORED_INFRA_SUBS="$(az containerapp show \
+        -n "$BACKEND_APP_PREDICTED_NAME" -g "$RG_NAME" \
+        --query "properties.template.containers[?name=='backend'].env[?name=='RTD_INFRA_SUBSCRIPTIONS'].value | [0]" \
+        -o tsv 2>/dev/null || true)"
+    if [[ -n "$PRE_STORED_INFRA_SUBS" && "$PRE_STORED_INFRA_SUBS" != "None" ]]; then
+        INFRA_SUBSCRIPTIONS="$PRE_STORED_INFRA_SUBS"
+        blue "    Infra subscriptions pre-resolved from backend Container App env"
+    fi
+fi
+
 # IP allowlist source of truth is the LIVE ingress ipSecurityRestrictions
 # on the frontend Container App — read the ipAddressRange values back and
 # re-flatten to CSV so the Bicep param below re-stamps them onto all
@@ -299,6 +330,7 @@ az deployment sub create \
     --parameters entraTenantId="$ENTRA_TENANT_ID" \
     --parameters entraClientId="$ENTRA_CLIENT_ID" \
     --parameters allowedIps="$ALLOWED_IPS" \
+    --parameters infraSubscriptions="$INFRA_SUBSCRIPTIONS" \
     --only-show-errors \
     -o none
 

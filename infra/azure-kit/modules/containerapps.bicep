@@ -56,6 +56,9 @@ param acaMcpAppEnabled bool = false
 @description('v1.28.1: Comma-separated IPv4 CIDRs allowed inbound HTTPS to the backend Container App via Envoy ingress. Empty → no restriction. Same allowlist stamped onto frontend and MCP so CLI + browser + MCP clients all use one list.')
 param allowedIps string = ''
 
+@description('v2.10.0 Infrastructure tab — CSV of Azure subscription IDs whose VMs the admin surface should manage. Passed to the backend as RTD_INFRA_SUBSCRIPTIONS. Empty → tab is inert (backend flips to mock mode when env=local).')
+param infraSubscriptions string = ''
+
 // Bicep can\'t nest for-expressions in ternaries (BCP138), so split into two vars.
 var trimmedAllowedIps = trim(allowedIps)
 var ipCidrList = empty(trimmedAllowedIps) ? [] : split(trimmedAllowedIps, ',')
@@ -164,6 +167,7 @@ var appEnv = [
   { name: 'ACI_RESOURCE_GROUP', value: resourceGroup().name }
   { name: 'ACI_LOCATION', value: location }
   { name: 'ACI_SOURCE_SHARE', value: 'tool-sources' }
+  { name: 'RTD_INFRA_SUBSCRIPTIONS', value: infraSubscriptions }
 ]
 
 // ---------------------------------------------------------------------------
