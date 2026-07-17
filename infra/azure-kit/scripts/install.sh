@@ -79,7 +79,7 @@ ALLOWED_IPS_FROM_FLAG=false
 # v2.10.0 Infrastructure tab — CSV of Azure subscription IDs the admin
 # Infrastructure tab surfaces + controls. Same resolve precedence as
 # --allowed-ips: flag → live backend Container App env → shell env var.
-INFRA_SUBSCRIPTIONS="${RTD_INFRA_SUBSCRIPTIONS:-}"
+INFRA_SUBSCRIPTIONS="${RTD_INFRA_SUBSCRIPTIONS:-${INFRA_SUBSCRIPTIONS:-}}"
 INFRA_SUBSCRIPTIONS_FROM_FLAG=false
 NON_INTERACTIVE=false
 
@@ -129,7 +129,8 @@ Options:
                           WARNING: a compromised backend can start / stop /
                           deallocate every VM in every listed sub. Falls
                           back to: live backend Container App env
-                          (RTD_INFRA_SUBSCRIPTIONS), then shell env.
+                          (INFRA_SUBSCRIPTIONS), then shell env
+                          (RTD_INFRA_SUBSCRIPTIONS or INFRA_SUBSCRIPTIONS).
   --yes                   Skip the confirmation prompt; useful in CI/automation.
   -h, --help              Show this help.
 EOF
@@ -276,14 +277,16 @@ if [[ "$ENTRA_CLIENT_ID_FROM_FLAG" != "true" ]]; then
 fi
 
 # v2.10.0 Infrastructure subscriptions — same live-env resolution pattern.
-# Source of truth is the RTD_INFRA_SUBSCRIPTIONS env var on the BACKEND
-# Container App (not the frontend, unlike the entra vars). Empty return
-# leaves whatever the CLI flag / shell env provided.
+# Source of truth is the INFRA_SUBSCRIPTIONS env var on the BACKEND
+# Container App (v2.10.3: renamed from RTD_INFRA_SUBSCRIPTIONS so pydantic-
+# settings' field-name → uppercase env var mapping picks it up; every
+# other setting in app/core/config.py follows the same no-prefix rule).
+# Falls back to the pre-v2.10.3 name for continuity on already-installed envs.
 BACKEND_APP_PREDICTED_NAME="rtd-${ENV_NAME}-app"
 if [[ "$INFRA_SUBSCRIPTIONS_FROM_FLAG" != "true" ]]; then
     PRE_STORED_INFRA_SUBS="$(az containerapp show \
         -n "$BACKEND_APP_PREDICTED_NAME" -g "$RG_NAME" \
-        --query "properties.template.containers[?name=='backend'].env[?name=='RTD_INFRA_SUBSCRIPTIONS'].value | [0]" \
+        --query "properties.template.containers[?name=='backend'].env[?name=='INFRA_SUBSCRIPTIONS' || name=='RTD_INFRA_SUBSCRIPTIONS'].value | [0]" \
         -o tsv 2>/dev/null || true)"
     if [[ -n "$PRE_STORED_INFRA_SUBS" && "$PRE_STORED_INFRA_SUBS" != "None" ]]; then
         INFRA_SUBSCRIPTIONS="$PRE_STORED_INFRA_SUBS"
