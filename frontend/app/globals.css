@@ -540,3 +540,21 @@
     animation-iteration-count: 1;
   }
 }
+
+/* v2.10.1 — indeterminate top progress bar used by <GlobalFetchingBar />.
+   Slides a 1/3-width chip left-to-right across the viewport on a 1.2s
+   loop. Suppressed under reduced-motion so it stays as a static hint. */
+.rtd-progress-bar {
+  animation: rtd-progress-slide 1.2s ease-in-out infinite;
+}
+@keyframes rtd-progress-slide {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(400%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rtd-progress-bar {
+    animation: none;
+    width: 100%;
+    opacity: 0.5;
+  }
+}

@@ -13,7 +13,7 @@ import { VmActionMenu } from "@/components/infrastructure/vm-action-menu";
 import { cn } from "@/lib/utils";
 import type { VmPowerState, VmSummary } from "@/lib/types";
 
-type SortKey = "name" | "region" | "status";
+type SortKey = "name" | "resource_group" | "region" | "status";
 
 const POWER_LABEL: Record<VmPowerState, string> = {
   running: "Running",
@@ -80,6 +80,8 @@ export function VmTable({
     const dir = sortDir === "asc" ? 1 : -1;
     const sorted = [...rows].sort((a, b) => {
       if (sortKey === "name") return a.name.localeCompare(b.name) * dir;
+      if (sortKey === "resource_group")
+        return a.resource_group.localeCompare(b.resource_group) * dir;
       if (sortKey === "region") return a.location.localeCompare(b.location) * dir;
       return a.power_state.localeCompare(b.power_state) * dir;
     });
@@ -129,6 +131,13 @@ export function VmTable({
                 onClick={() => toggleSort("name")}
               />
               <SortableTh
+                label="Resource Group"
+                sortKey="resource_group"
+                current={sortKey}
+                dir={sortDir}
+                onClick={() => toggleSort("resource_group")}
+              />
+              <SortableTh
                 label="Region"
                 sortKey="region"
                 current={sortKey}
@@ -150,14 +159,14 @@ export function VmTable({
           <tbody className="divide-y divide-border/60">
             {loading && vms.length === 0 && (
               <tr>
-                <td colSpan={6} className="px-3 py-6 text-center text-muted-foreground">
+                <td colSpan={7} className="px-3 py-6 text-center text-muted-foreground">
                   Loading VMs…
                 </td>
               </tr>
             )}
             {!loading && vms.length === 0 && (
               <tr>
-                <td colSpan={6} className="px-3 py-6 text-center text-muted-foreground">
+                <td colSpan={7} className="px-3 py-6 text-center text-muted-foreground">
                   No VMs surfaced. Check that the backend has the right
                   subscription IDs configured.
                 </td>
@@ -168,9 +177,10 @@ export function VmTable({
                 <td className="px-3 py-2">
                   <div className="font-medium text-foreground">{vm.name}</div>
                   <div className="text-[10px] text-muted-foreground">
-                    {vm.resource_group} · {vm.size}
+                    {vm.size}
                   </div>
                 </td>
+                <td className="px-3 py-2 font-mono text-xs">{vm.resource_group}</td>
                 <td className="px-3 py-2 text-xs">{vm.location}</td>
                 <td className="px-3 py-2 text-xs">
                   <div>{vm.os_type}</div>

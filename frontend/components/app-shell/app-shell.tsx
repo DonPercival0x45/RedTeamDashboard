@@ -12,6 +12,7 @@
 import { useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
 import { PanelLeft } from "lucide-react";
+import { GlobalFetchingBar } from "@/components/app-shell/global-fetching-bar";
 import { LeftSidebar } from "@/components/app-shell/left-sidebar";
 import { SettingsModal } from "@/components/settings/settings-modal";
 import { WhatsNewBanner } from "@/components/whats-new-banner";
@@ -68,6 +69,7 @@ export function AppShell({
 
   return (
     <div className="flex h-screen w-full overflow-hidden bg-background text-foreground">
+      <GlobalFetchingBar />
       <LeftSidebar
         collapsed={collapsed}
         onToggle={() => setCollapsed((v) => !v)}
