@@ -1,0 +1,425 @@
+"""Thin wrapper over the Azure ARM SDK for the Infrastructure tab.
+
+Every call is scoped to one subscription. ``list_all_vms`` fans out across
+every configured subscription in parallel. Managed identity credentials are
+picked up via ``DefaultAzureCredential`` (already vendored — same path
+as blob and sandbox_aci).
+
+Mock mode (``env=local`` + empty ``infra_subscriptions``) returns two
+fixture VMs so the UI is exercisable without an Azure cred path. Mock and
+real go through the same ``AzureArmService`` protocol so the router does
+not care which is active.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from dataclasses import dataclass, field
+from typing import Literal, Protocol
+
+from fastapi.concurrency import run_in_threadpool
+
+from app.core.config import Settings
+
+PowerState = Literal[
+    "running", "stopped", "deallocated", "starting", "stopping",
+    "deallocating", "unknown",
+]
+
+
+@dataclass(slots=True)
+class VmSummary:
+    """Wire-shape returned by ``GET /infrastructure/vms``."""
+
+    arm_id: str
+    name: str
+    subscription_id: str
+    resource_group: str
+    location: str
+    size: str
+    os_type: str
+    os_offer: str | None
+    power_state: PowerState
+    public_ip: str | None
+    private_ip: str | None
+    tags: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class SubscriptionSummary:
+    subscription_id: str
+    display_name: str
+    state: str
+
+
+class AzureArmService(Protocol):
+    async def list_subscriptions(self) -> list[SubscriptionSummary]: ...
+    async def list_all_vms(self) -> list[VmSummary]: ...
+    async def get_vm(self, arm_id: str) -> VmSummary: ...
+    async def start_vm(self, arm_id: str) -> None: ...
+    async def deallocate_vm(self, arm_id: str) -> None: ...
+    async def restart_vm(self, arm_id: str) -> None: ...
+
+
+# ---------------------------------------------------------------------------
+# ARM id parsing — canonical shape is
+# /subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.Compute/virtualMachines/{name}
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class VmRef:
+    subscription_id: str
+    resource_group: str
+    name: str
+
+
+def parse_vm_arm_id(arm_id: str) -> VmRef:
+    parts = arm_id.strip("/").split("/")
+    # Case-insensitive: Azure emits `resourceGroups` but browsers can
+    # arrive with any casing. Normalize on parse; re-emit canonical.
+    lowered = [p.lower() for p in parts]
+    try:
+        s = lowered.index("subscriptions")
+        r = lowered.index("resourcegroups")
+        v = lowered.index("virtualmachines")
+    except ValueError as exc:
+        raise ValueError(f"not a virtualMachines ARM id: {arm_id}") from exc
+    return VmRef(
+        subscription_id=parts[s + 1],
+        resource_group=parts[r + 1],
+        name=parts[v + 1],
+    )
+
+
+def format_vm_arm_id(ref: VmRef) -> str:
+    return (
+        f"/subscriptions/{ref.subscription_id}"
+        f"/resourceGroups/{ref.resource_group}"
+        f"/providers/Microsoft.Compute/virtualMachines/{ref.name}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Real implementation — one Compute + Network client per sub, cached.
+# ---------------------------------------------------------------------------
+
+
+class RealAzureArmService:
+    def __init__(self, settings: Settings) -> None:
+        self._settings = settings
+        self._compute: dict[str, object] = {}
+        self._network: dict[str, object] = {}
+        self._credential: object | None = None
+
+    def _cred(self) -> object:
+        if self._credential is None:
+            from azure.identity import DefaultAzureCredential
+
+            self._credential = DefaultAzureCredential()
+        return self._credential
+
+    def _compute_client(self, subscription_id: str) -> object:
+        client = self._compute.get(subscription_id)
+        if client is None:
+            from azure.mgmt.compute import ComputeManagementClient
+
+            client = ComputeManagementClient(self._cred(), subscription_id)
+            self._compute[subscription_id] = client
+        return client
+
+    def _network_client(self, subscription_id: str) -> object:
+        client = self._network.get(subscription_id)
+        if client is None:
+            from azure.mgmt.network import NetworkManagementClient
+
+            client = NetworkManagementClient(self._cred(), subscription_id)
+            self._network[subscription_id] = client
+        return client
+
+    async def list_subscriptions(self) -> list[SubscriptionSummary]:
+        # Only surface configured subs — we don't want to leak sub display
+        # names the caller isn't authorized to act against.
+        def _work() -> list[SubscriptionSummary]:
+            from azure.mgmt.subscription import SubscriptionClient
+
+            client = SubscriptionClient(self._cred())
+            out: list[SubscriptionSummary] = []
+            configured = set(self._settings.infra_subscriptions)
+            for sub in client.subscriptions.list():
+                if sub.subscription_id in configured:
+                    out.append(
+                        SubscriptionSummary(
+                            subscription_id=sub.subscription_id,
+                            display_name=sub.display_name or sub.subscription_id,
+                            state=str(sub.state) if sub.state else "unknown",
+                        )
+                    )
+            return out
+
+        return await run_in_threadpool(_work)
+
+    async def list_all_vms(self) -> list[VmSummary]:
+        subs = self._settings.infra_subscriptions
+        if not subs:
+            return []
+        results = await asyncio.gather(
+            *(self._list_vms_for_sub(sub_id) for sub_id in subs),
+            return_exceptions=True,
+        )
+        flat: list[VmSummary] = []
+        for r in results:
+            if isinstance(r, list):
+                flat.extend(r)
+            # Per-sub failures are swallowed here so one bad sub can't
+            # blank the whole page. Routes call ``get_vm`` directly for
+            # actions, so surface errors happen there.
+        return flat
+
+    async def _list_vms_for_sub(self, subscription_id: str) -> list[VmSummary]:
+        def _work() -> list[VmSummary]:
+            return _collect_vms_for_sub(
+                self._compute_client(subscription_id),
+                self._network_client(subscription_id),
+                subscription_id,
+            )
+
+        return await run_in_threadpool(_work)
+
+    async def get_vm(self, arm_id: str) -> VmSummary:
+        ref = parse_vm_arm_id(arm_id)
+
+        def _work() -> VmSummary:
+            compute = self._compute_client(ref.subscription_id)
+            network = self._network_client(ref.subscription_id)
+            return _hydrate_vm(
+                compute,
+                network,
+                ref.subscription_id,
+                ref.resource_group,
+                ref.name,
+                expand_instance_view=True,
+            )
+
+        return await run_in_threadpool(_work)
+
+    async def start_vm(self, arm_id: str) -> None:
+        ref = parse_vm_arm_id(arm_id)
+
+        def _work() -> None:
+            client = self._compute_client(ref.subscription_id)
+            # ``.begin_start`` returns a long-running-operation poller. We
+            # kick it and return — the frontend polls status via GET /vm.
+            client.virtual_machines.begin_start(ref.resource_group, ref.name)
+
+        await run_in_threadpool(_work)
+
+    async def deallocate_vm(self, arm_id: str) -> None:
+        ref = parse_vm_arm_id(arm_id)
+
+        def _work() -> None:
+            client = self._compute_client(ref.subscription_id)
+            client.virtual_machines.begin_deallocate(ref.resource_group, ref.name)
+
+        await run_in_threadpool(_work)
+
+    async def restart_vm(self, arm_id: str) -> None:
+        ref = parse_vm_arm_id(arm_id)
+
+        def _work() -> None:
+            client = self._compute_client(ref.subscription_id)
+            client.virtual_machines.begin_restart(ref.resource_group, ref.name)
+
+        await run_in_threadpool(_work)
+
+
+def _collect_vms_for_sub(
+    compute_client: object,
+    network_client: object,
+    subscription_id: str,
+) -> list[VmSummary]:
+    """Return one summary per VM in the sub. Runs sync inside a threadpool."""
+    # NIC → VM public/private IP requires two lookups. We fetch all NICs +
+    # PIPs in the sub once (cheap) and index them, so the per-VM cost is
+    # constant. The Azure Compute list gives us OS + power state (with
+    # instance view) in a single call when we ask.
+    pip_by_id: dict[str, str] = {}
+    for pip in network_client.public_ip_addresses.list_all():  # type: ignore[attr-defined]
+        if pip.id and pip.ip_address:
+            pip_by_id[pip.id.lower()] = pip.ip_address
+    nic_by_id: dict[str, object] = {}
+    for nic in network_client.network_interfaces.list_all():  # type: ignore[attr-defined]
+        if nic.id:
+            nic_by_id[nic.id.lower()] = nic
+
+    out: list[VmSummary] = []
+    for vm in compute_client.virtual_machines.list_all():  # type: ignore[attr-defined]
+        # Instance view carries power state — one extra call per VM. Large
+        # tenants might want a fan-out limit here later; today's shape is
+        # dozens, not thousands.
+        try:
+            ref = parse_vm_arm_id(vm.id or "")
+        except ValueError:
+            continue
+        summary = _summary_from_vm(
+            vm=vm,
+            subscription_id=subscription_id,
+            resource_group=ref.resource_group,
+            pip_by_id=pip_by_id,
+            nic_by_id=nic_by_id,
+            power_state="unknown",
+        )
+        try:
+            iv = compute_client.virtual_machines.instance_view(  # type: ignore[attr-defined]
+                ref.resource_group, ref.name
+            )
+            summary.power_state = _extract_power_state(iv)
+        except Exception:
+            pass
+        out.append(summary)
+    return out
+
+
+def _hydrate_vm(
+    compute_client: object,
+    network_client: object,
+    subscription_id: str,
+    resource_group: str,
+    name: str,
+    *,
+    expand_instance_view: bool,
+) -> VmSummary:
+    vm = compute_client.virtual_machines.get(  # type: ignore[attr-defined]
+        resource_group, name, expand="instanceView" if expand_instance_view else None
+    )
+    pip_by_id: dict[str, str] = {}
+    for pip in network_client.public_ip_addresses.list_all():  # type: ignore[attr-defined]
+        if pip.id and pip.ip_address:
+            pip_by_id[pip.id.lower()] = pip.ip_address
+    nic_by_id: dict[str, object] = {}
+    for nic in network_client.network_interfaces.list_all():  # type: ignore[attr-defined]
+        if nic.id:
+            nic_by_id[nic.id.lower()] = nic
+    iv = getattr(vm, "instance_view", None)
+    power = _extract_power_state(iv) if iv else "unknown"
+    return _summary_from_vm(
+        vm=vm,
+        subscription_id=subscription_id,
+        resource_group=resource_group,
+        pip_by_id=pip_by_id,
+        nic_by_id=nic_by_id,
+        power_state=power,
+    )
+
+
+def _summary_from_vm(
+    *,
+    vm: object,
+    subscription_id: str,
+    resource_group: str,
+    pip_by_id: dict[str, str],
+    nic_by_id: dict[str, object],
+    power_state: PowerState,
+) -> VmSummary:
+    # Public + private IP: pick the VM's primary NIC (or first if unmarked)
+    # then read its ip_configurations. Public IPs are referenced by id, so
+    # we look them up in the sub-wide index built above.
+    public_ip: str | None = None
+    private_ip: str | None = None
+    nic_refs = getattr(getattr(vm, "network_profile", None), "network_interfaces", None) or []
+    primary_nic = None
+    for nic_ref in nic_refs:
+        if getattr(nic_ref, "primary", False):
+            primary_nic = nic_by_id.get((nic_ref.id or "").lower())
+            break
+    if primary_nic is None and nic_refs:
+        primary_nic = nic_by_id.get((nic_refs[0].id or "").lower())
+    if primary_nic is not None:
+        for ip_cfg in getattr(primary_nic, "ip_configurations", None) or []:
+            if not private_ip and getattr(ip_cfg, "private_ip_address", None):
+                private_ip = ip_cfg.private_ip_address
+            pip_ref = getattr(ip_cfg, "public_ip_address", None)
+            if pip_ref and pip_ref.id and not public_ip:
+                public_ip = pip_by_id.get(pip_ref.id.lower())
+            if private_ip and public_ip:
+                break
+
+    storage = getattr(vm, "storage_profile", None)
+    os_disk = getattr(storage, "os_disk", None) if storage else None
+    image = getattr(storage, "image_reference", None) if storage else None
+    os_type_raw = str(getattr(os_disk, "os_type", "") or "")
+    os_offer = None
+    if image is not None:
+        offer = getattr(image, "offer", None)
+        sku = getattr(image, "sku", None)
+        if offer or sku:
+            os_offer = " ".join(part for part in (offer, sku) if part)
+
+    hardware = getattr(vm, "hardware_profile", None)
+    size = str(getattr(hardware, "vm_size", "") or "")
+
+    return VmSummary(
+        arm_id=vm.id,
+        name=vm.name,
+        subscription_id=subscription_id,
+        resource_group=resource_group,
+        location=vm.location,
+        size=size,
+        os_type=os_type_raw.capitalize() if os_type_raw else "Unknown",
+        os_offer=os_offer,
+        power_state=power_state,
+        public_ip=public_ip,
+        private_ip=private_ip,
+        tags=dict(vm.tags or {}),
+    )
+
+
+def _extract_power_state(instance_view: object) -> PowerState:
+    """Instance view returns a list of statuses like ``PowerState/running``.
+
+    Azure documents four VM states: running / stopped / deallocated /
+    stopping — plus transient starting / deallocating that surface during
+    LROs. Anything unrecognized falls back to unknown so the frontend
+    doesn't crash on new SDK values.
+    """
+    for status in getattr(instance_view, "statuses", None) or []:
+        code = str(getattr(status, "code", "") or "")
+        if code.startswith("PowerState/"):
+            key = code.split("/", 1)[1].lower()
+            if key in {"running", "stopped", "deallocated", "starting", "stopping", "deallocating"}:
+                return key  # type: ignore[return-value]
+    return "unknown"
+
+
+# ---------------------------------------------------------------------------
+# Factory — mock in local-dev when no sub is configured, real otherwise.
+# ---------------------------------------------------------------------------
+
+
+_service: AzureArmService | None = None
+
+
+def get_arm_service(settings: Settings) -> AzureArmService:
+    """Cached singleton. Router calls this via a FastAPI dependency."""
+    global _service
+    if _service is None:
+        if _should_use_mock(settings):
+            from app.services.azure_arm_mock import MockAzureArmService
+
+            _service = MockAzureArmService()
+        else:
+            _service = RealAzureArmService(settings)
+    return _service
+
+
+def _should_use_mock(settings: Settings) -> bool:
+    # Local dev with no configured subs → mock. Anywhere else needs subs
+    # to be configured; empty list just means the tab is inert but the
+    # real client still gets constructed for potential future config.
+    return settings.env == "local" and not settings.infra_subscriptions
+
+
+def reset_arm_service_cache() -> None:
+    """Test-only hook. Also used implicitly on process restart."""
+    global _service
+    _service = None

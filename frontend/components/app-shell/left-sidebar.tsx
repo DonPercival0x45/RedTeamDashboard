@@ -27,24 +27,28 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/auth";
-import { useEngagements } from "@/lib/hooks";
+import { useEngagements, useMe } from "@/lib/hooks";
 import { WhatsNewModal } from "@/components/settings/whats-new-modal";
 import { ApprovalInbox } from "@/components/approval-inbox";
 
 // Nav item shape — icon (lucide), label, href, and an optional live
 // badge count fetched by the sidebar (currently only Engagements).
+// v2.10.0: `adminOnly` hides the row for non-admin roles so the
+// Infrastructure surface — which controls tenant VMs — never appears
+// in the nav for users/guests. Direct URL still hits the AdminOnlyGate.
 type NavItem = {
   id: "engagements" | "automation" | "analytics" | "infrastructure";
   label: string;
   href: string;
   icon: typeof Crosshair;
+  adminOnly?: boolean;
 };
 
 const NAV_ITEMS: NavItem[] = [
   { id: "engagements", label: "Engagements", href: "/engagements", icon: Crosshair },
   { id: "automation", label: "Automation", href: "/automation", icon: Zap },
   { id: "analytics", label: "Analytics", href: "/analytics", icon: BarChart3 },
-  { id: "infrastructure", label: "Infrastructure", href: "/infrastructure", icon: HardDrive },
+  { id: "infrastructure", label: "Infrastructure", href: "/infrastructure", icon: HardDrive, adminOnly: true },
 ];
 
 // Path prefix → active nav id. `/e/*` and `/new` count as Engagements
@@ -80,6 +84,10 @@ export function LeftSidebar({
   const pathname = usePathname() ?? "/";
   const active = activeNavId(pathname);
   const { data: engagements } = useEngagements();
+  const { data: me } = useMe();
+  const visibleNavItems = NAV_ITEMS.filter(
+    (item) => !item.adminOnly || me?.is_admin,
+  );
 
   // Only Engagements gets a badge in v2.0.0 — the other nav items
   // don't have live counts to report until their features ship.
@@ -156,7 +164,7 @@ export function LeftSidebar({
 
       {/* Nav */}
       <nav className="flex flex-col gap-1 px-2">
-        {NAV_ITEMS.map((item) => {
+        {visibleNavItems.map((item) => {
           const isActive = active === item.id;
           const Icon = item.icon;
           const badge = item.id === "engagements" ? engagementsCount : null;

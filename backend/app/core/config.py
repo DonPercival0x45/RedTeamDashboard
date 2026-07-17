@@ -69,6 +69,20 @@ class Settings(BaseSettings):
             return [item.strip() for item in stripped.split(",") if item.strip()]
         return v
 
+    # ── Infrastructure tab (v2.10.0) ─────────────────────────────────────
+    # Comma-separated Azure subscription IDs the Infrastructure tab
+    # should surface VMs from. Blank → tab is inert; local dev with
+    # ``env=local`` additionally flips to mock mode so the UI is
+    # exercisable without any Azure credential path.
+    infra_subscriptions: Annotated[list[str], NoDecode] = []
+
+    @field_validator("infra_subscriptions", mode="before")
+    @classmethod
+    def _split_subs_csv(cls, v: object) -> object:
+        if isinstance(v, str):
+            return [item.strip() for item in v.split(",") if item.strip()]
+        return v
+
     # ── Microsoft Entra ID (per-analyst SSO) ─────────────────────────────
     # When tenant + client id are set, the API additionally accepts
     # `Authorization: Bearer <jwt>` access tokens issued by this Entra app

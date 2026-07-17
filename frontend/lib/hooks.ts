@@ -32,6 +32,7 @@ import {
   listAgentConfigurations,
   putAgentConfiguration,
   createObservation,
+  deallocateVm,
   deleteIntegration,
   createScopeItem,
   decideApproval,
@@ -48,6 +49,7 @@ import {
   getEngagementCosts,
   getEngagementStatus,
   getGlobalAgentRunSteps,
+  getInfraStatus,
   getStatusSteps,
   getMe,
   getReportReadiness,
@@ -62,9 +64,11 @@ import {
   getFindingActivity,
   getFindingChat,
   listFindingContextCandidates,
+  listInfraSubscriptions,
   listIntegrations,
   listObservations,
   listProviderKeys,
+  listVms,
   listOrchestratorTools,
   listPendingApprovals,
   fetchEngagementLog,
@@ -81,10 +85,12 @@ import {
   listToolInvocations,
   listTools,
   promoteFindingContext,
+  restartVm,
   retryAgentExecution,
   retryTask,
   revokeAuthorization,
   revokeTool,
+  startVm,
   updateIntegration,
   updateMyPreferences,
   updateUserRole,
@@ -192,6 +198,10 @@ export const qk = {
     ["analytics", "top-findings", engagement ?? "all", limit] as const,
   analyticsEngagementLog: (engagement: string | null, limit: number) =>
     ["analytics", "engagement-log", engagement ?? "all", limit] as const,
+  infraStatus: () => ["infra", "status"] as const,
+  infraSubscriptions: () => ["infra", "subscriptions"] as const,
+  vms: () => ["infra", "vms"] as const,
+  vm: (armId: string) => ["infra", "vm", armId] as const,
 };
 
 export function useEngagements() {
@@ -1163,5 +1173,60 @@ export function useRetryAgentExecutionMutation(slug: string) {
     mutationFn: retryAgentExecution,
     onSuccess: () =>
       qc.invalidateQueries({ queryKey: qk.engagementStatus(slug) }),
+  });
+}
+
+// ── v2.10.0 Infrastructure tab ───────────────────────────────────────
+// 15s refetchInterval so start/stop transitions surface without a
+// manual refresh — Azure LROs typically settle in <1 min.
+
+export function useInfraStatus(opts: { enabled?: boolean } = {}) {
+  return useQuery({
+    queryKey: qk.infraStatus(),
+    queryFn: getInfraStatus,
+    enabled: opts.enabled ?? true,
+    staleTime: 5 * 60_000,
+  });
+}
+
+export function useInfraSubscriptions(opts: { enabled?: boolean } = {}) {
+  return useQuery({
+    queryKey: qk.infraSubscriptions(),
+    queryFn: listInfraSubscriptions,
+    enabled: opts.enabled ?? true,
+    staleTime: 5 * 60_000,
+  });
+}
+
+export function useVms(opts: { enabled?: boolean } = {}) {
+  return useQuery({
+    queryKey: qk.vms(),
+    queryFn: listVms,
+    enabled: opts.enabled ?? true,
+    refetchInterval: 15_000,
+  });
+}
+
+export function useStartVmMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (armId: string) => startVm(armId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.vms() }),
+  });
+}
+
+export function useDeallocateVmMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (armId: string) => deallocateVm(armId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.vms() }),
+  });
+}
+
+export function useRestartVmMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (armId: string) => restartVm(armId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.vms() }),
   });
 }

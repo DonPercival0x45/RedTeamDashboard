@@ -1306,3 +1306,40 @@ export interface AgentConfigImportResult {
   applied_slugs: string[];
   skipped_unknown_slugs: string[];
 }
+
+// v2.10.0 Infrastructure tab — admin-only VM inventory.
+export type VmPowerState =
+  | "running"
+  | "stopped"
+  | "deallocated"
+  | "starting"
+  | "stopping"
+  | "deallocating"
+  | "unknown";
+
+export interface VmSummary {
+  arm_id: string;
+  name: string;
+  subscription_id: string;
+  resource_group: string;
+  location: string;
+  size: string;
+  os_type: string;
+  os_offer: string | null;
+  power_state: VmPowerState;
+  public_ip: string | null;
+  private_ip: string | null;
+  tags: Record<string, string>;
+}
+
+export interface InfraSubscription {
+  subscription_id: string;
+  display_name: string;
+  state: string;
+}
+
+export interface InfraStatus {
+  configured: boolean;
+  mock: boolean;
+  subscription_count: number;
+}

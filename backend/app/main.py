@@ -38,6 +38,7 @@ from app.api.engagement_strategist import router as engagement_strategist_router
 from app.api.engagements import router as engagements_router
 from app.api.entities import router as entities_router
 from app.api.events import router as events_router
+from app.api.infrastructure import router as infrastructure_router
 from app.api.integrations import router as integrations_router
 from app.api.me import router as me_router
 from app.api.orchestrator import router as orchestrator_router
@@ -94,6 +95,7 @@ app.include_router(entities_router)
 app.include_router(me_router)
 app.include_router(roadmap_suggestions_router)
 app.include_router(integrations_router)
+app.include_router(infrastructure_router)
 app.include_router(admin_users_router)
 app.include_router(status_router)
 app.include_router(strategy_router)
