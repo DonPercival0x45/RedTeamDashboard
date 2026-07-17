@@ -17,9 +17,12 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Literal, Protocol
 
+import structlog
 from fastapi.concurrency import run_in_threadpool
 
 from app.core.config import Settings
+
+log = structlog.get_logger(__name__)
 
 PowerState = Literal[
     "running", "stopped", "deallocated", "starting", "stopping",
@@ -168,12 +171,19 @@ class RealAzureArmService:
             return_exceptions=True,
         )
         flat: list[VmSummary] = []
-        for r in results:
+        for sub_id, r in zip(subs, results, strict=True):
             if isinstance(r, list):
                 flat.extend(r)
-            # Per-sub failures are swallowed here so one bad sub can't
-            # blank the whole page. Routes call ``get_vm`` directly for
-            # actions, so surface errors happen there.
+            else:
+                # v2.10.2: surface the real Azure error so an admin
+                # debugging an empty list can see what's failing per-sub
+                # (RBAC not propagated, wrong sub id, transient throttle,
+                # etc.). Previously we swallowed silently.
+                log.warning(
+                    "infra_list_vms_failed",
+                    subscription_id=sub_id,
+                    error=repr(r),
+                )
         return flat
 
     async def _list_vms_for_sub(self, subscription_id: str) -> list[VmSummary]:
