@@ -33,6 +33,7 @@ import {
   putAgentConfiguration,
   createObservation,
   deallocateVm,
+  deleteAutoShutdown,
   deleteIntegration,
   createScopeItem,
   decideApproval,
@@ -47,6 +48,7 @@ import {
   getContributionsHeatmap,
   getEngagement,
   getEngagementCosts,
+  getAutoShutdown,
   getEngagementStatus,
   getGlobalAgentRunSteps,
   getInfraStatus,
@@ -85,6 +87,7 @@ import {
   listToolInvocations,
   listTools,
   promoteFindingContext,
+  putAutoShutdown,
   restartVm,
   retryAgentExecution,
   retryTask,
@@ -202,6 +205,7 @@ export const qk = {
   infraSubscriptions: () => ["infra", "subscriptions"] as const,
   vms: () => ["infra", "vms"] as const,
   vm: (armId: string) => ["infra", "vm", armId] as const,
+  autoShutdown: (armId: string) => ["infra", "auto-shutdown", armId] as const,
 };
 
 export function useEngagements() {
@@ -1228,5 +1232,30 @@ export function useRestartVmMutation() {
   return useMutation({
     mutationFn: (armId: string) => restartVm(armId),
     onSuccess: () => qc.invalidateQueries({ queryKey: qk.vms() }),
+  });
+}
+
+export function useAutoShutdown(armId: string, opts: { enabled?: boolean } = {}) {
+  return useQuery({
+    queryKey: qk.autoShutdown(armId),
+    queryFn: () => getAutoShutdown(armId),
+    enabled: opts.enabled ?? true,
+  });
+}
+
+export function usePutAutoShutdownMutation(armId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: import("@/lib/types").AutoShutdownWrite) =>
+      putAutoShutdown(armId, body),
+    onSuccess: (fresh) => qc.setQueryData(qk.autoShutdown(armId), fresh),
+  });
+}
+
+export function useDeleteAutoShutdownMutation(armId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => deleteAutoShutdown(armId),
+    onSuccess: () => qc.setQueryData(qk.autoShutdown(armId), null),
   });
 }

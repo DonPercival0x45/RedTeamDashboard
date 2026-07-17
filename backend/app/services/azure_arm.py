@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 import structlog
 from fastapi.concurrency import run_in_threadpool
@@ -55,6 +55,25 @@ class SubscriptionSummary:
     state: str
 
 
+@dataclass(slots=True)
+class AutoShutdown:
+    """v2.11.0 — mirrors the subset of Microsoft.DevTestLab/schedules we surface.
+
+    The resource lives at
+    ``{RG}/providers/Microsoft.DevTestLab/schedules/shutdown-computevm-{vmName}``
+    and Azure's own auto-shutdown feature in the portal writes to this
+    same resource. ``time_hhmm`` is a 4-digit local time ("1900" == 19:00);
+    ``timezone_id`` is a Windows time-zone id (e.g. "Central Standard Time"),
+    not IANA. ``notification_webhook_url`` empty → notifications disabled.
+    """
+
+    enabled: bool
+    time_hhmm: str
+    timezone_id: str
+    notification_webhook_url: str | None = None
+    notification_minutes: int = 30
+
+
 class AzureArmService(Protocol):
     async def list_subscriptions(self) -> list[SubscriptionSummary]: ...
     async def list_all_vms(self) -> list[VmSummary]: ...
@@ -62,6 +81,11 @@ class AzureArmService(Protocol):
     async def start_vm(self, arm_id: str) -> None: ...
     async def deallocate_vm(self, arm_id: str) -> None: ...
     async def restart_vm(self, arm_id: str) -> None: ...
+    async def get_auto_shutdown(self, arm_id: str) -> AutoShutdown | None: ...
+    async def set_auto_shutdown(
+        self, arm_id: str, schedule: AutoShutdown
+    ) -> AutoShutdown: ...
+    async def delete_auto_shutdown(self, arm_id: str) -> None: ...
 
 
 # ---------------------------------------------------------------------------
@@ -241,6 +265,104 @@ class RealAzureArmService:
             client.virtual_machines.begin_restart(ref.resource_group, ref.name)
 
         await run_in_threadpool(_work)
+
+    # ---------------------------------------------------------------------
+    # v2.11.0 — Azure auto-shutdown schedule (Microsoft.DevTestLab/schedules).
+    # Uses raw ARM REST + a DefaultAzureCredential-issued token so we don't
+    # have to pull in azure-mgmt-devtestlabs just for one resource type.
+    # ---------------------------------------------------------------------
+
+    def _schedule_url(self, ref: VmRef) -> str:
+        return (
+            f"https://management.azure.com/subscriptions/{ref.subscription_id}"
+            f"/resourceGroups/{ref.resource_group}"
+            f"/providers/Microsoft.DevTestLab/schedules"
+            f"/shutdown-computevm-{ref.name}"
+            f"?api-version=2018-09-15"
+        )
+
+    def _arm_token(self) -> str:
+        cred = self._cred()
+        return cred.get_token("https://management.azure.com/.default").token  # type: ignore[attr-defined]
+
+    async def get_auto_shutdown(self, arm_id: str) -> AutoShutdown | None:
+        ref = parse_vm_arm_id(arm_id)
+        import httpx
+
+        url = self._schedule_url(ref)
+        token = await run_in_threadpool(self._arm_token)
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(url, headers={"Authorization": f"Bearer {token}"})
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        body = resp.json()
+        props = body.get("properties") or {}
+        notif = props.get("notificationSettings") or {}
+        return AutoShutdown(
+            enabled=(str(props.get("status", "")).lower() == "enabled"),
+            time_hhmm=str((props.get("dailyRecurrence") or {}).get("time", "")),
+            timezone_id=str(props.get("timeZoneId", "")),
+            notification_webhook_url=notif.get("webhookUrl") or None,
+            notification_minutes=int(notif.get("timeInMinutes") or 30),
+        )
+
+    async def set_auto_shutdown(
+        self, arm_id: str, schedule: AutoShutdown
+    ) -> AutoShutdown:
+        ref = parse_vm_arm_id(arm_id)
+        import httpx
+
+        # The schedule resource must be co-located with the VM. Read the
+        # VM once to pin location — Azure rejects PUT with a mismatched
+        # location if the schedule already exists elsewhere.
+        vm = await self.get_vm(arm_id)
+        payload: dict[str, Any] = {
+            "location": vm.location,
+            "properties": {
+                "status": "Enabled" if schedule.enabled else "Disabled",
+                "taskType": "ComputeVmShutdownTask",
+                "dailyRecurrence": {"time": schedule.time_hhmm},
+                "timeZoneId": schedule.timezone_id,
+                "targetResourceId": arm_id,
+            },
+        }
+        if schedule.notification_webhook_url:
+            payload["properties"]["notificationSettings"] = {
+                "status": "Enabled",
+                "webhookUrl": schedule.notification_webhook_url,
+                "timeInMinutes": schedule.notification_minutes,
+            }
+        url = self._schedule_url(ref)
+        token = await run_in_threadpool(self._arm_token)
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.put(
+                url,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+            )
+        resp.raise_for_status()
+        # PUT returns the persisted resource — round-trip through our reader
+        # so callers observe exactly what Azure stored, not our intent.
+        fresh = await self.get_auto_shutdown(arm_id)
+        if fresh is None:  # pragma: no cover — Azure lied
+            raise RuntimeError("Azure accepted the schedule but the GET now 404s")
+        return fresh
+
+    async def delete_auto_shutdown(self, arm_id: str) -> None:
+        ref = parse_vm_arm_id(arm_id)
+        import httpx
+
+        url = self._schedule_url(ref)
+        token = await run_in_threadpool(self._arm_token)
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.delete(url, headers={"Authorization": f"Bearer {token}"})
+        if resp.status_code == 404:
+            return
+        resp.raise_for_status()
 
 
 def _collect_vms_for_sub(

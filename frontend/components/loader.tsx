@@ -1,14 +1,18 @@
-// v1.33.3 shared loader — analyst-specified pushup-pillars + bouncing ball.
+// v2.11.0 shared loader — analyst-specified red @-fill.
 // CSS lives in app/globals.css under `.loader`; this file is the React
 // wrapper + a common overlay used when a container needs to display the
 // loader centered over its own bounds while an async action is pending.
+//
+// The @ outline is always visible; the red-liquid fill inside animates
+// bottom-up over ~2.8s then drains back. Sized in px via `--size`;
+// default 180 for full-page usage, drop to ~48 for inline placements.
 
 import { cn } from "@/lib/utils";
 import type { CSSProperties } from "react";
 
 type LoaderProps = {
-  // Optional pixel value for the loader unit. Default 1.75 renders ~131x175.
-  // Drop to ~0.6 for compact inline placements (~45x60).
+  // Optional pixel size of the @ glyph. Default 180 (full-page). Drop
+  // to ~48 for inline placements next to text.
   size?: number;
   className?: string;
   // Accessible label for screen readers. Callers should pass a task-specific
@@ -19,7 +23,7 @@ type LoaderProps = {
 export function Loader({ size, className, label = "Loading" }: LoaderProps) {
   const style =
     typeof size === "number"
-      ? ({ ["--loader-size" as string]: `${size}px` } as CSSProperties)
+      ? ({ ["--size" as string]: `${size}px` } as CSSProperties)
       : undefined;
   return (
     <div
@@ -29,6 +33,12 @@ export function Loader({ size, className, label = "Loading" }: LoaderProps) {
       aria-live="polite"
       aria-label={label}
     >
+      <span className="glyph outline" aria-hidden="true">
+        @
+      </span>
+      <span className="glyph fill" aria-hidden="true">
+        @
+      </span>
       <span className="sr-only">{label}…</span>
     </div>
   );

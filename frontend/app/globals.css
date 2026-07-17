@@ -449,95 +449,66 @@
   display: inline;
 }
 
-/* v1.33.3 loader — pushup-pillars + bouncing ball, per analyst spec.
-   Used by <Loader /> in components/loader.tsx. Size defaults to 1.75px
-   (~131x175 rendered); callers can override via the --loader-size CSS
-   var on the parent for compact placements. */
+/* v2.11.0 loader — red @-fill (analyst-specified, replaces v1.33.3
+   pushup-pillars). Used by <Loader /> in components/loader.tsx.
+   Renders two overlaid @ glyphs: an always-visible outline and a
+   red-liquid fill that clip-paths from bottom→top on a 2.8s loop.
+   Size defaults to 180px; override via the `--size` CSS var
+   (e.g. inline placements pass size=48 → --size:48px). */
 .loader {
-  --color-1: #ddd;
-  --color-2: #de3500;
-  --size: var(--loader-size, 1.75px);
+  --size: 180px;
+  --loader-fill-top: #ff515f;
+  --loader-fill-bottom: #b1001a;
+  --loader-outline: hsl(var(--foreground));
+  --loader-glow: rgba(239, 45, 60, 0.45);
 
   position: relative;
-  width: calc(75 * var(--size));
-  height: calc(100 * var(--size));
-  background-repeat: no-repeat;
-  background-image:
-    linear-gradient(var(--color-1) calc(50 * var(--size)), transparent 0),
-    linear-gradient(var(--color-1) calc(50 * var(--size)), transparent 0),
-    linear-gradient(var(--color-1) calc(50 * var(--size)), transparent 0),
-    linear-gradient(var(--color-1) calc(50 * var(--size)), transparent 0),
-    linear-gradient(var(--color-1) calc(50 * var(--size)), transparent 0);
-  background-size: calc(8 * var(--size)) 100%;
-  background-position:
-    0 calc(90 * var(--size)),
-    calc(15 * var(--size)) calc(78 * var(--size)),
-    calc(30 * var(--size)) calc(66 * var(--size)),
-    calc(45 * var(--size)) calc(58 * var(--size)),
-    calc(60 * var(--size)) calc(50 * var(--size));
-  animation: rtd-loader-pillerPushUp 4s linear infinite;
+  width: var(--size);
+  height: var(--size);
+  font-family: "Fredoka", system-ui, "Segoe UI", sans-serif;
+  font-weight: 700;
+  line-height: var(--size);
+  text-align: center;
 }
-.loader:after {
-  content: '';
+
+.loader .glyph {
   position: absolute;
-  bottom: calc(10 * var(--size));
-  left: 0;
-  width: calc(10 * var(--size));
-  height: calc(10 * var(--size));
-  background: var(--color-2);
-  border-radius: 50%;
-  animation: rtd-loader-ballStepUp 4s linear infinite;
+  inset: 0;
+  font-size: calc(var(--size) * 0.92);
+  -webkit-user-select: none;
+  user-select: none;
 }
 
-@keyframes rtd-loader-pillerPushUp {
-  0%,
-  40%,
-  100% {
-    background-position:
-      0 calc(90 * var(--size)),
-      calc(15 * var(--size)) calc(78 * var(--size)),
-      calc(30 * var(--size)) calc(66 * var(--size)),
-      calc(45 * var(--size)) calc(58 * var(--size)),
-      calc(60 * var(--size)) calc(50 * var(--size));
-  }
-  50%,
-  90% {
-    background-position:
-      0 calc(50 * var(--size)),
-      calc(15 * var(--size)) calc(58 * var(--size)),
-      calc(30 * var(--size)) calc(66 * var(--size)),
-      calc(45 * var(--size)) calc(78 * var(--size)),
-      calc(60 * var(--size)) calc(90 * var(--size));
-  }
+.loader .outline {
+  color: transparent;
+  -webkit-text-stroke: 0.75px var(--loader-outline);
 }
 
-@keyframes rtd-loader-ballStepUp {
-  0%   { transform: translate(0, 0); }
-  5%   { transform: translate(calc(8 * var(--size)),  calc(-14 * var(--size))); }
-  10%  { transform: translate(calc(15 * var(--size)), calc(-10 * var(--size))); }
-  17%  { transform: translate(calc(23 * var(--size)), calc(-24 * var(--size))); }
-  20%  { transform: translate(calc(30 * var(--size)), calc(-20 * var(--size))); }
-  27%  { transform: translate(calc(38 * var(--size)), calc(-34 * var(--size))); }
-  30%  { transform: translate(calc(45 * var(--size)), calc(-30 * var(--size))); }
-  37%  { transform: translate(calc(53 * var(--size)), calc(-44 * var(--size))); }
-  40%  { transform: translate(calc(60 * var(--size)), calc(-40 * var(--size))); }
-  50%  { transform: translate(calc(60 * var(--size)), 0); }
-  57%  { transform: translate(calc(53 * var(--size)), calc(-14 * var(--size))); }
-  60%  { transform: translate(calc(45 * var(--size)), calc(-10 * var(--size))); }
-  67%  { transform: translate(calc(37 * var(--size)), calc(-24 * var(--size))); }
-  70%  { transform: translate(calc(30 * var(--size)), calc(-20 * var(--size))); }
-  77%  { transform: translate(calc(22 * var(--size)), calc(-34 * var(--size))); }
-  80%  { transform: translate(calc(15 * var(--size)), calc(-30 * var(--size))); }
-  87%  { transform: translate(calc(7  * var(--size)), calc(-44 * var(--size))); }
-  90%  { transform: translate(0,                       calc(-40 * var(--size))); }
-  100% { transform: translate(0, 0); }
+.loader .fill {
+  color: transparent;
+  background: linear-gradient(
+    180deg,
+    var(--loader-fill-top),
+    var(--loader-fill-bottom)
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  filter: drop-shadow(0 0 10px var(--loader-glow));
+  clip-path: inset(100% 0 0 0);
+  animation: rtd-loader-fill 2.8s cubic-bezier(0.65, 0.02, 0.34, 1) infinite;
+}
+
+@keyframes rtd-loader-fill {
+  0%   { clip-path: inset(100% 0 0 0); }
+  42%  { clip-path: inset(0 0 -4% 0); }
+  58%  { clip-path: inset(0 0 -4% 0); }
+  100% { clip-path: inset(100% 0 0 0); }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .loader,
-  .loader:after {
-    animation-duration: 0s;
-    animation-iteration-count: 1;
+  .loader .fill {
+    animation: none;
+    clip-path: inset(45% 0 0 0);
   }
 }
 

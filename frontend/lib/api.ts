@@ -1858,3 +1858,31 @@ export function deallocateVm(armId: string): Promise<void> {
 export function restartVm(armId: string): Promise<void> {
   return request(`/infrastructure/vms${armId}/restart`, { method: "POST" });
 }
+
+// v2.11.0 auto-shutdown
+export function getAutoShutdown(
+  armId: string,
+): Promise<import("@/lib/types").AutoShutdown | null> {
+  return request<import("@/lib/types").AutoShutdown>(
+    `/infrastructure/vms${armId}/auto-shutdown`,
+  ).catch((err) => {
+    if (err instanceof ApiError && err.status === 404) return null;
+    throw err;
+  });
+}
+
+export function putAutoShutdown(
+  armId: string,
+  body: import("@/lib/types").AutoShutdownWrite,
+): Promise<import("@/lib/types").AutoShutdown> {
+  return request(`/infrastructure/vms${armId}/auto-shutdown`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
+
+export function deleteAutoShutdown(armId: string): Promise<void> {
+  return request(`/infrastructure/vms${armId}/auto-shutdown`, {
+    method: "DELETE",
+  });
+}

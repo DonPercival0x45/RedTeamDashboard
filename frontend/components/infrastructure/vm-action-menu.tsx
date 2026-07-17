@@ -14,6 +14,7 @@
 import { useState } from "react";
 import { CalendarClock, Play, RotateCcw, Square, Terminal } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { ScheduleModal } from "@/components/infrastructure/schedule-modal";
 import {
   useDeallocateVmMutation,
   useRestartVmMutation,
@@ -27,6 +28,7 @@ const CHIP = "h-6 gap-1 px-2 text-[11px] font-medium";
 
 export function VmActionMenu({ vm }: { vm: VmSummary }) {
   const [busy, setBusy] = useState<null | "start" | "stop" | "restart">(null);
+  const [scheduleOpen, setScheduleOpen] = useState(false);
   const startM = useStartVmMutation();
   const stopM = useDeallocateVmMutation();
   const restartM = useRestartVmMutation();
@@ -103,12 +105,13 @@ export function VmActionMenu({ vm }: { vm: VmSummary }) {
         size="sm"
         variant="outline"
         className={CHIP}
-        disabled
-        title="Coming in v2.11 — Azure auto-shutdown schedule"
+        onClick={() => setScheduleOpen(true)}
+        title="Auto-shutdown schedule (Azure DevTest Labs)"
       >
         <CalendarClock className="h-3 w-3" />
         Schedule
       </Button>
+      <ScheduleModal vm={vm} open={scheduleOpen} onOpenChange={setScheduleOpen} />
       <Button
         type="button"
         size="sm"

@@ -11,6 +11,7 @@ import asyncio
 from dataclasses import replace
 
 from app.services.azure_arm import (
+    AutoShutdown,
     PowerState,
     SubscriptionSummary,
     VmSummary,
@@ -63,6 +64,9 @@ def format_vm_arm_id_from_parts(sub: str, rg: str, name: str) -> str:
 class MockAzureArmService:
     def __init__(self) -> None:
         self._vms: dict[str, VmSummary] = {v.arm_id.lower(): v for v in _fixtures()}
+        # v2.11.0: per-VM auto-shutdown state. Persists across get/set
+        # cycles so the modal round-trip observably takes effect.
+        self._schedules: dict[str, AutoShutdown] = {}
         self._lock = asyncio.Lock()
 
     async def list_subscriptions(self) -> list[SubscriptionSummary]:
@@ -128,3 +132,29 @@ class MockAzureArmService:
         # Fire-and-forget: mirrors the real Azure LRO semantics where the
         # POST returns 202 and the workload settles asynchronously.
         asyncio.create_task(_settle())
+
+    # ---------------------------------------------------------------------
+    # v2.11.0 — auto-shutdown mock. Real Azure round-trips the
+    # Microsoft.DevTestLab/schedules resource; the mock just holds it
+    # in-process so the modal's save/reload flow is exercisable offline.
+    # ---------------------------------------------------------------------
+
+    async def get_auto_shutdown(self, arm_id: str) -> AutoShutdown | None:
+        # Confirm the VM exists (matches real service's 404 semantics for
+        # unknown resources) and then look up the schedule.
+        await self.get_vm(arm_id)
+        async with self._lock:
+            return self._schedules.get(arm_id.lower())
+
+    async def set_auto_shutdown(
+        self, arm_id: str, schedule: AutoShutdown
+    ) -> AutoShutdown:
+        await self.get_vm(arm_id)
+        async with self._lock:
+            self._schedules[arm_id.lower()] = schedule
+            return schedule
+
+    async def delete_auto_shutdown(self, arm_id: str) -> None:
+        await self.get_vm(arm_id)
+        async with self._lock:
+            self._schedules.pop(arm_id.lower(), None)

@@ -30,6 +30,7 @@ from app.api.deps import CurrentAdminUser, DbSession
 from app.core.config import Settings
 from app.models import ActorType, AuditLog
 from app.services.azure_arm import (
+    AutoShutdown,
     AzureArmService,
     SubscriptionSummary,
     VmSummary,
@@ -72,6 +73,39 @@ class InfraStatusRead(BaseModel):
     configured: bool
     mock: bool
     subscription_count: int
+
+
+class AutoShutdownRead(BaseModel):
+    """Serialized ``Microsoft.DevTestLab/schedules`` view (v2.11.0).
+
+    ``time_hhmm`` is a 4-digit local time ("1900"). ``timezone_id`` is a
+    Windows time-zone id (Azure's native format — not IANA). No schedule
+    on the VM → the API returns 404.
+    """
+
+    enabled: bool
+    time_hhmm: str
+    timezone_id: str
+    notification_webhook_url: str | None = None
+    notification_minutes: int = 30
+
+
+class AutoShutdownWrite(BaseModel):
+    enabled: bool = True
+    time_hhmm: str
+    timezone_id: str
+    notification_webhook_url: str | None = None
+    notification_minutes: int = 30
+
+
+def _to_schedule_read(s: AutoShutdown) -> AutoShutdownRead:
+    return AutoShutdownRead(
+        enabled=s.enabled,
+        time_hhmm=s.time_hhmm,
+        timezone_id=s.timezone_id,
+        notification_webhook_url=s.notification_webhook_url,
+        notification_minutes=s.notification_minutes,
+    )
 
 
 def _to_read(v: VmSummary) -> VmRead:
@@ -135,6 +169,110 @@ async def list_subscriptions(_: CurrentAdminUser) -> list[SubscriptionRead]:
 async def list_vms(_: CurrentAdminUser) -> list[VmRead]:
     vms = await _service().list_all_vms()
     return [_to_read(v) for v in vms]
+
+
+# ---------------------------------------------------------------------------
+# v2.11.0 — auto-shutdown schedule (Microsoft.DevTestLab/schedules).
+# Registered ABOVE the catch-all /vms/{arm_id:path} GET so FastAPI's
+# ordered path-matching hits the specific suffix first. Move at your
+# peril: a bare GET /vms/{arm}/auto-shutdown will otherwise land on
+# get_vm and return the VM's own JSON.
+# ---------------------------------------------------------------------------
+
+
+@router.get("/vms/{arm_id:path}/auto-shutdown", response_model=AutoShutdownRead)
+async def get_auto_shutdown(arm_id: str, _: CurrentAdminUser) -> AutoShutdownRead:
+    normalized = _normalize_arm_id(arm_id)
+    try:
+        schedule = await _service().get_auto_shutdown(normalized)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        log.warning("infra_get_schedule_failed", arm_id=normalized, error=str(exc))
+        raise HTTPException(status_code=502, detail=f"azure schedule read failed: {exc}") from exc
+    if schedule is None:
+        raise HTTPException(status_code=404, detail="no auto-shutdown schedule set")
+    return _to_schedule_read(schedule)
+
+
+@router.put("/vms/{arm_id:path}/auto-shutdown", response_model=AutoShutdownRead)
+async def put_auto_shutdown(
+    arm_id: str,
+    body: AutoShutdownWrite,
+    session: DbSession,
+    user: CurrentAdminUser,
+) -> AutoShutdownRead:
+    normalized = _normalize_arm_id(arm_id)
+    try:
+        ref = parse_vm_arm_id(normalized)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    schedule = AutoShutdown(
+        enabled=body.enabled,
+        time_hhmm=body.time_hhmm,
+        timezone_id=body.timezone_id,
+        notification_webhook_url=body.notification_webhook_url,
+        notification_minutes=body.notification_minutes,
+    )
+    try:
+        saved = await _service().set_auto_shutdown(normalized, schedule)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        log.warning("infra_set_schedule_failed", arm_id=normalized, error=str(exc))
+        raise HTTPException(status_code=502, detail=f"azure schedule write failed: {exc}") from exc
+    session.add(
+        AuditLog(
+            actor_type=ActorType.user,
+            actor_id=str(user.id),
+            event_type="infra.vm.auto_shutdown_set",
+            payload={
+                "arm_id": normalized,
+                "subscription_id": ref.subscription_id,
+                "resource_group": ref.resource_group,
+                "name": ref.name,
+                "enabled": saved.enabled,
+                "time_hhmm": saved.time_hhmm,
+                "timezone_id": saved.timezone_id,
+            },
+        )
+    )
+    session.commit()
+    return _to_schedule_read(saved)
+
+
+@router.delete("/vms/{arm_id:path}/auto-shutdown", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_auto_shutdown(
+    arm_id: str,
+    session: DbSession,
+    user: CurrentAdminUser,
+) -> None:
+    normalized = _normalize_arm_id(arm_id)
+    try:
+        ref = parse_vm_arm_id(normalized)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    try:
+        await _service().delete_auto_shutdown(normalized)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        log.warning("infra_delete_schedule_failed", arm_id=normalized, error=str(exc))
+        raise HTTPException(status_code=502, detail=f"azure schedule delete failed: {exc}") from exc
+    session.add(
+        AuditLog(
+            actor_type=ActorType.user,
+            actor_id=str(user.id),
+            event_type="infra.vm.auto_shutdown_deleted",
+            payload={
+                "arm_id": normalized,
+                "subscription_id": ref.subscription_id,
+                "resource_group": ref.resource_group,
+                "name": ref.name,
+            },
+        )
+    )
+    session.commit()
 
 
 @router.get("/vms/{arm_id:path}", response_model=VmRead)

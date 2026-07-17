@@ -1343,3 +1343,22 @@ export interface InfraStatus {
   mock: boolean;
   subscription_count: number;
 }
+
+// v2.11.0 Auto-shutdown schedule — Microsoft.DevTestLab/schedules.
+// `time_hhmm` is 4-digit local time ("1900"). `timezone_id` is a Windows
+// TZ id (Azure's native format — not IANA). `null` webhook = notifications off.
+export interface AutoShutdown {
+  enabled: boolean;
+  time_hhmm: string;
+  timezone_id: string;
+  notification_webhook_url: string | null;
+  notification_minutes: number;
+}
+
+export interface AutoShutdownWrite {
+  enabled: boolean;
+  time_hhmm: string;
+  timezone_id: string;
+  notification_webhook_url?: string | null;
+  notification_minutes?: number;
+}
