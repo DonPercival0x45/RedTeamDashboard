@@ -703,6 +703,21 @@ export function rewriteFindingSummary(
   );
 }
 
+export interface EngagementDiagnostics {
+  engagement_id: string;
+  engagement_slug: string;
+  generated_at: string;
+  markdown: string;
+}
+
+export function getEngagementDiagnostics(
+  slug: string,
+): Promise<EngagementDiagnostics> {
+  return request<EngagementDiagnostics>(
+    `/engagements/${slug}/diagnostics`,
+  );
+}
+
 export function listSuggestions(
   slug: string,
   status?: SuggestionStatus,

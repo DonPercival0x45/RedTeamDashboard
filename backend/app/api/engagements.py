@@ -3917,3 +3917,258 @@ def start_run(
         events_stream=outbound_stream(eng.id),
         model=effective_model,
     )
+
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Diagnostics dump — copy-pastable markdown of everything that happened on an
+# engagement. Built for runtime triage: paste into an agent prompt to see the
+# full state (runs, errors, audit, counts) without running queries by hand.
+# ─────────────────────────────────────────────────────────────────────────────
+def _diag_v(x: object) -> str:
+    """Stringify a StrEnum or scalar for the dump."""
+    return x.value if hasattr(x, "value") else str(x)
+
+
+def _diag_iso(dt: datetime | None) -> str:
+    return dt.isoformat(timespec="seconds") if dt else "—"
+
+
+def _diag_dur(start: datetime | None, end: datetime | None) -> str:
+    if not start or not end:
+        return "—"
+    secs = (end - start).total_seconds()
+    if secs < 60:
+        return f"{secs:.0f}s"
+    if secs < 3600:
+        return f"{secs / 60:.1f}m"
+    return f"{secs / 3600:.1f}h"
+
+
+def _diag_money(centsish: object) -> str:
+    # cost_usd is Numeric(10,6); render as $x.xxxx or —
+    if centsish is None:
+        return "—"
+    try:
+        return f"${float(centsish):.4f}"
+    except (TypeError, ValueError):
+        return str(centsish)
+
+
+def _diagnostics_markdown(session: DbSession, eng: Engagement) -> str:
+    from collections import Counter
+
+    from app.models import (
+        AgentExecution,
+        AuditLog,
+        EngagementObjective,
+        Entity,
+        Finding,
+        Suggestion,
+        Task,
+        WorkItem,
+    )
+
+    eid = eng.id
+    out: list[str] = []
+    w = out.append
+
+    w(f"# Diagnostics — {eng.name}")
+    w("")
+    w(f"- **slug**: `{eng.slug}`  **id**: `{eid}`")
+    w(f"- **status**: {_diag_v(eng.status)}  **work_state**: {_diag_v(eng.work_state)}")
+    w(
+        f"- **time_frame**: {_diag_v(eng.time_frame)}  "
+        f"**created**: {_diag_iso(eng.created_at)}"
+    )
+
+    # ── Objectives ──────────────────────────────────────────────────────────
+    objs = (
+        session.execute(
+            select(EngagementObjective)
+        .where(EngagementObjective.engagement_id == eid)
+        .order_by(EngagementObjective.display_order, EngagementObjective.created_at)
+        )
+        .scalars()
+        .all()
+    )
+    w("")
+    w(f"## Objectives ({len(objs)})")
+    for o in objs:
+        w(f"- [{_diag_v(o.status)}] {o.title}")
+
+    # ── Work items ──────────────────────────────────────────────────────────
+    wi_status = Counter(
+        _diag_v(r)
+        for r in session.execute(
+            select(WorkItem.status).where(WorkItem.engagement_id == eid)
+        ).scalars()
+    )
+    w("")
+    w(f"## Work items — {sum(wi_status.values())} total")
+    w("by status: " + (" | ".join(f"{k}: {v}" for k, v in sorted(wi_status.items())) or "—"))
+    wi_recent = (
+        session.execute(
+            select(WorkItem)
+            .where(WorkItem.engagement_id == eid)
+            .order_by(WorkItem.created_at.desc())
+            .limit(15)
+        )
+        .scalars()
+        .all()
+    )
+    for wi in wi_recent:
+        w(f"- [{_diag_v(wi.status)}] {wi.title}  ({_diag_v(wi.executor_type)})")
+
+    # ── Findings ────────────────────────────────────────────────────────────
+    f_sev = Counter(
+        _diag_v(r)
+        for r in session.execute(
+            select(Finding.severity).where(Finding.engagement_id == eid)
+        ).scalars()
+    )
+    f_stat = Counter(
+        _diag_v(r)
+        for r in session.execute(
+            select(Finding.status).where(Finding.engagement_id == eid)
+        ).scalars()
+    )
+    f_phase = Counter(
+        _diag_v(r)
+        for r in session.execute(
+            select(Finding.phase).where(Finding.engagement_id == eid)
+        ).scalars()
+    )
+    w("")
+    w(f"## Findings — {sum(f_sev.values())} total")
+    w("by severity: " + (" | ".join(f"{k}: {v}" for k, v in sorted(f_sev.items())) or "—"))
+    w("by status: " + (" | ".join(f"{k}: {v}" for k, v in sorted(f_stat.items())) or "—"))
+    w("by phase: " + (" | ".join(f"{k}: {v}" for k, v in sorted(f_phase.items())) or "—"))
+
+    # ── Suggestions ─────────────────────────────────────────────────────────
+    s_stat = Counter(
+        _diag_v(r)
+        for r in session.execute(
+            select(Suggestion.status).where(Suggestion.engagement_id == eid)
+        ).scalars()
+    )
+    s_kind = Counter(
+        _diag_v(r)
+        for r in session.execute(
+            select(Suggestion.kind).where(Suggestion.engagement_id == eid)
+        ).scalars()
+    )
+    w("")
+    w(f"## Suggestions — {sum(s_stat.values())} total")
+    w("by status: " + (" | ".join(f"{k}: {v}" for k, v in sorted(s_stat.items())) or "—"))
+    w("by kind: " + (" | ".join(f"{k}: {v}" for k, v in sorted(s_kind.items())) or "—"))
+
+    # ── Tasks ───────────────────────────────────────────────────────────────
+    t_stat = Counter(
+        _diag_v(r)
+        for r in session.execute(select(Task.status).where(Task.engagement_id == eid)).scalars()
+    )
+    w("")
+    w(f"## Tasks — {sum(t_stat.values())} total")
+    w("by status: " + (" | ".join(f"{k}: {v}" for k, v in sorted(t_stat.items())) or "—"))
+
+    # ── Entities ────────────────────────────────────────────────────────────
+    ent_n = session.execute(
+        select(func.count()).select_from(Entity).where(Entity.engagement_id == eid)
+    ).scalar_one()
+    w("")
+    w(f"## Entities — {ent_n}")
+
+    # ── Runs (agent_executions) ─────────────────────────────────────────────
+    run_status = Counter(
+        _diag_v(r)
+        for r in session.execute(
+            select(AgentExecution.status).where(AgentExecution.engagement_id == eid)
+        ).scalars()
+    )
+    w("")
+    w(f"## Runs (agent_executions) — {sum(run_status.values())} total")
+    w("by status: " + (" | ".join(f"{k}: {v}" for k, v in sorted(run_status.items())) or "—"))
+    runs = (
+        session.execute(
+            select(AgentExecution)
+            .where(AgentExecution.engagement_id == eid)
+            .order_by(AgentExecution.started_at.desc())
+            .limit(40)
+        )
+        .scalars()
+        .all()
+    )
+    if runs:
+        w("")
+        w("### recent runs")
+        w("| # | agent | trigger | status | model | tok(in/out) | cost | dur |")
+        w("|---|---|---|---|---|---|---|---|")
+        for i, run in enumerate(runs, 1):
+            model = (
+                f"{run.model_provider}/{run.model_name}" if run.model_name else _diag_v(run.agent)
+            )
+            tok = (
+                f"{run.tokens_in}/{run.tokens_out}"
+                if (run.tokens_in is not None or run.tokens_out is not None)
+                else "—"
+            )
+            w(
+                f"| {i} | {_diag_v(run.agent)} | {_diag_v(run.trigger)} | "
+                f"**{_diag_v(run.status)}** | {model} | {tok} | "
+                f"{_diag_money(run.cost_usd)} | {_diag_dur(run.started_at, run.completed_at)} |"
+            )
+    failed = [r for r in runs if _diag_v(r.status) == "failed" and r.error]
+    if failed:
+        w("")
+        w(f"### failed-run errors ({len(failed)})")
+        for r in failed:
+            w(f"- **{_diag_v(r.agent)}** ({_diag_v(r.trigger)}):")
+            w("  ```")
+            w((r.error or "").strip()[:1500])
+            w("```")
+
+    # ── Audit log ───────────────────────────────────────────────────────────
+    audit = (
+        session.execute(
+            select(AuditLog)
+            .where(AuditLog.engagement_id == eid)
+            .order_by(AuditLog.created_at.desc())
+            .limit(60)
+        )
+        .scalars()
+        .all()
+    )
+    w("")
+    w(f"## Audit log — {len(audit)} most recent")
+    for a in audit:
+        payload = json.dumps(a.payload, default=str, separators=(",", ":"))
+        if len(payload) > 220:
+            payload = payload[:220] + "…"
+        head = (
+            f"- {_diag_iso(a.created_at)} "
+            f"[{_diag_v(a.actor_type)}:{a.actor_id or '—'}] `{a.event_type}`"
+        )
+        w(f"{head} {payload}")
+
+    return "\n".join(out)
+
+
+@router.get("/engagements/{slug}/diagnostics")
+def get_engagement_diagnostics(
+    slug: str,
+    session: DbSession,
+    _user: CurrentUser,
+) -> dict[str, str]:
+    """Copy-pastable markdown dump of everything that happened on this engagement.
+
+    Surfaces runs (with errors), audit log, and record counts so an agent (or
+    analyst) can diagnose what's going on behind the scenes at runtime.
+    """
+    eng = _get_engagement_or_404(session, slug)
+    return {
+        "engagement_id": str(eng.id),
+        "engagement_slug": eng.slug,
+        "generated_at": datetime.now(tz=UTC).isoformat(timespec="seconds"),
+        "markdown": _diagnostics_markdown(session, eng),
+    }

@@ -8,6 +8,7 @@ import {
   MessageSquare,
   Network,
   Route,
+  ScrollText,
   Target,
   type LucideIcon,
 } from "lucide-react";
@@ -24,7 +25,8 @@ export type EngagementView =
   | "costs"
   | "scope"
   | "status"
-  | "contributions";
+  | "contributions"
+  | "diagnostics";
 
 // v2.4.0: reordered to put analyst-forward views first —
 // Scope > Strategy > Findings > Entities > Status is the workflow order
@@ -39,6 +41,7 @@ const ITEMS: { view: EngagementView; label: string; Icon: LucideIcon }[] = [
   { view: "contributions", label: "Contributions", Icon: CalendarDays },
   { view: "observations", label: "Observations", Icon: MessageSquare },
   { view: "costs", label: "Costs", Icon: DollarSign },
+  { view: "diagnostics", label: "Diagnostics", Icon: ScrollText },
 ];
 
 // Left rail for the engagement workspace. Selecting an item swaps the whole
