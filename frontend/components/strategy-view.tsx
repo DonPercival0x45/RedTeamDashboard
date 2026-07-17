@@ -248,7 +248,8 @@ export function StrategyView({
   const [workStatusFilter, setWorkStatusFilter] = useState<WorkItemStatus | "all">("all");
   const [workQuery, setWorkQuery] = useState("");
   const [selectedWorkId, setSelectedWorkId] = useState<string | null>(requestedWorkItemId);
-  const [resolution, setResolution] = useState<WorkItemResolution>("completed");
+  const [workFlyoutOpen, setWorkFlyoutOpen] = useState(false);
+  const [tab, setTab] = useState(requestedWorkItemId ? "work" : "strategy");
   const [checkpointNarrative, setCheckpointNarrative] = useState("");
   const [coverageTarget, setCoverageTarget] = useState("");
   const [coverageKind, setCoverageKind] = useState("domain");
@@ -337,7 +338,11 @@ export function StrategyView({
   }, [loadSlice, setSliceError, slug]);
 
   useEffect(() => {
-    if (requestedWorkItemId) setSelectedWorkId(requestedWorkItemId);
+    if (requestedWorkItemId) {
+      setSelectedWorkId(requestedWorkItemId);
+      setWorkFlyoutOpen(true);
+      setTab("work");
+    }
   }, [requestedWorkItemId]);
 
   useEffect(() => {
@@ -499,7 +504,7 @@ export function StrategyView({
 
       {decisionCount > 0 && <NeedsDecisionSection slug={slug} readOnly={readOnly} openSignals={openSignals} openSuggestions={openSuggestions} proposedRevisions={proposedRevisions} currentRevisionId={data.current?.id ?? null} busy={busy} mutate={mutate} />}
 
-      <Tabs defaultValue={requestedWorkItemId ? "work" : "strategy"} className="space-y-4">
+      <Tabs value={tab} onValueChange={setTab} className="space-y-4">
         {/* Sticky top chrome: analytics + tab bar persist at the top of the
             scroll region (<main overflow-y-auto>) across every tab, so the
             at-a-glance counts and tab navigation stay visible while scrolling. */}
@@ -694,11 +699,10 @@ export function StrategyView({
             <Button size="sm" disabled={!workTitle.trim() || busy !== null} onClick={() => void (async () => { if (await mutate("work-create", () => createWorkItem(slug, { title: workTitle.trim(), priority: workPriority, executor_type: workExecutor, objective_id: workObjective || null }), "Work item created.")) setWorkTitle(""); })()}>Add</Button>
           </div>
         )}
-        <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(20rem,0.8fr)]">
-          <ul className="max-h-[38rem] space-y-2 overflow-y-auto pr-1">
+        <ul className="mt-4 max-h-[40rem] space-y-2 overflow-y-auto pr-1">
             {visibleWork.map((item) => (
               <li key={item.id}>
-                <button type="button" onClick={() => setSelectedWorkId(item.id)} className={cn("w-full rounded border p-3 text-left hover:bg-muted/40", selectedWorkId === item.id ? "border-foreground/40 bg-muted/30" : "border-border bg-background")}>
+                <button type="button" onClick={() => { setSelectedWorkId(item.id); setWorkFlyoutOpen(true); }} className={cn("w-full rounded border p-3 text-left hover:bg-muted/40", selectedWorkId === item.id ? "border-foreground/40 bg-muted/30" : "border-border bg-background")}>
                   <div className="flex items-start justify-between gap-2"><span className="font-medium">{item.title}</span><span className="flex gap-1"><Badge variant="outline">{item.priority}</Badge><Badge variant="secondary">{item.status}</Badge></span></div>
                   <p className="mt-1 text-xs text-muted-foreground">{item.executor_type}{item.due_at ? <> · due <DateTime value={item.due_at} /></> : null}</p>
                   {item.blocked_reason && <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">Blocked: {item.blocked_reason}</p>}
@@ -707,10 +711,7 @@ export function StrategyView({
             ))}
             {visibleWork.length === 0 && <li className="text-sm text-muted-foreground">No matching work.</li>}
           </ul>
-          <div id="work-item-detail" tabIndex={-1}>
-            <WorkDetail item={selectedWork} objectives={data.objectives} slug={slug} readOnly={readOnly} busy={busy} resolution={resolution} setResolution={setResolution} mutate={mutate} />
-          </div>
-        </div>
+        <WorkItemFlyout item={selectedWork} objectives={data.objectives} slug={slug} readOnly={readOnly} busy={busy} mutate={mutate} open={workFlyoutOpen} onOpenChange={setWorkFlyoutOpen} onBackToStrategy={() => { setTab("strategy"); setWorkFlyoutOpen(false); }} />
       </section>
         </TabsContent>
         <TabsContent value="coverage" className="space-y-6">
@@ -950,11 +951,130 @@ function labelSuggestionKind(kind: Suggestion["kind"]): string {
   return kind.replaceAll("_", " ");
 }
 
-function WorkDetail({ item, objectives, slug, readOnly, busy, resolution, setResolution, mutate }: { item: WorkItem | null; objectives: Objective[]; slug: string; readOnly: boolean; busy: string | null; resolution: WorkItemResolution; setResolution: (value: WorkItemResolution) => void; mutate: (key: string, action: () => Promise<unknown>, success: string) => Promise<boolean> }) {
-  if (!item) return <div className="rounded border border-dashed border-border p-4 text-sm text-muted-foreground">Select a work item.</div>;
+function WorkItemFlyout({ item, objectives, slug, readOnly, busy, mutate, open, onOpenChange, onBackToStrategy }: { item: WorkItem | null; objectives: Objective[]; slug: string; readOnly: boolean; busy: string | null; mutate: (key: string, action: () => Promise<unknown>, success: string) => Promise<boolean>; open: boolean; onOpenChange: (value: boolean) => void; onBackToStrategy: () => void; }) {
+  const [title, setTitle] = useState(item?.title ?? "");
+  const [description, setDescription] = useState(item?.description ?? "");
+  const [rationale, setRationale] = useState(item?.rationale ?? "");
+  const [criteria, setCriteria] = useState((item?.acceptance_criteria ?? []).join("\n"));
+  const [priority, setPriority] = useState<WorkItemPriority>(item?.priority ?? "medium");
+  const [resolution, setResolution] = useState<WorkItemResolution>("completed");
+
+  // Re-sync the draft when the backing item changes (selection swap, or a
+  // row-version bump after a successful save). Keyed on id+row_version so
+  // typing in the fields doesn't clobber the in-flight draft on re-render.
+  useEffect(() => {
+    if (!item) return;
+    setTitle(item.title);
+    setDescription(item.description ?? "");
+    setRationale(item.rationale ?? "");
+    setCriteria(item.acceptance_criteria.join("\n"));
+    setPriority(item.priority);
+  }, [item?.id, item?.row_version]);
+
+  if (!item) return null;
   const objective = objectives.find((row) => row.id === item.objective_id);
   const terminal = item.status === "completed" || item.status === "cancelled";
-  return <article className="rounded border border-border bg-background p-4"><div className="flex items-start justify-between gap-2"><div><h4 className="font-semibold">{item.title}</h4><p className="mt-1 text-xs text-muted-foreground">row v{item.row_version} · {item.executor_type}{objective ? ` · ${objective.title}` : ""}</p></div><Badge variant="outline">{item.status}</Badge></div>{item.description && <p className="mt-3 whitespace-pre-wrap text-sm">{item.description}</p>}{item.rationale && <p className="mt-3 text-xs text-muted-foreground">Rationale: {item.rationale}</p>}{item.acceptance_criteria.length > 0 && <div className="mt-3"><p className="text-xs font-medium">Acceptance criteria</p><ul className="mt-1 list-disc pl-5 text-xs text-muted-foreground">{item.acceptance_criteria.map((criterion, index) => <li key={index}>{criterion}</li>)}</ul></div>}{item.finding_links.length > 0 && <div className="mt-3 flex flex-wrap gap-2">{item.finding_links.map((link) => <Link key={`${link.finding_id}-${link.relationship}`} href={`/e/findings/${link.finding_id}?slug=${encodeURIComponent(slug)}&returnTo=${encodeURIComponent(`/e?slug=${slug}&view=strategy&workItem=${item.id}`)}`} className="rounded-full border border-border px-2 py-1 text-[10px] hover:underline">Finding · {link.relationship}</Link>)}</div>}{!readOnly && <div className="mt-4 space-y-2 border-t border-border pt-3"><div className="flex flex-wrap gap-2">{(item.status === "ready" || item.status === "blocked") && <SmallAction onClick={() => void mutate(`work-${item.id}-start`, () => transitionWorkItem(item.id, "start", item.row_version), "Work started.")}>Start</SmallAction>}{item.status === "in_progress" && <SmallAction onClick={() => { const reason = window.prompt("Blocking reason"); if (reason?.trim()) void mutate(`work-${item.id}-block`, () => blockWorkItem(item.id, item.row_version, reason.trim()), "Work blocked."); }}>Block</SmallAction>}{!terminal && item.status !== "deferred" && <SmallAction onClick={() => void mutate(`work-${item.id}-defer`, () => transitionWorkItem(item.id, "defer", item.row_version, window.prompt("Deferral reason") ?? undefined), "Work deferred.")}>Defer</SmallAction>}{(item.status === "deferred" || item.status === "completed") && <SmallAction onClick={() => void mutate(`work-${item.id}-reopen`, () => transitionWorkItem(item.id, "reopen", item.row_version), "Work reopened.")}>Reopen</SmallAction>}{!terminal && <SmallAction onClick={() => void mutate(`work-${item.id}-cancel`, () => transitionWorkItem(item.id, "cancel", item.row_version, window.prompt("Cancellation reason") ?? undefined), "Work cancelled.")}>Cancel</SmallAction>}<SmallAction onClick={() => { const title = window.prompt("Work item title", item.title); if (title?.trim()) void mutate(`work-${item.id}-edit`, () => updateWorkItem(item.id, { expected_row_version: item.row_version, title: title.trim() }), "Work item updated."); }}>Edit</SmallAction></div>{!terminal && <div className="flex gap-2"><select value={resolution} onChange={(event) => setResolution(event.target.value as WorkItemResolution)} className="h-8 rounded border border-input bg-background px-2 text-xs">{RESOLUTIONS.map((outcome) => <option key={outcome}>{outcome}</option>)}</select><Button size="sm" variant="outline" disabled={busy !== null} onClick={() => void mutate(`work-${item.id}-resolve`, () => resolveWorkItem(item.id, item.row_version, resolution, window.prompt("Resolution note") ?? undefined), "Work resolved.")}>Resolve</Button></div>}</div>}</article>;
+  const dirty =
+    title !== item.title ||
+    (description || "") !== (item.description ?? "") ||
+    (rationale || "") !== (item.rationale ?? "") ||
+    criteria !== item.acceptance_criteria.join("\n") ||
+    priority !== item.priority;
+
+  const save = () =>
+    mutate(
+      "work-save",
+      () =>
+        updateWorkItem(item.id, {
+          expected_row_version: item.row_version,
+          title: title.trim(),
+          description: description.trim() || null,
+          rationale: rationale.trim() || null,
+          acceptance_criteria: criteria.split("\n").map((line) => line.trim()).filter(Boolean),
+          priority,
+        }),
+      "Work item saved.",
+    ).then((ok) => {
+      if (ok) onOpenChange(false);
+    });
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-4xl max-h-[88vh] w-[95vw] gap-0 overflow-hidden p-0">
+        <div className="flex items-center justify-between gap-3 border-b border-border p-4">
+          <DialogTitle className="flex flex-wrap items-center gap-2 text-base">
+            <Badge variant="secondary">{item.status}</Badge>
+            <Badge variant="outline">{item.priority}</Badge>
+            <span className="text-xs font-normal text-muted-foreground">{item.executor_type}{objective ? ` · ${objective.title}` : ""}</span>
+          </DialogTitle>
+          <div className="flex items-center gap-2">
+            <button type="button" onClick={onBackToStrategy} className="text-xs text-muted-foreground hover:underline">← Strategy / Resume</button>
+            <DialogClose asChild>
+              <Button size="sm" variant="ghost">Close</Button>
+            </DialogClose>
+          </div>
+        </div>
+        <div className="max-h-[78vh] space-y-4 overflow-y-auto p-4">
+          <label className="block space-y-1">
+            <span className="text-xs font-medium">Title</span>
+            <Input value={title} onChange={(event) => setTitle(event.target.value)} disabled={readOnly} />
+          </label>
+          <label className="block space-y-1">
+            <span className="text-xs font-medium">Description</span>
+            <Textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={5} disabled={readOnly} />
+          </label>
+          <label className="block space-y-1">
+            <span className="text-xs font-medium">Rationale</span>
+            <Textarea value={rationale} onChange={(event) => setRationale(event.target.value)} rows={3} disabled={readOnly} />
+          </label>
+          <label className="block space-y-1">
+            <span className="text-xs font-medium">Acceptance criteria <span className="font-normal text-muted-foreground">(one per line)</span></span>
+            <Textarea value={criteria} onChange={(event) => setCriteria(event.target.value)} rows={3} disabled={readOnly} />
+          </label>
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-medium">Priority</span>
+            <select value={priority} onChange={(event) => setPriority(event.target.value as WorkItemPriority)} disabled={readOnly} className="h-8 rounded border border-input bg-background px-2 text-xs">
+              {PRIORITIES.map((value) => <option key={value}>{value}</option>)}
+            </select>
+          </div>
+
+          {item.finding_links.length > 0 && (
+            <div>
+              <p className="text-xs font-medium">Linked findings</p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {item.finding_links.map((link) => (
+                  <Link key={`${link.finding_id}-${link.relationship}`} href={`/e/findings/${link.finding_id}?slug=${encodeURIComponent(slug)}&returnTo=${encodeURIComponent(`/e?slug=${slug}&view=strategy&workItem=${item.id}`)}`} className="rounded-full border border-border px-2 py-1 text-[10px] hover:underline">Finding · {link.relationship}</Link>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {!readOnly && (
+            <div className="space-y-3 border-t border-border pt-3">
+              <div className="flex flex-wrap gap-2">
+                {(item.status === "ready" || item.status === "blocked") && <SmallAction onClick={() => void mutate(`work-${item.id}-start`, () => transitionWorkItem(item.id, "start", item.row_version), "Work started.")}>Start</SmallAction>}
+                {item.status === "in_progress" && <SmallAction onClick={() => { const reason = window.prompt("Blocking reason"); if (reason?.trim()) void mutate(`work-${item.id}-block`, () => blockWorkItem(item.id, item.row_version, reason.trim()), "Work blocked."); }}>Block</SmallAction>}
+                {!terminal && item.status !== "deferred" && <SmallAction onClick={() => void mutate(`work-${item.id}-defer`, () => transitionWorkItem(item.id, "defer", item.row_version, window.prompt("Deferral reason") ?? undefined), "Work deferred.")}>Defer</SmallAction>}
+                {(item.status === "deferred" || item.status === "completed") && <SmallAction onClick={() => void mutate(`work-${item.id}-reopen`, () => transitionWorkItem(item.id, "reopen", item.row_version), "Work reopened.")}>Reopen</SmallAction>}
+                {!terminal && <SmallAction onClick={() => void mutate(`work-${item.id}-cancel`, () => transitionWorkItem(item.id, "cancel", item.row_version, window.prompt("Cancellation reason") ?? undefined), "Work cancelled.")}>Cancel</SmallAction>}
+              </div>
+              {!terminal && (
+                <div className="flex flex-wrap items-center gap-2">
+                  <select value={resolution} onChange={(event) => setResolution(event.target.value as WorkItemResolution)} className="h-8 rounded border border-input bg-background px-2 text-xs">
+                    {RESOLUTIONS.map((outcome) => <option key={outcome}>{outcome}</option>)}
+                  </select>
+                  <Button size="sm" variant="outline" disabled={busy !== null} onClick={() => void mutate(`work-${item.id}-resolve`, () => resolveWorkItem(item.id, item.row_version, resolution, window.prompt("Resolution note") ?? undefined), "Work resolved.")}>Resolve</Button>
+                </div>
+              )}
+              <div className="flex justify-end">
+                <Button size="sm" disabled={!dirty || busy !== null} onClick={() => void save()}>{busy === "work-save" ? "Saving…" : "Save changes"}</Button>
+              </div>
+            </div>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
 }
 
 function StrategistSection({ slug, readOnly, chat, message, setMessage, lastRun, setLastRun, busy, mutate, hasCurrentStrategy }: { slug: string; readOnly: boolean; chat: StrategistChatState; message: string; setMessage: (value: string) => void; lastRun: StrategistRunResponse | null; setLastRun: (value: StrategistRunResponse | null) => void; busy: string | null; mutate: (key: string, action: () => Promise<unknown>, success: string) => Promise<boolean>; hasCurrentStrategy: boolean }) {
