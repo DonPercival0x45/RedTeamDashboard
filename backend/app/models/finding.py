@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, Enum, ForeignKey, String, Text
+from sqlalchemy import DateTime, Enum, ForeignKey, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -165,3 +165,81 @@ class Finding(Base, TimestampMixin):
     # in the schemas. Not populated by importers — tags are analyst-
     # curated post-ingest.
     tags: Mapped[list[str]] = mapped_column(JSONB, default=list, nullable=False)
+
+
+class FindingOrigin(Base, TimestampMixin):
+    """Run→finding lineage: which langgraph run (thread_id) produced a finding.
+
+    Replaces the fragile ``finding.details['thread_id']`` JSON convention so
+    findings can be filtered by run and Status can link 'Produced N findings' to
+    exact rows. A finding can have many origins (a grouped finding folds items
+    from multiple runs); a run produces many findings. The
+    (finding_id, thread_id, source_tool) unique constraint makes re-processing
+    the same run idempotent.
+    """
+
+    __tablename__ = "finding_origins"
+    __table_args__ = (
+        UniqueConstraint(
+            "finding_id",
+            "thread_id",
+            "source_tool",
+            name="uq_finding_origins_finding_thread_tool",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid7
+    )
+    finding_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("findings.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    thread_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False, index=True
+    )
+    agent_execution_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("agent_executions.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    source_tool: Mapped[str | None] = mapped_column(String(120), nullable=True)
+
+
+def record_finding_origins(
+    session: Any,
+    *,
+    finding_ids: list[uuid.UUID],
+    thread_id: uuid.UUID | None,
+    source_tool: str | None = None,
+    agent_execution_id: uuid.UUID | None = None,
+) -> int:
+    """Idempotently record run→finding origins via ON CONFLICT DO NOTHING.
+
+    Safe to call when re-processing the same run; the unique constraint on
+    (finding_id, thread_id, source_tool) dedupes. Returns the number of rows
+    attempted (best-effort lineage — callers don't depend on the exact insert
+    count). No-op when there's no thread_id (e.g. a non-run-bound MCP call).
+    """
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+    if thread_id is None or not finding_ids:
+        return 0
+    rows = [
+        {
+            "id": uuid7(),
+            "finding_id": fid,
+            "thread_id": thread_id,
+            "agent_execution_id": agent_execution_id,
+            "source_tool": source_tool,
+        }
+        for fid in finding_ids
+    ]
+    session.execute(
+        pg_insert(FindingOrigin.__table__)
+        .values(rows)
+        .on_conflict_do_nothing(constraint="uq_finding_origins_finding_thread_tool")
+    )
+    return len(rows)

@@ -24,7 +24,7 @@ same Postgres database. The viewer shows findings from both.
 from __future__ import annotations
 
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import UTC, datetime
 from typing import Any
 
@@ -190,7 +190,7 @@ def _store_findings(
 ) -> int:
     from datetime import UTC, datetime
 
-    from app.models.finding import default_status_for_phase
+    from app.models.finding import default_status_for_phase, record_finding_origins
 
     phase_str = phase_for_tool(tool_name)
     try:
@@ -204,7 +204,7 @@ def _store_findings(
     now = datetime.now(tz=UTC)
     user = get_current_user()
 
-    count = 0
+    created: list[Finding] = []
     for f in findings:
         sev_raw = f.get("severity", "info")
         try:
@@ -216,26 +216,46 @@ def _store_findings(
         skip = ("severity", "title", "target", "summary")
         details = {k: v for k, v in f.items() if k not in skip}
 
-        session.add(
-            Finding(
-                engagement_id=eng.id,
-                title=title,
-                severity=sev,
-                summary=f.get("summary"),
-                details=details,
-                source_tool=tool_name,
-                target=f.get("target"),
-                phase=phase,
-                status=status,
-                validated_at=now if status == FindingStatus.validated else None,
-                validated_by=user.id if status == FindingStatus.validated else None,
-            )
+        row = Finding(
+            engagement_id=eng.id,
+            title=title,
+            severity=sev,
+            summary=f.get("summary"),
+            details=details,
+            source_tool=tool_name,
+            target=f.get("target"),
+            phase=phase,
+            status=status,
+            validated_at=now if status == FindingStatus.validated else None,
+            validated_by=user.id if status == FindingStatus.validated else None,
         )
-        count += 1
+        session.add(row)
+        created.append(row)
 
-    if count:
-        session.commit()
-    return count
+    if not created:
+        return 0
+    session.flush()  # populate finding IDs so we can record run→finding lineage
+    # When bound to a lease (worker/agent run), stamp the thread_id so findings
+    # can be filtered by run later. Best-effort: never block a finding store on
+    # lineage recording.
+    lease = get_current_lease()
+    thread_raw = (lease.context or {}).get("_thread_id") if lease else None
+    thread_id: uuid.UUID | None = None
+    if thread_raw:
+        try:
+            thread_id = uuid.UUID(str(thread_raw))
+        except (TypeError, ValueError):
+            thread_id = None
+    if thread_id is not None:
+        with suppress(Exception):  # lineage is best-effort; never block a finding store
+            record_finding_origins(
+                session,
+                finding_ids=[row.id for row in created],
+                thread_id=thread_id,
+                source_tool=tool_name,
+            )
+    session.commit()
+    return len(created)
 
 
 def _require_tool_in_lease(tool_name: str) -> dict[str, Any] | None:
