@@ -400,11 +400,15 @@ def _agent_to_entity(row: AgentExecution) -> StatusEntity:
         run_slug=_run_slug(slug_source),
         outcome=outcome,
         synopsis=_agent_synopsis(row, outcome),
-        # Triage retry is wired (POST /agent-executions/{id}/retry). Strategic
-        # and Tactical retry need richer per-kind dispatch — coming in a
-        # follow-up commit. Planner has its own re-evaluate button on
-        # /settings/feedback.
-        retryable=(row.status == AgentExecutionStatus.failed and row.agent == AgentName.triage),
+        # Triage retry re-runs the source finding; Tactical retry re-dispatches
+        # the run's source task (both via POST /agent-executions/{id}/retry).
+        # Strategic / Planner aren't wired here (Planner has its own re-evaluate
+        # button on /settings/feedback). Tactical is optimistic — the endpoint
+        # 400s cleanly if the run has no retryable source task.
+        retryable=(
+            row.status == AgentExecutionStatus.failed
+            and row.agent in (AgentName.triage, AgentName.tactical)
+        ),
         log={
             "agent": row.agent.value,
             "trigger": row.trigger.value,
@@ -1180,12 +1184,10 @@ def retry_agent_execution(
 ) -> StatusEntity:
     """Re-run a failed agent execution.
 
-    v0.8 only wires Triage retry (the simplest dispatch — re-run on the
-    same finding). Strategic / Tactical retry shipping in a follow-up:
-    each agent kind needs its own dispatcher because the source entity
-    (finding vs task) differs. Until then the Status tab's retryable
-    flag is False for Strategic / Tactical failed rows so the UI
-    doesn't promise a button that 501s.
+    Triage: re-run on the same source finding. Tactical: a run dispatched from
+    a task is retried by re-dispatching its source task (which re-derives the
+    prompt — the run's own prompt isn't durably stored). Other agents
+    (Strategic, …) are not wired and return 501.
 
     BYO key resolves against the *clicking* analyst's Redis cache
     (matches Strategic / Triage policy — preserves the v0.4 cross-user
@@ -1201,6 +1203,24 @@ def retry_agent_execution(
             status_code=400,
             detail="only failed agent executions can be retried",
         )
+    if row.agent == AgentName.tactical:
+        # A Tactical run dispatched from a task: re-dispatch the source task
+        # (TacticalAgent.dispatch re-derives the prompt; the run's own prompt
+        # isn't durably stored, so we can't rebuild the run directly).
+        task = session.execute(
+            select(Task).where(Task.run_id == execution_id)
+        ).scalar_one_or_none()
+        if task is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "this run wasn't dispatched from a task, so it can't be "
+                    "retried from here — re-run it from the engagement's Runs panel"
+                ),
+            )
+        task = _redispatch_task(session, redis_client, task, user=user)
+        return _task_to_entity(task)
+
     if row.agent != AgentName.triage:
         raise HTTPException(
             status_code=501,
@@ -1445,33 +1465,30 @@ def cancel_task(
     return _task_to_entity(row)
 
 
-@router.post(
-    "/tasks/{task_id}/retry",
-    response_model=StatusEntity,
-)
-def retry_task(
-    task_id: uuid.UUID,
+def _redispatch_task(
     session: DbSession,
     redis_client: RedisClient,
+    task: Task,
+    *,
     user: CurrentNonGuestUser,
-) -> StatusEntity:
-    """Re-dispatch a failed or deferred agent-eligible task.
+) -> Task:
+    """Re-dispatch a failed/deferred agent-eligible task.
 
-    Retry crosses the same Tactical service boundary as first dispatch, so
-    scope/approval gating and the analyst's provider/model selection still
-    apply. Merely resetting to pending is insufficient: there is no background
-    consumer that automatically discovers pending Task rows.
+    Shared by ``POST /tasks/{id}/retry`` and Tactical run-retry
+    (``POST /agent-executions/{id}/retry`` for a run that came from a task).
+    The caller locks the task; this validates it is retryable, cleans up the
+    prior queued run.start + leases, resets to ``pending``, and hands off to
+    ``TacticalAgent.dispatch`` (which re-derives the prompt from the task —
+    the run's own prompt isn't stored durably). Raises HTTPException on any
+    failure, restoring the prior terminal state so retry can't leave phantom
+    work.
     """
-    row = _lock_mutable_task(session, task_id)
-    if row.status not in (
-        TaskStatus.failed,
-        TaskStatus.deferred,
-    ):
+    if task.status not in (TaskStatus.failed, TaskStatus.deferred):
         raise HTTPException(
             status_code=400,
             detail="only failed or deferred tasks can be retried",
         )
-    if row.kind not in (TaskKind.scan, TaskKind.enum) or row.owner_eligibility not in (
+    if task.kind not in (TaskKind.scan, TaskKind.enum) or task.owner_eligibility not in (
         OwnerEligibility.agent,
         OwnerEligibility.either,
     ):
@@ -1480,20 +1497,20 @@ def retry_task(
             detail="only agent-eligible enumeration or scan tasks can be retried",
         )
 
-    previous_status = row.status
-    previous_run_id = row.run_id
-    previous_dispatched_at = row.dispatched_at
-    previous_completed_at = row.completed_at
-    removed = _remove_queued_run_start(redis_client, row)
-    released = _release_task_leases(session, row)
+    previous_status = task.status
+    previous_run_id = task.run_id
+    previous_dispatched_at = task.dispatched_at
+    previous_completed_at = task.completed_at
+    removed = _remove_queued_run_start(redis_client, task)
+    released = _release_task_leases(session, task)
     # Leave prior run timestamps/ID intact until Tactical atomically swaps the
     # pending row to dispatched. If cancellation wins during policy selection,
     # it retains the old lineage needed for cleanup and audit.
-    row.status = TaskStatus.pending
+    task.status = TaskStatus.pending
     try:
         TacticalAgent(redis_client).dispatch(
             session,
-            task=row,
+            task=task,
             acting_user_id=user.id,
             trigger=AgentTrigger.manual,
         )
@@ -1503,7 +1520,7 @@ def retry_task(
         # state and release the new lease so retry cannot leave phantom work.
         session.rollback()
         session.expire_all()
-        failed_row = session.get(Task, task_id)
+        failed_row = session.get(Task, task.id)
         if failed_row is None:
             raise HTTPException(status_code=404, detail="task not found") from exc
         failed_run_id = failed_row.run_id
@@ -1556,21 +1573,43 @@ def retry_task(
 
     session.add(
         AuditLog(
-            engagement_id=row.engagement_id,
+            engagement_id=task.engagement_id,
             actor_type=ActorType.user,
             actor_id=str(user.id),
             event_type="task.retried",
             payload={
-                "task_id": str(row.id),
+                "task_id": str(task.id),
                 "previous_status": previous_status.value,
-                "run_id": str(row.run_id) if row.run_id else None,
+                "run_id": str(task.run_id) if task.run_id else None,
                 "old_queued_commands_removed": removed,
                 "old_leases_released": released,
             },
         )
     )
     session.commit()
-    session.refresh(row)
+    session.refresh(task)
+    return task
+
+
+@router.post(
+    "/tasks/{task_id}/retry",
+    response_model=StatusEntity,
+)
+def retry_task(
+    task_id: uuid.UUID,
+    session: DbSession,
+    redis_client: RedisClient,
+    user: CurrentNonGuestUser,
+) -> StatusEntity:
+    """Re-dispatch a failed or deferred agent-eligible task.
+
+    Retry crosses the same Tactical service boundary as first dispatch, so
+    scope/approval gating and the analyst's provider/model selection still
+    apply. Merely resetting to pending is insufficient: there is no background
+    consumer that automatically discovers pending Task rows.
+    """
+    row = _lock_mutable_task(session, task_id)
+    row = _redispatch_task(session, redis_client, row, user=user)
     return _task_to_entity(row)
 
 
