@@ -900,24 +900,33 @@ class StrategicAgent:
                 # we silently drop it. The rejection count goes on the
                 # execution.output for visibility.
                 continue
-            # Stable key per (finding, tool, target, kind) so repeated Strategic
-            # runs on the same finding don't pile up duplicate open task
-            # suggestions. proposal_key also backs the
-            # uq_suggestions_open_proposal_key unique index as a backstop; we
-            # pre-check here to skip quietly rather than surface IntegrityErrors.
+            # Key by (tool, target, kind) — NOT finding_id — so the same
+            # follow-up work (e.g. "Resolve cwa.example") dedupes across the
+            # multiple findings that can reference one target, instead of
+            # stacking one open suggestion per source finding. proposal_key
+            # also backs the uq_suggestions_open_proposal_key unique index as a
+            # backstop; we pre-check here to skip quietly rather than surface
+            # IntegrityErrors.
             proposal_key = "strategic:" + hashlib.sha256(
-                f"{finding_id}|{task.tool}|{task.target}|{task.kind.value}".encode()
+                f"{task.tool}|{task.target}|{task.kind.value}".encode()
             ).hexdigest()[:24]
             if proposal_key in seen_keys:
                 continue
-            already_open = session.execute(
+            already_decided = session.execute(
                 select(Suggestion.id).where(
                     Suggestion.engagement_id == engagement_id,
                     Suggestion.proposal_key == proposal_key,
-                    Suggestion.status == SuggestionStatus.open,
+                    # Block re-creation if this exact work is already OPEN
+                    # (proposed) or was DISMISSED (analyst said no). Without
+                    # the dismissed branch the strategic watcher re-created
+                    # the same suggestion on every finding event, stacking
+                    # duplicates the analyst had already rejected.
+                    Suggestion.status.in_(
+                        (SuggestionStatus.open, SuggestionStatus.dismissed)
+                    ),
                 )
             ).first()
-            if already_open:
+            if already_decided:
                 continue
             seen_keys.add(proposal_key)
             suggestion = Suggestion(

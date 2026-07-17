@@ -1233,7 +1233,15 @@ def _persist_suggestions(
                 Suggestion.kind == SuggestionKind.work_item,
                 Suggestion.proposal_key == proposal.proposal_key,
                 or_(
-                    Suggestion.status == SuggestionStatus.open,
+                    # Don't re-propose the exact same work the analyst already
+                    # decided on: OPEN (already proposed), linked to a work
+                    # item (accepted), or DISMISSED (analyst said no). Without
+                    # the dismissed branch the strategic watcher re-created the
+                    # same suggestion on every finding event, stacking duplicate
+                    # suggestions the analyst had already rejected.
+                    Suggestion.status.in_(
+                        (SuggestionStatus.open, SuggestionStatus.dismissed)
+                    ),
                     Suggestion.work_item_id.is_not(None),
                 ),
             ).limit(1)
