@@ -70,6 +70,36 @@ def _mutable_engagement(session: Session, engagement_id: uuid.UUID) -> Engagemen
     return engagement
 
 
+def _find_existing_work_item(
+    session: Session,
+    engagement_id: uuid.UUID,
+    *,
+    title: str,
+    scope_item_id: uuid.UUID | None,
+    entity_id: uuid.UUID | None,
+    executor_type: WorkItemExecutor,
+) -> WorkItem | None:
+    """Return a work item with the same identity, if any.
+
+    Keeps suggestion-accept and bootstrap seeding from stacking duplicate work
+    items (same title + scope + entity + executor). The strategist dedups at
+    proposal time; this is the materialization backstop.
+    """
+    return session.execute(
+        select(WorkItem)
+        .where(
+            WorkItem.engagement_id == engagement_id,
+            WorkItem.title == title,
+            WorkItem.executor_type == executor_type,
+            WorkItem.scope_item_id == scope_item_id
+            if scope_item_id
+            else WorkItem.scope_item_id.is_(None),
+            WorkItem.entity_id == entity_id if entity_id else WorkItem.entity_id.is_(None),
+        )
+        .limit(1)
+    ).scalar_one_or_none()
+
+
 def _accept_work_item(
     session: Session,
     suggestion: Suggestion,
@@ -149,6 +179,20 @@ def _accept_work_item(
     criteria = payload.get("acceptance_criteria") or []
     if not isinstance(criteria, list) or not all(isinstance(value, str) for value in criteria):
         raise HTTPException(status_code=422, detail="acceptance criteria must be a string array")
+    existing = _find_existing_work_item(
+        session,
+        suggestion.engagement_id,
+        title=title,
+        scope_item_id=scope_item_id,
+        entity_id=entity_id,
+        executor_type=executor,
+    )
+    if existing is not None:
+        # Don't stack a duplicate — link this suggestion to the existing work
+        # item. (The strategist dedups at proposal time, but bootstrap-seeded
+        # or pre-dedup items can still match an accepted suggestion.)
+        suggestion.work_item_id = existing.id
+        return existing
     item = WorkItem(
         engagement_id=suggestion.engagement_id,
         objective_id=objective_id,
@@ -351,13 +395,32 @@ def _bootstrap_workspace_from_initial_strategy(
     # has an actionable queue. Each item points at a concrete scope_item and is
     # executor_type=finding_agent so it can be dispatched to an agent run.
     if not findings:
+        seen_scope_values: set[str] = set()
         for scope in scope_items[:5]:
+            if scope.value in seen_scope_values:
+                continue
+            seen_scope_values.add(scope.value)
+            enumerate_title = f"Enumerate and triage {scope.value}"[:300]
+            # Skip if an identical enumerate item already exists (robust against
+            # a re-bootstrap or duplicate scope entries).
+            if (
+                _find_existing_work_item(
+                    session,
+                    suggestion.engagement_id,
+                    title=enumerate_title,
+                    scope_item_id=scope.id,
+                    entity_id=None,
+                    executor_type=WorkItemExecutor.finding_agent,
+                )
+                is not None
+            ):
+                continue
             session.add(
                 WorkItem(
                     engagement_id=suggestion.engagement_id,
                     objective_id=validation_obj.id,
                     scope_item_id=scope.id,
-                    title=f"Enumerate and triage {scope.value}"[:300],
+                    title=enumerate_title,
                     description=(
                         "No findings exist yet for this in-scope target. Run "
                         "reconnaissance to discover surfaces and generate initial "
