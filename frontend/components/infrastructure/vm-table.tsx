@@ -174,31 +174,34 @@ export function VmTable({
             )}
             {visible.map((vm) => (
               <tr key={vm.arm_id} className="hover:bg-muted/30">
-                <td className="px-3 py-2">
+                <td className="whitespace-nowrap px-3 py-2">
                   <div className="font-medium text-foreground">{vm.name}</div>
                   <div className="text-[10px] text-muted-foreground">
                     {vm.size}
                   </div>
                 </td>
-                <td className="px-3 py-2 font-mono text-xs">{vm.resource_group}</td>
-                <td className="px-3 py-2 text-xs">{vm.location}</td>
-                <td className="px-3 py-2 text-xs">
+                <td className="whitespace-nowrap px-3 py-2 font-mono text-xs">{vm.resource_group}</td>
+                <td className="whitespace-nowrap px-3 py-2 text-xs">{vm.location}</td>
+                <td className="whitespace-nowrap px-3 py-2 text-xs">
                   <div>{vm.os_type}</div>
                   {vm.os_offer && (
-                    <div className="text-[10px] text-muted-foreground">
+                    <div
+                      className="max-w-[16rem] truncate text-[10px] text-muted-foreground"
+                      title={vm.os_offer}
+                    >
                       {vm.os_offer}
                     </div>
                   )}
                 </td>
-                <td className="px-3 py-2 font-mono text-xs">
+                <td className="whitespace-nowrap px-3 py-2 font-mono text-xs">
                   {vm.public_ip ?? <span className="text-muted-foreground">—</span>}
                 </td>
-                <td className="px-3 py-2">
+                <td className="whitespace-nowrap px-3 py-2">
                   <Badge variant="outline" className={cn(POWER_BADGE[vm.power_state])}>
                     {POWER_LABEL[vm.power_state]}
                   </Badge>
                 </td>
-                <td className="px-3 py-2 text-right">
+                <td className="whitespace-nowrap px-3 py-2 text-right">
                   <VmActionMenu vm={vm} />
                 </td>
               </tr>

@@ -1,10 +1,10 @@
 "use client";
 
 // v2.10.0 — three tiles across the top of the Infrastructure page:
-// Running VMs · Stopped · Active Agents. Layout mirrors the mockup
+// Running VMs · Stopped · Regions. Layout mirrors the mockup
 // (Webpage Layout Redesign); colors resolve to our theme tokens rather
-// than the reference palette. "Active Agents" surfaces "—" until a
-// later phase wires the agent registry into this view.
+// than the reference palette. Regions = distinct `location` values
+// across every surfaced VM.
 
 import { cn } from "@/lib/utils";
 import type { VmSummary } from "@/lib/types";
@@ -27,6 +27,7 @@ export function InfraStatTiles({
       v.power_state === "deallocated" ||
       v.power_state === "deallocating",
   ).length;
+  const regions = new Set(vms.map((v) => v.location).filter(Boolean)).size;
 
   return (
     <div className="grid gap-3 sm:grid-cols-3">
@@ -51,12 +52,15 @@ export function InfraStatTiles({
         }
       />
       <StatTile
-        label="Active Agents"
-        value="—"
-        loading={false}
-        accent="text-muted-foreground"
-        hint="Coming in a later phase"
-        disabled
+        label="Regions"
+        value={regions}
+        loading={loading}
+        accent="text-foreground"
+        hint={
+          regions === 0
+            ? "No VMs surfaced yet"
+            : `${regions} distinct Azure region${regions === 1 ? "" : "s"}`
+        }
       />
     </div>
   );
