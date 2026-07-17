@@ -37,7 +37,9 @@ from app.models import (
     Suggestion,
     SuggestionKind,
     SuggestionStatus,
+    User,
     WorkItem,
+    WorkItemComment,
     WorkItemExecutor,
     WorkItemFinding,
     WorkItemPriority,
@@ -61,6 +63,9 @@ from app.schemas.strategy import (
     StrategySignalRead,
     VersionedReason,
     WorkItemBlock,
+    WorkItemCommentAuthor,
+    WorkItemCommentCreate,
+    WorkItemCommentRead,
     WorkItemCreate,
     WorkItemFindingAdd,
     WorkItemFindingRead,
@@ -954,6 +959,98 @@ def get_work_item(work_item_id: uuid.UUID, session: DbSession, _user: CurrentUse
     if row is None:
         raise HTTPException(status_code=404, detail="work item not found")
     return _work_read(session, row)
+
+
+def _user_label(user: User | None) -> str:
+    if user is None:
+        return "unknown"
+    return user.display_name or user.email
+
+
+def _comment_read(comment: WorkItemComment, author: User | None) -> WorkItemCommentRead:
+    return WorkItemCommentRead(
+        id=comment.id,
+        work_item_id=comment.work_item_id,
+        author=WorkItemCommentAuthor(
+            id=str(comment.author_user_id), label=_user_label(author)
+        ),
+        body=comment.body,
+        created_at=comment.created_at,
+    )
+
+
+@router.get(
+    "/work-items/{work_item_id}/comments",
+    response_model=list[WorkItemCommentRead],
+)
+def list_work_item_comments(
+    work_item_id: uuid.UUID, session: DbSession, _user: CurrentUser
+):
+    work_item = session.get(WorkItem, work_item_id)
+    if work_item is None:
+        raise HTTPException(status_code=404, detail="work item not found")
+    comments = list(
+        session.execute(
+            select(WorkItemComment)
+            .where(WorkItemComment.work_item_id == work_item_id)
+            .order_by(WorkItemComment.created_at.asc(), WorkItemComment.id)
+        ).scalars()
+    )
+    author_ids = {c.author_user_id for c in comments}
+    authors: dict[uuid.UUID, User] = {}
+    if author_ids:
+        authors = {
+            row.id: row
+            for row in session.execute(
+                select(User).where(User.id.in_(author_ids))
+            ).scalars()
+        }
+    return [
+        _comment_read(c, authors.get(c.author_user_id)) for c in comments
+    ]
+
+
+@router.post(
+    "/work-items/{work_item_id}/comments",
+    response_model=WorkItemCommentRead,
+    status_code=201,
+)
+def create_work_item_comment(
+    work_item_id: uuid.UUID,
+    body: WorkItemCommentCreate,
+    session: DbSession,
+    user: CurrentNonGuestUser,
+):
+    work_item = session.get(WorkItem, work_item_id)
+    if work_item is None:
+        raise HTTPException(status_code=404, detail="work item not found")
+    eng = session.get(Engagement, work_item.engagement_id)
+    if eng is None:
+        raise HTTPException(status_code=404, detail="engagement not found")
+    _ensure_mutable(eng)
+    text = body.body.strip()
+    if not text:
+        raise HTTPException(
+            status_code=400, detail="comment body must not be empty"
+        )
+    comment = WorkItemComment(
+        engagement_id=eng.id,
+        work_item_id=work_item.id,
+        author_user_id=user.id,
+        body=text,
+    )
+    session.add(comment)
+    session.flush()
+    _audit(
+        session,
+        eng.id,
+        user.id,
+        "work_item.comment.created",
+        {"work_item_id": str(work_item.id), "comment_id": str(comment.id)},
+    )
+    session.commit()
+    session.refresh(comment)
+    return _comment_read(comment, user)
 
 
 @router.patch("/work-items/{work_item_id}", response_model=WorkItemRead)
