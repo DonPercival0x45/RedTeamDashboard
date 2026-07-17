@@ -804,6 +804,9 @@ def update_engagement(
             eng.archived_at = datetime.now(tz=UTC)
         eng.status = body.status
 
+    if body.auto_assess_enabled is not None:
+        eng.auto_assess_enabled = body.auto_assess_enabled
+
     session.commit()
     session.refresh(eng)
     read = EngagementRead.model_validate(eng)

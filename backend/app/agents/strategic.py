@@ -560,6 +560,25 @@ class StrategicAgent:
         engagement = session.get(Engagement, finding.engagement_id)
         if engagement is None:
             raise ValueError(f"finding {finding.id} has no engagement")
+        # Token-saving kill-switch: skip automatic background generation when
+        # the engagement has auto-assess disabled. The manual Analyze button
+        # (trigger=manual) is an explicit user action and stays unaffected.
+        if trigger != AgentTrigger.manual and not engagement.auto_assess_enabled:
+            structlog.get_logger(__name__).info(
+                "strategic.auto_assess_skipped", engagement_id=str(engagement.id)
+            )
+            now = datetime.now(tz=UTC)
+            execution = AgentExecution(
+                engagement_id=engagement.id,
+                agent=AgentName.strategic,
+                trigger=trigger,
+                input={"finding_id": str(finding.id), "auto_assess_disabled": True},
+                status=AgentExecutionStatus.cancelled,
+                started_at=now,
+                completed_at=now,
+            )
+            session.add(execution)
+            return execution, []
         scope_items = list(
             session.execute(
                 select(ScopeItem).where(ScopeItem.engagement_id == engagement.id)

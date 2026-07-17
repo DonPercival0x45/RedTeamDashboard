@@ -182,6 +182,16 @@ export function getEngagement(slug: string): Promise<Engagement> {
   return request<Engagement>(`/engagements/${slug}`);
 }
 
+export function updateEngagement(
+  slug: string,
+  body: { auto_assess_enabled?: boolean; name?: string; status?: EngagementStatus },
+): Promise<Engagement> {
+  return request<Engagement>(`/engagements/${slug}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
 export function createEngagement(body: {
   name: string;
   slug?: string;
