@@ -48,6 +48,7 @@ import {
   getContributionsHeatmap,
   getEngagement,
   getEngagementCosts,
+  getEngagementDiagnostics,
   getAutoShutdown,
   getEngagementStatus,
   getGlobalAgentRunSteps,
@@ -139,6 +140,7 @@ export const qk = {
   engagement: (slug: string) => ["engagement", slug] as const,
   reportReadiness: (slug: string) => ["report-readiness", slug] as const,
   findings: (slug: string) => ["findings", slug] as const,
+  diagnostics: (slug: string) => ["diagnostics", slug] as const,
   finding: (id: string) => ["finding", id] as const,
   findingActivity: (id: string) => ["finding-activity", id] as const,
   findingChat: (id: string) => ["finding-chat", id] as const,
@@ -220,6 +222,13 @@ export function useEngagement(slug: string) {
   return useQuery({
     queryKey: qk.engagement(slug),
     queryFn: () => getEngagement(slug),
+  });
+}
+
+export function useDiagnostics(slug: string) {
+  return useQuery({
+    queryKey: qk.diagnostics(slug),
+    queryFn: () => getEngagementDiagnostics(slug),
   });
 }
 
