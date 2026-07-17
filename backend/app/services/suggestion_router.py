@@ -11,7 +11,7 @@ from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.agents import TacticalAgent, TacticalRefusedExploit
+from app.agents import TacticalAgent, TacticalAlreadyScanned, TacticalRefusedExploit
 from app.models import (
     ActorType,
     AgentTrigger,
@@ -561,6 +561,13 @@ def _accept_execution_task(
                 acting_user_id=user_id,
             )
             dispatched = True
+        except TacticalAlreadyScanned as dedup:
+            # Already scanned recently — mark the task done against the prior
+            # run instead of re-dispatching (the duplicate-runs guardrail).
+            task.status = TaskStatus.completed
+            task.completed_at = datetime.now(tz=UTC)
+            task.run_id = dedup.prior_execution_id
+            dispatched = False
         except TacticalRefusedExploit:
             dispatched = False
     return task, dispatched

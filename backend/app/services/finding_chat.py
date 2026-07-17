@@ -19,7 +19,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
-from app.agents import TacticalAgent, TacticalRefusedExploit
+from app.agents import TacticalAgent, TacticalAlreadyScanned, TacticalRefusedExploit
 from app.agents.strategic import _extract_usage, _make_chat_model
 from app.core import pricing
 from app.models import (
@@ -1029,6 +1029,7 @@ def _accept_run_tool(
     session.flush()
     dispatched = False
     run_id: str | None = None
+    already_scanned = False
     try:
         thread_id = TacticalAgent(redis_client).dispatch(
             session,
@@ -1038,6 +1039,13 @@ def _accept_run_tool(
         )
         dispatched = True
         run_id = str(thread_id)
+    except TacticalAlreadyScanned as dedup:
+        # Already scanned recently — don't re-dispatch; surface the prior run.
+        already_scanned = True
+        run_id = str(dedup.prior_execution_id)
+        task.status = TaskStatus.completed
+        task.completed_at = datetime.now(tz=UTC)
+        task.run_id = dedup.prior_execution_id
     except TacticalRefusedExploit:
         dispatched = False
     return {
@@ -1048,9 +1056,13 @@ def _accept_run_tool(
         "dispatched": dispatched,
         "run_id": run_id,
         "note": (
-            "Dispatched to the existing agent run path. Active tools still "
-            "pause at the approval gate before execution."
-            if dispatched
-            else "Task created but not dispatched."
+            "Already scanned by a recent run — skipped the re-dispatch."
+            if already_scanned
+            else (
+                "Dispatched to the existing agent run path. Active tools still "
+                "pause at the approval gate before execution."
+                if dispatched
+                else "Task created but not dispatched."
+            )
         ),
     }
