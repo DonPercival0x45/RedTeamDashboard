@@ -47,6 +47,7 @@ from app.models import (
     WorkItemResultState,
     WorkItemStatus,
 )
+from app.schemas.finding import FindingRead
 from app.schemas.strategy import (
     CheckpointCreate,
     CheckpointRead,
@@ -669,6 +670,24 @@ def restore_strategy_revision(
 
 
 # Objectives ----------------------------------------------------------------
+
+
+@router.get("/runs/{thread_id}/findings", response_model=list[FindingRead])
+def list_run_findings(thread_id: uuid.UUID, session: DbSession, _user: CurrentUser):
+    from app.api.engagements import _finding_to_read
+    from app.models import Finding, FindingOrigin
+
+    rows = (
+        session.execute(
+            select(Finding)
+            .join(FindingOrigin, FindingOrigin.finding_id == Finding.id)
+            .where(FindingOrigin.thread_id == thread_id)
+            .order_by(Finding.created_at)
+        )
+        .scalars()
+        .all()
+    )
+    return [_finding_to_read(f) for f in rows]
 
 
 @router.get("/engagements/{slug}/objectives", response_model=list[ObjectiveRead])

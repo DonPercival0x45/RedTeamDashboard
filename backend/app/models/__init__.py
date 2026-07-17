@@ -55,6 +55,7 @@ from app.models.entity_group import EntityGroup, EntityGroupMember
 from app.models.finding import (
     Finding,
     FindingExclusion,
+    FindingOrigin,
     FindingPhase,
     FindingStatus,
     Severity,
@@ -122,6 +123,7 @@ __all__ = [
     "EntityGroupMember",
     "Finding",
     "FindingExclusion",
+    "FindingOrigin",
     "FindingPhase",
     "FindingStatus",
     "FindingSummary",
