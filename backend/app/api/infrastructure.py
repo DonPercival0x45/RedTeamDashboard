@@ -32,6 +32,7 @@ from app.models import ActorType, AuditLog
 from app.services.azure_arm import (
     AutoShutdown,
     AzureArmService,
+    RunCommandResult,
     SubscriptionSummary,
     VmSummary,
     get_arm_service,
@@ -96,6 +97,30 @@ class AutoShutdownWrite(BaseModel):
     timezone_id: str
     notification_webhook_url: str | None = None
     notification_minutes: int = 30
+
+
+class RunCommandRequest(BaseModel):
+    """POST body for the Connect drawer's one-shot run-command."""
+
+    script: str
+
+
+class RunCommandResponse(BaseModel):
+    stdout: str
+    stderr: str
+    exit_code: int | None
+    duration_ms: int
+    timed_out: bool
+
+
+def _to_run_command_response(r: RunCommandResult) -> RunCommandResponse:
+    return RunCommandResponse(
+        stdout=r.stdout,
+        stderr=r.stderr,
+        exit_code=r.exit_code,
+        duration_ms=r.duration_ms,
+        timed_out=r.timed_out,
+    )
 
 
 def _to_schedule_read(s: AutoShutdown) -> AutoShutdownRead:
@@ -273,6 +298,65 @@ async def delete_auto_shutdown(
         )
     )
     session.commit()
+
+
+# v2.12.0 — one-shot Run Command. Registered here (above the catch-all
+# GET /vms/{arm_id:path}) for the same reason auto-shutdown is: the
+# greedy :path capture would otherwise swallow the /run-command suffix.
+@router.post("/vms/{arm_id:path}/run-command", response_model=RunCommandResponse)
+async def run_command(
+    arm_id: str,
+    body: RunCommandRequest,
+    session: DbSession,
+    user: CurrentAdminUser,
+) -> RunCommandResponse:
+    normalized = _normalize_arm_id(arm_id)
+    try:
+        ref = parse_vm_arm_id(normalized)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    script = (body.script or "").strip()
+    if not script:
+        raise HTTPException(status_code=400, detail="script must be non-empty")
+    try:
+        vm = await _service().get_vm(normalized)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    try:
+        result = await _service().run_command(normalized, script, vm.os_type)
+    except Exception as exc:
+        log.warning(
+            "infra_run_command_failed",
+            arm_id=normalized,
+            script_bytes=len(script),
+            error=str(exc),
+        )
+        raise HTTPException(status_code=502, detail=f"azure run-command failed: {exc}") from exc
+    session.add(
+        AuditLog(
+            actor_type=ActorType.user,
+            actor_id=str(user.id),
+            event_type="infra.vm.run_command",
+            payload={
+                "arm_id": normalized,
+                "subscription_id": ref.subscription_id,
+                "resource_group": ref.resource_group,
+                "name": ref.name,
+                "os_type": vm.os_type,
+                # Store the script and truncated stdout for audit — never
+                # log secrets in scripts (admin's responsibility). stderr
+                # captured too since failures are actionable.
+                "script": script[:4000],
+                "stdout": result.stdout[:4000],
+                "stderr": result.stderr[:4000],
+                "exit_code": result.exit_code,
+                "duration_ms": result.duration_ms,
+                "timed_out": result.timed_out,
+            },
+        )
+    )
+    session.commit()
+    return _to_run_command_response(result)
 
 
 @router.get("/vms/{arm_id:path}", response_model=VmRead)

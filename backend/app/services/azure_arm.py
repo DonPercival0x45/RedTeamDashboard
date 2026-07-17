@@ -56,6 +56,24 @@ class SubscriptionSummary:
 
 
 @dataclass(slots=True)
+class RunCommandResult:
+    """v2.12.0 — one-shot shell/PowerShell execution against a VM.
+
+    Wraps Azure's synchronous ``Microsoft.Compute/.../runCommand`` LRO —
+    the backend polls until the long-running-operation resolves, then
+    parses the `value` array into stdout / stderr / exit_code buckets.
+    Timeout surfaces as ``timed_out=True`` with whatever partial output
+    Azure had emitted.
+    """
+
+    stdout: str
+    stderr: str
+    exit_code: int | None
+    duration_ms: int
+    timed_out: bool = False
+
+
+@dataclass(slots=True)
 class AutoShutdown:
     """v2.11.0 — mirrors the subset of Microsoft.DevTestLab/schedules we surface.
 
@@ -86,6 +104,9 @@ class AzureArmService(Protocol):
         self, arm_id: str, schedule: AutoShutdown
     ) -> AutoShutdown: ...
     async def delete_auto_shutdown(self, arm_id: str) -> None: ...
+    async def run_command(
+        self, arm_id: str, script: str, os_type: str
+    ) -> RunCommandResult: ...
 
 
 # ---------------------------------------------------------------------------
@@ -363,6 +384,136 @@ class RealAzureArmService:
         if resp.status_code == 404:
             return
         resp.raise_for_status()
+
+    # ---------------------------------------------------------------------
+    # v2.12.0 — one-shot Run Command via ARM LRO.
+    # POST accepts the script and returns 202 with an Azure-AsyncOperation
+    # URL; we poll every 2s up to ~90s. On Succeeded we GET that same URL
+    # for the ``value`` array, which is Azure's shape for the merged
+    # per-status-code stdout/stderr buckets.
+    # ---------------------------------------------------------------------
+
+    async def run_command(
+        self, arm_id: str, script: str, os_type: str
+    ) -> RunCommandResult:
+        ref = parse_vm_arm_id(arm_id)
+        import time
+
+        import httpx
+
+        command_id = (
+            "RunPowerShellScript"
+            if os_type.lower().startswith("windows")
+            else "RunShellScript"
+        )
+        run_url = (
+            f"https://management.azure.com/subscriptions/{ref.subscription_id}"
+            f"/resourceGroups/{ref.resource_group}"
+            f"/providers/Microsoft.Compute/virtualMachines/{ref.name}"
+            f"/runCommand?api-version=2024-11-01"
+        )
+        body = {"commandId": command_id, "script": [script]}
+        token = await run_in_threadpool(self._arm_token)
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
+
+        started = time.monotonic()
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(run_url, headers=headers, json=body)
+            if resp.status_code not in (200, 201, 202):
+                resp.raise_for_status()
+
+            # If Azure returned the result inline (rare for runCommand but
+            # possible on tiny fast VMs), skip polling.
+            poll_url = resp.headers.get("Azure-AsyncOperation") or resp.headers.get(
+                "Location"
+            )
+            body_json = _safe_json(resp)
+            if body_json and "value" in body_json:
+                stdout, stderr, code = _parse_run_command_value(body_json["value"])
+                return RunCommandResult(
+                    stdout=stdout,
+                    stderr=stderr,
+                    exit_code=code,
+                    duration_ms=int((time.monotonic() - started) * 1000),
+                )
+
+            if not poll_url:
+                raise RuntimeError(
+                    "Azure runCommand returned no Azure-AsyncOperation/Location header",
+                )
+
+            # Poll — 2s cadence, ~90s cap. Each poll refreshes headers so
+            # if Azure hands out a new location we follow it.
+            deadline = started + 90.0
+            while True:
+                await asyncio.sleep(2.0)
+                poll = await client.get(poll_url, headers=headers)
+                poll.raise_for_status()
+                poll_body = poll.json()
+                status_val = str(poll_body.get("status", "")).lower()
+                if status_val in {"succeeded", "failed", "canceled"}:
+                    # Terminal state. Azure's runCommand emits the actual
+                    # stdout/stderr inside the `properties.output.value`
+                    # array once the async op finishes.
+                    output = (poll_body.get("properties") or {}).get("output") or {}
+                    value = output.get("value") or poll_body.get("value") or []
+                    stdout, stderr, code = _parse_run_command_value(value)
+                    err_ctx = poll_body.get("error")
+                    if status_val == "failed" and err_ctx and not stderr:
+                        stderr = str(err_ctx)
+                    return RunCommandResult(
+                        stdout=stdout,
+                        stderr=stderr,
+                        exit_code=code,
+                        duration_ms=int((time.monotonic() - started) * 1000),
+                    )
+                if time.monotonic() > deadline:
+                    return RunCommandResult(
+                        stdout="",
+                        stderr="run-command exceeded 90s poll budget — the "
+                        "command may still be running on the VM. Check the "
+                        "Azure portal's Run Command tab for the final output.",
+                        exit_code=None,
+                        duration_ms=int((time.monotonic() - started) * 1000),
+                        timed_out=True,
+                    )
+
+
+def _safe_json(resp: object) -> dict[str, Any] | None:
+    try:
+        data = resp.json()  # type: ignore[attr-defined]
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _parse_run_command_value(
+    value: list[dict[str, Any]] | Any,
+) -> tuple[str, str, int | None]:
+    """Split Azure's per-status ``value`` array into stdout, stderr, exit code.
+
+    Each entry has a ``code`` like ``ComponentStatus/StdOut/succeeded`` and a
+    ``message`` string. Linux + Windows share this shape. Exit code isn't
+    surfaced directly by the LRO; we return None so the UI shows a neutral
+    "completed" chip rather than fabricating a 0/1.
+    """
+    stdout_parts: list[str] = []
+    stderr_parts: list[str] = []
+    if not isinstance(value, list):
+        return "", "", None
+    for entry in value:
+        if not isinstance(entry, dict):
+            continue
+        code = str(entry.get("code") or "")
+        msg = str(entry.get("message") or "")
+        if "StdOut" in code:
+            stdout_parts.append(msg)
+        elif "StdErr" in code:
+            stderr_parts.append(msg)
+    return "\n".join(stdout_parts).rstrip(), "\n".join(stderr_parts).rstrip(), None
 
 
 def _collect_vms_for_sub(

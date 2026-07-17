@@ -1886,3 +1886,16 @@ export function deleteAutoShutdown(armId: string): Promise<void> {
     method: "DELETE",
   });
 }
+
+// v2.12.0 — one-shot Run Command. Azure's LRO can take 30-60s for
+// heavier scripts, so callers should render a "Running…" state; this
+// resolves once the LRO returns.
+export function runCommand(
+  armId: string,
+  script: string,
+): Promise<import("@/lib/types").RunCommandResult> {
+  return request(`/infrastructure/vms${armId}/run-command`, {
+    method: "POST",
+    body: JSON.stringify({ script }),
+  });
+}

@@ -14,6 +14,7 @@
 import { useState } from "react";
 import { CalendarClock, Play, RotateCcw, Square, Terminal } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { ConnectDrawer } from "@/components/infrastructure/connect-drawer";
 import { ScheduleModal } from "@/components/infrastructure/schedule-modal";
 import {
   useDeallocateVmMutation,
@@ -29,6 +30,7 @@ const CHIP = "h-6 gap-1 px-2 text-[11px] font-medium";
 export function VmActionMenu({ vm }: { vm: VmSummary }) {
   const [busy, setBusy] = useState<null | "start" | "stop" | "restart">(null);
   const [scheduleOpen, setScheduleOpen] = useState(false);
+  const [connectOpen, setConnectOpen] = useState(false);
   const startM = useStartVmMutation();
   const stopM = useDeallocateVmMutation();
   const restartM = useRestartVmMutation();
@@ -117,12 +119,18 @@ export function VmActionMenu({ vm }: { vm: VmSummary }) {
         size="sm"
         variant="outline"
         className={CHIP}
-        disabled
-        title="Coming in v2.12 — serial console web terminal"
+        onClick={() => setConnectOpen(true)}
+        disabled={vm.power_state !== "running"}
+        title={
+          vm.power_state === "running"
+            ? "Run one command at a time via Azure Run Command"
+            : "VM must be running to Connect"
+        }
       >
         <Terminal className="h-3 w-3" />
         Connect
       </Button>
+      <ConnectDrawer vm={vm} open={connectOpen} onOpenChange={setConnectOpen} />
     </div>
   );
 }

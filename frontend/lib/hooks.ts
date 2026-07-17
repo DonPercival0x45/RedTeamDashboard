@@ -89,6 +89,7 @@ import {
   promoteFindingContext,
   putAutoShutdown,
   restartVm,
+  runCommand,
   retryAgentExecution,
   retryTask,
   revokeAuthorization,
@@ -1257,5 +1258,11 @@ export function useDeleteAutoShutdownMutation(armId: string) {
   return useMutation({
     mutationFn: () => deleteAutoShutdown(armId),
     onSuccess: () => qc.setQueryData(qk.autoShutdown(armId), null),
+  });
+}
+
+export function useRunCommandMutation(armId: string) {
+  return useMutation({
+    mutationFn: (script: string) => runCommand(armId, script),
   });
 }

@@ -1362,3 +1362,14 @@ export interface AutoShutdownWrite {
   notification_webhook_url?: string | null;
   notification_minutes?: number;
 }
+
+// v2.12.0 — one-shot Run Command against a VM. Backend wraps Azure's
+// LRO; the response is the parsed final output. `exit_code` is null
+// because Azure's runCommand LRO doesn't surface it directly.
+export interface RunCommandResult {
+  stdout: string;
+  stderr: string;
+  exit_code: number | null;
+  duration_ms: number;
+  timed_out: boolean;
+}

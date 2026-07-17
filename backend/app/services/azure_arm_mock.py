@@ -13,6 +13,7 @@ from dataclasses import replace
 from app.services.azure_arm import (
     AutoShutdown,
     PowerState,
+    RunCommandResult,
     SubscriptionSummary,
     VmSummary,
     parse_vm_arm_id,
@@ -158,3 +159,26 @@ class MockAzureArmService:
         await self.get_vm(arm_id)
         async with self._lock:
             self._schedules.pop(arm_id.lower(), None)
+
+    # ---------------------------------------------------------------------
+    # v2.12.0 — mock run-command. Simulates ~1s of Azure LRO delay so the
+    # UI's "Running…" state is observable, then echoes a canned response
+    # that quotes the analyst's script. Enough to exercise the drawer's
+    # stdout / stderr / duration rendering without an Azure round-trip.
+    # ---------------------------------------------------------------------
+
+    async def run_command(
+        self, arm_id: str, script: str, os_type: str
+    ) -> RunCommandResult:
+        vm = await self.get_vm(arm_id)
+        await asyncio.sleep(1.0)
+        return RunCommandResult(
+            stdout=(
+                f"[mock] {os_type} run-command on {vm.name}\n"
+                f"$ {script}\n"
+                "(mock mode — no real VM was contacted)"
+            ),
+            stderr="",
+            exit_code=0,
+            duration_ms=1000,
+        )
