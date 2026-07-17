@@ -841,53 +841,236 @@ function StrategyRequiredGate({ findingCount }: { findingCount: number }) {
   );
 }
 
+// ── Needs-decision outcome tags ──
+type DecisionTag = "Agent run" | "Work item" | "Strategy" | "Signal";
+
+function suggestionTag(suggestion: Suggestion): DecisionTag {
+  if (suggestion.kind === "strategy_revision") return "Strategy";
+  if (suggestion.kind === "task") {
+    const taskKind = suggestion.payload?.task_kind as string | undefined;
+    const owner = suggestion.payload?.owner_eligibility as string | undefined;
+    // Only tag "Agent run" when BOTH conditions are met; a missing
+    // owner_eligibility must NOT default to "Agent run" — fall through to
+    // "Work item" so the analyst isn't misled about what Accept does.
+    if (
+      (taskKind === "scan" || taskKind === "enum") &&
+      (owner === "agent" || owner === "either")
+    ) {
+      return "Agent run";
+    }
+  }
+  return "Work item";
+}
+
+const TAG_STYLES: Record<DecisionTag, string> = {
+  "Agent run": "border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-300",
+  "Work item": "border-violet-500/40 bg-violet-500/10 text-violet-700 dark:text-violet-300",
+  "Strategy": "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300",
+  "Signal": "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+};
+
+function TagBadge({ tag }: { tag: DecisionTag }) {
+  return (
+    <span className={cn("rounded-full border px-2 py-0.5 text-[10px] font-medium whitespace-nowrap", TAG_STYLES[tag])}>
+      {tag}
+    </span>
+  );
+}
+
+interface DecisionItem {
+  key: string;
+  tag: DecisionTag;
+  title: string;
+  description: string | null;
+  findingId: string | null;
+  accept: () => Promise<unknown>;
+  dismiss: () => Promise<unknown>;
+}
+
 function NeedsDecisionSection({ slug, readOnly, openSignals, openSuggestions, proposedRevisions, currentRevisionId, busy, mutate }: { slug: string; readOnly: boolean; openSignals: StrategySignal[]; openSuggestions: Suggestion[]; proposedRevisions: StrategyRevision[]; currentRevisionId: string | null; busy: string | null; mutate: (key: string, action: () => Promise<unknown>, success: string) => Promise<boolean> }) {
-  const total = openSignals.length + openSuggestions.length + proposedRevisions.length;
+  const [collapsed, setCollapsed] = useState(false);
+  const [activeTag, setActiveTag] = useState<DecisionTag | "All">("All");
+  const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
+
+  // Build the unified items list.
+  const items: DecisionItem[] = useMemo(() => [
+    ...proposedRevisions.map<DecisionItem>((rev) => ({
+      key: `revision:${rev.id}`,
+      tag: "Strategy" as const,
+      title: `Strategy revision v${rev.version}`,
+      description: rev.summary ?? "Proposed strategy revision",
+      findingId: null,
+      accept: () => decideStrategyRevision(slug, rev.id, "accept", { based_on_revision_id: currentRevisionId }),
+      dismiss: () => decideStrategyRevision(slug, rev.id, "reject", { based_on_revision_id: currentRevisionId }),
+    })),
+    ...openSuggestions.map<DecisionItem>((s) => ({
+      key: `suggestion:${s.id}`,
+      tag: suggestionTag(s),
+      title: s.title,
+      description: s.body ?? labelSuggestionKind(s.kind),
+      findingId: s.finding_id,
+      accept: () => acceptSuggestion(s.id),
+      dismiss: () => dismissSuggestion(s.id),
+    })),
+    ...openSignals.map<DecisionItem>((sig) => ({
+      key: `signal:${sig.id}`,
+      tag: "Signal" as const,
+      title: sig.signal_type,
+      description: sig.summary,
+      findingId: null,
+      accept: () => decideStrategySignal(sig.id, "incorporate"),
+      dismiss: () => decideStrategySignal(sig.id, "dismiss"),
+    })),
+  ], [proposedRevisions, openSuggestions, openSignals, slug, currentRevisionId]);
+
+  const total = items.length;
+  const tagsPresent = useMemo(() => {
+    const set = new Set<DecisionTag>();
+    items.forEach((i) => set.add(i.tag));
+    return ["All", ...Array.from(set)] as const;
+  }, [items]);
+
+  const visibleItems = activeTag === "All" ? items : items.filter((i) => i.tag === activeTag);
+  const selectedItems = items.filter((i) => selectedKeys.has(i.key));
+
+  const toggleSelected = (key: string) => {
+    setSelectedKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  // Bulk: resilient — allSettled, per-item catch, single toast.
+  const bulkAction = (actionItems: DecisionItem[], action: "accept" | "dismiss") => {
+    if (actionItems.length === 0) return;
+    void mutate(
+      "decisions-bulk",
+      async () => {
+        await Promise.allSettled(actionItems.map((item) => (action === "accept" ? item.accept() : item.dismiss())));
+      },
+      `${action === "accept" ? "Accepted" : "Dismissed"} ${actionItems.length} decision${actionItems.length === 1 ? "" : "s"}.`,
+    );
+    // Clear selection after a bulk action on selected items.
+    if (actionItems === selectedItems) setSelectedKeys(new Set());
+  };
+
+  const busyBulk = busy === "decisions-bulk";
+
   return (
     <section className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-4">
+      {/* Header: collapse toggle + count */}
       <div className="flex items-center justify-between gap-3">
-        <div>
-          <h3 className="text-sm font-semibold">Needs decision</h3>
-          <p className="text-xs text-muted-foreground">Durable proposals live here, not only in personal chat.</p>
-        </div>
+        <button type="button" onClick={() => setCollapsed((v) => !v)} className="flex items-center gap-2 text-left">
+          <span className="text-xs text-muted-foreground">{collapsed ? "▶" : "▼"}</span>
+          <h3 className="text-sm font-semibold">Needs decision ({total})</h3>
+        </button>
         <Badge variant={total ? "secondary" : "outline"}>{total} open</Badge>
       </div>
-      {total === 0 ? (
-        <p className="mt-3 text-sm text-muted-foreground">No shared decisions are waiting.</p>
-      ) : (
-        <ul className="mt-3 space-y-2">
-          {proposedRevisions.map((revision) => (
-            <li key={revision.id} className="rounded border border-border bg-background p-3 text-xs">
-              <div className="flex flex-wrap items-start justify-between gap-2">
-                <div>
-                  <p className="font-medium">Strategy revision v{revision.version}</p>
-                  <p className="mt-1 text-muted-foreground">{revision.summary ?? "Proposed strategy revision"}</p>
+
+      {!collapsed && (
+        <>
+          {/* Tag filter chips */}
+          {tagsPresent.length > 2 && (
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              {tagsPresent.map((tag) => (
+                <button
+                  key={tag}
+                  type="button"
+                  onClick={() => setActiveTag(tag)}
+                  className={cn(
+                    "rounded-full border px-2.5 py-0.5 text-[11px] font-medium transition-colors",
+                    activeTag === tag
+                      ? "border-foreground/40 bg-muted text-foreground"
+                      : "border-border text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {tag}
+                  {tag !== "All" && (
+                    <span className="ml-1 opacity-60">
+                      ({items.filter((i) => i.tag === tag).length})
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Bulk action bar */}
+          {!readOnly && visibleItems.length > 0 && (
+            <div className="mt-3 flex flex-wrap items-center gap-2 border-b border-border/60 pb-3">
+              <SmallAction onClick={() => bulkAction(visibleItems, "accept")} disabled={busy !== null}>
+                {busyBulk ? "Working…" : `Accept all${activeTag !== "All" ? ` (${activeTag})` : ""}`}
+              </SmallAction>
+              <SmallAction onClick={() => bulkAction(visibleItems, "dismiss")} disabled={busy !== null}>
+                {busyBulk ? "…" : `Dismiss all${activeTag !== "All" ? ` (${activeTag})` : ""}`}
+              </SmallAction>
+              {selectedItems.length > 0 && (
+                <>
+                  <span className="text-[10px] text-muted-foreground">|</span>
+                  <SmallAction onClick={() => bulkAction(selectedItems, "accept")} disabled={busy !== null}>
+                    Accept selected ({selectedItems.length})
+                  </SmallAction>
+                  <SmallAction onClick={() => bulkAction(selectedItems, "dismiss")} disabled={busy !== null}>
+                    Dismiss selected ({selectedItems.length})
+                  </SmallAction>
+                </>
+              )}
+            </div>
+          )}
+
+          {/* Items list */}
+          <ul className="mt-3 space-y-2">
+            {visibleItems.map((item) => (
+              <li key={item.key} className="rounded border border-border bg-background p-3 text-xs">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div className="flex items-start gap-2">
+                    {!readOnly && (
+                      <input
+                        type="checkbox"
+                        checked={selectedKeys.has(item.key)}
+                        onChange={() => toggleSelected(item.key)}
+                        className="mt-0.5 h-3.5 w-3.5 rounded border-border"
+                      />
+                    )}
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <TagBadge tag={item.tag} />
+                        <p className="font-medium">{item.title}</p>
+                      </div>
+                      {item.description && <p className="mt-1 text-muted-foreground">{item.description}</p>}
+                      {item.findingId && (
+                        <Link
+                          href={`/e/findings/${item.findingId}?slug=${encodeURIComponent(slug)}&returnTo=${encodeURIComponent(`/e?slug=${slug}&view=strategy`)}`}
+                          className="mt-2 inline-block text-[10px] hover:underline"
+                        >
+                          Open source finding →
+                        </Link>
+                      )}
+                    </div>
+                  </div>
                 </div>
-                <Badge variant="outline">strategy</Badge>
-              </div>
-              {!readOnly && <div className="mt-2 flex justify-end gap-2"><SmallAction onClick={() => void mutate(`revision-${revision.id}-reject`, () => decideStrategyRevision(slug, revision.id, "reject", { based_on_revision_id: currentRevisionId }), `Revision v${revision.version} rejected.`)}>Reject</SmallAction><SmallAction onClick={() => void mutate(`revision-${revision.id}-accept`, () => decideStrategyRevision(slug, revision.id, "accept", { based_on_revision_id: currentRevisionId }), `Revision v${revision.version} accepted.`)}>Accept</SmallAction></div>}
-            </li>
-          ))}
-          {openSuggestions.map((suggestion) => (
-            <li key={suggestion.id} className="rounded border border-border bg-background p-3 text-xs">
-              <div className="flex flex-wrap items-start justify-between gap-2">
-                <div>
-                  <p className="font-medium">{suggestion.title}</p>
-                  <p className="mt-1 text-muted-foreground">{suggestion.body ?? labelSuggestionKind(suggestion.kind)}</p>
-                  {suggestion.finding_id && <Link href={`/e/findings/${suggestion.finding_id}?slug=${encodeURIComponent(slug)}&returnTo=${encodeURIComponent(`/e?slug=${slug}&view=strategy`)}`} className="mt-2 inline-block text-[10px] hover:underline">Open source finding →</Link>}
-                </div>
-                <Badge variant="outline">{labelSuggestionKind(suggestion.kind)}</Badge>
-              </div>
-              {!readOnly && <div className="mt-2 flex justify-end gap-2"><SmallAction onClick={() => void mutate(`suggestion-${suggestion.id}-dismiss`, () => dismissSuggestion(suggestion.id), `Proposal “${suggestion.title}” dismissed.`)}>Dismiss</SmallAction><SmallAction onClick={() => void mutate(`suggestion-${suggestion.id}-accept`, () => acceptSuggestion(suggestion.id), `Proposal “${suggestion.title}” accepted.`)}>Accept</SmallAction></div>}
-            </li>
-          ))}
-          {openSignals.map((signal) => (
-            <li key={signal.id} className="rounded border border-border bg-background p-3 text-xs">
-              <div className="flex items-start justify-between gap-2"><div><p className="font-medium">{signal.signal_type}</p><p className="mt-1 text-muted-foreground">{signal.summary}</p></div><Badge variant="outline">{signal.confidence}</Badge></div>
-              {!readOnly && <div className="mt-2 flex justify-end gap-2"><SmallAction onClick={() => void mutate(`signal-${signal.id}-dismiss`, () => decideStrategySignal(signal.id, "dismiss", window.prompt("Dismissal reason") ?? undefined), "Signal dismissed.")}>Dismiss</SmallAction><SmallAction onClick={() => void mutate(`signal-${signal.id}-incorporate`, () => decideStrategySignal(signal.id, "incorporate", window.prompt("How was this incorporated?") ?? undefined), "Signal incorporated.")}>Incorporate</SmallAction></div>}
-            </li>
-          ))}
-        </ul>
+                {!readOnly && (
+                  <div className="mt-2 flex justify-end gap-2">
+                    <SmallAction
+                      onClick={() => void mutate(`${item.key}-dismiss`, item.dismiss, `Dismissed: ${item.title}`)}
+                      disabled={busy !== null}
+                    >
+                      Dismiss
+                    </SmallAction>
+                    <SmallAction
+                      onClick={() => void mutate(`${item.key}-accept`, item.accept, `Accepted: ${item.title}`)}
+                      disabled={busy !== null}
+                    >
+                      Accept
+                    </SmallAction>
+                  </div>
+                )}
+              </li>
+            ))}
+          </ul>
+        </>
       )}
     </section>
   );
@@ -1227,5 +1410,5 @@ function CompletionSection({ slug, engagementStatus, readiness, decisions, excep
 function Metric({ label, value, tone }: { label: string; value: string; tone?: "warn" }) { return <div className={cn("rounded-lg border border-border bg-card/40 p-3", tone === "warn" && "border-amber-500/40 bg-amber-500/5")}><p className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</p><p className="mt-1 text-lg font-semibold">{value}</p></div>; }
 function FactCard({ title, value }: { title: string; value: unknown }) { return <div className="rounded border border-sky-500/20 bg-background/60 p-3"><p className="text-xs font-medium">{title}</p><div className="mt-2 text-xs text-muted-foreground"><JsonSummary value={value} /></div></div>; }
 function JsonSummary({ value }: { value: unknown }) { if (value === null || value === undefined) return <span>None</span>; if (Array.isArray(value)) return value.length ? <ul className="space-y-1">{value.slice(0, 8).map((item, index) => <li key={index}>• {typeof item === "string" ? item : JSON.stringify(item)}</li>)}</ul> : <span>None</span>; if (typeof value === "object") return <dl className="space-y-1">{Object.entries(value as Record<string, unknown>).slice(0, 10).map(([key, item]) => <div key={key} className="flex justify-between gap-3"><dt>{key.replaceAll("_", " ")}</dt><dd className="text-right text-foreground">{typeof item === "object" ? JSON.stringify(item) : String(item)}</dd></div>)}</dl>; return <span>{String(value)}</span>; }
-function SmallAction({ children, onClick }: { children: React.ReactNode; onClick: () => void }) { return <button type="button" onClick={onClick} className="rounded border border-border px-2 py-1 text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{children}</button>; }
+function SmallAction({ children, onClick, disabled }: { children: React.ReactNode; onClick: () => void; disabled?: boolean }) { return <button type="button" onClick={onClick} disabled={disabled} className="rounded border border-border px-2 py-1 text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50">{children}</button>; }
 function messageFor(reason: unknown): string { return reason instanceof Error ? reason.message : String(reason); }
