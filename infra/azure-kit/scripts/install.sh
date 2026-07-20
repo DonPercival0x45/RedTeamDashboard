@@ -294,6 +294,22 @@ if [[ "$INFRA_SUBSCRIPTIONS_FROM_FLAG" != "true" ]]; then
     fi
 fi
 
+# v2.19.2: when nothing seeded INFRA_SUBSCRIPTIONS (no --flag, no shell env,
+# no prior stored value) the Bicep param stamps an empty string back onto
+# the app and the Infrastructure tab shows "No VMs surfaced" forever. This
+# tripped on 5qprod because the env was first installed pre-v2.10.0 (before
+# the Infra tab existed), and every install since read+re-stamped the empty
+# value. Fall back to the current deploy subscription — it's the sub the
+# app itself is running in, so it's the most-likely-correct default, and
+# the analyst can still narrow / widen via --infra-subscriptions.
+if [[ -z "$INFRA_SUBSCRIPTIONS" ]]; then
+    CURRENT_SUB_ID="$(az account show --query id -o tsv 2>/dev/null || true)"
+    if [[ -n "$CURRENT_SUB_ID" ]]; then
+        INFRA_SUBSCRIPTIONS="$CURRENT_SUB_ID"
+        blue "    Infra subscriptions defaulted to current deploy sub ($CURRENT_SUB_ID) — override with --infra-subscriptions"
+    fi
+fi
+
 # IP allowlist source of truth is the LIVE ingress ipSecurityRestrictions
 # on the frontend Container App — read the ipAddressRange values back and
 # re-flatten to CSV so the Bicep param below re-stamps them onto all
