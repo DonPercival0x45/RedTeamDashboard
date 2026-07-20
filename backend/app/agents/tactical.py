@@ -24,7 +24,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import structlog
-from sqlalchemy import select, update
+from sqlalchemy import String, cast, select, update
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -65,10 +65,10 @@ class TacticalAlreadyScanned(Exception):
     (deduped) against the prior run instead of re-dispatching — the guardrail
     against "the same stuff over and over"."""
 
-    def __init__(self, prior_execution_id: uuid.UUID, prior_thread_id: str | None) -> None:
+    def __init__(self, prior_execution_id: uuid.UUID, prior_thread_id: uuid.UUID) -> None:
         self.prior_execution_id = prior_execution_id
         self.prior_thread_id = prior_thread_id
-        super().__init__(f"already scanned by run {prior_execution_id}")
+        super().__init__(f"already scanned by worker thread {prior_thread_id}")
 
 
 class TacticalAgent:
@@ -125,22 +125,27 @@ class TacticalAgent:
         # minutes/hours apart just burns tokens + stacks duplicate findings —
         # skip it and let the caller mark the task done against the prior run.
         prior = session.execute(
-            select(AgentExecution)
+            select(AgentExecution.id, Task.run_id)
+            .join(
+                Task,
+                cast(Task.run_id, String) == AgentExecution.output["thread_id"].astext,
+            )
             .where(
                 AgentExecution.engagement_id == task.engagement_id,
                 AgentExecution.agent == AgentName.tactical,
                 AgentExecution.status == AgentExecutionStatus.completed,
                 AgentExecution.input["tool"].astext == tool_name,
                 AgentExecution.input["target"].astext == target,
-                AgentExecution.completed_at >= datetime.now(tz=UTC) - _RESCAN_DEDUP_WINDOW,
+                Task.engagement_id == task.engagement_id,
+                Task.status == TaskStatus.completed,
+                Task.completed_at >= datetime.now(tz=UTC) - _RESCAN_DEDUP_WINDOW,
             )
-            .order_by(AgentExecution.completed_at.desc())
+            .order_by(Task.completed_at.desc())
             .limit(1)
-        ).scalar_one_or_none()
+        ).one_or_none()
         if prior is not None:
-            raise TacticalAlreadyScanned(
-                prior.id, (prior.output or {}).get("thread_id")
-            )
+            prior_execution_id, prior_thread_id = prior
+            raise TacticalAlreadyScanned(prior_execution_id, prior_thread_id)
 
         prompt = (
             f"Use the {tool_name} tool with {spec.target_arg}={target!r}. "

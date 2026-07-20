@@ -628,7 +628,7 @@ def _accept_execution_task(
             # run instead of re-dispatching (the duplicate-runs guardrail).
             task.status = TaskStatus.completed
             task.completed_at = datetime.now(tz=UTC)
-            task.run_id = dedup.prior_execution_id
+            task.run_id = dedup.prior_thread_id
             dispatched = False
         except TacticalRefusedExploit:
             dispatched = False

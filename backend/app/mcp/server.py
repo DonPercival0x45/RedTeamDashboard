@@ -187,6 +187,10 @@ def _store_findings(
     eng: Engagement,
     tool_name: str,
     findings: list[dict[str, Any]],
+    *,
+    acting_user: User,
+    operation_id: uuid.UUID,
+    tool_args: dict[str, Any],
 ) -> int:
     from datetime import UTC, datetime
 
@@ -202,7 +206,6 @@ def _store_findings(
     # auto-validates; everything else stays pending for analyst review.
     status = default_status_for_phase(phase)
     now = datetime.now(tz=UTC)
-    user = get_current_user()
 
     created: list[Finding] = []
     for f in findings:
@@ -227,7 +230,7 @@ def _store_findings(
             phase=phase,
             status=status,
             validated_at=now if status == FindingStatus.validated else None,
-            validated_by=user.id if status == FindingStatus.validated else None,
+            validated_by=acting_user.id if status == FindingStatus.validated else None,
         )
         session.add(row)
         created.append(row)
@@ -254,6 +257,19 @@ def _store_findings(
                 thread_id=thread_id,
                 source_tool=tool_name,
             )
+    from app.services.finding_feedback import stage_finding_feedback
+
+    for row in created:
+        stage_finding_feedback(
+            session,
+            finding=row,
+            acting_user_id=acting_user.id,
+            operation_id=operation_id,
+            source="mcp_tool",
+            thread_id=thread_id,
+            tool=tool_name,
+            args=tool_args,
+        )
     session.commit()
     return len(created)
 
@@ -379,6 +395,7 @@ def _run_osint(
                 )
             )
 
+        operation_id = uuid.uuid4()
         result = run_tool(tool_name, args)
 
         # Lease-bound call (Stage 1.5 worker): the worker owns finding
@@ -394,6 +411,7 @@ def _run_osint(
             "ok": result.ok,
             "risk": decision.risk.value if decision.risk else None,
             "via": "mcp.lease" if leased else "mcp.api",
+            "operation_id": str(operation_id),
         }
         if not result.ok:
             payload["error"] = result.error
@@ -408,7 +426,15 @@ def _run_osint(
             }
 
         if result.ok and result.findings:
-            stored = _store_findings(session, eng, tool_name, result.findings)
+            stored = _store_findings(
+                session,
+                eng,
+                tool_name,
+                result.findings,
+                acting_user=user,
+                operation_id=operation_id,
+                tool_args=args,
+            )
             return {**result.data, "_findings_stored": stored}
 
         if not result.ok:
@@ -809,6 +835,17 @@ def create_finding(
             validated_by=user.id if status == FindingStatus.validated else None,
         )
         session.add(finding)
+        session.flush()
+        from app.services.finding_feedback import stage_finding_feedback
+
+        stage_finding_feedback(
+            session,
+            finding=finding,
+            acting_user_id=user.id,
+            operation_id=finding.id,
+            source="mcp",
+            tool=source_tool,
+        )
 
         session.add(
             AuditLog(

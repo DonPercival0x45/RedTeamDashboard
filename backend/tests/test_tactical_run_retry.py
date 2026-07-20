@@ -63,6 +63,7 @@ def _failed_tactical_run(db: Session, engagement: Engagement) -> AgentExecution:
         agent=AgentName.tactical,
         trigger=AgentTrigger.manual,
         status=AgentExecutionStatus.failed,
+        output={"thread_id": str(uuid.uuid4())},
         started_at=datetime.now(tz=UTC),
     )
     db.add(execution)
@@ -87,7 +88,7 @@ def test_retry_failed_tactical_run_redispatches_source_task(
         owner_eligibility=OwnerEligibility.agent,
         status=TaskStatus.failed,
         payload={"tool": "portscan", "target": "203.0.113.10"},
-        run_id=execution.id,
+        run_id=uuid.UUID(execution.output["thread_id"]),
     )
     db.add(task)
     db.commit()
@@ -122,7 +123,7 @@ def test_retry_failed_tactical_run_without_source_task_is_400(
     engagement: Engagement,
 ) -> None:
     execution = _failed_tactical_run(db, engagement)
-    # No Task with run_id == execution.id → can't re-derive a run.
+    # No Task with run_id == execution.output.thread_id → can't re-derive a run.
     response = client.post(f"/agent-executions/{execution.id}/retry", headers=HDR)
     assert response.status_code == 400
     assert "wasn't dispatched from a task" in response.json()["detail"]

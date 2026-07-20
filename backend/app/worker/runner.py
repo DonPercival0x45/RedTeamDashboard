@@ -17,6 +17,8 @@ and a DB session that points at the compose Postgres.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import uuid
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import contextmanager
@@ -38,12 +40,19 @@ from app.models import (
     RiskLevel,
     ScopeItem,
     Severity,
+    Task,
+    TaskStatus,
+    WorkItemFinding,
+    WorkItemFindingRelationship,
 )
 from app.orchestrator.scope import ScopeSnapshot
 from app.orchestrator.tools import phase_for_tool
 from app.runs.events import encode_event
 from app.runs.streams import outbound_stream
-from app.services.command_outbox import enqueue_event, publish_entry
+from app.services.finding_feedback import (
+    publish_feedback_entries,
+    stage_finding_feedback,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -315,6 +324,7 @@ class RunRunner:
                 "run.errored",
                 {"thread_id": thread_id, "error": str(exc)},
             )
+            self._finalize_task_for_run(thread_id, succeeded=False)
             self._emit(
                 engagement_id,
                 {"type": "run.errored", "thread_id": thread_id, "error": str(exc)},
@@ -594,6 +604,7 @@ class RunRunner:
                 "run.completed",
                 {"thread_id": thread_id},
             )
+            self._finalize_task_for_run(thread_id, succeeded=True)
             self._emit(
                 engagement_id,
                 {"type": "run.completed", "thread_id": thread_id},
@@ -652,11 +663,16 @@ class RunRunner:
         for _node_name, update in chunk.items():
             if not isinstance(update, Mapping):
                 continue
-            for finding in update.get("findings") or []:
-                self._persist_finding(
+            findings = [
+                finding
+                for finding in (update.get("findings") or [])
+                if isinstance(finding, Mapping)
+            ]
+            if findings:
+                self._persist_findings(
                     engagement_id,
                     thread_id,
-                    finding,
+                    findings,
                     acting_user_id=acting_user_id,
                 )
             for denial in update.get("denials") or []:
@@ -790,123 +806,178 @@ class RunRunner:
         thread_id: str,
         finding: Mapping[str, Any],
         *,
-        acting_user_id: str | None,
+        acting_user_id: str | None = None,
     ) -> Finding:
-        tool = str(finding.get("tool") or "unknown")
-        args = dict(finding.get("args") or {})
-        data = dict(finding.get("data") or {})
+        """Compatibility wrapper for one worker finding."""
+        return self._persist_findings(
+            engagement_id,
+            thread_id,
+            [finding],
+            acting_user_id=acting_user_id,
+        )[0]
 
-        # Per-row target (e.g. "10.0.0.5:3389" for a portscan finding) wins; fall
-        # back to the first string arg so passive tools that don't set a target
-        # still get something searchable.
-        target = finding.get("target") or next(
-            (str(v) for v in args.values() if isinstance(v, (str, int))),
-            None,
-        )
-
-        severity_raw = finding.get("severity") or "info"
-        try:
-            severity = Severity(severity_raw)
-        except ValueError:
-            severity = Severity.info
-
-        title = finding.get("title") or (f"{tool} → {target}" if target else tool)
-
-        # Phase-based validation gate: ``osint``-phase findings (passive
-        # recon + active-but-factual probes like httpx_probe) auto-validate;
-        # vuln_scan / exploit / phishing land pending_validation. The worker
-        # has no acting user — auto-validated rows leave validated_by NULL
-        # to signal "system-validated, no human reviewer."
+    def _persist_findings(
+        self,
+        engagement_id: uuid.UUID,
+        thread_id: str,
+        findings: list[Mapping[str, Any]],
+        *,
+        acting_user_id: str | None,
+    ) -> list[Finding]:
+        """Persist one graph chunk and stage final canonical-parent feedback."""
         from datetime import UTC, datetime
 
-        from app.models.finding import FindingStatus, default_status_for_phase
-        from app.services.finding_grouping import (
-            compute_group_key,
-            upsert_grouped_finding,
+        from app.models.finding import (
+            FindingStatus,
+            default_status_for_phase,
+            record_finding_origins,
         )
+        from app.services.finding_grouping import compute_group_key, upsert_grouped_finding
 
-        phase = FindingPhase(phase_for_tool(tool))
-        status = default_status_for_phase(phase)
-
-        # v1.4.0 (part 2): Nessus-style ingest grouping. When the tool has
-        # a declared category vocab, hits fold into ONE row per
-        # (engagement, group_key) with the per-hit records in details.items[].
-        # Unknown tools return group_key=None and fall back to the old
-        # per-hit INSERT path so nothing regresses silently.
-        group_key = compute_group_key(tool, args, data)
+        operation_digest = hashlib.sha256(
+            json.dumps(findings, sort_keys=True, default=str, separators=(",", ":")).encode()
+        ).hexdigest()[:32]
+        operation_id = f"worker:{thread_id}:{operation_digest}"
 
         with self._session_scope() as session:
-            if group_key:
-                row, _added = upsert_grouped_finding(
+            canonical: dict[uuid.UUID, tuple[Finding, bool]] = {}
+            for finding in findings:
+                tool = str(finding.get("tool") or "unknown")
+                args = dict(finding.get("args") or {})
+                data = dict(finding.get("data") or {})
+                target = finding.get("target") or next(
+                    (str(value) for value in args.values() if isinstance(value, (str, int))),
+                    None,
+                )
+                try:
+                    severity = Severity(finding.get("severity") or "info")
+                except ValueError:
+                    severity = Severity.info
+                title = finding.get("title") or (f"{tool} → {target}" if target else tool)
+                phase = FindingPhase(phase_for_tool(tool))
+                status = default_status_for_phase(phase)
+                group_key = compute_group_key(tool, args, data)
+                if group_key:
+                    row, added = upsert_grouped_finding(
+                        session,
+                        engagement_id=engagement_id,
+                        group_key=group_key,
+                        tool=tool,
+                        thread_id=thread_id,
+                        args=args,
+                        data=data,
+                        incoming_severity=severity,
+                        default_title=title,
+                        phase=phase,
+                        status=status,
+                    )
+                else:
+                    row = Finding(
+                        engagement_id=engagement_id,
+                        title=title,
+                        severity=severity,
+                        summary=None,
+                        details={"thread_id": thread_id, "args": args, **data},
+                        source_tool=tool,
+                        target=target,
+                        phase=phase,
+                        status=status,
+                        validated_at=(
+                            datetime.now(tz=UTC)
+                            if status == FindingStatus.validated
+                            else None
+                        ),
+                    )
+                    session.add(row)
+                    session.flush()
+                    added = True
+                record_finding_origins(
                     session,
-                    engagement_id=engagement_id,
-                    group_key=group_key,
-                    tool=tool,
-                    thread_id=thread_id,
-                    args=args,
-                    data=data,
-                    incoming_severity=severity,
-                    default_title=title,
-                    phase=phase,
-                    status=status,
-                )
-            else:
-                row = Finding(
-                    engagement_id=engagement_id,
-                    title=title,
-                    severity=severity,
-                    summary=None,
-                    details={"thread_id": thread_id, "args": args, **data},
+                    finding_ids=[row.id],
+                    thread_id=uuid.UUID(thread_id),
                     source_tool=tool,
-                    target=target,
-                    phase=phase,
-                    status=status,
-                    validated_at=(
-                        datetime.now(tz=UTC)
-                        if status == FindingStatus.validated
-                        else None
-                    ),
                 )
-                session.add(row)
-                session.flush()
+                previous = canonical.get(row.id)
+                canonical[row.id] = (row, added or bool(previous and previous[1]))
 
-            from app.models.finding import record_finding_origins
-
-            record_finding_origins(
-                session,
-                finding_ids=[row.id],
-                thread_id=uuid.UUID(thread_id),
-                source_tool=tool,
-            )
-            feedback_id = f"finding.created:{uuid.uuid4()}"
-            event = {
-                "type": "finding.created",
-                "thread_id": thread_id,
-                "tool": tool,
-                "args": args,
-                "data": data,
-                "target": row.target,
-                "severity": row.severity.value,
-                "title": row.title,
-                "finding_id": str(row.id),
-                "phase": row.phase.value,
-                "status": row.status.value,
-                "acting_user_id": acting_user_id,
-            }
-            outbox = enqueue_event(
-                session,
-                idempotency_key=feedback_id,
-                engagement_id=engagement_id,
-                stream_name=outbound_stream(engagement_id),
-                payload=event,
-                thread_id=thread_id,
-            )
+            entries = []
+            if acting_user_id:
+                for row, created in canonical.values():
+                    entries.append(
+                        stage_finding_feedback(
+                            session,
+                            finding=row,
+                            acting_user_id=acting_user_id,
+                            operation_id=operation_id,
+                            source="worker",
+                            event_type="finding.created" if created else "finding.updated",
+                            thread_id=thread_id,
+                            tool=row.source_tool,
+                            data={"chunk_finding_count": len(findings)},
+                        )
+                    )
             session.commit()
-            # Low-latency attempt after finding + origin + event commit. Redis
-            # failure records retry state and the relay publishes later.
-            publish_entry(session, self._redis, outbox.id)
-            session.refresh(row)
-            return row
+            publish_feedback_entries(session, self._redis, entries)
+            for row, _created in canonical.values():
+                session.refresh(row)
+            return [row for row, _created in canonical.values()]
+
+    def _finalize_task_for_run(self, thread_id: str, *, succeeded: bool) -> None:
+        """Persist Task terminal truth and produced-finding work links.
+
+        The outbound terminal event is an observation of this state change, not
+        its source of truth.  Status-tab reconciliation remains a repair path
+        for terminal events emitted by older workers.
+        """
+        from datetime import UTC, datetime
+
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+        try:
+            run_id = uuid.UUID(thread_id)
+        except ValueError:
+            logger.warning("worker.task_finalize_invalid_thread", thread_id=thread_id)
+            return
+
+        with self._session_scope() as session:
+            task = session.execute(
+                select(Task)
+                .where(
+                    Task.run_id == run_id,
+                    Task.status.in_((TaskStatus.dispatched, TaskStatus.running)),
+                )
+                .with_for_update()
+            ).scalar_one_or_none()
+            if task is None:
+                return
+            task.status = TaskStatus.completed if succeeded else TaskStatus.failed
+            task.completed_at = datetime.now(tz=UTC)
+
+            if task.work_item_id is not None:
+                from app.models import FindingOrigin
+
+                finding_ids = list(
+                    session.execute(
+                        select(FindingOrigin.finding_id).where(
+                            FindingOrigin.thread_id == run_id
+                        )
+                    ).scalars()
+                )
+                if finding_ids:
+                    rows = [
+                        {
+                            "work_item_id": task.work_item_id,
+                            "finding_id": finding_id,
+                            "relationship": WorkItemFindingRelationship.produced_by,
+                        }
+                        for finding_id in set(finding_ids)
+                    ]
+                    session.execute(
+                        pg_insert(WorkItemFinding.__table__)
+                        .values(rows)
+                        .on_conflict_do_nothing()
+                    )
+            session.commit()
 
     def _finalize_tactical_execution(
         self,

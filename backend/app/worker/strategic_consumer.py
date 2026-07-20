@@ -211,11 +211,11 @@ class StrategicConsumer:
                     )
                     if not should_process:
                         logger.info("strategic.duplicate_event_skipped", delivery_id=delivery_id)
-                    elif event_type == "finding.created":
+                    elif event_type in ("finding.created", "finding.updated"):
                         finding_id_raw = envelope.get("finding_id")
                         acting_user_id_raw = envelope.get("acting_user_id")
                         if not finding_id_raw or not acting_user_id_raw:
-                            raise ValueError("finding.created missing finding/actor identity")
+                            raise ValueError(f"{event_type} missing finding/actor identity")
                         if receipt.agent_execution_id is None:
                             receipt.agent_execution_id = uuid.uuid4()
                             receipt_session.commit()

@@ -6,6 +6,7 @@ empty-stdout skip, and non-fatal-on-extractor-error.
 """
 from __future__ import annotations
 
+import json
 import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -144,8 +145,14 @@ async def test_creates_findings_from_extracted_output(
     assert row.status.value == "validated"
     # provenance stamped in details
     assert row.details["invocation_id"] == str(inv.id)
-    # finding.created emitted onto the engagement stream
-    assert fake_redis.xadd.called
+    # Canonical feedback is delivered from the transactionally committed outbox.
+    assert fake_redis.xadd.call_count == 1
+    _stream, fields = fake_redis.xadd.call_args.args
+    envelope = json.loads(fields["data"])
+    assert envelope["acting_user_id"] == str(invoker.id)
+    assert envelope["finding_id"] == str(row.id)
+    assert envelope["operation_id"] == str(inv.id)
+    assert envelope["feedback_id"].startswith("finding-feedback:tool_invocation:")
 
 
 async def test_skips_when_stdout_empty(db: Session, engagement: Engagement) -> None:

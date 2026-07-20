@@ -28,6 +28,7 @@ from app.mcp.server import _run_osint
 from app.models import (
     APIKey,
     AuditLog,
+    CommandOutbox,
     Engagement,
     EngagementStatus,
     Finding,
@@ -225,6 +226,16 @@ def test_run_osint_without_lease_stores_findings_server_side(
     ).scalars().all()
     assert len(post_findings) == 1
     assert post_findings[0].target == "acme.test"
+
+    feedback = db.execute(
+        select(CommandOutbox).where(
+            CommandOutbox.engagement_id == engagement.id,
+            CommandOutbox.delivery_kind == "event",
+        )
+    ).scalar_one()
+    assert feedback.idempotency_key.startswith("finding-feedback:mcp_tool:")
+    assert feedback.encoded_payload["data"].find(str(user.id)) >= 0
+    assert feedback.encoded_payload["data"].find(str(post_findings[0].id)) >= 0
 
     audits = db.execute(
         select(AuditLog).where(

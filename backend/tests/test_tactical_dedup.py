@@ -53,19 +53,38 @@ def engagement(db: Session):
 
 
 def _prior_run(
-    db: Session, engagement: Engagement, tool: str = "dns_lookup", target: str = "cwa.example"
+    db: Session,
+    engagement: Engagement,
+    tool: str = "dns_lookup",
+    target: str = "cwa.example",
+    *,
+    task_status: TaskStatus = TaskStatus.completed,
 ) -> AgentExecution:
+    thread_id = uuid.uuid4()
     run = AgentExecution(
         engagement_id=engagement.id,
         agent=AgentName.tactical,
         trigger=AgentTrigger.manual,
         status=AgentExecutionStatus.completed,
         input={"task_id": str(uuid.uuid4()), "tool": tool, "target": target},
-        output={"thread_id": str(uuid.uuid4()), "prompt": "..."},
+        output={"thread_id": str(thread_id), "prompt": "..."},
         started_at=datetime.now(tz=UTC),
         completed_at=datetime.now(tz=UTC),
     )
     db.add(run)
+    db.flush()
+    db.add(
+        Task(
+            engagement_id=engagement.id,
+            title=f"Prior {tool} {target}",
+            kind=TaskKind.enum,
+            owner_eligibility=OwnerEligibility.agent,
+            status=task_status,
+            payload={"tool": tool, "target": target},
+            run_id=thread_id,
+            completed_at=(datetime.now(tz=UTC) if task_status == TaskStatus.completed else None),
+        )
+    )
     db.commit()
     db.refresh(run)
     return run
@@ -97,6 +116,26 @@ def test_dispatch_refuses_recently_scanned_target(db: Session, engagement: Engag
         agent.dispatch(db, task=task, acting_user_id=uuid.uuid4())
 
     assert ei.value.prior_execution_id == prior.id
+    assert ei.value.prior_thread_id == uuid.UUID(prior.output["thread_id"])
+
+
+def test_dispatch_does_not_dedup_failed_worker_task(
+    db: Session, engagement: Engagement
+) -> None:
+    _prior_run(
+        db,
+        engagement,
+        "dns_lookup",
+        "failed.example",
+        task_status=TaskStatus.failed,
+    )
+    task = _task(db, engagement, "dns_lookup", "failed.example")
+
+    with pytest.raises(Exception) as exc_info:  # noqa: PT011 - later lease path
+        TacticalAgent(redis_client=None).dispatch(
+            db, task=task, acting_user_id=uuid.uuid4()
+        )
+    assert not isinstance(exc_info.value, TacticalAlreadyScanned)
 
 
 def test_dispatch_allows_distinct_target(db: Session, engagement: Engagement) -> None:

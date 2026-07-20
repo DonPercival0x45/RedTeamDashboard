@@ -1221,7 +1221,16 @@ def retry_agent_execution(
         # A Tactical run dispatched from a task: re-dispatch the source task
         # (TacticalAgent.dispatch re-derives the prompt; the run's own prompt
         # isn't durably stored, so we can't rebuild the run directly).
-        task = session.execute(select(Task).where(Task.run_id == execution_id)).scalar_one_or_none()
+        thread_id_raw = (row.output or {}).get("thread_id")
+        try:
+            thread_id = uuid.UUID(str(thread_id_raw))
+        except (TypeError, ValueError):
+            thread_id = None
+        task = (
+            session.execute(select(Task).where(Task.run_id == thread_id)).scalar_one_or_none()
+            if thread_id is not None
+            else None
+        )
         if task is None:
             raise HTTPException(
                 status_code=400,
@@ -1568,7 +1577,7 @@ def _redispatch_task(
         # instead of re-dispatching (the duplicate-runs guardrail).
         task.status = TaskStatus.completed
         task.completed_at = datetime.now(tz=UTC)
-        task.run_id = dedup.prior_execution_id
+        task.run_id = dedup.prior_thread_id
     except Exception as exc:
         # Tactical stages lease/task/outbox without committing. Roll back the
         # caller-owned transaction and restore the prior retryable state.
