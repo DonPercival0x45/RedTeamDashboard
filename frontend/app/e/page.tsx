@@ -92,6 +92,11 @@ function EngagementDetail({ slug }: { slug: string }) {
     (next: EngagementView) => {
       const p = new URLSearchParams(params.toString());
       p.set("view", next);
+      // View-specific deep-link params (like Strategy's ?workItem=) are
+      // consumed once on their view's mount; leaving them in the URL makes
+      // the flyout re-open every time the analyst returns to that tab.
+      // Strip them on any tab switch so the deep-link is one-shot.
+      p.delete("workItem");
       router.replace(`/e?${p.toString()}`, { scroll: false });
     },
     [params, router],

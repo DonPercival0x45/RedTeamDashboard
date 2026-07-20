@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { DateTime } from "@/components/date-time";
 import { acceptSuggestion, ApiError, dismissSuggestion, listSuggestions } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
@@ -219,6 +219,8 @@ export function StrategyView({
   slug: string;
   engagementStatus: EngagementStatus;
 }) {
+  const router = useRouter();
+  const pathname = usePathname();
   const searchParams = useSearchParams();
   const requestedWorkItemId = searchParams?.get("workItem") ?? null;
   const handledWorkLink = useRef<string | null>(null);
@@ -249,6 +251,22 @@ export function StrategyView({
   const [workQuery, setWorkQuery] = useState("");
   const [selectedWorkId, setSelectedWorkId] = useState<string | null>(requestedWorkItemId);
   const [workFlyoutOpen, setWorkFlyoutOpen] = useState(false);
+  // Flyout close ALSO strips ?workItem= from the URL. Without this, the
+  // deep-link param persists and a refresh (or a tab switch back into
+  // Strategy) re-opens the flyout — same "reopens forever" pattern the
+  // ?run= fix established in v2.5.x.
+  const handleWorkFlyoutOpenChange = useCallback(
+    (next: boolean) => {
+      setWorkFlyoutOpen(next);
+      if (!next && searchParams?.get("workItem")) {
+        const p = new URLSearchParams(searchParams.toString());
+        p.delete("workItem");
+        const qs = p.toString();
+        router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+      }
+    },
+    [pathname, router, searchParams],
+  );
   const [tab, setTab] = useState(requestedWorkItemId ? "work" : "strategy");
   const [checkpointNarrative, setCheckpointNarrative] = useState("");
   const [coverageTarget, setCoverageTarget] = useState("");
@@ -711,7 +729,7 @@ export function StrategyView({
             ))}
             {visibleWork.length === 0 && <li className="text-sm text-muted-foreground">No matching work.</li>}
           </ul>
-        <WorkItemFlyout item={selectedWork} objectives={data.objectives} slug={slug} readOnly={readOnly} busy={busy} mutate={mutate} open={workFlyoutOpen} onOpenChange={setWorkFlyoutOpen} onBackToStrategy={() => { setTab("strategy"); setWorkFlyoutOpen(false); }} />
+        <WorkItemFlyout item={selectedWork} objectives={data.objectives} slug={slug} readOnly={readOnly} busy={busy} mutate={mutate} open={workFlyoutOpen} onOpenChange={handleWorkFlyoutOpenChange} onBackToStrategy={() => { setTab("strategy"); handleWorkFlyoutOpenChange(false); }} />
       </section>
         </TabsContent>
         <TabsContent value="coverage" className="space-y-6">
