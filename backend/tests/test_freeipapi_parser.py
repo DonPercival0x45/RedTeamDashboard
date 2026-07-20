@@ -5,8 +5,6 @@ early guards (missing ip / missing api_key / invalid ip) short-circuit
 before any network I/O. Wiring into finding_grouping is covered by the
 group_key + dedup tests below.
 """
-from __future__ import annotations
-
 from app.orchestrator.tools.freeipapi import (
     freeipapi_impl,
     parse_freeipapi_response,
