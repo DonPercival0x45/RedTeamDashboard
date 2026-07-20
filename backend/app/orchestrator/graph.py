@@ -335,6 +335,18 @@ def _tool_dispatch_node(
                 ],
             }
 
+        # v2.20.0: tools that talk to third-party APIs (freeipapi today) get
+        # their api_key injected from the acting user's ephemeral BYO key
+        # store. The worker populated ``tool_secrets`` on the initial state
+        # by resolving each needs_secret tool against Redis at run start.
+        # Missing key → the tool impl short-circuits with a clear error;
+        # never falls through to the third-party service unauthed.
+        if spec is not None and spec.needs_secret:
+            tool_secrets = state.get("tool_secrets") or {}
+            secret = tool_secrets.get(name)
+            if secret:
+                effective_args = {**effective_args, "api_key": secret}
+
         import time as _t
 
         _start = _t.monotonic()

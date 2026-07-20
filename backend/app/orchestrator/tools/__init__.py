@@ -37,6 +37,12 @@ class ToolSpec:
     # Extra JSON-schema properties merged into the tool's input_schema beyond
     # the (required) target_arg — e.g. an optional `ports` arg. Not required.
     extra_properties: Mapping[str, Any] = field(default_factory=dict)
+    # v2.20.0: tool needs an api_key that the dispatch layer resolves from the
+    # acting analyst's ephemeral BYO key (Redis, per-user). When True, the
+    # dispatch node injects ``api_key`` into args before invoking the tool.
+    # freeipapi (IP geolocation enrichment) is the first user. Kept OFF for
+    # every existing recon tool — none of them need auth.
+    needs_secret: bool = False
 
 
 _PHASE_0_TOOLS: tuple[ToolSpec, ...] = (
@@ -129,6 +135,21 @@ _PHASE_0_TOOLS: tuple[ToolSpec, ...] = (
         },
     ),
     ToolSpec(
+        name="freeipapi",
+        risk=RiskLevel.passive,
+        target_arg="ip",
+        kind=ScopeKind.ip,
+        description=(
+            "IP geolocation enrichment via freeipapi.com — country, region, "
+            "city, latitude, longitude, ISP/ASN, timezone. Passive third-"
+            "party API call, no traffic touches the target. Requires an "
+            "analyst-supplied freeipapi API key (upload at /settings/keys "
+            "with provider='freeipapi'). Response feeds the Dossier tab's "
+            "map + IP entity Evidence panel."
+        ),
+        needs_secret=True,
+    ),
+    ToolSpec(
         name="service_detect",
         risk=RiskLevel.active,
         target_arg="target",
@@ -171,6 +192,7 @@ _TOOL_PHASE: dict[str, str] = {
     "whois_lookup": "osint",
     "httpx_probe": "osint",
     "reverse_dns": "osint",
+    "freeipapi": "osint",
     "portscan": "vuln_scan",
     "subnet_sweep": "vuln_scan",
     "service_detect": "vuln_scan",

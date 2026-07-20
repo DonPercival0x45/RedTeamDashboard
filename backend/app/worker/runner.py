@@ -46,6 +46,58 @@ from app.runs.streams import outbound_stream
 logger = structlog.get_logger(__name__)
 
 
+def _resolve_tool_secrets(
+    redis_client: Any, acting_user_id: str | None
+) -> dict[str, str]:
+    """Pre-resolve every ``needs_secret`` tool's api_key from the acting
+    analyst's ephemeral BYO key store (Redis, per-user, 30-min sliding TTL).
+
+    Returns a ``{tool_name: api_key}`` dict for tools whose key IS present.
+    Tools with no key (analyst hasn't uploaded one, or TTL expired) are
+    omitted — the graph dispatch node then skips injection and the tool
+    impl fails cleanly at run time with a "no api_key" error pointing at
+    /settings/keys, rather than silently hitting the third-party service
+    unauthenticated.
+
+    Raises nothing: resolution failure per-tool is swallowed and the tool
+    is omitted from the result. The run itself continues; the tool call
+    fails when it fires. This matches the LLM-key pattern (which errors
+    the entire run on missing key) intentionally — freeipapi is a nice-
+    to-have per call, not a run-wide precondition.
+    """
+    from app.orchestrator.tools import all_tools
+    from app.services.ephemeral_provider_key import (
+        NoProviderKeyError,
+        resolve_for_user,
+    )
+
+    if not acting_user_id:
+        return {}
+    try:
+        user_uuid = uuid.UUID(str(acting_user_id))
+    except (TypeError, ValueError):
+        return {}
+
+    resolved: dict[str, str] = {}
+    for spec in all_tools():
+        if not spec.needs_secret:
+            continue
+        try:
+            key = resolve_for_user(
+                redis_client, user_id=user_uuid, provider=spec.name
+            )
+        except NoProviderKeyError:
+            continue
+        except Exception:  # noqa: BLE001 — resolver bugs shouldn't nuke the run
+            logger.exception(
+                "worker.tool_secret_resolve_failed", tool=spec.name
+            )
+            continue
+        if key.api_key:
+            resolved[spec.name] = key.api_key
+    return resolved
+
+
 def _build_system_prompt(snapshots: list[ScopeSnapshot]) -> str:
     """Initial context the agent sees: who it is, what scope it operates in,
     and how to interpret bulk-scan phrasing.
@@ -304,6 +356,14 @@ class RunRunner:
                 HumanMessage(content=prompt),
             ],
             "scope_items": snapshots,
+            # v2.20.0: pre-resolve any needs_secret tool's api_key from the
+            # acting analyst's ephemeral BYO key store. Tools that don't
+            # need a secret get no entry; tools whose key is missing get a
+            # None (the dispatch node then skips injection and the tool
+            # impl fails cleanly with a "no api_key" error).
+            "tool_secrets": _resolve_tool_secrets(
+                self._redis, acting_user_id
+            ),
         }
         config = self._config(thread_id)
 

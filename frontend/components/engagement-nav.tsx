@@ -4,6 +4,7 @@ import {
   Activity,
   CalendarDays,
   DollarSign,
+  Globe,
   ListChecks,
   MessageSquare,
   Network,
@@ -21,6 +22,7 @@ export type EngagementView =
   | "findings"
   | "strategy"
   | "entities"
+  | "dossier"
   | "observations"
   | "costs"
   | "scope"
@@ -37,6 +39,7 @@ const ITEMS: { view: EngagementView; label: string; Icon: LucideIcon }[] = [
   { view: "strategy", label: "Strategy", Icon: Route },
   { view: "findings", label: "Findings", Icon: ListChecks },
   { view: "entities", label: "Entities", Icon: Network },
+  { view: "dossier", label: "Dossier", Icon: Globe },
   { view: "status", label: "Status", Icon: Activity },
   { view: "contributions", label: "Contributions", Icon: CalendarDays },
   { view: "observations", label: "Observations", Icon: MessageSquare },
