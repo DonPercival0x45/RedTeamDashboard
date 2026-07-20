@@ -37,7 +37,7 @@ _ENTITY_KIND_LOOKUP: dict[str, tuple[ScopeKind, ...]] = {
 def classify_entity_scope_status(
     entity_type: str,
     entity_value: str,
-    current_scope_items: Iterable["scope_matcher.ScopeItemLike"],
+    current_scope_items: Iterable[scope_matcher.ScopeItemLike],
     retired_scope_values: set[str],
 ) -> str:
     """Return "live" | "legacy" | "oos" for one entity.
@@ -66,7 +66,7 @@ def classify_entity_scope_status(
 def annotate_scope_status(
     entities: list[dict[str, Any]],
     *,
-    current_scope_items: Iterable["scope_matcher.ScopeItemLike"],
+    current_scope_items: Iterable[scope_matcher.ScopeItemLike],
     retired_scope_values: set[str],
 ) -> list[dict[str, Any]]:
     """Attach ``scope_status`` to each entity dict in place and return the list."""
