@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { CheckCircle2, Loader2, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -94,9 +95,8 @@ export function RunPrompt({
   initialPrompt?: string;
   onPromptConsumed?: () => void;
 }) {
-  const [prompt, setPrompt] = useState(
-    initialPrompt ?? "enumerate acme.com subdomains and probe what's live",
-  );
+  const [prompt, setPrompt] = useState(initialPrompt ?? "");
+  const [promptTouched, setPromptTouched] = useState(Boolean(initialPrompt));
   // v1.11.0: expose setPrompt to the ToolsPanel bridge so tool buttons
   // can drop their example prompt into the textarea without either
   // component owning the other's state.
@@ -112,6 +112,12 @@ export function RunPrompt({
     () => (scopeItems ?? []).filter((s) => !s.is_exclusion),
     [scopeItems],
   );
+  useEffect(() => {
+    const first = scopeActions[0];
+    if (!initialPrompt && !promptTouched && !prompt && first) {
+      setPrompt(SCOPE_ACTION_TEMPLATES[first.kind](first.value));
+    }
+  }, [initialPrompt, prompt, promptTouched, scopeActions]);
   const [provider, setProvider] = useState<LLMProvider>("anthropic");
   // v0.8.3: model is now a hybrid dropdown. ``modelSelect`` is what's
   // selected in the <select>; CUSTOM_VALUE means the analyst chose
@@ -127,7 +133,11 @@ export function RunPrompt({
   // v1.0.0: shared useProviderKeys cache. The /settings/keys page hits the
   // same key, so the two share one round-trip. Best-effort: on 401 / Redis
   // miss, `keys` stays [] and the dropdown falls back to presets.
-  const { data: keys = [] } = useProviderKeys();
+  const {
+    data: keys = [],
+    isLoading: keysLoading,
+    error: keysError,
+  } = useProviderKeys();
   // v1.4.11: pre-select the analyst's saved default model (roadmap #3 / #12)
   // instead of the hardcoded Anthropic default. Fires once when /me loads.
   const { data: me } = useMe();
@@ -191,6 +201,9 @@ export function RunPrompt({
     () => keys.filter((k) => k.provider === provider),
     [keys, provider],
   );
+  const isLocalProvider = provider === "ollama";
+  const providerReady =
+    isLocalProvider || (!keysLoading && !keysError && providerKeys.length > 0);
 
   const onProviderChange = (next: LLMProvider) => {
     setProvider(next);
@@ -215,6 +228,10 @@ export function RunPrompt({
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!prompt.trim()) return;
+    if (!providerReady) {
+      setError("Add a usable provider key before starting this run.");
+      return;
+    }
     if (!effectiveModel) {
       setError("model name is required");
       return;
@@ -240,7 +257,7 @@ export function RunPrompt({
       runToast.fire({
         kind: "agent",
         runSlug: runSlugFromId(result.thread_id),
-        label: "Run dispatched",
+        label: "Run started",
         sublabel: prompt.trim().slice(0, 80),
         openHref: `/e/${slug}?run=${result.thread_id}`,
         // v1.10.0: give the toast the run ref so "Open live" opens the
@@ -262,8 +279,8 @@ export function RunPrompt({
       <CardHeader>
         <CardTitle>Start a run</CardTitle>
         <CardDescription>
-          Pushes <code>run.start</code> onto the inbound stream. The worker
-          picks it up; events stream into the panels below.
+          Describe the authorized enumeration or scanning work you want to
+          begin. You can follow progress from Status.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -273,7 +290,10 @@ export function RunPrompt({
             <Textarea
               id="prompt"
               value={prompt}
-              onChange={(event) => setPrompt(event.target.value)}
+              onChange={(event) => {
+                setPromptTouched(true);
+                setPrompt(event.target.value);
+              }}
               rows={3}
             />
             {scopeActions.length > 0 && (
@@ -285,11 +305,10 @@ export function RunPrompt({
                   <button
                     key={item.id}
                     type="button"
-                    onClick={() =>
-                      setPrompt(
-                        SCOPE_ACTION_TEMPLATES[item.kind](item.value),
-                      )
-                    }
+                    onClick={() => {
+                      setPromptTouched(true);
+                      setPrompt(SCOPE_ACTION_TEMPLATES[item.kind](item.value));
+                    }}
                     className="inline-flex items-center gap-1 rounded-full border border-border bg-muted/40 px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:border-foreground/40 hover:bg-secondary hover:text-foreground"
                     title={`Prefill a run for ${item.value}`}
                   >
@@ -362,6 +381,29 @@ export function RunPrompt({
               )}
             </div>
           </div>
+          <div
+            className={`rounded-md border px-3 py-2 text-xs ${
+              providerReady
+                ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-800 dark:text-emerald-100"
+                : "border-amber-500/40 bg-amber-500/10 text-amber-800 dark:text-amber-100"
+            }`}
+          >
+            {isLocalProvider ? (
+              <p>Ollama runs locally; no provider key is required.</p>
+            ) : keysLoading ? (
+              <p>Checking provider-key readiness…</p>
+            ) : providerReady ? (
+              <p>{providerKeys.length} usable {provider} key{providerKeys.length === 1 ? "" : "s"} available.</p>
+            ) : (
+              <p>
+                A usable {provider} key is required. {keysError ? "Key readiness could not be verified. " : ""}
+                <Link href="/settings/keys" className="font-medium underline">
+                  Open Settings &gt; Keys
+                </Link>
+                .
+              </p>
+            )}
+          </div>
           {providerKeys.length >= 2 && (
             <div className="space-y-2">
               <Label htmlFor="run-key">
@@ -396,16 +438,15 @@ export function RunPrompt({
               <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-300" />
               <div className="min-w-0 flex-1">
                 <p className="font-medium text-emerald-900 dark:text-emerald-50">
-                  Run dispatched to the worker.
+                  Run started.
                 </p>
                 <p className="mt-0.5 text-xs text-emerald-700 dark:text-emerald-200/80">
                   thread{" "}
                   <code className="font-mono">
                     {lastDispatched.threadId.slice(0, 8)}
                   </code>{" "}
-                  · {lastDispatched.provider}/{lastDispatched.modelName}. Watch
-                  the <strong>Status</strong> tab or the event log below for
-                  agent calls + approval gates as they fire.
+                  · {lastDispatched.provider}/{lastDispatched.modelName}. Follow
+                  progress and any approval requests from <strong>Status</strong>.
                 </p>
               </div>
               <button
@@ -419,9 +460,13 @@ export function RunPrompt({
             </div>
           )}
 
-          <Button type="submit" disabled={busy} className="gap-1.5">
+          <Button
+            type="submit"
+            disabled={busy || !providerReady || !prompt.trim() || !effectiveModel}
+            className="gap-1.5"
+          >
             {busy && <Loader2 className="h-4 w-4 animate-spin" />}
-            {busy ? "Dispatching to worker…" : "Run"}
+            {busy ? "Starting…" : "Start run"}
           </Button>
         </form>
       </CardContent>

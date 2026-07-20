@@ -149,8 +149,8 @@ export default function EngagementListPage() {
             </span>
           </div>
           <p className="mt-1 text-xs text-muted-foreground">
-            Add scope and a strategy revision (or wait for the start date)
-            to activate.
+            Add at least one in-scope target to finish setup. Planning dates and
+            strategy guidance do not change the backend&apos;s active status.
           </p>
           <div className="mt-3 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {pending.map((eng) => (
@@ -177,8 +177,8 @@ export default function EngagementListPage() {
             </span>
           </div>
           <p className="mt-1 text-xs text-muted-foreground">
-            Scope defined, strategy in place, start date reached. Runs can
-            dispatch.
+            Scope is defined. Runs remain subject to provider readiness, scope,
+            risk, and approval gates.
           </p>
           <div className="mt-3 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {active.map((eng) => (

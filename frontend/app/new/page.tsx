@@ -21,32 +21,7 @@ import { ScopeImporter } from "@/components/scope-importer";
 import { createEngagement } from "@/lib/api";
 import type { EngagementTimeFrame, ScopeKind } from "@/lib/types";
 
-// Nessus-style engagement setup (CHARTER Idea 3): name, details, time frame,
-// and scope. v0.6.0 removed the kickoff-on-create button — engagement creation
-// is now a preset. The analyst launches scans from the Scope tab once the
-// engagement exists.
-
 const KINDS: ScopeKind[] = ["domain", "cidr", "ip", "url"];
-
-// v2.4.0: Nessus-style schedule picker. The UI collects frequency +
-// date + time + optional end; the submit path maps that onto the
-// existing EngagementTimeFrame enum (no migration). Chosen time is
-// preserved as an ISO stamp in the description so the analyst sees it
-// on the workspace header until we ship a first-class scheduled_at
-// column.
-// v2.6.1 — cadence options aligned to how engagements actually get
-// scheduled: Once, Monthly, Quarterly, or an analyst-defined Custom
-// window. Recurring cadences (monthly / quarterly) are metadata-only
-// today — the scheduler + workflow-template that actually fire the
-// runs land in a later phase (see roadmap tasks).
-type Frequency = "once" | "monthly" | "quarterly" | "custom";
-
-const FREQUENCIES: { value: Frequency; label: string }[] = [
-  { value: "once", label: "Once" },
-  { value: "monthly", label: "Recurring — monthly" },
-  { value: "quarterly", label: "Recurring — quarterly" },
-  { value: "custom", label: "Custom window" },
-];
 
 interface ScopeDraft {
   kind: ScopeKind;
@@ -60,23 +35,15 @@ export default function NewEngagementPage() {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [scope, setScope] = useState<ScopeDraft[]>([]);
-
   const [kind, setKind] = useState<ScopeKind>("domain");
   const [value, setValue] = useState("");
   const [isExclusion, setIsExclusion] = useState(false);
-
-  // v2.4.0 Nessus-style schedule state
-  const [frequency, setFrequency] = useState<Frequency>("once");
   const [startDate, setStartDate] = useState("");
-  const [startTime, setStartTime] = useState("09:00");
   const [endDate, setEndDate] = useState("");
-
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const hasUsableScope = scope.some((item) => !item.isExclusion);
 
-  // Schedule fields are forward-looking planning inputs, so cap them at
-  // today + 3 years. Anything past that is almost certainly a typo (e.g.
-  // 2029 vs 2026) and would silently sit in the DB.
   const maxScheduleDate = useMemo(() => {
     const d = new Date();
     d.setFullYear(d.getFullYear() + 3);
@@ -89,9 +56,9 @@ export default function NewEngagementPage() {
     return `${y}-${m}-${day}`;
   }, [maxScheduleDate]);
   const startDateAsDate = useMemo(() => {
-    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(startDate);
-    if (!m) return undefined;
-    return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(startDate);
+    if (!match) return undefined;
+    return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
   }, [startDate]);
 
   const addScope = () => {
@@ -109,10 +76,7 @@ export default function NewEngagementPage() {
       );
       return;
     }
-    setScope((items) => [
-      ...items,
-      { kind, value: candidate, isExclusion },
-    ]);
+    setScope((items) => [...items, { kind, value: candidate, isExclusion }]);
     setValue("");
     setIsExclusion(false);
     setError(null);
@@ -123,8 +87,8 @@ export default function NewEngagementPage() {
       setError("Name is required.");
       return;
     }
-    if (!startDate) {
-      setError("Start date is required.");
+    if (endDate && !startDate) {
+      setError("Choose a start date before adding an end date.");
       return;
     }
     if (endDate && endDate < startDate) {
@@ -132,51 +96,19 @@ export default function NewEngagementPage() {
       return;
     }
     if (startDate > maxScheduleDateStr || (endDate && endDate > maxScheduleDateStr)) {
-      setError("Schedule dates can't be more than 3 years in the future.");
+      setError("Planning dates can't be more than 3 years in the future.");
       return;
     }
 
-    // Map schedule state onto the existing EngagementTimeFrame enum
-    // (no schema migration):
-    //   - monthly / quarterly    → 'repeatable' (metadata cadence)
-    //   - custom                 → 'custom' (analyst-picked window)
-    //   - once WITH end date     → 'custom' (bounded single pass)
-    //   - once WITHOUT end       → 'point_in_time'
-    // The exact HH:MM + cadence gets appended to description as a
-    // human-readable "Scheduled: …" line so the analyst still sees it
-    // in the engagement header until we ship a first-class schedule
-    // column + scheduler service.
-    let timeFrame: EngagementTimeFrame;
-    if (frequency === "monthly" || frequency === "quarterly") {
-      timeFrame = "repeatable";
-    } else if (frequency === "custom") {
-      timeFrame = "custom";
-    } else if (endDate) {
-      timeFrame = "custom";
-    } else {
-      timeFrame = "point_in_time";
-    }
-    const cadenceLabel =
-      frequency === "once"
-        ? "once"
-        : frequency === "custom"
-          ? "custom window"
-          : `recurring ${frequency}`;
-    const scheduleLine = `Scheduled: ${startDate} ${startTime} · ${cadenceLabel}${
-      endDate ? ` · through ${endDate}` : ""
-    }`;
-    const bodyDescription = [description.trim(), scheduleLine]
-      .filter(Boolean)
-      .join("\n\n");
-
+    const timeFrame: EngagementTimeFrame = endDate ? "custom" : "point_in_time";
     setBusy(true);
     setError(null);
     try {
       const eng = await createEngagement({
         name: name.trim(),
-        description: bodyDescription || undefined,
+        description: description.trim() || undefined,
         time_frame: timeFrame,
-        start_date: startDate,
+        start_date: startDate || null,
         end_date: endDate || null,
         initial_scope: scope.map((item) => ({
           kind: item.kind,
@@ -184,7 +116,8 @@ export default function NewEngagementPage() {
           is_exclusion: item.isExclusion,
         })),
       });
-      router.push(`/e?slug=${encodeURIComponent(eng.slug)}&view=scope`);
+      const nextView = hasUsableScope ? "strategy&setup=initial-guidance" : "scope";
+      router.push(`/e?slug=${encodeURIComponent(eng.slug)}&view=${nextView}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setBusy(false);
@@ -203,262 +136,122 @@ export default function NewEngagementPage() {
   return (
     <div className="mx-auto max-w-2xl space-y-6">
       <div>
-        <Link
-          href="/"
-          className="text-xs text-muted-foreground hover:text-foreground"
-        >
+        <Link href="/" className="text-xs text-muted-foreground hover:text-foreground">
           ← all engagements
         </Link>
-        <h1 className="mt-2 text-2xl font-semibold tracking-tight">
-          New engagement
-        </h1>
+        <h1 className="mt-2 text-2xl font-semibold tracking-tight">New engagement</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Name it, set the time frame, and stage scope. Launch scans from the
-          Scope tab once the engagement is created.
+          A name and scope are enough to get started. You can add planning details now or later.
         </p>
       </div>
 
       <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Details</CardTitle>
-        </CardHeader>
+        <CardHeader><CardTitle className="text-base">Details</CardTitle></CardHeader>
         <CardContent className="space-y-4">
           <div className="space-y-2">
             <Label htmlFor="name">Name</Label>
-            <Input
-              id="name"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="Acme Q1 Pentest"
-              required
-            />
+            <Input id="name" value={name} onChange={(e) => setName(e.target.value)} placeholder="Acme assessment" required />
           </div>
           <div className="space-y-2">
-            <Label htmlFor="description">Description / rules of engagement</Label>
-            <Textarea
-              id="description"
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              rows={3}
-              placeholder="Objectives, constraints, point of contact…"
-            />
+            <Label htmlFor="description">Description / rules of engagement (optional)</Label>
+            <Textarea id="description" value={description} onChange={(e) => setDescription(e.target.value)} rows={3} placeholder="Objectives, constraints, point of contact…" />
           </div>
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Schedule</CardTitle>
-          <CardDescription>
-            When the engagement is meant to run. If the start date is in the
-            future the engagement stays{" "}
-            <span className="font-medium text-amber-500">pending</span> until
-            that day.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="space-y-2">
-            <Label htmlFor="frequency">Frequency</Label>
-            <select
-              id="frequency"
-              value={frequency}
-              onChange={(e) => setFrequency(e.target.value as Frequency)}
-              className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-            >
-              {FREQUENCIES.map((f) => (
-                <option key={f.value} value={f.value}>
-                  {f.label}
-                </option>
-              ))}
-            </select>
-          </div>
-
+      <details className="rounded-lg border border-border bg-card">
+        <summary className="cursor-pointer px-6 py-4 text-sm font-medium">
+          Planning dates <span className="font-normal text-muted-foreground">(optional)</span>
+        </summary>
+        <div className="space-y-4 border-t border-border px-6 py-4">
+          <p className="text-xs text-muted-foreground">
+            These dates are planning metadata only. They do not schedule or block runs.
+          </p>
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-2">
-              <Label htmlFor="start_date">
-                {frequency === "once" || frequency === "custom"
-                  ? "Start date"
-                  : "First run date"}
-              </Label>
-              <DatePicker
-                id="start_date"
-                value={startDate}
-                onChange={setStartDate}
-                maxDate={maxScheduleDate}
-                required
-                placeholder="Pick a start date"
-              />
+              <Label htmlFor="start_date">Start date</Label>
+              <DatePicker id="start_date" value={startDate} onChange={setStartDate} maxDate={maxScheduleDate} placeholder="Pick a start date" />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="start_time">Time</Label>
-              <Input
-                id="start_time"
-                type="time"
-                value={startTime}
-                onChange={(e) => setStartTime(e.target.value)}
-                required
-              />
+              <Label htmlFor="end_date">End date</Label>
+              <DatePicker id="end_date" value={endDate} onChange={setEndDate} minDate={startDateAsDate} maxDate={maxScheduleDate} placeholder="Pick an end date" />
             </div>
           </div>
-
-          <div className="space-y-2">
-            <Label htmlFor="end_date">
-              {frequency === "custom"
-                ? "End date"
-                : frequency === "once"
-                  ? "End date (optional — leave blank for a single-day pass)"
-                  : "End date (optional — leave blank for open-ended)"}
-            </Label>
-            <DatePicker
-              id="end_date"
-              value={endDate}
-              onChange={setEndDate}
-              minDate={startDateAsDate}
-              maxDate={maxScheduleDate}
-              placeholder="Pick an end date"
-            />
-          </div>
-
-          <p className="text-xs text-muted-foreground">
-            {frequency === "once"
-              ? endDate
-                ? `Single pass window ${startDate || "?"} → ${endDate}.`
-                : `Single-day pass on ${startDate || "?"}.`
-              : frequency === "custom"
-                ? `Custom window ${startDate || "?"} → ${endDate || "?"}.`
-                : `Recurs ${frequency}${endDate ? ` until ${endDate}` : " (open-ended)"} starting ${startDate || "?"}.`}
-          </p>
-        </CardContent>
-      </Card>
+        </div>
+      </details>
 
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Scope</CardTitle>
           <CardDescription>
-            Targets the engagement may touch. Tool calls outside scope are denied
-            by the gate. Add includes (and optional exclusions).
+            Targets the engagement may touch. Tool calls outside scope are denied by the gate. Add includes and optional exclusions.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <ScopeImporter
             onCommit={(_text, preview) => {
-              const seen = new Set(
-                scope.map(
-                  (item) => `${item.kind}\u0000${item.value}\u0000${item.isExclusion}`,
-                ),
-              );
+              const seen = new Set(scope.map((item) => `${item.kind}\u0000${item.value}\u0000${item.isExclusion}`));
               const additions: ScopeDraft[] = [];
               const duplicates: ScopeDraft[] = [];
               for (const row of preview.preview) {
-                const draft = {
-                  kind: row.kind,
-                  value: row.value,
-                  isExclusion: row.is_exclusion,
-                };
+                const draft = { kind: row.kind, value: row.value, isExclusion: row.is_exclusion };
                 const key = `${draft.kind}\u0000${draft.value}\u0000${draft.isExclusion}`;
-                if (seen.has(key)) {
-                  duplicates.push(draft);
-                } else {
-                  seen.add(key);
-                  additions.push(draft);
-                }
+                if (seen.has(key)) duplicates.push(draft);
+                else { seen.add(key); additions.push(draft); }
               }
               setScope((items) => [...items, ...additions]);
               if (duplicates.length > 0) {
                 const first = duplicates[0];
-                setError(
-                  `${first.kind}:${first.value} is already staged${duplicates.length > 1 ? `; ${duplicates.length} duplicate entries were skipped` : ""}.`,
-                );
-              } else {
-                setError(null);
-              }
+                setError(`${first.kind}:${first.value} is already staged${duplicates.length > 1 ? `; ${duplicates.length} duplicate entries were skipped` : ""}.`);
+              } else setError(null);
             }}
           />
           <div className="grid gap-3 sm:grid-cols-[7rem_1fr_auto] sm:items-end">
             <div className="space-y-2">
               <Label htmlFor="kind">Kind</Label>
-              <select
-                id="kind"
-                value={kind}
-                onChange={(e) => setKind(e.target.value as ScopeKind)}
-                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-              >
-                {KINDS.map((k) => (
-                  <option key={k} value={k}>
-                    {k}
-                  </option>
-                ))}
+              <select id="kind" value={kind} onChange={(e) => setKind(e.target.value as ScopeKind)} className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
+                {KINDS.map((k) => <option key={k} value={k}>{k}</option>)}
               </select>
             </div>
             <div className="space-y-2">
               <Label htmlFor="value">Value</Label>
-              <Input
-                id="value"
-                value={value}
-                onChange={(e) => setValue(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    addScope();
-                  }
-                }}
-                placeholder={placeholder}
-              />
+              <Input id="value" value={value} onChange={(e) => setValue(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addScope(); } }} placeholder={placeholder} />
             </div>
-            <Button type="button" variant="outline" onClick={addScope}>
-              Add
-            </Button>
+            <Button type="button" variant="outline" onClick={addScope}>Add</Button>
             <label className="flex items-center gap-2 text-sm sm:col-span-3">
-              <input
-                type="checkbox"
-                checked={isExclusion}
-                onChange={(e) => setIsExclusion(e.target.checked)}
-                className="h-4 w-4 rounded border-input"
-              />
+              <input type="checkbox" checked={isExclusion} onChange={(e) => setIsExclusion(e.target.checked)} className="h-4 w-4 rounded border-input" />
               Exclusion (carve out from a broader include)
             </label>
           </div>
 
           {scope.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              No scope yet — add includes here or from the Scope tab after save.
-            </p>
+            <p className="text-sm text-muted-foreground">No scope yet — save now to continue on the Scope tab.</p>
           ) : (
-            <ul className="divide-y divide-border">
-              {scope.map((item, i) => (
-                <li
-                  key={`${item.kind}-${item.value}-${i}`}
-                  className="flex items-center justify-between py-2"
-                >
-                  <div className="flex items-center gap-3">
-                    <Badge variant={item.isExclusion ? "destructive" : "secondary"}>
-                      {item.kind}
-                      {item.isExclusion ? " · exclude" : ""}
-                    </Badge>
-                    <span className="font-mono text-sm">{item.value}</span>
-                  </div>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    onClick={() => setScope((s) => s.filter((_, j) => j !== i))}
-                    aria-label="Remove scope item"
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
-                </li>
-              ))}
-            </ul>
+            <>
+              <ul className="divide-y divide-border">
+                {scope.map((item, i) => (
+                  <li key={`${item.kind}-${item.value}-${i}`} className="flex items-center justify-between py-2">
+                    <div className="flex items-center gap-3">
+                      <Badge variant={item.isExclusion ? "destructive" : "secondary"}>{item.kind}{item.isExclusion ? " · exclude" : ""}</Badge>
+                      <span className="font-mono text-sm">{item.value}</span>
+                    </div>
+                    <Button type="button" variant="ghost" size="icon" onClick={() => setScope((items) => items.filter((_, j) => j !== i))} aria-label="Remove scope item"><Trash2 className="h-4 w-4" /></Button>
+                  </li>
+                ))}
+              </ul>
+              {!hasUsableScope && (
+                <p className="text-sm text-amber-700 dark:text-amber-300">
+                  Add at least one included target. Exclusions alone do not define usable scope, so saving will continue on the Scope tab.
+                </p>
+              )}
+            </>
           )}
         </CardContent>
       </Card>
 
       {error && <p className="text-sm text-critical">{error}</p>}
-
       <div className="flex justify-end">
-        <Button disabled={busy} onClick={submit}>
-          {busy ? "Saving…" : "Save engagement"}
-        </Button>
+        <Button disabled={busy} onClick={submit}>{busy ? "Saving…" : hasUsableScope ? "Save and continue to Strategy" : "Save engagement"}</Button>
       </div>
     </div>
   );

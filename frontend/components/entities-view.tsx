@@ -933,8 +933,7 @@ function EntitySlideOver({
                     key={action.label}
                     size="sm"
                     variant={isNext ? "default" : "outline"}
-                    disabled={done && !isNext}
-                    className={done && !isNext ? "opacity-50" : ""}
+                    className={done && !isNext ? "opacity-70" : ""}
                     onClick={() => onQuickAction(action.prompt(entity.value))}
                     title={
                       done

@@ -68,6 +68,8 @@ export function EngagementCard({
       await Promise.all([
         qc.invalidateQueries({ queryKey: qk.scope(eng.slug) }),
         qc.invalidateQueries({ queryKey: qk.engagements() }),
+        qc.invalidateQueries({ queryKey: qk.entities(eng.slug) }),
+        qc.invalidateQueries({ queryKey: ["stored-entities", eng.slug] }),
       ]);
       setValue("");
       setIsExclusion(false);

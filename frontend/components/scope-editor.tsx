@@ -104,7 +104,12 @@ export function ScopeEditor({
           <ScopeImporter
             onCommit={async (text) => {
               const result = await importScope(slug, text);
-              await qc.invalidateQueries({ queryKey: qk.scope(slug) });
+              await Promise.all([
+                qc.invalidateQueries({ queryKey: qk.scope(slug) }),
+                qc.invalidateQueries({ queryKey: qk.entities(slug) }),
+                qc.invalidateQueries({ queryKey: ["stored-entities", slug] }),
+                qc.invalidateQueries({ queryKey: qk.engagements() }),
+              ]);
               if (result.errors.length || result.duplicates.length) {
                 const bits = [
                   `${result.created.length} added`,

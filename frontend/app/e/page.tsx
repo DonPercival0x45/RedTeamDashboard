@@ -37,6 +37,7 @@ import {
   useEngagement,
   useFindings,
   useFlushEngagementMutation,
+  useMe,
   useUpdateEngagementMutation,
 } from "@/lib/hooks";
 import type { Engagement, Finding } from "@/lib/types";
@@ -115,6 +116,7 @@ function EngagementDetail({ slug }: { slug: string }) {
   const qc = useQueryClient();
   const engagementQuery = useEngagement(slug);
   const findingsQuery = useFindings(slug);
+  const { data: me } = useMe();
   const engagement = engagementQuery.data ?? null;
   const findings = findingsQuery.data ?? [];
   const archiveMutation = useArchiveEngagementMutation(slug);
@@ -148,11 +150,24 @@ function EngagementDetail({ slug }: { slug: string }) {
   }, [slug]);
 
   const upsertFinding = useCallback(
-    (f: Finding) => upsertFindingInCache(qc, slug, f),
+    (finding: Finding) => {
+      upsertFindingInCache(qc, slug, finding);
+      void Promise.all([
+        qc.invalidateQueries({ queryKey: qk.reportReadiness(slug) }),
+        qc.invalidateQueries({ queryKey: qk.findingActivity(finding.id) }),
+        qc.invalidateQueries({ queryKey: qk.entities(slug) }),
+      ]);
+    },
     [qc, slug],
   );
   const removeFinding = useCallback(
-    (findingId: string) => removeFindingFromCache(qc, slug, findingId),
+    (findingId: string) => {
+      removeFindingFromCache(qc, slug, findingId);
+      void Promise.all([
+        qc.invalidateQueries({ queryKey: qk.reportReadiness(slug) }),
+        qc.invalidateQueries({ queryKey: qk.entities(slug) }),
+      ]);
+    },
     [qc, slug],
   );
 
@@ -199,6 +214,11 @@ function EngagementDetail({ slug }: { slug: string }) {
             };
             return [created, ...list];
           });
+          void Promise.all([
+            qc.invalidateQueries({ queryKey: qk.reportReadiness(slug) }),
+            qc.invalidateQueries({ queryKey: qk.entities(slug) }),
+            qc.invalidateQueries({ queryKey: ["stored-entities", slug] }),
+          ]);
         } else if (
           event.type === "run.completed" ||
           event.type === "run.errored"
@@ -244,6 +264,15 @@ function EngagementDetail({ slug }: { slug: string }) {
     if (!window.confirm(`Archive ${engagement.slug}? Stops new runs.`)) return;
     try {
       await archiveMutation.mutateAsync();
+    } catch (err) {
+      setLocalError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const onUnarchive = async () => {
+    if (!engagement) return;
+    try {
+      await updateEngagementMutation.mutateAsync({ status: "active" });
     } catch (err) {
       setLocalError(err instanceof Error ? err.message : String(err));
     }
@@ -320,7 +349,12 @@ function EngagementDetail({ slug }: { slug: string }) {
           )}
         </div>
         {canWrite && (
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <Button asChild variant="outline" size="sm">
+              <Link href={`/automation?tab=reporting&slug=${encodeURIComponent(slug)}`}>
+                Build report
+              </Link>
+            </Button>
             <Button
               variant="outline"
               size="sm"
@@ -348,14 +382,26 @@ function EngagementDetail({ slug }: { slug: string }) {
                 Archive
               </Button>
             )}
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={onDelete}
-              className="text-critical hover:bg-critical/10"
-            >
-              Delete
-            </Button>
+            {engagement.status === "archived" && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={onUnarchive}
+                disabled={updateEngagementMutation.isPending}
+              >
+                {updateEngagementMutation.isPending ? "Reopening…" : "Unarchive"}
+              </Button>
+            )}
+            {me?.is_admin && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={onDelete}
+                className="text-critical hover:bg-critical/10"
+              >
+                Delete
+              </Button>
+            )}
           </div>
         )}
       </div>
