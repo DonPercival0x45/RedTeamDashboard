@@ -917,7 +917,40 @@ class RunRunner:
                         )
                     )
             session.commit()
+            # Publish only after every finding in this chunk has folded into its
+            # final canonical parent. Failure is swallowed by the helper and
+            # leaves the committed row relayable. Legacy test/CLI envelopes may
+            # lack an acting user and therefore cannot create Strategic
+            # feedback; retain their real-time lifecycle event without making
+            # it a Strategic command.
             publish_feedback_entries(session, self._redis, entries)
+            if not entries:
+                for row, _created in canonical.values():
+                    try:
+                        self._emit(
+                            engagement_id,
+                            {
+                                "type": "finding.created",
+                                "thread_id": thread_id,
+                                "tool": row.source_tool,
+                                "args": {},
+                                "data": {"chunk_finding_count": len(findings)},
+                                "target": row.target,
+                                "severity": row.severity.value,
+                                "title": row.title,
+                                "finding_id": str(row.id),
+                                "phase": row.phase.value,
+                                "status": row.status.value,
+                                "acting_user_id": None,
+                                "source": "worker_lifecycle",
+                            },
+                        )
+                    except Exception:  # noqa: BLE001 - lifecycle is best effort
+                        logger.exception(
+                            "worker.finding_lifecycle_publish_failed",
+                            finding_id=str(row.id),
+                            thread_id=thread_id,
+                        )
             for row, _created in canonical.values():
                 session.refresh(row)
             return [row for row, _created in canonical.values()]

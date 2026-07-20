@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.main import app
-from app.models import AuditLog, Engagement, Finding, ScopeItem, Severity
+from app.models import AuditLog, CommandOutbox, Engagement, Finding, ScopeItem, Severity
 from app.runs.streams import inbound_stream, outbound_stream
 
 # ---------------------------------------------------------------------------
@@ -506,12 +506,24 @@ def test_flush_removes_engagement_and_streams(
         test_user.role = UserRole.admin
         db.commit()
 
-    # Seed an inbound stream message so we can confirm the redis cleanup.
-    redis_client.xadd(
-        inbound_stream(uuid.UUID(eng["id"])),
-        {"data": "{}"},
+    engagement_id = uuid.UUID(eng["id"])
+    # Seed both streams and a durable outbox row so flush proves cleanup of
+    # Redis transport state and SQL delivery state.
+    redis_client.xadd(inbound_stream(engagement_id), {"data": "{}"})
+    redis_client.xadd(outbound_stream(engagement_id), {"data": "{}"})
+    from app.services.command_outbox import enqueue_event
+
+    outbox = enqueue_event(
+        db,
+        idempotency_key=f"flush-test:{engagement_id}",
+        engagement_id=engagement_id,
+        stream_name=outbound_stream(engagement_id),
+        payload={"type": "finding.created", "finding_id": str(uuid.uuid4())},
     )
-    assert redis_client.exists(inbound_stream(uuid.UUID(eng["id"]))) == 1
+    db.commit()
+    outbox_id = outbox.id
+    assert redis_client.exists(inbound_stream(engagement_id)) == 1
+    assert redis_client.exists(outbound_stream(engagement_id)) == 1
 
     response = client.post(
         f"/engagements/{eng['slug']}/flush", headers=_headers()
@@ -524,8 +536,10 @@ def test_flush_removes_engagement_and_streams(
     ).scalar_one_or_none()
     assert gone is None
 
-    # Stream is gone.
-    assert redis_client.exists(inbound_stream(uuid.UUID(eng["id"]))) == 0
+    # Streams and the engagement-owned outbox row are gone.
+    assert redis_client.exists(inbound_stream(engagement_id)) == 0
+    assert redis_client.exists(outbound_stream(engagement_id)) == 0
+    assert db.get(CommandOutbox, outbox_id) is None
 
 
 # ---------------------------------------------------------------------------

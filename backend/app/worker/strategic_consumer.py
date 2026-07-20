@@ -211,6 +211,10 @@ class StrategicConsumer:
                     )
                     if not should_process:
                         logger.info("strategic.duplicate_event_skipped", delivery_id=delivery_id)
+                    elif envelope.get("source") == "worker_lifecycle":
+                        # Legacy envelopes have no analyst identity. They are a
+                        # live-run notification, not a Strategic instruction.
+                        complete(receipt_session, receipt)
                     elif event_type in ("finding.created", "finding.updated"):
                         finding_id_raw = envelope.get("finding_id")
                         acting_user_id_raw = envelope.get("acting_user_id")

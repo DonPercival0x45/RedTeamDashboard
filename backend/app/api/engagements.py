@@ -1035,11 +1035,7 @@ def flush_engagement(
     # explicitly drop them here.
     session.execute(text("SELECT flush_engagement(:id)"), {"id": eid})
     session.commit()
-    from app.services.finding_feedback import feedback_marker_key
-
-    redis_client.delete(
-        inbound_stream(eid), outbound_stream(eid), feedback_marker_key(eid)
-    )
+    redis_client.delete(inbound_stream(eid), outbound_stream(eid))
     return Response(status_code=204)
 
 

@@ -131,11 +131,16 @@ def test_dispatch_does_not_dedup_failed_worker_task(
     )
     task = _task(db, engagement, "dns_lookup", "failed.example")
 
-    with pytest.raises(Exception) as exc_info:  # noqa: PT011 - later lease path
-        TacticalAgent(redis_client=None).dispatch(
-            db, task=task, acting_user_id=uuid.uuid4()
-        )
-    assert not isinstance(exc_info.value, TacticalAlreadyScanned)
+    thread_id = TacticalAgent(redis_client=None).dispatch(
+        db, task=task, acting_user_id=uuid.uuid4()
+    )
+    assert task.status == TaskStatus.dispatched
+    assert task.run_id == thread_id
+    outbox = db.execute(
+        select(CommandOutbox).where(CommandOutbox.task_id == task.id)
+    ).scalar_one()
+    assert outbox.status == CommandOutboxStatus.pending
+    assert json.loads(outbox.encoded_payload["data"])["thread_id"] == str(thread_id)
 
 
 def test_dispatch_allows_distinct_target(db: Session, engagement: Engagement) -> None:
