@@ -546,6 +546,7 @@ class StrategicAgent:
         finding: Finding,
         trigger: AgentTrigger,
         acting_user_id: uuid.UUID,
+        execution_id: uuid.UUID | None = None,
     ) -> tuple[AgentExecution, list[Suggestion]]:
         """Run Strategic over a finding and persist suggestions + execution row.
 
@@ -560,6 +561,17 @@ class StrategicAgent:
         engagement = session.get(Engagement, finding.engagement_id)
         if engagement is None:
             raise ValueError(f"finding {finding.id} has no engagement")
+        execution = session.get(AgentExecution, execution_id) if execution_id else None
+        if execution is not None:
+            if execution.engagement_id != engagement.id or str(
+                (execution.input or {}).get("finding_id")
+            ) != str(finding.id):
+                raise ValueError("Strategic execution identity does not match finding event")
+            if execution.status != AgentExecutionStatus.running:
+                # Receipt completion may have been interrupted after the
+                # execution already reached a terminal state. Never create a
+                # second accounting row or overwrite cancellation.
+                return execution, []
         # Token-saving kill-switch: skip automatic background generation when
         # the engagement has auto-assess disabled. The manual Analyze button
         # (trigger=manual) is an explicit user action and stays unaffected.
@@ -568,16 +580,21 @@ class StrategicAgent:
                 "strategic.auto_assess_skipped", engagement_id=str(engagement.id)
             )
             now = datetime.now(tz=UTC)
-            execution = AgentExecution(
-                engagement_id=engagement.id,
-                agent=AgentName.strategic,
-                trigger=trigger,
-                input={"finding_id": str(finding.id), "auto_assess_disabled": True},
-                status=AgentExecutionStatus.cancelled,
-                started_at=now,
-                completed_at=now,
-            )
-            session.add(execution)
+            if execution is None:
+                execution = AgentExecution(
+                    id=execution_id,
+                    engagement_id=engagement.id,
+                    agent=AgentName.strategic,
+                    trigger=trigger,
+                    input={"finding_id": str(finding.id), "auto_assess_disabled": True},
+                    status=AgentExecutionStatus.cancelled,
+                    started_at=now,
+                    completed_at=now,
+                )
+                session.add(execution)
+            else:
+                execution.status = AgentExecutionStatus.cancelled
+                execution.completed_at = now
             return execution, []
         scope_items = list(
             session.execute(
@@ -587,23 +604,23 @@ class StrategicAgent:
 
         prompt = _build_user_prompt(engagement, finding, _scope_summary(scope_items))
 
-        execution = AgentExecution(
-            engagement_id=engagement.id,
-            agent=AgentName.strategic,
-            trigger=trigger,
-            input={
-                "finding_id": str(finding.id),
-                "engagement_slug": engagement.slug,
-            },
-            status=AgentExecutionStatus.running,
-            started_at=datetime.now(tz=UTC),
-        )
-        session.add(execution)
-        # v0.8.1 fix: commit immediately so the Status tab can paint a green
-        # "active" box as the worker run progresses. Previously the row
-        # only became visible to other DB sessions when this whole method
-        # returned and the caller committed — meaning Strategic was
-        # invisible for the full duration of the LLM call.
+        if execution is None:
+            execution = AgentExecution(
+                id=execution_id,
+                engagement_id=engagement.id,
+                agent=AgentName.strategic,
+                trigger=trigger,
+                input={
+                    "finding_id": str(finding.id),
+                    "engagement_slug": engagement.slug,
+                },
+                status=AgentExecutionStatus.running,
+                started_at=datetime.now(tz=UTC),
+            )
+            session.add(execution)
+        # Commit the one stable execution identity for Status visibility. A
+        # receipt-bound replay reloads this same running row rather than
+        # creating another accounting entry.
         session.commit()
         session.refresh(execution)
 
@@ -640,6 +657,11 @@ class StrategicAgent:
             execution.tokens_in = tokens_in
             execution.tokens_out = tokens_out
         except Exception as exc:  # noqa: BLE001 — any LLM failure → mark failed
+            # Serialize with synchronous cancellation. If the analyst already
+            # cancelled, preserve that terminal state instead of overwriting it.
+            session.refresh(execution, with_for_update=True)
+            if execution.status == AgentExecutionStatus.cancelled:
+                return execution, []
             execution.status = AgentExecutionStatus.failed
             execution.error = str(exc)[:2000]
             execution.completed_at = datetime.now(tz=UTC)
@@ -649,6 +671,17 @@ class StrategicAgent:
                 error=str(exc),
             )
             return execution, []
+
+        # Cancellation and terminal effects share this row lock. A cancellation
+        # that committed during the LLM call wins; otherwise completion and its
+        # suggestions commit atomically before a later cancel can observe it.
+        session.refresh(execution, with_for_update=True)
+        if execution.status == AgentExecutionStatus.cancelled:
+            return execution, []
+        execution.model_provider = provider
+        execution.model_name = model_name
+        execution.tokens_in = tokens_in
+        execution.tokens_out = tokens_out
 
         suggestions = self._persist_suggestions(
             session,
@@ -777,11 +810,10 @@ class StrategicAgent:
             status=AgentExecutionStatus.running,
             started_at=datetime.now(tz=UTC),
         )
+        # Caller-owned transaction: never commit accepted suggestion/Task
+        # state before Tactical has staged its lease and command outbox.
         session.add(execution)
-        # v0.8.1 fix: commit immediately — see analyze_finding above for
-        # the rationale (Status tab visibility during LLM call).
-        session.commit()
-        session.refresh(execution)
+        session.flush()
 
         try:
             llm, provider, model_name = self._resolve_llm(

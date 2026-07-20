@@ -97,7 +97,6 @@ from app.models import (
 )
 from app.models.api_key import APIKeyScope
 from app.orchestrator.llm import default_provider_model
-from app.runs.events import encode_command
 from app.runs.streams import inbound_stream, outbound_stream, store_run_model
 from app.schemas.engagement import (
     EngagementCreate,
@@ -137,6 +136,7 @@ from app.schemas.finding import (
     _normalize_tags,
 )
 from app.schemas.observation import ObservationCreate, ObservationRead
+from app.services.command_outbox import enqueue_command, publish_entry
 from app.services.entities import annotate_scope_status, extract_entities
 from app.services.findings import (
     get_active_finding_or_404,
@@ -4130,13 +4130,6 @@ def start_run(
     )
     session.add(run_execution)
 
-    # Commit lease + audit + the run-execution row BEFORE enqueueing on
-    # Redis. The worker reads the envelope in another process within
-    # ~2ms; if we xadd before commit, the worker's `validate_token`
-    # lookup races the API session's commit and returns None (lease not
-    # yet visible) — surfaced as a confusing "invalid, released, or
-    # expired" ValueError. Crash between commit and xadd leaves an
-    # orphan lease that the periodic sweeper reclaims.
     session.add(
         AuditLog(
             engagement_id=eng.id,
@@ -4153,29 +4146,28 @@ def start_run(
             },
         )
     )
-    session.commit()
-
-    # NB: we put ``acting_user_id`` on the envelope, NOT the decrypted key.
-    # The worker re-resolves at run-time via the ephemeral Redis-backed
-    # provider-key store. This keeps plaintext API keys out of the Redis
-    # stream payloads (which are persisted longer than the live key TTL).
-    redis_client.xadd(
-        inbound_stream(eng.id),
-        encode_command(
-            {
-                "type": "run.start",
-                "thread_id": str(thread_id),
-                "prompt": body.prompt,
-                "model": {
-                    "provider": effective_model.provider,
-                    "name": effective_model.name,
-                },
-                "acting_user_id": str(user.id),
-                "mcp_url": mcp_url,
-                "lease_token": str(lease.id),
-            }
-        ),
+    # Lease, audit, execution row, and durable command commit atomically.
+    # The envelope carries actor identity, never the plaintext provider key.
+    outbox = enqueue_command(
+        session,
+        idempotency_key=f"run.start:{thread_id}",
+        engagement_id=eng.id,
+        stream_name=inbound_stream(eng.id),
+        payload={
+            "type": "run.start",
+            "thread_id": str(thread_id),
+            "prompt": body.prompt,
+            "model": {
+                "provider": effective_model.provider,
+                "name": effective_model.name,
+            },
+            "acting_user_id": str(user.id),
+            "mcp_url": mcp_url,
+            "lease_token": str(lease.id),
+        },
     )
+    session.commit()
+    publish_entry(session, redis_client, outbox.id)
 
     return RunStartResponse(
         engagement_id=eng.id,

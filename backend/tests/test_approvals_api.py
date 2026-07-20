@@ -97,6 +97,7 @@ def _pending_approval(
         thread_id=thread_id or str(uuid.uuid4()),
         node="tool_dispatch",
         tool_name="portscan",
+        tool_call_id="call-approval-test",
         tool_args={"ip": "10.0.0.5"},
         risk=RiskLevel.active,
         scope_check={
@@ -212,6 +213,9 @@ def test_decision_approves_updates_row_and_pushes_resume(
         "type": "run.resume",
         "thread_id": approval.thread_id,
         "approved": True,
+        "approval_id": str(approval.id),
+        "tool_call_id": approval.tool_call_id,
+        "command_id": f"approval.resume:{approval.id}",
     }
 
 
@@ -287,17 +291,40 @@ def test_decision_resume_carries_cached_model_when_present(
     assert payload["model"] == {"provider": "anthropic", "name": "claude-sonnet-4-6"}
 
 
-def test_decision_on_already_decided_returns_409(
+def test_repeated_same_decision_is_idempotent(
+    client: TestClient,
+    db: Session,
+    engagement: Engagement,
+    redis_client: redis_lib.Redis,
+) -> None:
+    approval = _pending_approval(db, engagement.id)
+    redis_client.delete(inbound_stream(engagement.id))
+    first = client.post(
+        f"/approvals/{approval.id}/decision",
+        headers={"X-User-Id": "analyst@example.com"},
+        json={"approved": True},
+    )
+    second = client.post(
+        f"/approvals/{approval.id}/decision",
+        headers={"X-User-Id": "analyst@example.com"},
+        json={"approved": True},
+    )
+    assert first.status_code == second.status_code == 200
+    assert len(redis_client.xrange(inbound_stream(engagement.id))) == 1
+
+
+def test_conflicting_terminal_decision_returns_409(
     client: TestClient, db: Session, engagement: Engagement
 ) -> None:
     approval = _pending_approval(db, engagement.id)
     approval.status = ApprovalStatus.approved
+    approval.decision_args = {"approved": True}
     db.commit()
 
     response = client.post(
         f"/approvals/{approval.id}/decision",
         headers={"X-User-Id": "analyst@example.com"},
-        json={"approved": True},
+        json={"approved": False},
     )
     assert response.status_code == 409
 

@@ -8,11 +8,12 @@ done against the prior run.
 """
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.agents import TacticalAgent, TacticalAlreadyScanned
@@ -21,6 +22,8 @@ from app.models import (
     AgentExecutionStatus,
     AgentName,
     AgentTrigger,
+    CommandOutbox,
+    CommandOutboxStatus,
     Engagement,
     EngagementStatus,
     EngagementWorkState,
@@ -101,12 +104,14 @@ def test_dispatch_allows_distinct_target(db: Session, engagement: Engagement) ->
     _prior_run(db, engagement, "dns_lookup", "cwa.example")
     task = _task(db, engagement, "dns_lookup", "other.example")
 
-    agent = TacticalAgent(redis_client=None)
-    # Guard does not fire — dispatch proceeds past it (then fails later on
-    # lease/redis, but NOT with TacticalAlreadyScanned).
-    with pytest.raises(Exception) as ei:  # noqa: PT011 — any later failure is fine
-        agent.dispatch(db, task=task, acting_user_id=uuid.uuid4())
-    assert not isinstance(ei.value, TacticalAlreadyScanned)
+    thread_id = TacticalAgent(redis_client=None).dispatch(
+        db, task=task, acting_user_id=uuid.uuid4()
+    )
+    assert task.status == TaskStatus.dispatched
+    assert task.run_id == thread_id
+    outbox = db.execute(select(CommandOutbox).where(CommandOutbox.task_id == task.id)).scalar_one()
+    assert outbox.status == CommandOutboxStatus.pending
+    assert json.loads(outbox.encoded_payload["data"])["thread_id"] == str(thread_id)
 
 
 def test_dispatch_allows_old_run_outside_window(db: Session, engagement: Engagement) -> None:
@@ -126,7 +131,11 @@ def test_dispatch_allows_old_run_outside_window(db: Session, engagement: Engagem
     db.commit()
     task = _task(db, engagement, "dns_lookup", "cwa.example")
 
-    agent = TacticalAgent(redis_client=None)
-    with pytest.raises(Exception) as ei:  # noqa: PT011
-        agent.dispatch(db, task=task, acting_user_id=uuid.uuid4())
-    assert not isinstance(ei.value, TacticalAlreadyScanned)
+    thread_id = TacticalAgent(redis_client=None).dispatch(
+        db, task=task, acting_user_id=uuid.uuid4()
+    )
+    assert task.status == TaskStatus.dispatched
+    assert task.run_id == thread_id
+    outbox = db.execute(select(CommandOutbox).where(CommandOutbox.task_id == task.id)).scalar_one()
+    assert outbox.status == CommandOutboxStatus.pending
+    assert json.loads(outbox.encoded_payload["data"])["thread_id"] == str(thread_id)

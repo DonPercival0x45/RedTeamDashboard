@@ -39,9 +39,9 @@ from app.models import (
 )
 from app.orchestrator.llm import default_provider_model
 from app.orchestrator.tools import get_tool
-from app.runs.events import encode_command
 from app.runs.streams import inbound_stream, run_model_key, store_run_model
 from app.services.agent_model_resolver import resolve_agent_model
+from app.services.command_outbox import enqueue_command
 
 logger = structlog.get_logger(__name__)
 
@@ -201,13 +201,20 @@ class TacticalAgent:
             mcp_url = f"{settings.public_base_url.rstrip('/')}/mcp/sse"
             mcp_host = "colocated"
 
-        store_run_model(
-            self._redis,
-            thread_id,
-            provider=provider,
-            model_name=model_name,
-            acting_user_id=acting_user_id,
-        )
+        try:
+            store_run_model(
+                self._redis,
+                thread_id,
+                provider=provider,
+                model_name=model_name,
+                acting_user_id=acting_user_id,
+            )
+        except Exception:  # noqa: BLE001 - durable lineage is in the command
+            logger.warning(
+                "tactical.run_model_cache_failed",
+                task_id=str(task.id),
+                thread_id=str(thread_id),
+            )
 
         now = datetime.now(tz=UTC)
         execution = AgentExecution(
@@ -261,33 +268,32 @@ class TacticalAgent:
                 f"task {task.id} changed state during dispatch; refusing to enqueue"
             )
 
-        # Commit lease + execution + task state BEFORE enqueueing on Redis.
-        # The worker reads the envelope in another process within ~2ms; if
-        # we xadd before commit, the worker's ``validate_token`` lookup
-        # races this session's commit and returns None (lease not yet
-        # visible) — surfaced as a confusing "invalid, released, or
-        # expired" ValueError. Crash between commit and xadd leaves an
-        # orphan lease that the periodic sweeper reclaims and a task in
-        # ``dispatched`` state with no run on the queue — recoverable.
-        session.commit()
-        session.refresh(task)
-
-        self._redis.xadd(
-            inbound_stream(task.engagement_id),
-            encode_command(
-                {
-                    "type": "run.start",
-                    "thread_id": str(thread_id),
-                    "prompt": prompt,
-                    "model": {"provider": provider, "name": model_name},
-                    "mcp_url": mcp_url,
-                    "lease_token": str(lease.id),
-                    # The worker resolves the BYO key off this id at run
-                    # time (ephemeral Redis cache). Required — no fallback.
-                    "acting_user_id": str(acting_user_id),
-                }
-            ),
+        # Commit lease + execution + task state and the command outbox row in
+        # one transaction. Redis publication happens only after the lease is
+        # visible, and a Redis outage leaves a retryable pending row rather
+        # than a silently stranded dispatched task.
+        run_payload = {
+            "type": "run.start",
+            "thread_id": str(thread_id),
+            "prompt": prompt,
+            "model": {"provider": provider, "name": model_name},
+            "mcp_url": mcp_url,
+            "lease_token": str(lease.id),
+            # The worker resolves the BYO key off this id at run time.
+            "acting_user_id": str(acting_user_id),
+        }
+        enqueue_command(
+            session,
+            idempotency_key=f"run.start:{thread_id}",
+            engagement_id=task.engagement_id,
+            stream_name=inbound_stream(task.engagement_id),
+            payload=run_payload,
+            task_id=task.id,
         )
+        # Keep every mutation caller-owned. The API/service that accepted or
+        # retried the Task commits suggestion + Task + policy execution + lease
+        # + outbox together; the independent relay publishes after commit.
+        session.refresh(task)
 
         logger.info(
             "tactical.dispatched",

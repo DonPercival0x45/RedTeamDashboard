@@ -26,9 +26,10 @@ from app.models import (
     Authorization,
     Engagement,
 )
-from app.runs.events import encode_command
+from app.models.command_outbox import CommandOutbox
 from app.runs.streams import inbound_stream, load_run_model
 from app.schemas.approval import ApprovalDecision, ApprovalInboxRead, ApprovalRead
+from app.services.command_outbox import enqueue_command, publish_entry
 
 router = APIRouter()
 
@@ -98,14 +99,42 @@ def decide_approval(
     redis_client: RedisClient,
     user: CurrentNonGuestUser,
 ) -> Approval:
-    approval = session.get(Approval, approval_id)
+    # Serialize terminal decisions. The lock covers the approval update,
+    # optional grant, audit row, and outbox insert in one DB transaction.
+    approval = session.execute(
+        select(Approval).where(Approval.id == approval_id).with_for_update()
+    ).scalar_one_or_none()
     if approval is None:
         raise HTTPException(status_code=404, detail="approval not found")
+
+    decision_args: dict[str, object] = {"approved": body.approved}
+    if body.edited_args:
+        decision_args["edited_args"] = body.edited_args
+    if body.reason:
+        decision_args["reason"] = body.reason
+
+    outbox_key = f"approval.resume:{approval.id}"
     if approval.status is not ApprovalStatus.pending:
-        raise HTTPException(
-            status_code=409,
-            detail=f"approval is {approval.status.value}, not pending",
-        )
+        same_decision = approval.decision_args == decision_args
+        if body.approved and body.remember_for_session and approval.authorization_id is None:
+            same_decision = False
+        if not same_decision:
+            raise HTTPException(
+                status_code=409,
+                detail=f"approval already decided as {approval.status.value}",
+            )
+        # An exact retry is idempotent. If the prior immediate XADD failed,
+        # retry publication now while leaving the durable row for the relay.
+        outbox = session.execute(
+            select(CommandOutbox).where(
+                CommandOutbox.idempotency_key == outbox_key
+            )
+        ).scalar_one_or_none()
+        session.commit()
+        if outbox is not None:
+            publish_entry(session, redis_client, outbox.id)
+        session.refresh(approval)
+        return approval
 
     if body.approved:
         approval.status = (
@@ -115,12 +144,6 @@ def decide_approval(
         approval.status = ApprovalStatus.denied
     approval.decided_by = user.id
     approval.decided_at = datetime.now(tz=UTC)
-
-    decision_args: dict[str, object] = {"approved": body.approved}
-    if body.edited_args:
-        decision_args["edited_args"] = body.edited_args
-    if body.reason:
-        decision_args["reason"] = body.reason
     approval.decision_args = decision_args
 
     # Approving "for the session" grants a standing per-(engagement, tool)
@@ -142,7 +165,7 @@ def decide_approval(
                 note=f"granted while approving a {approval.tool_name} call",
             )
             session.add(grant)
-            session.flush()  # assign grant.id
+            session.flush()
             session.add(
                 AuditLog(
                     engagement_id=approval.engagement_id,
@@ -175,37 +198,51 @@ def decide_approval(
             },
         )
     )
-    session.commit()
-    session.refresh(approval)
 
+    if not approval.tool_call_id:
+        raise HTTPException(status_code=409, detail="approval lacks interrupt identity")
     resume_payload: dict[str, object] = {
         "type": "run.resume",
         "thread_id": approval.thread_id,
-        "approved": body.approved,
+        "approval_id": str(approval.id),
+        "tool_call_id": approval.tool_call_id,
+        **decision_args,
     }
-    if body.edited_args:
-        resume_payload["edited_args"] = body.edited_args
-    if body.reason:
-        resume_payload["reason"] = body.reason
 
-    # Carry the original run's model + the kicking analyst's id forward
-    # so the worker resolves the SAME analyst's ephemeral BYO key on
-    # resume (not the approving user's). Missing only if the cache TTL
-    # expired (>6h since run.start) — in that case the worker raises
-    # because no acting_user_id means no resolvable key.
-    cached_model = load_run_model(redis_client, approval.thread_id)
-    if cached_model is not None:
-        # Split: ``model`` carries (provider, name) only; ``acting_user_id``
-        # rides as its own envelope field so the worker reads it the same
-        # way it does on run.start.
-        acting_user_id = cached_model.pop("acting_user_id", None)
-        resume_payload["model"] = cached_model
-        if acting_user_id:
-            resume_payload["acting_user_id"] = acting_user_id
+    # New approvals persist this lineage in Postgres. The Redis lookup is only
+    # a compatibility fallback for approvals created before migration 0054.
+    run_model = dict(approval.run_model) if approval.run_model else None
+    acting_user_id = str(approval.acting_user_id) if approval.acting_user_id else None
+    if run_model is None or acting_user_id is None:
+        try:
+            cached_model = load_run_model(redis_client, approval.thread_id)
+        except Exception:  # noqa: BLE001 - outbox must survive Redis outage
+            cached_model = None
+        if cached_model:
+            cached_acting_user = cached_model.pop("acting_user_id", None)
+            run_model = run_model or cached_model
+            acting_user_id = acting_user_id or cached_acting_user
+    if run_model:
+        resume_payload["model"] = run_model
+    if acting_user_id:
+        resume_payload["acting_user_id"] = acting_user_id
+    if approval.run_context:
+        for key in ("mcp_url", "lease_token"):
+            if approval.run_context.get(key):
+                resume_payload[key] = approval.run_context[key]
 
-    redis_client.xadd(
-        inbound_stream(approval.engagement_id),
-        encode_command(resume_payload),
+    outbox = enqueue_command(
+        session,
+        idempotency_key=outbox_key,
+        engagement_id=approval.engagement_id,
+        stream_name=inbound_stream(approval.engagement_id),
+        payload=resume_payload,
     )
+    session.commit()
+    session.refresh(approval)
 
+    # Low-latency attempt after the atomic domain+outbox commit. Failure is
+    # recorded as pending and is not an API error; the worker relay retries it.
+    publish_entry(session, redis_client, outbox.id)
+    session.refresh(approval)
     return approval

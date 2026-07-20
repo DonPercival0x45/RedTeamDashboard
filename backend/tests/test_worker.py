@@ -28,6 +28,8 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.db.session import SessionLocal
 from app.models import (
+    Approval,
+    ApprovalStatus,
     Engagement,
     EngagementStatus,
     RiskLevel,
@@ -351,6 +353,11 @@ def test_active_run_interrupts_then_resumes(
         pending = next(e for e in first if e["type"] == "approval.pending")
         assert pending["tool"] == "portscan"
         assert pending["risk"] == "active"
+        approval = db.get(Approval, uuid.UUID(pending["approval_id"]))
+        assert approval is not None
+        approval.status = ApprovalStatus.approved
+        approval.decision_args = {"approved": True}
+        db.commit()
 
         # Approve and resume on the same thread.
         redis_client.xadd(
@@ -360,6 +367,8 @@ def test_active_run_interrupts_then_resumes(
                     "type": "run.resume",
                     "thread_id": thread_id,
                     "approved": True,
+                    "approval_id": pending["approval_id"],
+                    "tool_call_id": pending["tool_call_id"],
                 }
             ),
         )

@@ -6,6 +6,7 @@ now mints a lease per direct run so every worker invocation carries an
 MCP envelope. These tests verify the lease + envelope shape and the
 strategic consumer's release path for direct runs.
 """
+
 from __future__ import annotations
 
 import json
@@ -18,9 +19,12 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
+from app.api.deps import redis_client as redis_dependency
 from app.core.config import settings
 from app.main import app
 from app.models import (
+    CommandOutbox,
+    CommandOutboxStatus,
     Engagement,
     EngagementStatus,
     MCPLease,
@@ -55,9 +59,7 @@ def redis_client() -> Iterator[redis_lib.Redis]:
 
 
 @pytest.fixture()
-def cleanup_slugs(
-    db: Session, redis_client: redis_lib.Redis
-) -> Iterator[list[str]]:
+def cleanup_slugs(db: Session, redis_client: redis_lib.Redis) -> Iterator[list[str]]:
     """Test appends engagement slugs it created; teardown flushes each."""
     slugs: list[str] = []
     yield slugs
@@ -75,6 +77,7 @@ def cleanup_slugs(
         db.execute(text("SELECT flush_engagement(:id)"), {"id": eng_id})
         db.commit()
         redis_client.delete(inbound_stream(eng_id), outbound_stream(eng_id))
+
 
 # ---------------------------------------------------------------------------
 # Service-level: direct-run mint + thread lookup
@@ -237,15 +240,11 @@ def test_post_runs_lease_excludes_exploit_tools(
         headers=_headers(),
     )
     assert response.status_code == 202, response.text
-    payload = json.loads(
-        redis_client.xrange(inbound_stream(uuid.UUID(eng["id"])))[-1][1]["data"]
-    )
+    payload = json.loads(redis_client.xrange(inbound_stream(uuid.UUID(eng["id"])))[-1][1]["data"])
 
     lease = mcp_lease.validate_token(db, payload["lease_token"])
     assert lease is not None
-    exploit_tools = {
-        spec.name for spec in all_tools() if spec.kind == TaskKind.exploit
-    }
+    exploit_tools = {spec.name for spec in all_tools() if spec.kind == TaskKind.exploit}
     assert not exploit_tools & set(lease.allowed_tools)
 
 
@@ -274,9 +273,7 @@ def test_post_runs_lease_uses_colocated_mcp_url(
         headers=_headers(),
     )
     assert response.status_code == 202, response.text
-    payload = json.loads(
-        redis_client.xrange(inbound_stream(uuid.UUID(eng["id"])))[-1][1]["data"]
-    )
+    payload = json.loads(redis_client.xrange(inbound_stream(uuid.UUID(eng["id"])))[-1][1]["data"])
     assert payload["mcp_url"] == "http://backend:8000/mcp/sse"
 
 
@@ -309,11 +306,51 @@ def test_strategic_consumer_releases_direct_run_lease_on_terminal_event(
         redis_client=None,  # type: ignore[arg-type]
         session_factory=lambda: db,
     )
-    consumer._release_lease_for_run(thread_id, reason="run.completed")
+    consumer._release_lease_for_run(db, thread_id, reason="run.completed")
+    db.commit()
 
     # Use a fresh session-scope read to bypass cached identity.
-    fresh = db.execute(
-        select(MCPLease).where(MCPLease.id == lease.id)
-    ).scalar_one()
+    fresh = db.execute(select(MCPLease).where(MCPLease.id == lease.id)).scalar_one()
     assert fresh.status == MCPLeaseStatus.released.value
     assert fresh.released_at is not None
+
+
+def test_direct_run_redis_outage_leaves_pending_outbox(
+    client: TestClient,
+    db: Session,
+    redis_client: redis_lib.Redis,
+    cleanup_slugs: list[str],
+) -> None:
+    eng = _create(client, "direct-outbox-outage")
+    cleanup_slugs.append(eng["slug"])
+    _seed_provider_key(client)
+
+    class FailingXadd:
+        def __init__(self, wrapped: redis_lib.Redis) -> None:
+            self._wrapped = wrapped
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self._wrapped, name)
+
+        def xadd(self, *_args: object, **_kwargs: object) -> None:
+            raise ConnectionError("injected direct-run Redis outage")
+
+    app.dependency_overrides[redis_dependency] = lambda: FailingXadd(redis_client)
+    try:
+        response = client.post(
+            f"/engagements/{eng['slug']}/runs",
+            json={
+                "prompt": "durable direct run",
+                "model": {"provider": "ollama", "name": "llama3.1:8b"},
+            },
+            headers=_headers(),
+        )
+    finally:
+        app.dependency_overrides.pop(redis_dependency, None)
+    assert response.status_code == 202, response.text
+    thread_id = response.json()["thread_id"]
+    outbox = db.execute(
+        select(CommandOutbox).where(CommandOutbox.thread_id == thread_id)
+    ).scalar_one()
+    assert outbox.status == CommandOutboxStatus.pending
+    assert "injected direct-run Redis outage" in (outbox.last_error or "")

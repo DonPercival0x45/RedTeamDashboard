@@ -10,12 +10,13 @@ from collections.abc import Iterator
 from typing import Any
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.agents.strategic import StrategicAgent
 from app.agents.tactical import TacticalAgent
 from app.models import (
+    CommandOutbox,
     Engagement,
     EngagementStatus,
     MCPLeaseStatus,
@@ -27,6 +28,13 @@ from app.models import (
     TaskStatus,
 )
 from app.services import mcp_lease
+
+
+def _outbox_envelope(db: Session, task: Task) -> dict[str, Any]:
+    row = db.execute(
+        select(CommandOutbox).where(CommandOutbox.task_id == task.id)
+    ).scalar_one()
+    return json.loads(row.encoded_payload["data"])
 
 
 class _FakeRedis:
@@ -128,10 +136,8 @@ def test_tactical_dispatch_mints_lease_and_stamps_envelope(
     TacticalAgent(redis).dispatch(db, task=task, acting_user_id=uuid.uuid4())
     db.commit()
 
-    # Envelope carries mcp_url + lease_token.
-    assert len(redis.xadd_calls) == 1
-    _stream, fields = redis.xadd_calls[0]
-    envelope = json.loads(fields["data"])
+    # Durable envelope carries mcp_url + lease_token.
+    envelope = _outbox_envelope(db, task)
     assert envelope["type"] == "run.start"
     # mcp_url is the full FastMCP SSE handler path, not just the mount root.
     # The /mcp/sse vs /mcp distinction matters: a bare /mcp 404s once auth passes.
@@ -224,7 +230,7 @@ def test_tactical_routes_to_colocated_when_aca_disabled(
     TacticalAgent(redis).dispatch(db, task=task, acting_user_id=uuid.uuid4())
     db.commit()
 
-    envelope = json.loads(redis.xadd_calls[0][1]["data"])
+    envelope = _outbox_envelope(db, task)
     assert envelope["mcp_url"] == "http://backend:8000/mcp/sse"
 
 
@@ -251,7 +257,7 @@ def test_tactical_routes_to_colocated_when_lease_does_not_require_container(
     TacticalAgent(redis).dispatch(db, task=task, acting_user_id=uuid.uuid4())
     db.commit()
 
-    envelope = json.loads(redis.xadd_calls[0][1]["data"])
+    envelope = _outbox_envelope(db, task)
     assert envelope["mcp_url"] == "http://backend:8000/mcp/sse"
 
 
@@ -278,7 +284,7 @@ def test_tactical_routes_to_aca_mcp_when_lease_and_settings_agree(
     TacticalAgent(redis).dispatch(db, task=task, acting_user_id=uuid.uuid4())
     db.commit()
 
-    envelope = json.loads(redis.xadd_calls[0][1]["data"])
+    envelope = _outbox_envelope(db, task)
     assert (
         envelope["mcp_url"]
         == "https://rtd-mcp.example.azurecontainerapps.io/mcp/sse"
@@ -311,5 +317,5 @@ def test_tactical_routes_to_colocated_when_aca_url_blank(
     TacticalAgent(redis).dispatch(db, task=task, acting_user_id=uuid.uuid4())
     db.commit()
 
-    envelope = json.loads(redis.xadd_calls[0][1]["data"])
+    envelope = _outbox_envelope(db, task)
     assert envelope["mcp_url"] == "http://backend:8000/mcp/sse"
