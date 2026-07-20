@@ -11,6 +11,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
+import structlog
 from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
@@ -80,10 +81,12 @@ from app.schemas.strategy import (
     WorkItemRollupBucket,
     WorkItemUpdate,
 )
-from app.services.engagement_strategist import maybe_schedule_auto_reassess
+from app.services.command_outbox import publish_entry
+from app.services.engagement_strategist import stage_auto_reassess
 from app.services.report_readiness import build_report_readiness
 
 router = APIRouter(tags=["strategy"])
+logger = structlog.get_logger(__name__)
 
 _TERMINAL_WORK = {WorkItemStatus.completed, WorkItemStatus.cancelled}
 _REMAINING_WORK = {
@@ -1241,9 +1244,20 @@ def resolve_work_item(
             "row_version": row.row_version,
         },
     )
+    event = stage_auto_reassess(
+        session,
+        work_item_id=row.id,
+        resolution_version=row.row_version,
+        engagement_id=row.engagement_id,
+        acting_user_id=user.id,
+    )
     session.commit()
     session.refresh(row)
-    maybe_schedule_auto_reassess(redis_client, row.engagement_id, user.id)
+    try:
+        publish_entry(session, redis_client, event.id)
+    except Exception:  # noqa: BLE001 - committed outbox relay is the recovery path
+        session.rollback()
+        logger.exception("auto_reassess.immediate_publish_failed", event_id=str(event.id))
     return _work_read(session, row)
 
 
