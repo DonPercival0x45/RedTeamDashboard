@@ -19,8 +19,8 @@ help: ## Show this help
 # Stack lifecycle
 # ---------------------------------------------------------------------------
 
-up: ## Bring the full stack up (postgres, redis, backend, worker, frontend)
-	$(COMPOSE) up -d
+up: ## Bootstrap and bring up the full local stack
+	./scripts/local-up.sh
 
 down: ## Stop the stack (preserves volumes)
 	$(COMPOSE) down

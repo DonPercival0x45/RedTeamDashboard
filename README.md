@@ -42,12 +42,32 @@ docs/       architecture, charter, deployment docs
 
 ## Local dev
 
+A fresh stack needs a worker MCP credential after the database and backend are
+ready. Use the two-phase bootstrap instead of starting every service at once:
+
 ```bash
-cp infra/.env.example infra/.env
-docker compose -f infra/docker-compose.yml up --build
+make up
+# equivalent: ./scripts/local-up.sh
 ```
 
+The helper creates `infra/.env` from `.env.example` when needed, starts
+Postgres, Redis, and the backend, waits for health, mints a `cli`-scoped worker
+key, and saves it to the gitignored `infra/.env` before starting the worker and
+frontend. Re-running it reuses the saved key. Production still requires
+`WORKER_MCP_API_KEY` to be provisioned externally; no fallback key is built in.
+Edit `infra/.env` before or after the first run to select an LLM provider.
+
+The developer Compose override used by `make up` publishes:
+
 - Frontend: http://localhost:3001
-- Backend:  http://localhost:8000/health
+- Backend:  http://localhost:8001/health
 - Postgres: localhost:5432
-- Redis:    localhost:6379
+- Redis:    localhost:7000
+
+To inspect the migration revision rather than relying on a hard-coded head:
+
+```bash
+cd backend
+python -m alembic heads       # currently 0053
+python -m alembic current
+```

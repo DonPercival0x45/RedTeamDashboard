@@ -81,6 +81,14 @@ jobs:
         working-directory: backend
         run: ruff check app tests
 
+      - name: Verify FastAPI app imports with 204 routes
+        working-directory: backend
+        run: |
+          # FastAPI validates 204 response annotations while routers are
+          # registered. The old `-> None` route failed during this import on
+          # supported 0.115.x environments, before any test could collect.
+          python -c "from app.main import app; assert app is not None"
+
       - name: Apply migrations
         working-directory: backend
         run: alembic upgrade head
@@ -178,6 +186,37 @@ jobs:
   # `code-scanning/default-setup` API). Default setup and custom workflow
   # uploads can't coexist, so we don't run it from this workflow.
   # ---------------------------------------------------------------------------
+
+  # ---------------------------------------------------------------------------
+  # Local onboarding config: parse scripts and Compose without starting Docker.
+  # ---------------------------------------------------------------------------
+  local-config:
+    name: Local onboarding config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check bootstrap shell syntax
+        run: bash -n scripts/local-up.sh
+
+      - name: Parse base and override Compose configuration
+        run: |
+          docker compose -f infra/docker-compose.yml config --quiet
+          docker compose \
+            -f infra/docker-compose.yml \
+            -f infra/docker-compose.override.yml \
+            config --quiet
+
+      - name: Check documented bootstrap and runtime API variables
+        run: |
+          grep -Fq './scripts/local-up.sh' README.md
+          grep -Fq 'python -m alembic heads' README.md
+          docker compose -f infra/docker-compose.yml config \
+            | grep -Fq 'RTD_API_BASE_URL: http://localhost:8000'
+          docker compose \
+            -f infra/docker-compose.yml \
+            -f infra/docker-compose.override.yml \
+            config | grep -Fq 'RTD_API_BASE_URL: http://localhost:8001'
 
   # ---------------------------------------------------------------------------
   # Trivy filesystem scan — surfaces dependency CVEs without building images.

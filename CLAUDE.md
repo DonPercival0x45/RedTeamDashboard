@@ -71,8 +71,9 @@ docker compose -f infra/docker-compose.yml up -d --force-recreate backend worker
 
 ## Conventions
 
-- **Alembic:** single linear chain, one head (currently `0009`). New migration =
-  next number, `down_revision` = current head. Never branch the chain.
+- **Alembic:** single linear chain, one head. Determine it with
+  `cd backend && python -m alembic heads` (currently `0053`); set a new
+  migration's `down_revision` to that result. Never branch the chain.
 - **Merge resolution:** conflicts in registration files (`app/main.py`,
   `models/__init__.py`, `frontend/lib/api.ts`, `frontend/lib/types.ts`) are almost
   always additive — keep both sides, then sort/close interfaces.

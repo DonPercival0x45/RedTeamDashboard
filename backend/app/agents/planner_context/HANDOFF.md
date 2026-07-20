@@ -154,7 +154,8 @@ sequence.
 **`backend/alembic/versions/0009_attachments.py`** — Migration `0009`
 
 - Creates `attachments` table; indexes on `finding_id` and `engagement_id`
-- Alembic head is now `0009`
+- Alembic head was `0009` at this historical checkpoint. Do not use it as
+  current guidance; run `cd backend && python -m alembic heads`.
 
 **New endpoints in `backend/app/api/engagements.py`**
 
