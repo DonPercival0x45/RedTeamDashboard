@@ -1,3 +1,5 @@
+import type { Suggestion } from "@/lib/types";
+
 export type StrategyRevisionState =
   | "draft"
   | "proposed"
@@ -119,6 +121,8 @@ export interface WorkItem {
   engagement_id: string;
   objective_id: string | null;
   parent_work_item_id: string | null;
+  scope_item_id: string | null;
+  entity_id: string | null;
   title: string;
   description: string | null;
   rationale: string | null;
@@ -185,6 +189,21 @@ export interface WorkItemFilters {
   q?: string;
   limit?: number;
   cursor?: string;
+}
+
+export interface ExecutionSuggestionCreate {
+  tool: string;
+  target: string;
+  task_kind: "enum" | "scan";
+  title: string;
+  expected_work_item_version: number;
+  idempotency_key: string;
+  finding_id?: string | null;
+}
+
+export interface ExecutionSuggestionResponse {
+  suggestion: Suggestion;
+  scope_reason: string;
 }
 
 export interface WorkItemResult {

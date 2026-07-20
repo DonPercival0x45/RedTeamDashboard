@@ -76,11 +76,26 @@ def create_execution_suggestion(
         raise HTTPException(
             status_code=409, detail="work item changed since the action was composed"
         )
+    if body.task_kind not in {TaskKind.scan.value, TaskKind.enum.value}:
+        raise HTTPException(status_code=422, detail="only scan or enum tasks may be proposed")
+    tool = get_tool(body.tool)
+    if tool is None:
+        raise HTTPException(status_code=422, detail="unknown execution tool")
+    target_kind = infer_scope_kind(body.target)
+    if tool.kind != target_kind:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"tool {body.tool} accepts {tool.kind.value} targets, "
+                f"not {target_kind.value}"
+            ),
+        )
     existing = session.execute(
         select(Suggestion).where(
             Suggestion.engagement_id == work_item.engagement_id,
             Suggestion.kind == SuggestionKind.task,
             Suggestion.proposal_key == body.idempotency_key,
+            Suggestion.status == SuggestionStatus.open,
         )
     ).scalar_one_or_none()
     if existing is not None:
@@ -93,11 +108,6 @@ def create_execution_suggestion(
             suggestion=SuggestionRead.model_validate(existing),
             scope_reason=str((existing.payload or {}).get("scope_reason") or "already validated"),
         )
-    if body.task_kind not in {TaskKind.scan.value, TaskKind.enum.value}:
-        raise HTTPException(status_code=422, detail="only scan or enum tasks may be proposed")
-    tool = get_tool(body.tool)
-    if tool is None:
-        raise HTTPException(status_code=422, detail="unknown execution tool")
     finding_id = body.finding_id
     if finding_id is not None:
         finding = session.get(Finding, finding_id)
@@ -112,7 +122,7 @@ def create_execution_suggestion(
             select(ScopeItem).where(ScopeItem.engagement_id == work_item.engagement_id)
         ).scalars()
     )
-    match = evaluate_scope(body.target, infer_scope_kind(body.target), scope_items)
+    match = evaluate_scope(body.target, target_kind, scope_items)
     if not match.allowed:
         raise HTTPException(
             status_code=422, detail=f"target is outside current scope: {match.reason}"

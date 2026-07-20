@@ -193,6 +193,8 @@ class WorkItemRead(BaseModel):
     engagement_id: UUID
     objective_id: UUID | None
     parent_work_item_id: UUID | None
+    scope_item_id: UUID | None
+    entity_id: UUID | None
     title: str
     description: str | None
     rationale: str | None

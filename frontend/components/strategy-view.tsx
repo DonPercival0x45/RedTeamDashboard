@@ -4,7 +4,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { DateTime } from "@/components/date-time";
-import { acceptSuggestion, ApiError, dismissSuggestion, listSuggestions } from "@/lib/api";
+import {
+  acceptSuggestion,
+  ApiError,
+  dismissSuggestion,
+  listOrchestratorTools,
+  listScope,
+  listSuggestions,
+} from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -18,6 +25,7 @@ import {
   cancelObjective,
   createCheckpoint,
   createCoverageItem,
+  createExecutionSuggestion,
   createObjective,
   createStrategyRevision,
   createWorkItem,
@@ -72,7 +80,12 @@ import type {
   WorkItemResolution,
   WorkItemStatus,
 } from "@/lib/strategy-types";
-import type { EngagementStatus, Suggestion } from "@/lib/types";
+import type {
+  EngagementStatus,
+  OrchestratorTool,
+  ScopeItem,
+  Suggestion,
+} from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 type LoadState = {
@@ -88,6 +101,8 @@ type LoadState = {
   resume: ResumeBriefing;
   chat: StrategistChatState;
   suggestions: Suggestion[];
+  scope: ScopeItem[];
+  tools: OrchestratorTool[];
 };
 
 const WORK_STATUSES: Array<WorkItemStatus | "all"> = [
@@ -153,6 +168,8 @@ const SLICE_LABELS: Record<string, string> = {
   resume: "resume briefing",
   chat: "strategist chat",
   suggestions: "proposals",
+  scope: "formal scope",
+  tools: "execution tool catalog",
   objectives: "objectives",
   workItems: "work queue",
   checkpoints: "checkpoints",
@@ -199,6 +216,8 @@ function emptyLoadState(): LoadState {
     },
     chat: { conversation_id: null, messages: [] },
     suggestions: [],
+    scope: [],
+    tools: [],
   };
 }
 
@@ -322,6 +341,8 @@ export function StrategyView({
     void loadSlice("resume", seq, () => getResumeBriefing(slug));
     void loadSlice("chat", seq, () => getStrategistChat(slug));
     void loadSlice("suggestions", seq, () => listSuggestions(slug, "open"));
+    void loadSlice("scope", seq, () => listScope(slug));
+    void loadSlice("tools", seq, () => listOrchestratorTools());
     // The current strategy gates the workspace slice, so await it inline.
     try {
       const current = await getCurrentStrategy(slug);
@@ -729,7 +750,7 @@ export function StrategyView({
             ))}
             {visibleWork.length === 0 && <li className="text-sm text-muted-foreground">No matching work.</li>}
           </ul>
-        <WorkItemFlyout item={selectedWork} objectives={data.objectives} slug={slug} readOnly={readOnly} busy={busy} mutate={mutate} open={workFlyoutOpen} onOpenChange={handleWorkFlyoutOpenChange} onBackToStrategy={() => { setTab("strategy"); handleWorkFlyoutOpenChange(false); }} />
+        <WorkItemFlyout item={selectedWork} objectives={data.objectives} scope={data.scope} tools={data.tools} scopeError={sliceErrors.scope ?? null} toolsError={sliceErrors.tools ?? null} slug={slug} readOnly={readOnly} busy={busy} mutate={mutate} open={workFlyoutOpen} onOpenChange={handleWorkFlyoutOpenChange} onBackToStrategy={() => { setTab("strategy"); handleWorkFlyoutOpenChange(false); }} />
       </section>
         </TabsContent>
         <TabsContent value="coverage" className="space-y-6">
@@ -963,6 +984,16 @@ function NeedsDecisionSection({ slug, readOnly, openSignals, openSuggestions, pr
   // Bulk: resilient — allSettled, per-item catch, single toast.
   const bulkAction = (actionItems: DecisionItem[], action: "accept" | "dismiss") => {
     if (actionItems.length === 0) return;
+    const agentRunCount = actionItems.filter((item) => item.tag === "Agent run").length;
+    if (
+      action === "accept" &&
+      agentRunCount > 0 &&
+      !window.confirm(
+        `Accept ${agentRunCount} Agent run proposal${agentRunCount === 1 ? "" : "s"}? Acceptance immediately requests scope-gated Tactical dispatch. Active tools may still pause for approval.`,
+      )
+    ) {
+      return;
+    }
     void mutate(
       "decisions-bulk",
       async () => {
@@ -1058,6 +1089,11 @@ function NeedsDecisionSection({ slug, readOnly, openSignals, openSuggestions, pr
                         <p className="font-medium">{item.title}</p>
                       </div>
                       {item.description && <p className="mt-1 text-muted-foreground">{item.description}</p>}
+                      {item.tag === "Agent run" && (
+                        <p className="mt-1 text-[10px] text-sky-700 dark:text-sky-300">
+                          Acceptance immediately requests a scope-gated Tactical dispatch. Active tools may still pause for approval.
+                        </p>
+                      )}
                       {item.findingId && (
                         <Link
                           href={`/e/findings/${item.findingId}?slug=${encodeURIComponent(slug)}&returnTo=${encodeURIComponent(`/e?slug=${slug}&view=strategy`)}`}
@@ -1078,10 +1114,26 @@ function NeedsDecisionSection({ slug, readOnly, openSignals, openSuggestions, pr
                       Dismiss
                     </SmallAction>
                     <SmallAction
-                      onClick={() => void mutate(`${item.key}-accept`, item.accept, `Accepted: ${item.title}`)}
+                      onClick={() => {
+                        if (
+                          item.tag === "Agent run" &&
+                          !window.confirm(
+                            "Accept this Agent run proposal? Acceptance immediately requests scope-gated Tactical dispatch. Active tools may still pause for approval.",
+                          )
+                        ) {
+                          return;
+                        }
+                        void mutate(
+                          `${item.key}-accept`,
+                          item.accept,
+                          item.tag === "Agent run"
+                            ? `Run requested: ${item.title}`
+                            : `Accepted: ${item.title}`,
+                        );
+                      }}
                       disabled={busy !== null}
                     >
-                      Accept
+                      {item.tag === "Agent run" ? "Accept & request run" : "Accept"}
                     </SmallAction>
                   </div>
                 )}
@@ -1152,7 +1204,197 @@ function labelSuggestionKind(kind: Suggestion["kind"]): string {
   return kind.replaceAll("_", " ");
 }
 
-function WorkItemFlyout({ item, objectives, slug, readOnly, busy, mutate, open, onOpenChange, onBackToStrategy }: { item: WorkItem | null; objectives: Objective[]; slug: string; readOnly: boolean; busy: string | null; mutate: (key: string, action: () => Promise<unknown>, success: string) => Promise<boolean>; open: boolean; onOpenChange: (value: boolean) => void; onBackToStrategy: () => void; }) {
+const PREFERRED_TOOLS: Record<string, string[]> = {
+  domain: ["subfinder"],
+  ip: ["portscan", "port_scan"],
+  cidr: ["subnet_sweep"],
+  url: ["httpx_probe"],
+};
+
+function executionIdempotencyKey(
+  workItemId: string,
+  rowVersion: number,
+  tool: string,
+  target: string,
+): string {
+  const value = `${tool}\u0000${target}`;
+  let first = 0xdeadbeef ^ value.length;
+  let second = 0x41c6ce57 ^ value.length;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    first = Math.imul(first ^ code, 2654435761);
+    second = Math.imul(second ^ code, 1597334677);
+  }
+  first = Math.imul(first ^ (first >>> 16), 2246822507) ^ Math.imul(second ^ (second >>> 13), 3266489909);
+  second = Math.imul(second ^ (second >>> 16), 2246822507) ^ Math.imul(first ^ (first >>> 13), 3266489909);
+  const digest = `${(second >>> 0).toString(36)}${(first >>> 0).toString(36)}`;
+  return `work-item-execution:${workItemId}:${rowVersion}:${digest}`;
+}
+
+function SafeRunProposal({
+  item,
+  scope,
+  tools,
+  scopeError,
+  toolsError,
+  readOnly,
+  busy,
+  mutate,
+}: {
+  item: WorkItem;
+  scope: ScopeItem[];
+  tools: OrchestratorTool[];
+  scopeError: string | null;
+  toolsError: string | null;
+  readOnly: boolean;
+  busy: string | null;
+  mutate: (key: string, action: () => Promise<unknown>, success: string) => Promise<boolean>;
+}) {
+  const workItemId = item.id;
+  const scopeItemId = item.scope_item_id;
+  const anchor = scope.find((candidate) => candidate.id === scopeItemId) ?? null;
+  const compatibleTools = useMemo(() => {
+    if (!anchor || anchor.is_exclusion) return [];
+    const candidates = tools.filter(
+      (tool) =>
+        tool.scope_kind === anchor.kind &&
+        tool.risk !== "destructive" &&
+        tool.phase !== "exploit" &&
+        tool.phase !== "phishing",
+    );
+    const preferences = PREFERRED_TOOLS[anchor.kind] ?? [];
+    return [...candidates].sort((left, right) => {
+      const leftRank = preferences.indexOf(left.name);
+      const rightRank = preferences.indexOf(right.name);
+      if (leftRank >= 0 || rightRank >= 0) {
+        return (leftRank < 0 ? Number.MAX_SAFE_INTEGER : leftRank) -
+          (rightRank < 0 ? Number.MAX_SAFE_INTEGER : rightRank);
+      }
+      return left.name.localeCompare(right.name);
+    });
+  }, [anchor, tools]);
+  const toolNames = compatibleTools.map((tool) => tool.name).join("\u0000");
+  const defaultToolName = compatibleTools[0]?.name ?? "";
+  const [toolName, setToolName] = useState("");
+  const [feedback, setFeedback] = useState<{ kind: "success" | "error"; text: string } | null>(null);
+
+  useEffect(() => {
+    setToolName(defaultToolName);
+    setFeedback(null);
+  }, [workItemId, scopeItemId, anchor?.kind, anchor?.value, defaultToolName, toolNames]);
+
+  const selectedTool = compatibleTools.find((tool) => tool.name === toolName) ?? null;
+  const taskKind = selectedTool?.risk === "passive" || selectedTool?.phase === "osint"
+    ? "enum"
+    : "scan";
+  const proposing = busy === `work-${item.id}-execution-suggestion`;
+
+  if (!item.scope_item_id) {
+    return (
+      <div className="rounded border border-amber-500/30 bg-amber-500/5 p-3">
+        <p className="text-xs font-medium">Propose safe run</p>
+        <p className="mt-1 text-xs text-muted-foreground">
+          This work item has no formal scope anchor. {item.entity_id ? "Its entity anchor alone cannot prefill a scope-checked target." : "Add a scope anchor before proposing a run."}
+        </p>
+      </div>
+    );
+  }
+  if (!anchor) {
+    return (
+      <div className="rounded border border-amber-500/30 bg-amber-500/5 p-3">
+        <p className="text-xs font-medium">Propose safe run</p>
+        <p className="mt-1 text-xs text-muted-foreground">
+          {scopeError ? `Formal scope could not be loaded: ${scopeError}` : "The work item's scope anchor is no longer present in formal scope."}
+        </p>
+      </div>
+    );
+  }
+  if (anchor.is_exclusion) {
+    return (
+      <div className="rounded border border-amber-500/30 bg-amber-500/5 p-3">
+        <p className="text-xs font-medium">Propose safe run</p>
+        <p className="mt-1 text-xs text-muted-foreground">The anchored scope item is an exclusion, so no run can be proposed from it.</p>
+      </div>
+    );
+  }
+  if (compatibleTools.length === 0) {
+    return (
+      <div className="rounded border border-amber-500/30 bg-amber-500/5 p-3">
+        <p className="text-xs font-medium">Propose safe run</p>
+        <p className="mt-1 text-xs text-muted-foreground">
+          {toolsError ? `The execution tool catalog could not be loaded: ${toolsError}` : `No safe catalog tool accepts ${anchor.kind} targets.`}
+        </p>
+      </div>
+    );
+  }
+
+  const propose = async () => {
+    if (!selectedTool) return;
+    setFeedback(null);
+    const ok = await mutate(
+      `work-${item.id}-execution-suggestion`,
+      () =>
+        createExecutionSuggestion(item.id, {
+          tool: selectedTool.name,
+          target: anchor.value,
+          task_kind: taskKind,
+          title: `Proposed ${selectedTool.name} run: ${item.title}`.slice(0, 300),
+          expected_work_item_version: item.row_version,
+          idempotency_key: executionIdempotencyKey(
+            item.id,
+            item.row_version,
+            selectedTool.name,
+            anchor.value,
+          ),
+          finding_id: item.finding_links[0]?.finding_id ?? null,
+        }),
+      "Run proposal created. Nothing executed; an analyst must accept it in Needs decision.",
+    );
+    setFeedback(ok
+      ? { kind: "success", text: "Proposal created. It will appear in Needs decision as the refresh completes. Nothing executed; an analyst must accept the run proposal before the existing approval and Tactical gates apply." }
+      : { kind: "error", text: "The proposal was not created. The backend rejected the request; review the page error and try again." });
+  };
+
+  return (
+    <div className="rounded border border-sky-500/30 bg-sky-500/5 p-3">
+      <p className="text-xs font-medium">Propose safe run</p>
+      <p className="mt-1 text-[11px] text-muted-foreground">
+        This creates an inert proposal only. It does not execute or dispatch a tool; an analyst must accept the new run proposal in Needs decision.
+      </p>
+      <div className="mt-3 grid gap-2 sm:grid-cols-[11rem_1fr_auto]">
+        <select
+          aria-label="Compatible execution tool"
+          value={toolName}
+          onChange={(event) => { setToolName(event.target.value); setFeedback(null); }}
+          disabled={readOnly || proposing}
+          className="h-8 rounded border border-input bg-background px-2 text-xs"
+        >
+          {compatibleTools.map((tool) => <option key={tool.name} value={tool.name}>{tool.name}</option>)}
+        </select>
+        <Input
+          aria-label="Scope-anchored execution target"
+          value={anchor.value}
+          readOnly
+          className="h-8 font-mono text-xs"
+        />
+        <Button size="sm" variant="outline" disabled={readOnly || busy !== null} onClick={() => void propose()}>
+          {proposing ? "Proposing…" : "Propose safe run"}
+        </Button>
+      </div>
+      <p className="mt-2 text-[10px] text-muted-foreground">
+        Anchored to {anchor.kind}: <span className="font-mono">{anchor.value}</span> · task kind {taskKind}
+        {readOnly ? " · this engagement is read-only" : ""}
+      </p>
+      {feedback && (
+        <p role={feedback.kind === "error" ? "alert" : "status"} className={cn("mt-2 text-xs", feedback.kind === "error" ? "text-critical" : "text-emerald-700 dark:text-emerald-200")}>
+          {feedback.text}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function WorkItemFlyout({ item, objectives, scope, tools, scopeError, toolsError, slug, readOnly, busy, mutate, open, onOpenChange, onBackToStrategy }: { item: WorkItem | null; objectives: Objective[]; scope: ScopeItem[]; tools: OrchestratorTool[]; scopeError: string | null; toolsError: string | null; slug: string; readOnly: boolean; busy: string | null; mutate: (key: string, action: () => Promise<unknown>, success: string) => Promise<boolean>; open: boolean; onOpenChange: (value: boolean) => void; onBackToStrategy: () => void; }) {
   const [title, setTitle] = useState(item?.title ?? "");
   const [description, setDescription] = useState(item?.description ?? "");
   const [rationale, setRationale] = useState(item?.rationale ?? "");
@@ -1248,6 +1490,10 @@ function WorkItemFlyout({ item, objectives, slug, readOnly, busy, mutate, open, 
                 ))}
               </div>
             </div>
+          )}
+
+          {(["finding_agent", "tactical"] as WorkItemExecutor[]).includes(item.executor_type) && !terminal && (
+            <SafeRunProposal item={item} scope={scope} tools={tools} scopeError={scopeError} toolsError={toolsError} readOnly={readOnly} busy={busy} mutate={mutate} />
           )}
 
           {!readOnly && (
