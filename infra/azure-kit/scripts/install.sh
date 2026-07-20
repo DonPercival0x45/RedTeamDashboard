@@ -404,11 +404,20 @@ for i in {1..40}; do
 done
 
 # ---------------------------------------------------------------------------
-# v1.10.0: SWA build + deploy step removed. The frontend Container App
-# (Bicep module modules/frontend.bicep) is now the sole viewer. Its
-# ingress IP restrictions + Entra env vars were stamped during the Bicep
-# deploy at step [3/6]; no post-Bicep viewer work required.
+# v2.19.1: force the frontend Container App to mint a fresh revision so it
+# pulls the current :latest viewer image. Container Apps skips revision
+# creation when Bicep replays the same template — and the frontend's
+# template has nothing that naturally changes between installs (unlike the
+# backend, whose Key Vault secret rotation churns its hash). Without this
+# nudge, `install.sh` would report "Deploy complete." while the browser
+# kept serving whatever :latest resolved to at the LAST install (frontend
+# stayed on the 2026-07-17 v2.15 image across the whole v2.16→v2.19 batch
+# until we bumped this env manually).
 # ---------------------------------------------------------------------------
+echo "    refreshing frontend Container App (force :latest re-pull)…"
+az containerapp update -n "$FRONTEND_APP_NAME" -g "$RG_OUT" \
+    --set-env-vars "RTD_REVISION_BUMP=$REV_BUMP" --only-show-errors -o none
+green "    frontend refreshed — new revision draining the previous one."
 
 # ---------------------------------------------------------------------------
 # Bootstrap — mint admin key + store secrets in Key Vault
