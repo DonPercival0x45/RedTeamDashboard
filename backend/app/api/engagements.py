@@ -64,7 +64,7 @@ from fastapi import (
     UploadFile,
     status,
 )
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, RootModel, field_validator, model_validator
 from sqlalchemy import case, func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import object_session
@@ -114,6 +114,8 @@ from app.schemas.engagement import (
     ScopeItemUpdate,
 )
 from app.schemas.finding import (
+    MAX_FINDING_SUMMARY_CHARS,
+    MAX_FINDING_TAGS,
     AttachmentRead,
     CorrelateGroup,
     CorrelateResponse,
@@ -132,9 +134,14 @@ from app.schemas.finding import (
     RegroupPreview,
     RegroupProposal,
     RepairGroupsResult,
+    _normalize_tags,
 )
 from app.schemas.observation import ObservationCreate, ObservationRead
 from app.services.entities import annotate_scope_status, extract_entities
+from app.services.findings import (
+    get_active_finding_or_404,
+    lock_active_finding_or_404,
+)
 from app.services.scope_import import parse_scope_text
 
 router = APIRouter()
@@ -172,6 +179,17 @@ def _get_engagement_or_404(session: DbSession, slug: str) -> Engagement:
 # card. ``scope_count`` counts the actionable (non-exclusion) items;
 # ``exclusion_count`` counts the !-marked items. Returns
 # ``(scope_count, exclusion_count)`` for one engagement.
+def _scope_audit_value(item: ScopeItem) -> dict[str, Any]:
+    return {
+        "id": str(item.id),
+        "kind": item.kind.value,
+        "value": item.value,
+        "is_exclusion": item.is_exclusion,
+        "note": item.note,
+        "source": item.source,
+    }
+
+
 def _scope_counts_for(session: DbSession, engagement_id: uuid.UUID) -> tuple[int, int]:
     rows = session.execute(
         select(
@@ -231,6 +249,9 @@ def _populate_has_strategy(session: DbSession, reads: list[EngagementRead]) -> l
     return reads
 
 
+_AUDIT_LEDGER_LIMIT = 1000
+
+
 def _build_export_payload(
     session: DbSession,
     eng: Engagement,
@@ -265,15 +286,31 @@ def _build_export_payload(
                 )
             ).scalar_one()
         )
-    audit_rows = list(
-        session.execute(
-            select(AuditLog).where(AuditLog.engagement_id == eng.id).order_by(AuditLog.created_at)
-        ).scalars()
-    )
-    audit_summary: dict[str, Any] = {"count": len(audit_rows)}
-    if audit_rows:
-        audit_summary["first"] = str(audit_rows[0].created_at)
-        audit_summary["last"] = str(audit_rows[-1].created_at)
+    audit_count, audit_first, audit_last = session.execute(
+        select(
+            func.count(AuditLog.id),
+            func.min(AuditLog.created_at),
+            func.max(AuditLog.created_at),
+        ).where(AuditLog.engagement_id == eng.id)
+    ).one()
+    audit_summary: dict[str, Any] = {"count": int(audit_count or 0)}
+    if audit_first is not None:
+        audit_summary["first"] = str(audit_first)
+        audit_summary["last"] = str(audit_last)
+
+    # Internal archives carry the durable ledger itself. Keep only the newest
+    # bounded window, then restore chronological order for deterministic replay.
+    audit_rows: list[AuditLog] = []
+    if not omit_excluded:
+        audit_rows = list(
+            session.execute(
+                select(AuditLog)
+                .where(AuditLog.engagement_id == eng.id)
+                .order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
+                .limit(_AUDIT_LEDGER_LIMIT)
+            ).scalars()
+        )
+        audit_rows.reverse()
 
     observations = list(
         session.execute(
@@ -570,6 +607,27 @@ def _build_export_payload(
             {"task_id": str(row.id), "work_item_id": str(row.work_item_id)} for row in linked_tasks
         ],
         "audit_summary": audit_summary,
+        **(
+            {
+                "audit_ledger": [
+                    {
+                        "event_id": str(row.id),
+                        "event_type": row.event_type,
+                        "actor": {
+                            "type": row.actor_type.value,
+                            "id": row.actor_id,
+                        },
+                        "timestamp": str(row.created_at),
+                        "payload": row.payload,
+                    }
+                    for row in audit_rows
+                ],
+                "audit_ledger_truncated": int(audit_count or 0) > _AUDIT_LEDGER_LIMIT,
+                "audit_ledger_limit": _AUDIT_LEDGER_LIMIT,
+            }
+            if not omit_excluded
+            else {}
+        ),
     }
 
 
@@ -608,6 +666,13 @@ def _reject_engagement_id(session: DbSession, engagement_id: uuid.UUID) -> None:
     if eng is None:
         raise HTTPException(status_code=404, detail="engagement not found")
     _reject_flushed(eng)
+
+
+def _lock_active_finding_for_mutation(session: DbSession, finding_id: uuid.UUID) -> Finding:
+    """Lock the engagement then recheck and lock its visible finding."""
+    finding = get_active_finding_or_404(session, finding_id)
+    _reject_engagement_id(session, finding.engagement_id)
+    return lock_active_finding_or_404(session, finding_id)
 
 
 def _finding_to_read(f: Finding) -> dict[str, Any]:
@@ -681,9 +746,7 @@ def create_engagement(
     try:
         session.flush()
     except IntegrityError as exc:
-        constraint_name = getattr(
-            getattr(exc.orig, "diag", None), "constraint_name", None
-        )
+        constraint_name = getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
         session.rollback()
         if constraint_name in {"ix_engagements_slug", "engagements_slug_key"}:
             raise HTTPException(
@@ -721,6 +784,16 @@ def create_engagement(
                 "initial_scope_count": len(scope_items),
                 "include_count": include_count,
                 "exclusion_count": exclusion_count,
+                "initial_scope": [
+                    {
+                        "kind": item.kind.value,
+                        "value": item.value,
+                        "is_exclusion": item.is_exclusion,
+                        "note": item.note,
+                        "source": "defined",
+                    }
+                    for item in scope_items
+                ],
             },
         )
     )
@@ -771,27 +844,42 @@ def update_engagement(
     slug: str,
     body: EngagementUpdate,
     session: DbSession,
-    _user: CurrentNonGuestUser,
+    user: CurrentNonGuestUser,
 ) -> EngagementRead:
     eng = _get_engagement_or_404(session, slug)
     _lock_not_flushed(eng)
     from app.models import EngagementWorkState
 
     if eng.status is EngagementStatus.archived and (
-        body.name is not None or body.status is not EngagementStatus.active
+        body.name is not None
+        or body.auto_assess_enabled is not None
+        or body.status is not EngagementStatus.active
     ):
         raise HTTPException(
             status_code=409,
             detail="archived engagement is read-only; only unarchive is allowed",
         )
-    if eng.work_state is EngagementWorkState.completed and body.name is not None:
+    if eng.work_state is EngagementWorkState.completed and (
+        body.name is not None or body.auto_assess_enabled is not None
+    ):
         raise HTTPException(
             status_code=409,
-            detail="completed engagement must be reopened before renaming",
+            detail="completed engagement must be reopened before updating it",
         )
 
-    if body.name is not None:
+    audit_rows: list[AuditLog] = []
+    if body.name is not None and body.name != eng.name:
+        before = {"name": eng.name}
         eng.name = body.name
+        audit_rows.append(
+            AuditLog(
+                engagement_id=eng.id,
+                actor_type=ActorType.user,
+                actor_id=str(user.id),
+                event_type="engagement.updated",
+                payload={"before": before, "after": {"name": eng.name}},
+            )
+        )
 
     if body.status is not None:
         if body.status is EngagementStatus.flushed:
@@ -799,15 +887,53 @@ def update_engagement(
                 status_code=400,
                 detail="use POST /engagements/{slug}/flush to flush",
             )
-        if body.status is EngagementStatus.active and eng.status is EngagementStatus.archived:
-            eng.archived_at = None
-        elif body.status is EngagementStatus.archived and eng.status is EngagementStatus.active:
-            eng.archived_at = datetime.now(tz=UTC)
-        eng.status = body.status
+        if body.status is not eng.status:
+            before = {
+                "status": eng.status.value,
+                "archived_at": str(eng.archived_at) if eng.archived_at else None,
+            }
+            event_type = (
+                "engagement.unarchived"
+                if body.status is EngagementStatus.active
+                else "engagement.archived"
+            )
+            eng.archived_at = (
+                None if body.status is EngagementStatus.active else datetime.now(tz=UTC)
+            )
+            eng.status = body.status
+            audit_rows.append(
+                AuditLog(
+                    engagement_id=eng.id,
+                    actor_type=ActorType.user,
+                    actor_id=str(user.id),
+                    event_type=event_type,
+                    payload={
+                        "before": before,
+                        "after": {
+                            "status": eng.status.value,
+                            "archived_at": str(eng.archived_at) if eng.archived_at else None,
+                        },
+                    },
+                )
+            )
 
-    if body.auto_assess_enabled is not None:
+    if body.auto_assess_enabled is not None and body.auto_assess_enabled != eng.auto_assess_enabled:
+        before = {"auto_assess_enabled": eng.auto_assess_enabled}
         eng.auto_assess_enabled = body.auto_assess_enabled
+        audit_rows.append(
+            AuditLog(
+                engagement_id=eng.id,
+                actor_type=ActorType.user,
+                actor_id=str(user.id),
+                event_type="engagement.auto_assess_updated",
+                payload={
+                    "before": before,
+                    "after": {"auto_assess_enabled": eng.auto_assess_enabled},
+                },
+            )
+        )
 
+    session.add_all(audit_rows)
     session.commit()
     session.refresh(eng)
     read = EngagementRead.model_validate(eng)
@@ -849,15 +975,34 @@ def export_engagement(
     "/engagements/{slug}",
     response_model=EngagementRead,
 )
-def archive_engagement(slug: str, session: DbSession, _user: CurrentNonGuestUser) -> Engagement:
+def archive_engagement(slug: str, session: DbSession, user: CurrentNonGuestUser) -> Engagement:
     eng = _get_engagement_or_404(session, slug)
     _lock_not_flushed(eng)
     if eng.status is not EngagementStatus.archived:
+        before = {
+            "status": eng.status.value,
+            "archived_at": str(eng.archived_at) if eng.archived_at else None,
+        }
         eng.status = EngagementStatus.archived
         eng.archived_at = datetime.now(tz=UTC)
+        session.add(
+            AuditLog(
+                engagement_id=eng.id,
+                actor_type=ActorType.user,
+                actor_id=str(user.id),
+                event_type="engagement.archived",
+                payload={
+                    "before": before,
+                    "after": {
+                        "status": eng.status.value,
+                        "archived_at": str(eng.archived_at),
+                    },
+                },
+            )
+        )
         session.commit()
         session.refresh(eng)
-        # Export to blob; failure doesn't block the archive.
+        # Export after the audit commit so the archive contains its own event.
         upload_engagement_export(slug, _build_export_payload(session, eng))
     else:
         session.commit()
@@ -908,7 +1053,7 @@ def create_scope_item(
     slug: str,
     body: ScopeItemCreate,
     session: DbSession,
-    _user: CurrentNonGuestUser,
+    user: CurrentNonGuestUser,
 ) -> ScopeItem:
     eng = _get_engagement_or_404(session, slug)
     _reject_flushed(eng)
@@ -921,6 +1066,16 @@ def create_scope_item(
         source=body.source,
     )
     session.add(item)
+    session.flush()
+    session.add(
+        AuditLog(
+            engagement_id=eng.id,
+            actor_type=ActorType.user,
+            actor_id=str(user.id),
+            event_type="scope.item.created",
+            payload={"before": None, "after": _scope_audit_value(item)},
+        )
+    )
     session.commit()
     session.refresh(item)
     return item
@@ -1036,6 +1191,9 @@ def import_scope(
                     "created_count": len(created),
                     "error_count": len(errors),
                     "duplicate_count": len(duplicates),
+                    "changes": [
+                        {"before": None, "after": _scope_audit_value(item)} for item in created
+                    ],
                 },
             )
         )
@@ -1071,19 +1229,32 @@ def update_scope_item(
     scope_id: uuid.UUID,
     body: ScopeItemUpdate,
     session: DbSession,
-    _user: CurrentNonGuestUser,
+    user: CurrentNonGuestUser,
 ) -> ScopeItem:
     eng = _get_engagement_or_404(session, slug)
     _reject_flushed(eng)
     item = session.get(ScopeItem, scope_id)
     if item is None or item.engagement_id != eng.id:
         raise HTTPException(status_code=404, detail="scope item not found")
+    session.refresh(item, with_for_update=True)
+    before = _scope_audit_value(item)
     if body.value is not None:
         item.value = body.value
     if body.is_exclusion is not None:
         item.is_exclusion = body.is_exclusion
     if body.note is not None:
         item.note = body.note
+    after = _scope_audit_value(item)
+    if after != before:
+        session.add(
+            AuditLog(
+                engagement_id=eng.id,
+                actor_type=ActorType.user,
+                actor_id=str(user.id),
+                event_type="scope.item.updated",
+                payload={"before": before, "after": after},
+            )
+        )
     session.commit()
     session.refresh(item)
     return item
@@ -1105,6 +1276,8 @@ def delete_scope_item(
     item = session.get(ScopeItem, scope_id)
     if item is None or item.engagement_id != eng.id:
         raise HTTPException(status_code=404, detail="scope item not found")
+    session.refresh(item, with_for_update=True)
+    before = _scope_audit_value(item)
     # v2.19.0: record the deletion so the Entities tab can flip previously
     # in-scope values from "live" to "legacy". Payload carries the exact
     # value string so downstream classifiers can match without a join.
@@ -1119,6 +1292,8 @@ def delete_scope_item(
                 "kind": item.kind.value,
                 "value": item.value,
                 "is_exclusion": item.is_exclusion,
+                "before": before,
+                "after": None,
             },
         )
     )
@@ -1242,9 +1417,7 @@ def list_entities(
     # extraction cache. Both queries are cheap (typical engagement has
     # ~10-100 scope items and ~0 retired values).
     scope_items = list(
-        session.execute(
-            select(ScopeItem).where(ScopeItem.engagement_id == eng.id)
-        ).scalars()
+        session.execute(select(ScopeItem).where(ScopeItem.engagement_id == eng.id)).scalars()
     )
     retired_values = {
         v.strip().lower()
@@ -1315,10 +1488,7 @@ def validate_finding(
 ) -> dict[str, Any]:
     """Promote/reject a pending finding. ``validated`` makes it report-eligible;
     ``rejected`` / ``false_positive`` keep it for audit but exclude it."""
-    finding = session.get(Finding, finding_id)
-    if finding is None:
-        raise HTTPException(status_code=404, detail="finding not found")
-    _reject_engagement_id(session, finding.engagement_id)
+    finding = _lock_active_finding_for_mutation(session, finding_id)
 
     finding.status = body.decision
     if body.decision is FindingStatus.validated:
@@ -1386,9 +1556,7 @@ def _observation_finding_ids(
 
 
 @router.get("/engagements/{slug}/observations", response_model=list[ObservationRead])
-def list_observations(
-    slug: str, session: DbSession, _user: CurrentUser
-) -> list[dict[str, Any]]:
+def list_observations(slug: str, session: DbSession, _user: CurrentUser) -> list[dict[str, Any]]:
     eng = _get_engagement_or_404(session, slug)
     rows = list(
         session.execute(
@@ -1468,9 +1636,7 @@ def link_observation_to_finding(
     repeat call returns the observation with the link already present."""
     obs_eng = _engagement_for_observation(session, observation_id)
     _reject_engagement_id(session, obs_eng)
-    finding = session.get(Finding, finding_id)
-    if finding is None:
-        raise HTTPException(status_code=404, detail="finding not found")
+    finding = lock_active_finding_or_404(session, finding_id)
     # Cross-engagement links make no sense and would confuse the report.
     if finding.engagement_id != obs_eng:
         raise HTTPException(
@@ -1506,6 +1672,12 @@ def unlink_observation_from_finding(
     not the link existed."""
     obs_eng = _engagement_for_observation(session, observation_id)
     _reject_engagement_id(session, obs_eng)
+    finding = lock_active_finding_or_404(session, finding_id)
+    if finding.engagement_id != obs_eng:
+        raise HTTPException(
+            status_code=400,
+            detail="observation and finding belong to different engagements",
+        )
     link = session.get(
         ObservationFindingLink,
         {"observation_id": observation_id, "finding_id": finding_id},
@@ -1523,9 +1695,7 @@ def list_observations_for_finding(
     """Back-references for the finding slide-over — the observations that
     reference this finding. Fetched on open (like attachments) so the
     findings list stays N+1-free."""
-    finding = session.get(Finding, finding_id)
-    if finding is None:
-        raise HTTPException(status_code=404, detail="finding not found")
+    get_active_finding_or_404(session, finding_id)
     obs_ids = [
         row[0]
         for row in session.execute(
@@ -1550,23 +1720,69 @@ def list_observations_for_finding(
 # ---------------------------------------------------------------------------
 
 
-class FindingImport(BaseModel):
-    """Single finding in a bulk import payload."""
+MAX_FINDING_IMPORT_BATCH = 500
+MAX_FINDING_IMPORT_DETAILS_BYTES = 256 * 1024
+MAX_FINDING_IMPORT_BATCH_DETAILS_BYTES = 5 * 1024 * 1024
 
-    title: str
+
+class FindingImport(BaseModel):
+    """Single bounded finding in a generic bulk import payload."""
+
+    title: str = Field(min_length=1, max_length=300)
     severity: Severity = Severity.info
     phase: FindingPhase = FindingPhase.general
-    summary: str | None = None
-    target: str | None = None
-    source_tool: str | None = "import"
-    details: dict[str, Any] = {}
+    summary: str | None = Field(default=None, max_length=MAX_FINDING_SUMMARY_CHARS)
+    target: str | None = Field(default=None, min_length=1, max_length=500)
+    source_tool: str | None = Field(default="import", min_length=1, max_length=120)
+    details: dict[str, Any] = Field(default_factory=dict)
     observed_at: datetime | None = None
-    burp_serial_number: str | None = None
+    burp_serial_number: str | None = Field(default=None, min_length=1, max_length=64)
     # v1.4.0: optional grouping. Callers that want Nessus-style rows
     # (multiple hits under one parent) stamp their own key, e.g.
     # "csv:cve-2024-1234" or "sca:log4j". Null = per-hit row, the old
     # behavior. See docs/FINDINGS_GROUPING.md.
-    group_key: str | None = None
+    group_key: str | None = Field(default=None, min_length=1, max_length=200)
+    tags: list[str] = Field(default_factory=list, max_length=MAX_FINDING_TAGS)
+
+    @field_validator("title", "target", "source_tool", "burp_serial_number", "group_key")
+    @classmethod
+    def _strip_nonblank_strings(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("value cannot be blank")
+        return normalized
+
+    @field_validator("tags")
+    @classmethod
+    def _normalize_import_tags(cls, value: list[str]) -> list[str]:
+        return _normalize_tags(value)
+
+    @model_validator(mode="after")
+    def _bound_details(self) -> FindingImport:
+        encoded_size = len(json.dumps(self.details, separators=(",", ":"), default=str).encode())
+        if encoded_size > MAX_FINDING_IMPORT_DETAILS_BYTES:
+            raise ValueError(
+                f"details exceeds the {MAX_FINDING_IMPORT_DETAILS_BYTES:,}-byte per-finding limit"
+            )
+        return self
+
+
+class FindingImportBatch(RootModel[list[FindingImport]]):
+    root: list[FindingImport] = Field(max_length=MAX_FINDING_IMPORT_BATCH)
+
+    @model_validator(mode="after")
+    def _bound_total_details(self) -> FindingImportBatch:
+        total = sum(
+            len(json.dumps(item.details, separators=(",", ":"), default=str).encode())
+            for item in self.root
+        )
+        if total > MAX_FINDING_IMPORT_BATCH_DETAILS_BYTES:
+            raise ValueError(
+                f"details exceed the {MAX_FINDING_IMPORT_BATCH_DETAILS_BYTES:,}-byte batch limit"
+            )
+        return self
 
 
 class NessusImportResult(BaseModel):
@@ -1749,6 +1965,7 @@ def _create_findings_from_imports(
                 status=status,
                 validated_by=user.id if status == FindingStatus.validated else None,
                 burp_serial_number=serial,
+                item_tags=getattr(item, "tags", None),
             )
             if not added:
                 skipped_duplicate += 1
@@ -1773,6 +1990,7 @@ def _create_findings_from_imports(
             validated_by=user.id if status == FindingStatus.validated else None,
             observed_at=getattr(item, "observed_at", None),
             burp_serial_number=serial,
+            tags=list(getattr(item, "tags", None) or []),
         )
         session.add(f)
         created.append(f)
@@ -1802,7 +2020,7 @@ def _create_findings_from_imports(
 )
 def import_findings(
     slug: str,
-    body: list[FindingImport],
+    body: FindingImportBatch,
     session: DbSession,
     user: CurrentNonGuestUser,
 ) -> list[dict[str, Any]]:
@@ -1812,14 +2030,14 @@ def import_findings(
     review before they become report-eligible. ``source_tool`` defaults to
     ``'import'`` if omitted.
     """
-    if not body:
+    if not body.root:
         return []
 
     eng = _get_engagement_or_404(session, slug)
     _reject_flushed(eng)
 
     created, _skipped = _create_findings_from_imports(
-        session, eng, body, user, source="bulk_import"
+        session, eng, body.root, user, source="bulk_import"
     )
     session.commit()
     for f in created:
@@ -2271,10 +2489,7 @@ def update_finding(
     appended to the finding's summary history. Setting it to ``null``
     or ``""`` just clears the cached body without recording history.
     """
-    finding = session.get(Finding, finding_id)
-    if finding is None:
-        raise HTTPException(status_code=404, detail="finding not found")
-    _reject_engagement_id(session, finding.engagement_id)
+    finding = _lock_active_finding_for_mutation(session, finding_id)
 
     changed: dict[str, Any] = {}
     if "title" in body.model_fields_set and body.title is not None:
@@ -2341,11 +2556,14 @@ def bulk_update_findings(
     ids = list(dict.fromkeys(body.finding_ids))
     rows = list(
         session.execute(
-            select(Finding).where(
+            select(Finding)
+            .where(
                 Finding.engagement_id == eng.id,
                 Finding.id.in_(ids),
                 Finding.deleted_at.is_(None),
             )
+            .with_for_update()
+            .execution_options(populate_existing=True)
         ).scalars()
     )
     found_ids = {row.id for row in rows}
@@ -3186,10 +3404,7 @@ def merge_findings(
     the merge can be traced (and eventually undone via a recovery view).
     Returns the updated parent finding.
     """
-    parent = session.get(Finding, parent_id)
-    if parent is None or parent.deleted_at is not None:
-        raise HTTPException(status_code=404, detail="parent finding not found")
-    _reject_engagement_id(session, parent.engagement_id)
+    parent = _lock_active_finding_for_mutation(session, parent_id)
 
     child_ids = list({cid for cid in body.child_ids if cid != parent_id})
     if not child_ids:
@@ -3200,10 +3415,13 @@ def merge_findings(
 
     children = list(
         session.execute(
-            select(Finding).where(
+            select(Finding)
+            .where(
                 Finding.id.in_(child_ids),
                 Finding.deleted_at.is_(None),
             )
+            .with_for_update()
+            .execution_options(populate_existing=True)
         ).scalars()
     )
     if len(children) != len(child_ids):
@@ -3409,10 +3627,13 @@ def bulk_delete_findings(
     ids = list({fid for fid in body.finding_ids})  # dedup within request
     rows = list(
         session.execute(
-            select(Finding).where(
+            select(Finding)
+            .where(
                 Finding.engagement_id == eng.id,
                 Finding.id.in_(ids),
             )
+            .with_for_update()
+            .execution_options(populate_existing=True)
         ).scalars()
     )
     found_ids = {r.id for r in rows}
@@ -3476,6 +3697,7 @@ def delete_finding(
     if finding is None:
         raise HTTPException(status_code=404, detail="finding not found")
     _reject_engagement_id(session, finding.engagement_id)
+    session.refresh(finding, with_for_update=True)
     if finding.deleted_at is None:
         finding.deleted_at = datetime.now(tz=UTC)
         finding.deleted_by_user_id = user.id
@@ -3531,10 +3753,7 @@ def create_finding_summary(
     at the top. Also refreshes ``findings.summary`` as the denormalized
     cache so the Report tab / JSON export keep showing the latest.
     """
-    finding = session.get(Finding, finding_id)
-    if finding is None:
-        raise HTTPException(status_code=404, detail="finding not found")
-    _reject_engagement_id(session, finding.engagement_id)
+    finding = _lock_active_finding_for_mutation(session, finding_id)
 
     entry = _record_finding_summary(session, finding, body.body, user.id)
     session.add(
@@ -3565,9 +3784,7 @@ def list_finding_summaries(
     _user: CurrentUser,
 ) -> list[dict[str, Any]]:
     """Newest-first list of summary entries for a finding."""
-    finding = session.get(Finding, finding_id)
-    if finding is None:
-        raise HTTPException(status_code=404, detail="finding not found")
+    get_active_finding_or_404(session, finding_id)
 
     rows = list(
         session.execute(
@@ -3627,11 +3844,6 @@ async def upload_attachment(
     user: CurrentNonGuestUser,
 ) -> Attachment:
     """Upload a screenshot or evidence file and attach it to the finding."""
-    finding = session.get(Finding, finding_id)
-    if finding is None:
-        raise HTTPException(status_code=404, detail="finding not found")
-    _reject_engagement_id(session, finding.engagement_id)
-
     data = await file.read()
     if len(data) > _MAX_ATTACHMENT_BYTES:
         raise HTTPException(
@@ -3639,6 +3851,7 @@ async def upload_attachment(
             detail=f"file too large — max {_MAX_ATTACHMENT_BYTES // (1024 * 1024)} MB",
         )
 
+    finding = _lock_active_finding_for_mutation(session, finding_id)
     attachment = Attachment(
         finding_id=finding_id,
         engagement_id=finding.engagement_id,
@@ -3677,9 +3890,7 @@ def list_attachments(
     _user: CurrentUser,
 ) -> list[Attachment]:
     """List attachment metadata for a finding (no raw bytes — fetch individually)."""
-    finding = session.get(Finding, finding_id)
-    if finding is None:
-        raise HTTPException(status_code=404, detail="finding not found")
+    get_active_finding_or_404(session, finding_id)
     return list(
         session.execute(
             select(Attachment)
@@ -3699,6 +3910,7 @@ def serve_attachment(
     attachment = session.get(Attachment, attachment_id)
     if attachment is None:
         raise HTTPException(status_code=404, detail="attachment not found")
+    get_active_finding_or_404(session, attachment.finding_id)
     return Response(
         content=attachment.data,
         media_type=attachment.content_type,
@@ -3719,7 +3931,7 @@ def delete_attachment(
     attachment = session.get(Attachment, attachment_id)
     if attachment is None:
         raise HTTPException(status_code=404, detail="attachment not found")
-    _reject_engagement_id(session, attachment.engagement_id)
+    _lock_active_finding_for_mutation(session, attachment.finding_id)
     session.add(
         AuditLog(
             engagement_id=attachment.engagement_id,
@@ -3967,7 +4179,6 @@ def start_run(
     )
 
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Diagnostics dump — copy-pastable markdown of everything that happened on an
 # engagement. Built for runtime triage: paste into an agent prompt to see the
@@ -4025,17 +4236,14 @@ def _diagnostics_markdown(session: DbSession, eng: Engagement) -> str:
     w("")
     w(f"- **slug**: `{eng.slug}`  **id**: `{eid}`")
     w(f"- **status**: {_diag_v(eng.status)}  **work_state**: {_diag_v(eng.work_state)}")
-    w(
-        f"- **time_frame**: {_diag_v(eng.time_frame)}  "
-        f"**created**: {_diag_iso(eng.created_at)}"
-    )
+    w(f"- **time_frame**: {_diag_v(eng.time_frame)}  **created**: {_diag_iso(eng.created_at)}")
 
     # ── Objectives ──────────────────────────────────────────────────────────
     objs = (
         session.execute(
             select(EngagementObjective)
-        .where(EngagementObjective.engagement_id == eid)
-        .order_by(EngagementObjective.display_order, EngagementObjective.created_at)
+            .where(EngagementObjective.engagement_id == eid)
+            .order_by(EngagementObjective.display_order, EngagementObjective.created_at)
         )
         .scalars()
         .all()

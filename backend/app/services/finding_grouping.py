@@ -29,6 +29,7 @@ entry in the vocab returns ``None`` from :func:`compute_group_key`, and
 the caller falls back to a plain per-hit ``INSERT`` — the pre-v1.4.0
 behavior.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -166,9 +167,7 @@ def compute_group_key(
         # surface without a wall of one-row-per-URL noise.
         url = str(data.get("url") or data.get("final_url") or args.get("url") or "")
         host = url.split("://", 1)[-1].split("/", 1)[0].split(":", 1)[0].lower()
-        bucket = _httpx_bucket(
-            data.get("status") if isinstance(data.get("status"), int) else None
-        )
+        bucket = _httpx_bucket(data.get("status") if isinstance(data.get("status"), int) else None)
         apex = _apex_of(host) if host else "unknown"
         return f"httpx:{apex}:{bucket}"
 
@@ -234,11 +233,7 @@ def _unwrap_legacy_mcp_wrapper(data: Mapping[str, Any] | None) -> Mapping[str, A
         return data
     text_chunks: list[str] = []
     for part in value:
-        txt = (
-            part.get("text")
-            if isinstance(part, Mapping)
-            else getattr(part, "text", None)
-        )
+        txt = part.get("text") if isinstance(part, Mapping) else getattr(part, "text", None)
         if isinstance(txt, str):
             text_chunks.append(txt)
     if not text_chunks:
@@ -316,9 +311,7 @@ def extract_items(
 
     if tool == "reverse_dns":
         return [
-            {"hostname": h}
-            for h in data.get("hostnames") or []
-            if isinstance(h, str) and h.strip()
+            {"hostname": h} for h in data.get("hostnames") or [] if isinstance(h, str) and h.strip()
         ]
 
     if tool == "httpx_probe":
@@ -372,9 +365,7 @@ def _find_item_by_key(
     return None
 
 
-def _merge_enrichment_into(
-    existing: dict[str, Any], incoming: Mapping[str, Any]
-) -> bool:
+def _merge_enrichment_into(existing: dict[str, Any], incoming: Mapping[str, Any]) -> bool:
     """Enrich an already-recorded item with fields a later tool contributed.
 
     - List fields (DNS record types) are unioned with the existing list,
@@ -575,9 +566,7 @@ def upsert_grouped_finding(
             target=_representative_target(tool, group_key, data),
             phase=phase,
             status=status,
-            validated_at=datetime.now(tz=UTC)
-            if status == FindingStatus.validated
-            else None,
+            validated_at=datetime.now(tz=UTC) if status == FindingStatus.validated else None,
             validated_by=validated_by if status == FindingStatus.validated else None,
             group_key=group_key,
         )
@@ -650,6 +639,7 @@ def upsert_grouped_import_item(
     status: FindingStatus,
     validated_by: uuid.UUID | None = None,
     burp_serial_number: str | None = None,
+    item_tags: list[str] | None = None,
 ) -> tuple[Finding, bool]:
     """Importer-side twin of :func:`upsert_grouped_finding`.
 
@@ -718,11 +708,10 @@ def upsert_grouped_import_item(
             target=item_target,
             phase=phase,
             status=status,
-            validated_at=datetime.now(tz=UTC)
-            if status == FindingStatus.validated
-            else None,
+            validated_at=datetime.now(tz=UTC) if status == FindingStatus.validated else None,
             validated_by=validated_by if status == FindingStatus.validated else None,
             group_key=group_key,
+            tags=list(item_tags or []),
         )
         session.add(row)
         session.flush()
@@ -737,15 +726,16 @@ def upsert_grouped_import_item(
     details = dict(row.details or {})
     existing_items = list(details.get("items") or [])
     existing_keys = {
-        import_item_dedup_key(source_tool, it)
-        for it in existing_items
-        if isinstance(it, dict)
+        import_item_dedup_key(source_tool, it) for it in existing_items if isinstance(it, dict)
     }
 
     if dedup_key in existing_keys:
-        # Already-present hit — no-op except for last_seen_at bump.
+        # Already-present hit — no-op except for last_seen_at and explicit
+        # generic-import tags, which are analyst-curated metadata.
         details["last_seen_at"] = now
         row.details = details
+        if item_tags:
+            row.tags = list(dict.fromkeys([*(row.tags or []), *item_tags]))[:20]
         return row, False
 
     existing_items.append(item_record)
@@ -756,6 +746,8 @@ def upsert_grouped_import_item(
 
     if _SEV_RANK[item_severity] > _SEV_RANK[row.severity]:
         row.severity = item_severity
+    if item_tags:
+        row.tags = list(dict.fromkeys([*(row.tags or []), *item_tags]))[:20]
 
     logger.info(
         "finding_grouping.import_merged",
@@ -789,9 +781,7 @@ def import_item_dedup_key(source_tool: str, item: Mapping[str, Any]) -> str:
     return str(item.get("target") or "")
 
 
-def _representative_target(
-    tool: str | None, group_key: str, data: Mapping[str, Any]
-) -> str | None:
+def _representative_target(tool: str | None, group_key: str, data: Mapping[str, Any]) -> str | None:
     """Pick a stable target string for the grouped row's ``target``
     column so the search-bar filter still hits."""
     if tool in ("portscan", "subnet_sweep", "service_detect", "reverse_dns"):

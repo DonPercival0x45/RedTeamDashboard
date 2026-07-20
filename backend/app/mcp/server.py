@@ -443,11 +443,7 @@ async def _run_osint_async(
         return await anyio.to_thread.run_sync(
             _run_osint, tool_name, engagement_slug, args, cancellable=True
         )
-    return {
-        "error": (
-            f"{tool_name} exceeded {_OSINT_THREAD_TIMEOUT_S}s and was aborted"
-        )
-    }
+    return {"error": (f"{tool_name} exceeded {_OSINT_THREAD_TIMEOUT_S}s and was aborted")}
 
 
 # Engagement management tools
@@ -653,6 +649,7 @@ def add_scope_item(
             note=note or None,
         )
         session.add(item)
+        session.flush()
 
         session.add(
             AuditLog(
@@ -661,9 +658,15 @@ def add_scope_item(
                 actor_id=str(user.id),
                 event_type="mcp.scope.added",
                 payload={
-                    "kind": kind,
-                    "value": value,
-                    "is_exclusion": is_exclusion,
+                    "before": None,
+                    "after": {
+                        "id": str(item.id),
+                        "kind": item.kind.value,
+                        "value": item.value,
+                        "is_exclusion": item.is_exclusion,
+                        "note": item.note,
+                        "source": item.source,
+                    },
                 },
             )
         )
@@ -1366,23 +1369,32 @@ def archive_engagement(engagement_slug: str) -> dict:
             return {"error": "engagement has been flushed"}
 
         if eng.status != EngagementStatus.archived:
+            before = {
+                "status": eng.status.value,
+                "archived_at": str(eng.archived_at) if eng.archived_at else None,
+            }
             eng.status = EngagementStatus.archived
             eng.archived_at = _dt.now(tz=UTC)
+            session.add(
+                AuditLog(
+                    engagement_id=eng.id,
+                    actor_type=ActorType.agent,
+                    actor_id=str(user.id),
+                    event_type="mcp.engagement.archived",
+                    payload={
+                        "before": before,
+                        "after": {
+                            "status": eng.status.value,
+                            "archived_at": str(eng.archived_at),
+                        },
+                    },
+                )
+            )
             session.commit()
             session.refresh(eng)
 
+        # Build after the transition audit commits so the archive traces itself.
         blob_url = upload_engagement_export(engagement_slug, _build_export_payload(session, eng))
-
-        session.add(
-            AuditLog(
-                engagement_id=eng.id,
-                actor_type=ActorType.agent,
-                actor_id=str(user.id),
-                event_type="mcp.engagement.archived",
-                payload={"blob_url": blob_url},
-            )
-        )
-        session.commit()
 
         return {
             "slug": engagement_slug,
