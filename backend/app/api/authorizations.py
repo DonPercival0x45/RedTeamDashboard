@@ -17,7 +17,7 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import select
 
-from app.api.deps import CurrentNonGuestUser, DbSession
+from app.api.deps import CurrentNonGuestUser, CurrentUser, DbSession
 from app.models import ActorType, AuditLog, Authorization
 from app.schemas.authorization import AuthorizationRead
 
@@ -31,6 +31,7 @@ router = APIRouter()
 def list_authorizations(
     engagement_id: UUID,
     session: DbSession,
+    _user: CurrentUser,
     active: Annotated[bool | None, Query(description="Filter by active/revoked.")] = None,
 ) -> list[Authorization]:
     stmt = select(Authorization).where(Authorization.engagement_id == engagement_id)

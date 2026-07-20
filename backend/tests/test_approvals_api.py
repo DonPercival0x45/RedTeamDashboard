@@ -368,6 +368,7 @@ def test_decision_remember_for_session_creates_grant(
     grants = client.get(
         f"/engagements/{engagement.id}/authorizations",
         params={"active": "true"},
+        headers={"X-User-Id": "analyst@example.com"},
     ).json()
     assert len(grants) == 1
     assert grants[0]["tool_name"] == "portscan"
@@ -389,7 +390,10 @@ def test_decision_without_remember_creates_no_grant(
         headers={"X-User-Id": "analyst@example.com"},
         json={"approved": True},
     )
-    grants = client.get(f"/engagements/{engagement.id}/authorizations").json()
+    grants = client.get(
+        f"/engagements/{engagement.id}/authorizations",
+        headers={"X-User-Id": "analyst@example.com"},
+    ).json()
     assert grants == []
 
 
@@ -419,6 +423,7 @@ def test_remember_for_session_reuses_existing_active_grant(
     grants = client.get(
         f"/engagements/{engagement.id}/authorizations",
         params={"active": "true"},
+        headers={"X-User-Id": "analyst@example.com"},
     ).json()
     assert len(grants) == 1
 
@@ -439,6 +444,7 @@ def test_revoke_authorization(
     grant_id = client.get(
         f"/engagements/{engagement.id}/authorizations",
         params={"active": "true"},
+        headers={"X-User-Id": "analyst@example.com"},
     ).json()[0]["id"]
 
     revoked = client.post(
@@ -452,6 +458,7 @@ def test_revoke_authorization(
         client.get(
             f"/engagements/{engagement.id}/authorizations",
             params={"active": "true"},
+            headers={"X-User-Id": "analyst@example.com"},
         ).json()
         == []
     )
