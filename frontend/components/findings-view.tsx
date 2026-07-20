@@ -1348,10 +1348,9 @@ function RegroupModal({
         }
       }
       onApplied(absorbedIds);
-      // v1.4.2: refetch so the new / bumped parent rows appear without a
-      // page refresh. Fires AFTER onApplied so the local drops are the
-      // instant feedback while the refetch fills in the parents.
-      void qc.invalidateQueries({ queryKey: qk.findings(slug) });
+      // Wait for the fresh list so newly created or updated parent rows are
+      // visible before the operation is reported as complete.
+      await qc.refetchQueries({ queryKey: qk.findings(slug) });
       setRows((prev) =>
         prev.map((r) =>
           appliedKeys.has(r.group_key) && r.status === "applying"

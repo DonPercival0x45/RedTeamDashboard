@@ -469,7 +469,10 @@ export function useArchiveEngagementMutation(slug: string) {
   return useMutation({
     mutationFn: () => archiveEngagement(slug),
     onSuccess: () =>
-      qc.invalidateQueries({ queryKey: qk.engagement(slug) }),
+      Promise.all([
+        qc.invalidateQueries({ queryKey: qk.engagement(slug) }),
+        qc.invalidateQueries({ queryKey: qk.engagements() }),
+      ]),
   });
 }
 
@@ -482,7 +485,10 @@ export function useUpdateEngagementMutation(slug: string) {
       status?: import("@/lib/types").EngagementStatus;
     }) => updateEngagement(slug, body),
     onSuccess: () =>
-      qc.invalidateQueries({ queryKey: qk.engagement(slug) }),
+      Promise.all([
+        qc.invalidateQueries({ queryKey: qk.engagement(slug) }),
+        qc.invalidateQueries({ queryKey: qk.engagements() }),
+      ]),
   });
 }
 
@@ -586,7 +592,12 @@ export function useCreateScopeItemMutation(slug: string) {
     mutationFn: (body: Parameters<typeof createScopeItem>[1]) =>
       createScopeItem(slug, body),
     onSuccess: () =>
-      qc.invalidateQueries({ queryKey: qk.scope(slug) }),
+      Promise.all([
+        qc.invalidateQueries({ queryKey: qk.scope(slug) }),
+        qc.invalidateQueries({ queryKey: qk.entities(slug) }),
+        qc.invalidateQueries({ queryKey: ["stored-entities", slug] }),
+        qc.invalidateQueries({ queryKey: qk.engagements() }),
+      ]),
   });
 }
 
@@ -594,10 +605,16 @@ export function useDeleteScopeItemMutation(slug: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => deleteScopeItem(slug, id),
-    onSuccess: (_res, id) =>
+    onSuccess: (_res, id) => {
       qc.setQueryData<ScopeItem[]>(qk.scope(slug), (prev) =>
         prev ? prev.filter((s) => s.id !== id) : [],
-      ),
+      );
+      void Promise.all([
+        qc.invalidateQueries({ queryKey: qk.entities(slug) }),
+        qc.invalidateQueries({ queryKey: ["stored-entities", slug] }),
+        qc.invalidateQueries({ queryKey: qk.engagements() }),
+      ]);
+    },
   });
 }
 

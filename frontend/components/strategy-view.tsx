@@ -242,6 +242,8 @@ export function StrategyView({
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const requestedWorkItemId = searchParams?.get("workItem") ?? null;
+  const showInitialGuidancePath =
+    searchParams?.get("setup") === "initial-guidance";
   const handledWorkLink = useRef<string | null>(null);
   // Monotonic refresh sequence: only the latest refresh's data lands, so a slow
   // or stale response can never overwrite newer state.
@@ -467,6 +469,9 @@ export function StrategyView({
           await refresh().catch(() => undefined);
         } else {
           setError(messageFor(reason));
+          // A batched action may have partially succeeded. Refresh before
+          // returning so successful decisions disappear while failures remain.
+          await refresh().catch(() => undefined);
         }
         return false;
       } finally {
@@ -523,6 +528,11 @@ export function StrategyView({
         {readOnly && <ReadOnlyNotice engagementStatus={engagementStatus} />}
         {error && <p role="alert" className="rounded-md border border-critical/40 bg-critical/10 p-3 text-sm text-critical">{error}</p>}
         {notice && <p role="status" className="rounded-md border border-emerald-500/40 bg-emerald-500/10 p-3 text-sm text-emerald-700 dark:text-emerald-200">{notice}</p>}
+        {showInitialGuidancePath && (
+          <p role="status" className="rounded-md border border-violet-500/40 bg-violet-500/10 p-3 text-sm text-violet-800 dark:text-violet-100">
+            Scope saved. Choose <strong>Generate initial guidance</strong> below to create reviewable proposals from the engagement&apos;s actual scope. Nothing is accepted or run automatically.
+          </p>
+        )}
         <StrategistSection slug={slug} readOnly={readOnly} chat={data.chat} message={strategistMessage} setMessage={setStrategistMessage} lastRun={lastStrategistRun} setLastRun={setLastStrategistRun} busy={busy} mutate={mutate} hasCurrentStrategy={false} />
         {decisionCount > 0 && <NeedsDecisionSection slug={slug} readOnly={readOnly} openSignals={[]} openSuggestions={openSuggestions} proposedRevisions={proposedRevisions} currentRevisionId={null} busy={busy} mutate={mutate} />}
         <InitialStrategyBuilder slug={slug} readOnly={readOnly} summary={strategySummary} setSummary={setStrategySummary} sections={strategySectionDrafts} setSections={setStrategySectionDrafts} busy={busy} mutate={mutate} />
@@ -981,8 +991,7 @@ function NeedsDecisionSection({ slug, readOnly, openSignals, openSuggestions, pr
     });
   };
 
-  // Bulk: resilient — allSettled, per-item catch, single toast.
-  const bulkAction = (actionItems: DecisionItem[], action: "accept" | "dismiss") => {
+  const bulkAction = async (actionItems: DecisionItem[], action: "accept" | "dismiss") => {
     if (actionItems.length === 0) return;
     const agentRunCount = actionItems.filter((item) => item.tag === "Agent run").length;
     if (
@@ -991,18 +1000,32 @@ function NeedsDecisionSection({ slug, readOnly, openSignals, openSuggestions, pr
       !window.confirm(
         `Accept ${agentRunCount} Agent run proposal${agentRunCount === 1 ? "" : "s"}? Acceptance immediately requests scope-gated Tactical dispatch. Active tools may still pause for approval.`,
       )
-    ) {
-      return;
-    }
-    void mutate(
+    ) return;
+
+    await mutate(
       "decisions-bulk",
       async () => {
-        await Promise.allSettled(actionItems.map((item) => (action === "accept" ? item.accept() : item.dismiss())));
+        const results = await Promise.allSettled(
+          actionItems.map((item) => action === "accept" ? item.accept() : item.dismiss()),
+        );
+        const failedKeys = new Set(
+          results.flatMap((result, index) => result.status === "rejected" ? [actionItems[index].key] : []),
+        );
+        setSelectedKeys((previous) => {
+          const next = new Set(previous);
+          actionItems.forEach((item) => next.delete(item.key));
+          failedKeys.forEach((key) => next.add(key));
+          return next;
+        });
+        if (failedKeys.size > 0) {
+          const succeeded = actionItems.length - failedKeys.size;
+          throw new Error(
+            `${succeeded} decision${succeeded === 1 ? "" : "s"} updated; ${failedKeys.size} failed. Failed decisions remain selected so you can retry.`,
+          );
+        }
       },
       `${action === "accept" ? "Accepted" : "Dismissed"} ${actionItems.length} decision${actionItems.length === 1 ? "" : "s"}.`,
     );
-    // Clear selection after a bulk action on selected items.
-    if (actionItems === selectedItems) setSelectedKeys(new Set());
   };
 
   const busyBulk = busy === "decisions-bulk";
@@ -1049,19 +1072,19 @@ function NeedsDecisionSection({ slug, readOnly, openSignals, openSuggestions, pr
           {/* Bulk action bar */}
           {!readOnly && visibleItems.length > 0 && (
             <div className="mt-3 flex flex-wrap items-center gap-2 border-b border-border/60 pb-3">
-              <SmallAction onClick={() => bulkAction(visibleItems, "accept")} disabled={busy !== null}>
+              <SmallAction onClick={() => void bulkAction(visibleItems, "accept")} disabled={busy !== null}>
                 {busyBulk ? "Working…" : `Accept all${activeTag !== "All" ? ` (${activeTag})` : ""}`}
               </SmallAction>
-              <SmallAction onClick={() => bulkAction(visibleItems, "dismiss")} disabled={busy !== null}>
+              <SmallAction onClick={() => void bulkAction(visibleItems, "dismiss")} disabled={busy !== null}>
                 {busyBulk ? "…" : `Dismiss all${activeTag !== "All" ? ` (${activeTag})` : ""}`}
               </SmallAction>
               {selectedItems.length > 0 && (
                 <>
                   <span className="text-[10px] text-muted-foreground">|</span>
-                  <SmallAction onClick={() => bulkAction(selectedItems, "accept")} disabled={busy !== null}>
+                  <SmallAction onClick={() => void bulkAction(selectedItems, "accept")} disabled={busy !== null}>
                     Accept selected ({selectedItems.length})
                   </SmallAction>
-                  <SmallAction onClick={() => bulkAction(selectedItems, "dismiss")} disabled={busy !== null}>
+                  <SmallAction onClick={() => void bulkAction(selectedItems, "dismiss")} disabled={busy !== null}>
                     Dismiss selected ({selectedItems.length})
                   </SmallAction>
                 </>
@@ -1526,7 +1549,7 @@ function WorkItemFlyout({ item, objectives, scope, tools, scopeError, toolsError
 
 function StrategistSection({ slug, readOnly, chat, message, setMessage, lastRun, setLastRun, busy, mutate, hasCurrentStrategy }: { slug: string; readOnly: boolean; chat: StrategistChatState; message: string; setMessage: (value: string) => void; lastRun: StrategistRunResponse | null; setLastRun: (value: StrategistRunResponse | null) => void; busy: string | null; mutate: (key: string, action: () => Promise<unknown>, success: string) => Promise<boolean>; hasCurrentStrategy: boolean }) {
   const runModes = [
-    ["generate-initial", "Generate initial"],
+    ["generate-initial", "Generate initial guidance"],
     ["recommend", "Recommend next"],
     ["reassess", "Reassess"],
     ["review-completion", "Review completion"],

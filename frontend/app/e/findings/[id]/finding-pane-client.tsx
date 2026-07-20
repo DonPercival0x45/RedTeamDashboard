@@ -13,7 +13,7 @@ import {
   MessageSquare,
   Sparkles,
 } from "lucide-react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { DateTime } from "@/components/date-time";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -108,7 +108,42 @@ const KIND_META: Record<string, { icon: typeof Activity; tint: string }> = {
   "finding.updated": { icon: Activity, tint: "text-muted-foreground" },
 };
 
+function safeReturnPath(value: string | null): string | null {
+  if (!value?.startsWith("/") || value.startsWith("//")) return null;
+  try {
+    const base = "https://rtd.local";
+    const parsed = new URL(value, base);
+    return parsed.origin === base
+      ? `${parsed.pathname}${parsed.search}${parsed.hash}`
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function syncFindingCaches(
+  qc: QueryClient,
+  finding: Finding,
+  slug: string | null,
+) {
+  qc.setQueryData(qk.finding(finding.id), finding);
+  if (!slug) {
+    void qc.invalidateQueries({ queryKey: qk.findingActivity(finding.id) });
+    return;
+  }
+  void Promise.all([
+    qc.invalidateQueries({ queryKey: qk.findings(slug) }),
+    qc.invalidateQueries({ queryKey: qk.reportReadiness(slug) }),
+    qc.invalidateQueries({ queryKey: qk.findingActivity(finding.id) }),
+    qc.invalidateQueries({ queryKey: qk.entities(slug) }),
+    qc.invalidateQueries({ queryKey: ["stored-entities", slug] }),
+  ]);
+}
+
 function FindingPane({ id, slug }: { id: string; slug: string | null }) {
+  const params = useSearchParams();
+  const returnTo = safeReturnPath(params.get("returnTo"));
+  const backHref = returnTo ?? (slug ? `/e?slug=${encodeURIComponent(slug)}&view=findings` : "/");
   const { data: finding, isLoading, error } = useFinding(id);
   const { data: activity } = useFindingActivity(id);
 
@@ -133,21 +168,12 @@ function FindingPane({ id, slug }: { id: string; slug: string | null }) {
     <div className="mx-auto max-w-7xl px-4 py-6">
       {/* top bar */}
       <div className="mb-4 flex items-center justify-between gap-3">
-        {slug ? (
-          <Link
-            href={`/e?slug=${encodeURIComponent(slug)}`}
-            className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
-          >
-            <ArrowLeft className="h-3.5 w-3.5" /> back to engagement
-          </Link>
-        ) : (
-          <Link
-            href="/"
-            className="text-xs text-muted-foreground hover:text-foreground"
-          >
-            ← engagements
-          </Link>
-        )}
+        <Link
+          href={backHref}
+          className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+        >
+          <ArrowLeft className="h-3.5 w-3.5" /> {returnTo ? "back" : slug ? "back to Findings" : "engagements"}
+        </Link>
         <span className="font-mono text-[10px] text-muted-foreground">
           {finding.id}
         </span>
@@ -333,9 +359,9 @@ function FindingWorkbench({
         {tab === "ai" && <ChatRail findingId={finding.id} slug={slug} />}
         {tab === "notes" && (
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-            <DecisionPanel finding={finding} />
-            <TagsPanel finding={finding} />
-            <SummaryPanel finding={finding} />
+            <DecisionPanel finding={finding} slug={slug} />
+            <TagsPanel finding={finding} slug={slug} />
+            <SummaryPanel finding={finding} slug={slug} />
             <CommentsPanel finding={finding} slug={slug} />
           </div>
         )}
@@ -344,7 +370,7 @@ function FindingWorkbench({
             <EvidenceDetailsSection finding={finding} />
             <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
               <EvidenceChecklistPanel finding={finding} />
-              <AttachmentsPanel finding={finding} />
+              <AttachmentsPanel finding={finding} slug={slug} />
             </div>
           </div>
         )}
@@ -364,7 +390,7 @@ function FindingWorkbench({
   );
 }
 
-function DecisionPanel({ finding }: { finding: Finding }) {
+function DecisionPanel({ finding, slug }: { finding: Finding; slug: string | null }) {
   const qc = useQueryClient();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -374,7 +400,7 @@ function DecisionPanel({ finding }: { finding: Finding }) {
     setError(null);
     try {
       const updated = await validateFinding(finding.id, status);
-      qc.setQueryData(qk.finding(finding.id), updated);
+      syncFindingCaches(qc, updated, slug);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -387,7 +413,7 @@ function DecisionPanel({ finding }: { finding: Finding }) {
     setError(null);
     try {
       const updated = await updateFinding(finding.id, { exclusion });
-      qc.setQueryData(qk.finding(finding.id), updated);
+      syncFindingCaches(qc, updated, slug);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -454,7 +480,7 @@ function SmallButton({
   );
 }
 
-function SummaryPanel({ finding }: { finding: Finding }) {
+function SummaryPanel({ finding, slug }: { finding: Finding; slug: string | null }) {
   const qc = useQueryClient();
   const [draft, setDraft] = useState("");
   const [rows, setRows] = useState<FindingSummaryEntry[] | null>(null);
@@ -476,9 +502,7 @@ function SummaryPanel({ finding }: { finding: Finding }) {
       const entry = await createFindingSummary(finding.id, body);
       setRows((prev) => [entry, ...(prev ?? [])]);
       setDraft("");
-      qc.setQueryData<Finding>(qk.finding(finding.id), (prev) =>
-        prev ? { ...prev, summary: entry.body } : prev,
-      );
+      syncFindingCaches(qc, { ...finding, summary: entry.body }, slug);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -563,7 +587,7 @@ function SummaryPanel({ finding }: { finding: Finding }) {
   );
 }
 
-function TagsPanel({ finding }: { finding: Finding }) {
+function TagsPanel({ finding, slug }: { finding: Finding; slug: string | null }) {
   const qc = useQueryClient();
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
@@ -573,7 +597,7 @@ function TagsPanel({ finding }: { finding: Finding }) {
     setBusy(true);
     try {
       const updated = await updateFinding(finding.id, { tags: next });
-      qc.setQueryData(qk.finding(finding.id), updated);
+      syncFindingCaches(qc, updated, slug);
     } finally {
       setBusy(false);
     }
@@ -642,8 +666,10 @@ function TagsPanel({ finding }: { finding: Finding }) {
 }
 
 function CommentsPanel({ finding, slug }: { finding: Finding; slug: string | null }) {
+  const qc = useQueryClient();
   const [rows, setRows] = useState<Observation[] | null>(null);
   const [draft, setDraft] = useState("");
+  const [savedUnlinked, setSavedUnlinked] = useState<Observation | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -653,19 +679,45 @@ function CommentsPanel({ finding, slug }: { finding: Finding; slug: string | nul
       .catch(() => setRows([]));
   }, [finding.id]);
 
-  async function addComment() {
-    const content = draft.trim();
-    if (!content || !slug) return;
+  async function linkSavedObservation(observation: Observation) {
     setBusy(true);
     setError(null);
     try {
-      const obs = await createObservation(slug, {
+      const linked = await linkObservationFinding(observation.id, finding.id);
+      setRows((prev) => [...(prev ?? []), linked]);
+      setSavedUnlinked(null);
+      if (slug) void qc.invalidateQueries({ queryKey: qk.observations(slug) });
+      void qc.invalidateQueries({ queryKey: qk.findingActivity(finding.id) });
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      setError(`The observation is still saved but is not linked to this finding. Retry linking below. ${detail}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function addComment() {
+    const content = draft.trim();
+    if (!content || !slug || savedUnlinked) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const observation = await createObservation(slug, {
         content,
         phase: finding.phase,
       });
-      const linked = await linkObservationFinding(obs.id, finding.id);
-      setRows((prev) => [...(prev ?? []), linked]);
       setDraft("");
+      setSavedUnlinked(observation);
+      void qc.invalidateQueries({ queryKey: qk.observations(slug) });
+      try {
+        const linked = await linkObservationFinding(observation.id, finding.id);
+        setRows((prev) => [...(prev ?? []), linked]);
+        setSavedUnlinked(null);
+        void qc.invalidateQueries({ queryKey: qk.findingActivity(finding.id) });
+      } catch (linkError) {
+        const detail = linkError instanceof Error ? linkError.message : String(linkError);
+        setError(`Your observation was saved, but linking it to this finding failed. Retry linking below; do not submit it again. ${detail}`);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -693,18 +745,32 @@ function CommentsPanel({ finding, slug }: { finding: Finding; slug: string | nul
           ))
         )}
       </div>
+      {savedUnlinked && (
+        <div role="alert" className="mt-3 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-900 dark:text-amber-100">
+          <p className="font-medium">Saved observation — not linked yet</p>
+          <p className="mt-1">{savedUnlinked.content}</p>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void linkSavedObservation(savedUnlinked)}
+            className="mt-2 rounded border border-amber-500/50 px-2 py-1 font-medium hover:bg-amber-500/10 disabled:opacity-50"
+          >
+            {busy ? "Retrying…" : "Retry link to finding"}
+          </button>
+        </div>
+      )}
       <textarea
         value={draft}
         onChange={(event) => setDraft(event.target.value)}
         placeholder={slug ? "Add a comment / observation…" : "Open via an engagement slug to comment"}
-        disabled={!slug || busy}
+        disabled={!slug || busy || Boolean(savedUnlinked)}
         className="mt-3 min-h-20 w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring disabled:opacity-50"
       />
       <div className="mt-2 flex items-center gap-2">
         <button
           type="button"
           onClick={addComment}
-          disabled={!slug || busy || !draft.trim()}
+          disabled={!slug || busy || Boolean(savedUnlinked) || !draft.trim()}
           className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
         >
           {busy ? "Adding…" : "Add comment"}
@@ -818,8 +884,9 @@ function isRelatedFinding(
   return indicators.some((value) => otherText.includes(value.toLowerCase()));
 }
 
-function AttachmentsPanel({ finding }: { finding: Finding }) {
+function AttachmentsPanel({ finding, slug }: { finding: Finding; slug: string | null }) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const qc = useQueryClient();
   const [rows, setRows] = useState<Attachment[] | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -835,6 +902,8 @@ function AttachmentsPanel({ finding }: { finding: Finding }) {
     try {
       const uploaded = await uploadAttachment(finding.id, file);
       setRows((prev) => [...(prev ?? []), uploaded]);
+      void qc.invalidateQueries({ queryKey: qk.findingActivity(finding.id) });
+      if (slug) void qc.invalidateQueries({ queryKey: qk.reportReadiness(slug) });
     } finally {
       setBusy(false);
     }
@@ -846,6 +915,8 @@ function AttachmentsPanel({ finding }: { finding: Finding }) {
     try {
       await deleteAttachment(id);
       setRows((prev) => (prev ?? []).filter((row) => row.id !== id));
+      void qc.invalidateQueries({ queryKey: qk.findingActivity(finding.id) });
+      if (slug) void qc.invalidateQueries({ queryKey: qk.reportReadiness(slug) });
     } finally {
       setBusy(false);
     }
@@ -1484,6 +1555,7 @@ function EvidenceDetailsSection({ finding }: { finding: Finding }) {
 
 function DetailsPanel({ finding, slug }: { finding: Finding; slug: string | null }) {
   const router = useRouter();
+  const qc = useQueryClient();
   const [deleting, setDeleting] = useState(false);
 
   async function removeFinding() {
@@ -1491,7 +1563,16 @@ function DetailsPanel({ finding, slug }: { finding: Finding; slug: string | null
     setDeleting(true);
     try {
       await deleteFinding(finding.id);
-      router.replace(slug ? `/e?slug=${encodeURIComponent(slug)}` : "/");
+      if (slug) {
+        await Promise.all([
+          qc.invalidateQueries({ queryKey: qk.findings(slug) }),
+          qc.invalidateQueries({ queryKey: qk.reportReadiness(slug) }),
+          qc.invalidateQueries({ queryKey: qk.entities(slug) }),
+          qc.invalidateQueries({ queryKey: ["stored-entities", slug] }),
+        ]);
+      }
+      qc.removeQueries({ queryKey: qk.finding(finding.id) });
+      router.replace(slug ? `/e?slug=${encodeURIComponent(slug)}&view=findings` : "/");
     } finally {
       setDeleting(false);
     }
@@ -1799,6 +1880,7 @@ function ChatRail({
   const summarize = useSummarizeFindingChatMutation(findingId);
   const acceptAction = useAcceptFindingChatActionMutation(findingId);
   const denyAction = useDenyFindingChatActionMutation(findingId);
+  const qc = useQueryClient();
   const { data: findings } = useFindings(slug ?? "");
   const { data: tasks } = useTasks(slug ?? "");
   const messages = chat?.messages ?? [];
@@ -1889,7 +1971,20 @@ function ChatRail({
               key={m.id}
               message={m}
               onAccept={(messageId, actionIndex) =>
-                acceptAction.mutate({ messageId, actionIndex })
+                acceptAction.mutate(
+                  { messageId, actionIndex },
+                  {
+                    onSuccess: () => {
+                      if (!slug) return;
+                      void Promise.all([
+                        qc.invalidateQueries({ queryKey: qk.findings(slug) }),
+                        qc.invalidateQueries({ queryKey: qk.reportReadiness(slug) }),
+                        qc.invalidateQueries({ queryKey: qk.entities(slug) }),
+                        qc.invalidateQueries({ queryKey: ["stored-entities", slug] }),
+                      ]);
+                    },
+                  },
+                )
               }
               onDeny={(messageId, actionIndex) =>
                 denyAction.mutate({ messageId, actionIndex })
