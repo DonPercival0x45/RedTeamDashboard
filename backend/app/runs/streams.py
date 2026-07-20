@@ -35,6 +35,15 @@ def engagement_id_from_inbound(stream_name: str) -> uuid.UUID:
     return uuid.UUID(raw)
 
 
+def engagement_id_from_outbound(stream_name: str) -> uuid.UUID:
+    if not stream_name.startswith(_INBOUND_PREFIX) or not stream_name.endswith(
+        _OUTBOUND_SUFFIX
+    ):
+        raise ValueError(f"not an outbound stream name: {stream_name!r}")
+    raw = stream_name[len(_INBOUND_PREFIX) : -len(_OUTBOUND_SUFFIX)]
+    return uuid.UUID(raw)
+
+
 # Per-thread LLM choice cache. ``start_run`` writes the chosen
 # (provider, model) here so the approval endpoint can include it in
 # ``run.resume`` envelopes without re-deriving it. TTL is generous —

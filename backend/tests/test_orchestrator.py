@@ -20,7 +20,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.agents.strategic import StrategicAgent
@@ -29,6 +29,7 @@ from app.main import app
 from app.models import (
     AgentName,
     AgentTrigger,
+    CommandOutbox,
     Engagement,
     EngagementStatus,
     Finding,
@@ -403,12 +404,12 @@ def test_tactical_dispatches_scan_task(
 
     assert task.status == TaskStatus.dispatched
     assert task.run_id == thread_id
-    assert len(redis.xadd_calls) == 1
-    stream, fields = redis.xadd_calls[0]
-    assert stream.endswith(":in")
+    outbox = db.execute(
+        select(CommandOutbox).where(CommandOutbox.task_id == task.id)
+    ).scalar_one()
     import json
 
-    envelope = json.loads(fields["data"])
+    envelope = json.loads(outbox.encoded_payload["data"])
     assert envelope["type"] == "run.start"
     assert "subfinder" in envelope["prompt"]
     assert "acme.test" in envelope["prompt"]
@@ -499,13 +500,15 @@ def test_accept_dispatches_agent_eligible(
         assert body["suggestion"]["status"] == "accepted"
         assert body["task"] is not None
         assert body["dispatched"] is True
-        assert len(redis.xadd_calls) == 1
 
         db.expire_all()
         task = (
             db.query(Task).filter(Task.id == uuid.UUID(body["task"]["id"])).one()
         )
         assert task.status == TaskStatus.dispatched
+        assert db.execute(
+            select(CommandOutbox).where(CommandOutbox.task_id == task.id)
+        ).scalar_one().status.value == "pending"
         assert task.kind == TaskKind.enum
     finally:
         app.dependency_overrides.pop(deps_mod.redis_client, None)

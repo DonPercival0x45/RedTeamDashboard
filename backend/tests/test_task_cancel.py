@@ -21,6 +21,7 @@ from app.db.session import SessionLocal
 from app.main import app
 from app.models import (
     AuditLog,
+    CommandOutbox,
     Engagement,
     EngagementStatus,
     MCPLease,
@@ -30,7 +31,7 @@ from app.models import (
     TaskKind,
     TaskStatus,
 )
-from app.runs.events import decode_envelope, encode_command
+from app.runs.events import encode_command
 from app.runs.streams import inbound_stream, run_model_key
 
 HDR = {"X-User-Id": "task-cancel@example.com"}
@@ -261,9 +262,16 @@ def test_retry_task_redispatches_worker_command(
         assert task.completed_at is None
         assert not redis_client.exists(run_model_key(previous_run_id))
 
-        queued = redis_client.xrange(stream)
-        assert len(queued) == 1
-        envelope = decode_envelope(queued[0][1])
+        outboxes = list(
+            db.execute(
+                select(CommandOutbox).where(
+                    CommandOutbox.task_id == task.id,
+                    CommandOutbox.delivery_kind == "command",
+                )
+            ).scalars()
+        )
+        assert len(outboxes) == 1
+        envelope = json.loads(outboxes[0].encoded_payload["data"])
         assert envelope["type"] == "run.start"
         assert envelope["thread_id"] == str(task.run_id)
         assert envelope["acting_user_id"]

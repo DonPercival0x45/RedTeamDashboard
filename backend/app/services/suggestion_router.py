@@ -592,9 +592,8 @@ def _accept_execution_task(
     suggestion.task_id = task.id
     should_dispatch = owner in {OwnerEligibility.agent, OwnerEligibility.either}
 
-    # Tactical's lease policy and dispatcher commit internally. Stage the
-    # suggestion decision, task link, and audit *before* entering Tactical so
-    # its first commit cannot leave an open suggestion with a committed Task.
+    # Tactical is caller-transaction-owned: acceptance, Task, policy metadata,
+    # lease, and outbox are staged together and committed only by this route.
     suggestion.status = SuggestionStatus.accepted
     suggestion.decided_by = user_id
     suggestion.decided_at = datetime.now(tz=UTC)

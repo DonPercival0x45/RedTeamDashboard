@@ -39,6 +39,8 @@ from app.models import (
     Approval,
     ApprovalStatus,
     AuditLog,
+    CommandOutbox,
+    CommandOutboxStatus,
     Engagement,
     EngagementStatus,
     EngagementWorkState,
@@ -535,8 +537,21 @@ def _reconcile_stale_tasks(
     )
     if not stale:
         return
+    pending_keys = set(
+        session.execute(
+            select(CommandOutbox.idempotency_key).where(
+                CommandOutbox.engagement_id == eng_id,
+                CommandOutbox.status == CommandOutboxStatus.pending,
+            )
+        ).scalars()
+    )
     now = datetime.now(tz=UTC)
     for row in stale:
+        # A Redis outage can legitimately leave an old dispatched task with a
+        # durable pending run.start. The relay, not a Status-page visit, owns
+        # its recovery; never silently cancel that retryable work.
+        if row.run_id and f"run.start:{row.run_id}" in pending_keys:
+            continue
         row.status = TaskStatus.cancelled
         row.completed_at = now
     session.commit()
@@ -1328,6 +1343,38 @@ def _remove_queued_run_start(redis_client: Any, task: Task) -> int:
     )
 
 
+def _tombstone_thread_outbox(
+    session: Session, engagement_id: uuid.UUID, thread_id: str
+) -> int:
+    rows = list(
+        session.execute(
+            select(CommandOutbox)
+            .where(
+                CommandOutbox.engagement_id == engagement_id,
+                CommandOutbox.thread_id == thread_id,
+                CommandOutbox.delivery_kind == "command",
+                CommandOutbox.status.notin_(
+                    (CommandOutboxStatus.cancelled, CommandOutboxStatus.failed)
+                ),
+            )
+            .with_for_update()
+        ).scalars()
+    )
+    now = datetime.now(tz=UTC)
+    for row in rows:
+        row.status = CommandOutboxStatus.cancelled
+        row.cancelled_at = now
+    session.flush()
+    return len(rows)
+
+
+def _tombstone_run_outbox(session: Session, task: Task) -> int:
+    """Lock and durably cancel delivery before best-effort Redis cleanup."""
+    if task.run_id is None:
+        return 0
+    return _tombstone_thread_outbox(session, task.engagement_id, str(task.run_id))
+
+
 @router.post(
     "/agent-executions/{execution_id}/cancel",
     response_model=StatusEntity,
@@ -1346,7 +1393,12 @@ def cancel_agent_execution(
     cooperative/best-effort: the DB row is marked cancelled immediately so the
     app no longer shows it as active.
     """
-    row = session.get(AgentExecution, execution_id)
+    row = session.execute(
+        select(AgentExecution)
+        .where(AgentExecution.id == execution_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
     if row is None:
         raise HTTPException(status_code=404, detail="agent execution not found")
     if row.status != AgentExecutionStatus.running:
@@ -1359,7 +1411,10 @@ def cancel_agent_execution(
     thread_id = input_payload.get("thread_id") if isinstance(input_payload, dict) else None
     removed = 0
     if row.engagement_id is not None and thread_id:
-        removed = _remove_queued_thread_start(
+        removed = _tombstone_thread_outbox(
+            session, row.engagement_id, str(thread_id)
+        )
+        removed += _remove_queued_thread_start(
             redis_client,
             row.engagement_id,
             str(thread_id),
@@ -1432,7 +1487,8 @@ def cancel_task(
         )
 
     previous_status = row.status
-    removed = _remove_queued_run_start(redis_client, row)
+    removed = _tombstone_run_outbox(session, row)
+    removed += _remove_queued_run_start(redis_client, row)
     released = _release_task_leases(session, row)
     row.status = TaskStatus.cancelled
     row.completed_at = datetime.now(tz=UTC)
@@ -1492,7 +1548,8 @@ def _redispatch_task(
     previous_run_id = task.run_id
     previous_dispatched_at = task.dispatched_at
     previous_completed_at = task.completed_at
-    removed = _remove_queued_run_start(redis_client, task)
+    removed = _tombstone_run_outbox(session, task)
+    removed += _remove_queued_run_start(redis_client, task)
     released = _release_task_leases(session, task)
     # Leave prior run timestamps/ID intact until Tactical atomically swaps the
     # pending row to dispatched. If cancellation wins during policy selection,
@@ -1513,9 +1570,8 @@ def _redispatch_task(
         task.completed_at = datetime.now(tz=UTC)
         task.run_id = dedup.prior_execution_id
     except Exception as exc:
-        # Tactical commits the new lease/task state before Redis XADD to avoid
-        # a worker-vs-DB race. If enqueue then fails, restore the prior terminal
-        # state and release the new lease so retry cannot leave phantom work.
+        # Tactical stages lease/task/outbox without committing. Roll back the
+        # caller-owned transaction and restore the prior retryable state.
         session.rollback()
         session.expire_all()
         failed_row = session.get(Task, task.id)

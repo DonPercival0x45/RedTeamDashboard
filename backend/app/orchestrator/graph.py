@@ -277,7 +277,11 @@ def _tool_dispatch_node(
             resume_value = interrupt(request)
             out_pending.append({**request, "resolved": True})
 
-            approved = isinstance(resume_value, dict) and bool(resume_value.get("approved"))
+            if not isinstance(resume_value, dict) or str(
+                resume_value.get("tool_call_id") or ""
+            ) != str(call_id):
+                raise ValueError("resume does not match the pending tool call")
+            approved = bool(resume_value.get("approved"))
             if not approved:
                 reason = (
                     resume_value.get("reason")

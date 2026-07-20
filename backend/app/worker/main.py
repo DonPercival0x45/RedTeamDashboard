@@ -27,6 +27,7 @@ from app.worker.checkpoint import build_postgres_checkpointer
 from app.worker.consumer import StreamConsumer
 from app.worker.discord_bot import DiscordBotThread
 from app.worker.lease_sweeper import LeaseSweeperThread
+from app.worker.outbox_relay import CommandOutboxRelay
 from app.worker.runner import RunRunner
 from app.worker.strategic_consumer import StrategicConsumer
 
@@ -147,6 +148,20 @@ def main() -> None:
     signal.signal(signal.SIGTERM, _shutdown)
     signal.signal(signal.SIGINT, _shutdown)
 
+    # Relay commands whose domain transaction committed while Redis was
+    # unavailable. Multiple worker replicas coordinate through row locks.
+    outbox_relay = CommandOutboxRelay(
+        redis_client=redis_client,
+        session_factory=SessionLocal,
+    )
+    outbox_thread = threading.Thread(
+        target=outbox_relay.run_forever,
+        args=(stop_event,),
+        name="command-outbox-relay",
+        daemon=True,
+    )
+    outbox_thread.start()
+
     # Phase 9: Strategic watcher subscribes to the outbound event stream and
     # runs on every finding.created. Lives in a sibling thread so the
     # existing run-command consumer in the main thread is untouched.
@@ -198,6 +213,7 @@ def main() -> None:
     discord_thread.start()
 
     consumer.run_forever(stop_event)
+    outbox_thread.join(timeout=5.0)
     strategic_thread.join(timeout=5.0)
     sweeper_thread.join(timeout=5.0)
     discord_thread.join(timeout=5.0)

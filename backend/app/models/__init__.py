@@ -13,6 +13,7 @@ from app.models.approval import Approval, ApprovalStatus, RiskLevel
 from app.models.attachment import Attachment
 from app.models.audit_log import ActorType, AuditLog
 from app.models.authorization import Authorization
+from app.models.command_outbox import CommandOutbox, CommandOutboxStatus
 from app.models.conversation import (
     Conversation,
     ConversationContextType,
@@ -65,6 +66,7 @@ from app.models.integration import Integration, IntegrationPurpose, IntegrationT
 from app.models.mcp_lease import MCPLease, MCPLeaseStatus
 from app.models.observation import Observation
 from app.models.observation_finding_link import ObservationFindingLink
+from app.models.processing_receipt import ProcessingReceipt, ProcessingReceiptStatus
 from app.models.roadmap_suggestion import (
     RoadmapSuggestion,
     RoadmapSuggestionStatus,
@@ -102,6 +104,8 @@ __all__ = [
     "ApprovalStatus",
     "AuditLog",
     "Authorization",
+    "CommandOutbox",
+    "CommandOutboxStatus",
     "EngagementCompletionAction",
     "Conversation",
     "ConversationContextType",
@@ -137,6 +141,8 @@ __all__ = [
     "Observation",
     "ObservationFindingLink",
     "OwnerEligibility",
+    "ProcessingReceipt",
+    "ProcessingReceiptStatus",
     "RiskLevel",
     "RoadmapSuggestion",
     "RoadmapSuggestionStatus",

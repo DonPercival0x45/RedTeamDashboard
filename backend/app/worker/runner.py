@@ -14,6 +14,7 @@
 The graph and the session factory are injected so tests can wire a fake LLM
 and a DB session that points at the compose Postgres.
 """
+
 from __future__ import annotations
 
 import uuid
@@ -42,6 +43,7 @@ from app.orchestrator.scope import ScopeSnapshot
 from app.orchestrator.tools import phase_for_tool
 from app.runs.events import encode_event
 from app.runs.streams import outbound_stream
+from app.services.command_outbox import enqueue_event, publish_entry
 
 logger = structlog.get_logger(__name__)
 
@@ -55,8 +57,7 @@ def _build_system_prompt(snapshots: list[ScopeSnapshot]) -> str:
     exist (the gate only enforces, it doesn't advertise)."""
     if snapshots:
         scope_lines = "\n".join(
-            f"  - {item.kind.value} {item.value}"
-            + (" (exclude)" if item.is_exclusion else "")
+            f"  - {item.kind.value} {item.value}" + (" (exclude)" if item.is_exclusion else "")
             for item in snapshots
         )
     else:
@@ -101,6 +102,7 @@ def _build_system_prompt(snapshots: list[ScopeSnapshot]) -> str:
         "When you have gathered findings for every target the operator asked "
         "about, reply with a short summary (no tool_calls) to end the run."
     )
+
 
 SessionFactory = Callable[[], Session]
 
@@ -202,9 +204,7 @@ class RunRunner:
         assert self._graph_factory is not None  # noqa: S101 — invariant of __init__
         return self._graph_factory(model, allowed_tools, mcp_url, lease_token)
 
-    def _resolve_allowed_tools(
-        self, envelope: Mapping[str, Any]
-    ) -> list[str] | None:
+    def _resolve_allowed_tools(self, envelope: Mapping[str, Any]) -> list[str] | None:
         """Read ``lease_token`` from envelope and return the lease's
         ``allowed_tools`` list. Returns None when no lease token is present
         (legacy path — full registry). Raises ValueError on invalid/expired
@@ -241,20 +241,14 @@ class RunRunner:
         # event we emit can carry it — strategic_consumer needs it to resolve
         # the kicker's BYO key (no engagement-creator fallback anymore).
         acting_user_id = envelope.get("acting_user_id")
-        acting_user_id_str = (
-            str(acting_user_id) if acting_user_id else None
-        )
+        acting_user_id_str = str(acting_user_id) if acting_user_id else None
 
         try:
             graph = self._resolve_graph(envelope)
             if kind == "run.start":
-                self._start(
-                    engagement_id, thread_id, envelope, graph, acting_user_id_str
-                )
+                self._start(engagement_id, thread_id, envelope, graph, acting_user_id_str)
             elif kind == "run.resume":
-                self._resume(
-                    engagement_id, thread_id, envelope, graph, acting_user_id_str
-                )
+                self._resume(engagement_id, thread_id, envelope, graph, acting_user_id_str)
             else:
                 raise ValueError(f"unknown envelope type: {kind!r}")
         except Exception as exc:
@@ -306,6 +300,27 @@ class RunRunner:
             "scope_items": snapshots,
         }
         config = self._config(thread_id)
+        existing = graph.get_state(config)
+        if getattr(existing, "values", None) or getattr(existing, "tasks", None):
+            if getattr(existing, "next", None) and not self._interrupt_tool_call_id(existing):
+                logger.info("worker.crashed_run_start_continuing", thread_id=thread_id)
+                self._drive(
+                    engagement_id,
+                    thread_id,
+                    None,
+                    config,
+                    graph,
+                    acting_user_id,
+                    run_model=model,
+                    run_context={
+                        key: envelope[key]
+                        for key in ("mcp_url", "lease_token")
+                        if envelope.get(key)
+                    },
+                )
+            else:
+                logger.info("worker.duplicate_run_start_skipped", thread_id=thread_id)
+            return
 
         # v1.2.0: derive run_slug from thread_id (matches the Status
         # card's slug so the kickoff toast and the eventual card show
@@ -325,7 +340,16 @@ class RunRunner:
             {"type": "run.started", **started_payload},
         )
         self._drive(
-            engagement_id, thread_id, initial_state, config, graph, acting_user_id
+            engagement_id,
+            thread_id,
+            initial_state,
+            config,
+            graph,
+            acting_user_id,
+            run_model=model,
+            run_context={
+                key: envelope[key] for key in ("mcp_url", "lease_token") if envelope.get(key)
+            },
         )
 
     def _resume(
@@ -336,7 +360,65 @@ class RunRunner:
         graph: Any,
         acting_user_id: str | None,
     ) -> None:
-        resume_value: dict[str, Any] = {"approved": bool(envelope.get("approved"))}
+        expected_tool_call_id = str(envelope.get("tool_call_id") or "")
+        approval_id = str(envelope.get("approval_id") or "")
+        if not expected_tool_call_id or not approval_id:
+            raise ValueError("run.resume missing approval_id/tool_call_id")
+        if not self._resume_matches_approval(
+            engagement_id,
+            thread_id,
+            approval_id=approval_id,
+            tool_call_id=expected_tool_call_id,
+            approved=bool(envelope.get("approved")),
+        ):
+            logger.warning("worker.resume_approval_identity_rejected", approval_id=approval_id)
+            return
+        config = self._config(thread_id)
+        snapshot = graph.get_state(config)
+        current_tool_call_id = self._interrupt_tool_call_id(snapshot)
+        model = envelope.get("model") if isinstance(envelope.get("model"), Mapping) else None
+        run_context = {
+            key: envelope[key] for key in ("mcp_url", "lease_token") if envelope.get(key)
+        }
+        if current_tool_call_id is None and getattr(snapshot, "next", None):
+            # The approval was checkpointed and the process stopped later in
+            # the same command. Continue without applying the decision twice.
+            self._drive(
+                engagement_id,
+                thread_id,
+                None,
+                config,
+                graph,
+                acting_user_id,
+                run_model=model,
+                run_context=run_context,
+            )
+            return
+        if current_tool_call_id != expected_tool_call_id:
+            logger.warning(
+                "worker.stale_resume_rejected",
+                thread_id=thread_id,
+                approval_id=approval_id,
+                expected_tool_call_id=expected_tool_call_id,
+                current_tool_call_id=current_tool_call_id,
+            )
+            self._audit(
+                engagement_id,
+                "run.resume_rejected",
+                {
+                    "thread_id": thread_id,
+                    "approval_id": approval_id,
+                    "expected_tool_call_id": expected_tool_call_id,
+                    "current_tool_call_id": current_tool_call_id,
+                },
+            )
+            return
+
+        resume_value: dict[str, Any] = {
+            "approved": bool(envelope.get("approved")),
+            "approval_id": approval_id,
+            "tool_call_id": expected_tool_call_id,
+        }
         if "edited_args" in envelope and isinstance(envelope["edited_args"], dict):
             resume_value["edited_args"] = envelope["edited_args"]
         if "reason" in envelope and envelope["reason"]:
@@ -348,7 +430,6 @@ class RunRunner:
             thread_id=thread_id,
             approved=resume_value["approved"],
         )
-        config = self._config(thread_id)
         self._drive(
             engagement_id,
             thread_id,
@@ -356,7 +437,42 @@ class RunRunner:
             config,
             graph,
             acting_user_id,
+            run_model=model,
+            run_context=run_context,
         )
+
+    def _resume_matches_approval(
+        self,
+        engagement_id: uuid.UUID,
+        thread_id: str,
+        *,
+        approval_id: str,
+        tool_call_id: str,
+        approved: bool,
+    ) -> bool:
+        try:
+            approval_uuid = uuid.UUID(approval_id)
+        except ValueError:
+            return False
+        with self._session_scope() as session:
+            approval = session.get(Approval, approval_uuid)
+            return bool(
+                approval
+                and approval.engagement_id == engagement_id
+                and approval.thread_id == thread_id
+                and approval.tool_call_id == tool_call_id
+                and approval.status != ApprovalStatus.pending
+                and bool((approval.decision_args or {}).get("approved")) == approved
+            )
+
+    @staticmethod
+    def _interrupt_tool_call_id(snapshot: Any) -> str | None:
+        for task in getattr(snapshot, "tasks", ()) or ():
+            for interrupt_obj in getattr(task, "interrupts", ()) or ():
+                value = getattr(interrupt_obj, "value", None)
+                if isinstance(value, Mapping) and value.get("tool_call_id"):
+                    return str(value["tool_call_id"])
+        return None
 
     # ------------------------------------------------------------------
     # Graph driving + event emission
@@ -370,6 +486,9 @@ class RunRunner:
         config: dict[str, Any],
         graph: Any,
         acting_user_id: str | None,
+        *,
+        run_model: Mapping[str, Any] | None,
+        run_context: Mapping[str, Any] | None,
     ) -> None:
         # v1.4.10: accumulate per-run totals as the graph streams so we
         # can update the tactical AgentExecution row on completion —
@@ -394,7 +513,13 @@ class RunRunner:
                     node=node,
                 )
             self._emit_from_chunk(
-                engagement_id, thread_id, chunk, acting_user_id, totals=totals
+                engagement_id,
+                thread_id,
+                chunk,
+                acting_user_id,
+                run_model=run_model,
+                run_context=run_context,
+                totals=totals,
             )
 
         snapshot = graph.get_state(config)
@@ -429,6 +554,8 @@ class RunRunner:
         chunk: Mapping[str, Any],
         acting_user_id: str | None,
         *,
+        run_model: Mapping[str, Any] | None,
+        run_context: Mapping[str, Any] | None,
         totals: dict[str, Any] | None = None,
     ) -> None:
         # langgraph yields a special ``__interrupt__`` chunk when interrupt()
@@ -440,7 +567,12 @@ class RunRunner:
                 if not isinstance(payload, Mapping):
                     continue
                 approval_id = self._persist_pending_approval(
-                    engagement_id, thread_id, payload
+                    engagement_id,
+                    thread_id,
+                    payload,
+                    run_model=run_model,
+                    run_context=run_context,
+                    acting_user_id=acting_user_id,
                 )
                 self._emit(
                     engagement_id,
@@ -461,26 +593,11 @@ class RunRunner:
             if not isinstance(update, Mapping):
                 continue
             for finding in update.get("findings") or []:
-                row = self._persist_finding(engagement_id, thread_id, finding)
-                self._emit(
+                self._persist_finding(
                     engagement_id,
-                    {
-                        "type": "finding.created",
-                        "thread_id": thread_id,
-                        "tool": finding.get("tool"),
-                        "args": finding.get("args"),
-                        "data": finding.get("data"),
-                        "target": row.target,
-                        "severity": row.severity.value,
-                        "title": row.title,
-                        "finding_id": str(row.id),
-                        "phase": row.phase.value,
-                        "status": row.status.value,
-                        # Stamped so the strategic-watcher consumer can
-                        # resolve THIS analyst's ephemeral BYO key — no
-                        # engagement-creator fallback.
-                        "acting_user_id": acting_user_id,
-                    },
+                    thread_id,
+                    finding,
+                    acting_user_id=acting_user_id,
                 )
             for denial in update.get("denials") or []:
                 self._audit(
@@ -585,9 +702,7 @@ class RunRunner:
                 )
                 if totals is not None:
                     totals["tools_count"] += 1
-                    totals["findings_count"] += int(
-                        tool_evt.get("findings_emitted") or 0
-                    )
+                    totals["findings_count"] += int(tool_evt.get("findings_emitted") or 0)
                     totals["tool_calls"].append(
                         {
                             "name": tool_evt.get("tool"),
@@ -602,7 +717,9 @@ class RunRunner:
     # ------------------------------------------------------------------
 
     def _emit(self, engagement_id: uuid.UUID, payload: dict[str, Any]) -> None:
-        self._redis.xadd(outbound_stream(engagement_id), encode_event(payload))
+        envelope = dict(payload)
+        envelope.setdefault("event_id", str(uuid.uuid4()))
+        self._redis.xadd(outbound_stream(engagement_id), encode_event(envelope))
 
     def _config(self, thread_id: str) -> dict[str, Any]:
         return {"configurable": {"thread_id": thread_id}}
@@ -612,6 +729,8 @@ class RunRunner:
         engagement_id: uuid.UUID,
         thread_id: str,
         finding: Mapping[str, Any],
+        *,
+        acting_user_id: str | None,
     ) -> Finding:
         tool = str(finding.get("tool") or "unknown")
         args = dict(finding.get("args") or {})
@@ -631,9 +750,7 @@ class RunRunner:
         except ValueError:
             severity = Severity.info
 
-        title = finding.get("title") or (
-            f"{tool} → {target}" if target else tool
-        )
+        title = finding.get("title") or (f"{tool} → {target}" if target else tool)
 
         # Phase-based validation gate: ``osint``-phase findings (passive
         # recon + active-but-factual probes like httpx_probe) auto-validate;
@@ -673,26 +790,61 @@ class RunRunner:
                     phase=phase,
                     status=status,
                 )
-                session.commit()
-                session.refresh(row)
-                return row
+            else:
+                row = Finding(
+                    engagement_id=engagement_id,
+                    title=title,
+                    severity=severity,
+                    summary=None,
+                    details={"thread_id": thread_id, "args": args, **data},
+                    source_tool=tool,
+                    target=target,
+                    phase=phase,
+                    status=status,
+                    validated_at=(
+                        datetime.now(tz=UTC)
+                        if status == FindingStatus.validated
+                        else None
+                    ),
+                )
+                session.add(row)
+                session.flush()
 
-            row = Finding(
-                engagement_id=engagement_id,
-                title=title,
-                severity=severity,
-                summary=None,
-                details={"thread_id": thread_id, "args": args, **data},
+            from app.models.finding import record_finding_origins
+
+            record_finding_origins(
+                session,
+                finding_ids=[row.id],
+                thread_id=uuid.UUID(thread_id),
                 source_tool=tool,
-                target=target,
-                phase=phase,
-                status=status,
-                validated_at=datetime.now(tz=UTC)
-                if status == FindingStatus.validated
-                else None,
             )
-            session.add(row)
+            feedback_id = f"finding.created:{uuid.uuid4()}"
+            event = {
+                "type": "finding.created",
+                "thread_id": thread_id,
+                "tool": tool,
+                "args": args,
+                "data": data,
+                "target": row.target,
+                "severity": row.severity.value,
+                "title": row.title,
+                "finding_id": str(row.id),
+                "phase": row.phase.value,
+                "status": row.status.value,
+                "acting_user_id": acting_user_id,
+            }
+            outbox = enqueue_event(
+                session,
+                idempotency_key=feedback_id,
+                engagement_id=engagement_id,
+                stream_name=outbound_stream(engagement_id),
+                payload=event,
+                thread_id=thread_id,
+            )
             session.commit()
+            # Low-latency attempt after finding + origin + event commit. Redis
+            # failure records retry state and the relay publishes later.
+            publish_entry(session, self._redis, outbox.id)
             session.refresh(row)
             return row
 
@@ -732,14 +884,17 @@ class RunRunner:
                 # ``output.thread_id`` for the strategic-autonomous path
                 # (agents/tactical.py:161). Check both.
                 row = session.execute(
-                    select(AgentExecution).where(
+                    select(AgentExecution)
+                    .where(
                         AgentExecution.engagement_id == engagement_id,
                         AgentExecution.agent == AgentName.tactical,
                         or_(
                             AgentExecution.input["thread_id"].astext == thread_id,
                             AgentExecution.output["thread_id"].astext == thread_id,
                         ),
-                    ).order_by(AgentExecution.started_at.desc()).limit(1)
+                    )
+                    .order_by(AgentExecution.started_at.desc())
+                    .limit(1)
                 ).scalar_one_or_none()
                 if row is None:
                     logger.info(
@@ -808,6 +963,10 @@ class RunRunner:
         engagement_id: uuid.UUID,
         thread_id: str,
         payload: Mapping[str, Any],
+        *,
+        run_model: Mapping[str, Any] | None,
+        run_context: Mapping[str, Any] | None,
+        acting_user_id: str | None,
     ) -> uuid.UUID:
         risk_raw = payload.get("risk")
         risk = RiskLevel(risk_raw) if risk_raw else RiskLevel.active
@@ -817,10 +976,16 @@ class RunRunner:
                 thread_id=thread_id,
                 node="tool_dispatch",
                 tool_name=str(payload.get("tool") or ""),
+                tool_call_id=(
+                    str(payload["tool_call_id"]) if payload.get("tool_call_id") else None
+                ),
                 tool_args=dict(payload.get("args") or {}),
                 risk=risk,
                 scope_check=dict(payload.get("scope") or {}),
                 status=ApprovalStatus.pending,
+                run_model=dict(run_model) if run_model else None,
+                run_context=dict(run_context) if run_context else None,
+                acting_user_id=(uuid.UUID(acting_user_id) if acting_user_id else None),
             )
             session.add(approval)
             session.commit()

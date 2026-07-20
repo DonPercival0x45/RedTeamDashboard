@@ -350,7 +350,9 @@ def test_active_tool_interrupts_then_resumes_approved() -> None:
     snapshot = graph.get_state(config)
     assert snapshot.next, "expected graph to be paused on interrupt()"
 
-    final = graph.invoke(Command(resume={"approved": True}), config=config)
+    final = graph.invoke(
+        Command(resume={"approved": True, "tool_call_id": "call-1"}), config=config
+    )
 
     findings = final.get("findings") or []
     assert len(findings) == 1
@@ -389,7 +391,13 @@ def test_active_tool_interrupts_then_resumes_denied() -> None:
     )
 
     final = graph.invoke(
-        Command(resume={"approved": False, "reason": "out of agreed window"}),
+        Command(
+            resume={
+                "approved": False,
+                "reason": "out of agreed window",
+                "tool_call_id": "call-1",
+            }
+        ),
         config=config,
     )
 
@@ -442,7 +450,9 @@ def test_resolve_host_tool_resolves_before_gate_then_runs(
     snapshot = graph.get_state(config)
     assert snapshot.next, "expected interrupt before an active scan runs"
 
-    final = graph.invoke(Command(resume={"approved": True}), config=config)
+    final = graph.invoke(
+        Command(resume={"approved": True, "tool_call_id": "call-1"}), config=config
+    )
     findings = final.get("findings") or []
     assert len(findings) == 1
     assert findings[0]["args"]["target"] == "10.0.0.5"
@@ -557,7 +567,9 @@ def test_subnet_sweep_interrupts_then_injects_exclusions(
     )
     assert graph.get_state(config).next, "expected one interrupt for the CIDR"
 
-    final = graph.invoke(Command(resume={"approved": True}), config=config)
+    final = graph.invoke(
+        Command(resume={"approved": True, "tool_call_id": "call-1"}), config=config
+    )
     findings = final.get("findings") or []
     assert len(findings) == 1
     assert findings[0]["args"]["cidr"] == "10.0.0.0/24"
@@ -627,7 +639,9 @@ def test_service_detect_active_interrupts_then_runs() -> None:
     )
     assert graph.get_state(config).next, "expected interrupt before fingerprinting"
 
-    final = graph.invoke(Command(resume={"approved": True}), config=config)
+    final = graph.invoke(
+        Command(resume={"approved": True, "tool_call_id": "call-1"}), config=config
+    )
     findings = final.get("findings") or []
     assert len(findings) == 1
     assert findings[0]["tool"] == "service_detect"
