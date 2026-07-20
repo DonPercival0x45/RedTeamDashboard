@@ -105,12 +105,16 @@ const PHASE_FILTERS: (FindingPhase | "all")[] = [
   "vuln_scan",
   "exploit",
   "phishing",
+  "general",
 ];
 
 const STATUS_FILTERS: (FindingValidationStatus | "all")[] = [
   "all",
   "pending_validation",
   "validated",
+  "rejected",
+  "false_positive",
+  "needs_review",
 ];
 
 const SORT_LABEL: Record<FindingSort, string> = {

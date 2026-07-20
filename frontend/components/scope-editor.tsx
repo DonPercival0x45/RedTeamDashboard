@@ -38,7 +38,7 @@ export function ScopeEditor({
   // v1.0.0: react-query owns the fetch. Add/delete mutations invalidate
   // the scope cache; importer calls qc.invalidateQueries directly.
   const qc = useQueryClient();
-  const { data: items, error: queryError } = useScope(slug);
+  const { data: items, error: queryError, isLoading } = useScope(slug);
   const createMutation = useCreateScopeItemMutation(slug);
   const deleteMutation = useDeleteScopeItemMutation(slug);
 
@@ -197,7 +197,7 @@ export function ScopeEditor({
 
         {error && <p className="text-sm text-destructive">{error}</p>}
 
-        {items === null && !error && (
+        {isLoading && items === undefined && !error && (
           <p className="text-sm text-muted-foreground">Loading…</p>
         )}
 

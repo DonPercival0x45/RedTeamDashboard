@@ -11,7 +11,6 @@ interface DatePickerProps {
   onChange: (value: string) => void;
   minDate?: Date;
   maxDate?: Date;
-  required?: boolean;
   disabled?: boolean;
   placeholder?: string;
   className?: string;
@@ -45,7 +44,6 @@ export function DatePicker({
   onChange,
   minDate,
   maxDate,
-  required,
   disabled,
   placeholder = "Select a date",
   className,
@@ -82,7 +80,6 @@ export function DatePicker({
         id={id}
         type="button"
         disabled={disabled}
-        aria-required={required}
         aria-haspopup="dialog"
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}

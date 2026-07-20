@@ -37,7 +37,7 @@ export function AttributionTable({ slug }: { slug: string }) {
     desc: true,
   });
 
-  const rows: AttributionRow[] = data ?? [];
+  const rows = useMemo<AttributionRow[]>(() => data ?? [], [data]);
 
   const sorted = useMemo(() => {
     const cmp = (a: AttributionRow, b: AttributionRow): number => {
