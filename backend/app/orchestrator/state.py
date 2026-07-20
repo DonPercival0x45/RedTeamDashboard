@@ -21,6 +21,13 @@ class OsintState(TypedDict, total=False):
     engagement_id: UUID
     messages: Annotated[list[BaseMessage], add_messages]
     scope_items: list[ScopeSnapshot]
+    # v2.20.0: per-tool secrets resolved from the acting user's ephemeral BYO
+    # keys at run start (worker's handle() populates this from Redis via
+    # resolve_for_user). Keyed by tool name; the dispatch node injects the
+    # matching value as ``api_key`` into args when the tool's ToolSpec has
+    # ``needs_secret=True``. Absent / None → tool impl returns a clean
+    # "no api_key" error instead of hitting the third-party service unauthed.
+    tool_secrets: dict[str, str]
     findings: Annotated[list[dict[str, Any]], operator.add]
     denials: Annotated[list[dict[str, Any]], operator.add]
     pending: Annotated[list[dict[str, Any]], operator.add]

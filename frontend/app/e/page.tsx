@@ -14,6 +14,7 @@ import {
   EngagementNav,
   type EngagementView,
 } from "@/components/engagement-nav";
+import { DossierView } from "@/components/dossier-view";
 import { EntitiesView } from "@/components/entities-view";
 import { FindingsView } from "@/components/findings-view";
 import { ObservationsView } from "@/components/observations-view";
@@ -66,6 +67,7 @@ const VALID_VIEWS = new Set<EngagementView>([
   "findings",
   "strategy",
   "entities",
+  "dossier",
   "observations",
   "costs",
   "scope",
@@ -439,6 +441,8 @@ function EngagementDetail({ slug }: { slug: string }) {
               }}
             />
           )}
+
+          {view === "dossier" && <DossierView slug={slug} />}
 
           {view === "observations" && <ObservationsView slug={slug} />}
 

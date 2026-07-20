@@ -178,6 +178,16 @@ def compute_group_key(
             return None
         return f"reverse_dns:{ip}"
 
+    if tool == "freeipapi":
+        # v2.20.0: IP enrichment. One row per IP; re-running freeipapi on the
+        # same IP merges the fresh geo/ISP fields into the existing item via
+        # finding_grouping's enrichment path (unions list fields, refreshes
+        # last_seen). Keeps the Dossier tab's list stable across re-runs.
+        ip = str(data.get("ip") or args.get("ip") or "").strip()
+        if not ip:
+            return None
+        return f"ip_enrichment:{ip}"
+
     if tool == "httpx_probe":
         # One row per response bucket per apex — 200s under one row,
         # 4xx/5xx broken out. Lets the analyst scan the reachable
@@ -331,6 +341,14 @@ def extract_items(
             {"hostname": h} for h in data.get("hostnames") or [] if isinstance(h, str) and h.strip()
         ]
 
+    if tool == "freeipapi":
+        # v2.20.0: one item per enriched IP. Carries the fields the Dossier
+        # tab + entity extractor consume (geo + isp + timezone). A re-run
+        # on the same IP hits the same group_key + item_dedup_key, so the
+        # merge branch enriches the existing item (union of populated
+        # fields) instead of duplicating the row.
+        return [dict(data)]
+
     if tool == "httpx_probe":
         return [
             {
@@ -438,6 +456,11 @@ def item_dedup_key(tool: str | None, item: Mapping[str, Any]) -> str:
         return f"{item.get('type')}={item.get('value')}"
     if tool == "reverse_dns":
         return str(item.get("hostname") or "").lower()
+    if tool == "freeipapi":
+        # v2.20.0: dedup on the IP itself so re-enriching the same IP hits
+        # the existing item and layers in any fresh fields via the merge
+        # branch's enrichment path (v2.19.0 fix).
+        return str(item.get("ip") or "").strip()
     if tool == "httpx_probe":
         return str(item.get("url") or item.get("final_url") or "").lower()
     if tool in ("portscan", "subnet_sweep"):
@@ -487,6 +510,9 @@ def group_title(tool: str | None, group_key: str, data: Mapping[str, Any] | None
     if tool == "reverse_dns":
         ip = group_key.split(":", 1)[-1]
         return f"Reverse DNS — {ip}"
+    if tool == "freeipapi":
+        ip = group_key.split(":", 1)[-1]
+        return f"IP enrichment — {ip}"
     if tool == "httpx_probe":
         # httpx:<apex>:<bucket>
         parts = group_key.split(":", 2)
@@ -808,6 +834,8 @@ def _representative_target(tool: str | None, group_key: str, data: Mapping[str, 
     column so the search-bar filter still hits."""
     if tool in ("portscan", "subnet_sweep", "service_detect", "reverse_dns"):
         return str(data.get("host") or data.get("ip") or "").strip() or None
+    if tool == "freeipapi":
+        return str(data.get("ip") or "").strip() or None
     if tool in ("subfinder", "crt_sh", "dns_lookup", "whois_lookup"):
         # The apex domain out of the group key.
         return group_key.split(":", 1)[-1]
