@@ -242,6 +242,78 @@ def test_generic_import_rejects_max_plus_one_and_blank_values_with_422(
     assert response.status_code == 422, response.text
 
 
+def test_grouped_import_tag_union_exact_cap_and_overflow_is_atomic(
+    client: TestClient,
+    db: Session,
+    engagement: Engagement,
+) -> None:
+    parent = Finding(
+        engagement_id=engagement.id,
+        title="Existing grouped parent",
+        severity=Severity.info,
+        details={
+            "items": [{"target": "existing.example.test"}],
+            "grouped": True,
+        },
+        source_tool="bulk",
+        target="existing.example.test",
+        phase=FindingPhase.general,
+        status=FindingStatus.pending_validation,
+        group_key="shared-group",
+        tags=[f"existing-{index}" for index in range(18)],
+    )
+    db.add(parent)
+    db.commit()
+    db.refresh(parent)
+
+    exact = client.post(
+        f"/engagements/{engagement.slug}/findings/import",
+        json=[
+            {
+                "title": "Exact capacity",
+                "source_tool": "bulk",
+                "target": "exact.example.test",
+                "group_key": "shared-group",
+                "tags": ["incoming-a", "incoming-b"],
+                "details": {"marker": "exact"},
+            }
+        ],
+        headers=HDR,
+    )
+    assert exact.status_code == 201, exact.text
+    db.refresh(parent)
+    assert parent.tags == [
+        *[f"existing-{index}" for index in range(18)],
+        "incoming-a",
+        "incoming-b",
+    ]
+    assert len(parent.details["items"]) == 2
+    tags_before_overflow = list(parent.tags)
+    details_before_overflow = dict(parent.details)
+
+    overflow = client.post(
+        f"/engagements/{engagement.slug}/findings/import",
+        json=[
+            {
+                "title": "Overflow",
+                "source_tool": "bulk",
+                "target": "overflow.example.test",
+                "group_key": "shared-group",
+                "tags": ["incoming-c"],
+                "details": {"marker": "must-not-persist"},
+            }
+        ],
+        headers=HDR,
+    )
+    assert overflow.status_code == 422, overflow.text
+    assert "would exceed the 20-tag limit" in overflow.json()["detail"]
+    db.expire_all()
+    unchanged = db.get(Finding, parent.id)
+    assert unchanged is not None
+    assert unchanged.tags == tags_before_overflow
+    assert unchanged.details == details_before_overflow
+
+
 def test_generic_import_rejects_oversized_batch_with_422(
     client: TestClient, engagement: Engagement
 ) -> None:

@@ -31,7 +31,7 @@ from typing import Any
 import anyio
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import object_session
 
 from app.mcp.auth import get_current_key, get_current_lease, get_current_user
@@ -995,7 +995,10 @@ def resource_engagements() -> str:
             select(
                 Engagement,
                 select(func.count())
-                .where(Finding.engagement_id == Engagement.id)
+                .where(
+                    Finding.engagement_id == Engagement.id,
+                    Finding.deleted_at.is_(None),
+                )
                 .correlate(Engagement)
                 .scalar_subquery()
                 .label("finding_count"),
@@ -1041,6 +1044,7 @@ def resource_engagement(slug: str) -> str:
                 .where(
                     Finding.engagement_id == eng.id,
                     Finding.severity.in_([Severity.high, Severity.critical]),
+                    Finding.deleted_at.is_(None),
                 )
                 .order_by(Finding.created_at.desc())
                 .limit(20)
@@ -1104,7 +1108,10 @@ def resource_findings(slug: str) -> str:
         findings = list(
             session.execute(
                 select(Finding)
-                .where(Finding.engagement_id == eng.id)
+                .where(
+                    Finding.engagement_id == eng.id,
+                    Finding.deleted_at.is_(None),
+                )
                 .order_by(Finding.created_at.desc())
                 .limit(500)
             ).scalars()
@@ -1497,8 +1504,14 @@ def get_finding_context(engagement_slug: str, finding_id: str) -> dict:
         except ValueError:
             return {"error": f"invalid finding_id {finding_id!r} — must be a UUID"}
 
-        finding = session.get(_Finding, fid)
-        if finding is None or finding.engagement_id != eng.id:
+        finding = session.execute(
+            select(_Finding).where(
+                _Finding.id == fid,
+                _Finding.engagement_id == eng.id,
+                _Finding.deleted_at.is_(None),
+            )
+        ).scalar_one_or_none()
+        if finding is None:
             return {"error": f"finding {finding_id} not found in {engagement_slug}"}
 
         scope_items = list(
@@ -1652,8 +1665,17 @@ def propose_strategic_suggestion(
         except ValueError as exc:
             return {"error": str(exc)}
 
-        finding = session.get(_Finding, fid)
-        if finding is None or finding.engagement_id != eng.id:
+        finding = session.execute(
+            select(_Finding)
+            .where(
+                _Finding.id == fid,
+                _Finding.engagement_id == eng.id,
+                _Finding.deleted_at.is_(None),
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).scalar_one_or_none()
+        if finding is None:
             return {"error": f"finding {finding_id} not found in {engagement_slug}"}
 
         now = datetime.now(tz=UTC)
@@ -1744,8 +1766,15 @@ def list_open_suggestions(engagement_slug: str, finding_id: str | None = None) -
 
         stmt = (
             select(Suggestion)
-            .where(Suggestion.engagement_id == eng.id)
-            .where(Suggestion.status == SuggestionStatus.open)
+            .outerjoin(Finding, Finding.id == Suggestion.finding_id)
+            .where(
+                Suggestion.engagement_id == eng.id,
+                Suggestion.status == SuggestionStatus.open,
+                or_(
+                    Suggestion.finding_id.is_(None),
+                    Finding.deleted_at.is_(None),
+                ),
+            )
             .order_by(Suggestion.created_at.desc())
         )
         if finding_id is not None:

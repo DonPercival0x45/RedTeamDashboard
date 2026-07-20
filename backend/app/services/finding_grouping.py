@@ -48,6 +48,7 @@ from app.models import (
     FindingStatus,
     Severity,
 )
+from app.schemas.finding import MAX_FINDING_TAGS
 
 logger = structlog.get_logger(__name__)
 
@@ -67,6 +68,22 @@ _SEV_RANK: dict[Severity, int] = {
 
 def _max_severity(a: Severity, b: Severity) -> Severity:
     return a if _SEV_RANK[a] >= _SEV_RANK[b] else b
+
+
+class FindingTagCapacityError(ValueError):
+    """Incoming import tags cannot fit on an existing grouped parent."""
+
+
+def merge_import_tags(existing: list[str], incoming: list[str]) -> list[str]:
+    """Return the stable tag union or reject it rather than discarding tags."""
+    merged = list(dict.fromkeys([*existing, *incoming]))
+    if len(merged) > MAX_FINDING_TAGS:
+        raise FindingTagCapacityError(
+            "grouped finding tags would exceed the "
+            f"{MAX_FINDING_TAGS}-tag limit (existing={len(existing)}, "
+            f"incoming={len(incoming)}, merged={len(merged)})"
+        )
+    return merged
 
 
 # ---------------------------------------------------------------------------
@@ -668,6 +685,11 @@ def upsert_grouped_import_item(
         )
         .with_for_update()
     ).scalar_one_or_none()
+    merged_tags = (
+        merge_import_tags(list(row.tags or []) if row is not None else [], item_tags)
+        if item_tags is not None
+        else None
+    )
     if row is not None and row.deleted_at is not None:
         # The group-key unique index includes deleted rows. Re-import is an
         # explicit analyst action, so revive the canonical parent rather than
@@ -711,7 +733,7 @@ def upsert_grouped_import_item(
             validated_at=datetime.now(tz=UTC) if status == FindingStatus.validated else None,
             validated_by=validated_by if status == FindingStatus.validated else None,
             group_key=group_key,
-            tags=list(item_tags or []),
+            tags=merged_tags or [],
         )
         session.add(row)
         session.flush()
@@ -734,8 +756,8 @@ def upsert_grouped_import_item(
         # generic-import tags, which are analyst-curated metadata.
         details["last_seen_at"] = now
         row.details = details
-        if item_tags:
-            row.tags = list(dict.fromkeys([*(row.tags or []), *item_tags]))[:20]
+        if merged_tags is not None:
+            row.tags = merged_tags
         return row, False
 
     existing_items.append(item_record)
@@ -746,8 +768,8 @@ def upsert_grouped_import_item(
 
     if _SEV_RANK[item_severity] > _SEV_RANK[row.severity]:
         row.severity = item_severity
-    if item_tags:
-        row.tags = list(dict.fromkeys([*(row.tags or []), *item_tags]))[:20]
+    if merged_tags is not None:
+        row.tags = merged_tags
 
     logger.info(
         "finding_grouping.import_merged",

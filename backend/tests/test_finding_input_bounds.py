@@ -19,6 +19,10 @@ from app.schemas.finding import (
     MAX_FINDING_TAGS,
     FindingUpdate,
 )
+from app.services.finding_grouping import (
+    FindingTagCapacityError,
+    merge_import_tags,
+)
 
 
 def _details_with_size(size: int) -> dict[str, str]:
@@ -54,6 +58,18 @@ def test_finding_update_exact_boundaries() -> None:
 def test_finding_update_rejects_max_plus_one_and_blank(payload: dict[str, object]) -> None:
     with pytest.raises(ValidationError):
         FindingUpdate.model_validate(payload)
+
+
+def test_grouped_parent_tag_union_accepts_exact_cap_and_rejects_overflow() -> None:
+    existing = [f"existing-{index}" for index in range(18)]
+    assert merge_import_tags(existing, ["incoming-a", "incoming-b"]) == [
+        *existing,
+        "incoming-a",
+        "incoming-b",
+    ]
+
+    with pytest.raises(FindingTagCapacityError, match="would exceed the 20-tag limit"):
+        merge_import_tags(existing, ["incoming-a", "incoming-b", "incoming-c"])
 
 
 def test_generic_import_exact_boundaries_and_caps() -> None:

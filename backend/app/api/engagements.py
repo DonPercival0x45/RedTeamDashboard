@@ -2036,9 +2036,15 @@ def import_findings(
     eng = _get_engagement_or_404(session, slug)
     _reject_flushed(eng)
 
-    created, _skipped = _create_findings_from_imports(
-        session, eng, body.root, user, source="bulk_import"
-    )
+    from app.services.finding_grouping import FindingTagCapacityError
+
+    try:
+        created, _skipped = _create_findings_from_imports(
+            session, eng, body.root, user, source="bulk_import"
+        )
+    except FindingTagCapacityError as exc:
+        session.rollback()
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     session.commit()
     for f in created:
         session.refresh(f)
