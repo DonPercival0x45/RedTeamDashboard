@@ -1621,6 +1621,15 @@ def maybe_schedule_auto_reassess(
     Rate-limited per engagement (AUTO_REASSESS_COOLDOWN_SECONDS) so resolving
     several items in a row fires at most one run. Never raises — the resolve
     that triggers this must not fail because of it."""
+    # Token-saving kill-switch: skip when the engagement has auto-assess
+    # disabled (the analyst is just evaluating + doesn't want auto-generated
+    # suggestions burning tokens).
+    from app.db.session import SessionLocal
+
+    with SessionLocal() as session:
+        eng = session.get(Engagement, engagement_id)
+        if eng is not None and not eng.auto_assess_enabled:
+            return
     if not _auto_reassess_should_fire(redis_client, engagement_id):
         return
     try:

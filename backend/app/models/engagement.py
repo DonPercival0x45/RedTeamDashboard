@@ -4,7 +4,7 @@ import enum
 import uuid
 from datetime import date, datetime
 
-from sqlalchemy import Date, DateTime, Enum, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, Date, DateTime, Enum, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -68,4 +68,11 @@ class Engagement(Base, TimestampMixin):
     )
     work_state_version: Mapped[int] = mapped_column(
         Integer, default=1, nullable=False, server_default="1"
+    )
+    # Token-saving kill-switch for automatic background strategic generation
+    # (the finding watcher + auto-reassess on work-item resolve). Default on;
+    # analysts flip it off while evaluating so no LLM tokens are spent on
+    # auto-generated suggestions. The manual Analyze button is unaffected.
+    auto_assess_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False, server_default="true"
     )

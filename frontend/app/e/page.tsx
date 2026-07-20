@@ -37,6 +37,7 @@ import {
   useEngagement,
   useFindings,
   useFlushEngagementMutation,
+  useUpdateEngagementMutation,
 } from "@/lib/hooks";
 import type { Engagement, Finding } from "@/lib/types";
 
@@ -113,6 +114,7 @@ function EngagementDetail({ slug }: { slug: string }) {
   const findings = findingsQuery.data ?? [];
   const archiveMutation = useArchiveEngagementMutation(slug);
   const flushMutation = useFlushEngagementMutation(slug);
+  const updateEngagementMutation = useUpdateEngagementMutation(slug);
 
   const [events, setEvents] = useState<LoggedEvent[]>([]);
   const [pending, setPending] = useState<PendingApproval | null>(null);
@@ -242,6 +244,21 @@ function EngagementDetail({ slug }: { slug: string }) {
     }
   };
 
+  // Token-saving kill-switch: pauses the strategic watcher (finding trigger)
+  // and auto-reassess (work-item resolve) so no LLM tokens are spent on
+  // auto-generated suggestions while an analyst is just evaluating. The
+  // manual Analyze button is unaffected either way.
+  const onToggleAutoAssess = async () => {
+    if (!engagement) return;
+    try {
+      await updateEngagementMutation.mutateAsync({
+        auto_assess_enabled: !engagement.auto_assess_enabled,
+      });
+    } catch (err) {
+      setLocalError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
   // Hard delete: irreversibly drops the engagement row and cascades through
   // findings, scope, approvals, audit log, tasks, leases, attachments,
   // entities, observations. Type-to-confirm because there is no undo.
@@ -298,7 +315,29 @@ function EngagementDetail({ slug }: { slug: string }) {
           )}
         </div>
         {canWrite && (
-          <div className="flex gap-2">
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={onToggleAutoAssess}
+              disabled={updateEngagementMutation.isPending}
+              title={
+                engagement.auto_assess_enabled
+                  ? "Auto-assess is on — the strategic watcher (new findings) and auto-reassess (work-item resolve) run automatically. Click to pause and stop spending tokens on auto-generated suggestions. The manual Analyze button still works either way."
+                  : "Auto-assess is paused — no background strategist runs on new findings or work-item resolves, so no LLM tokens are spent on auto-generated suggestions. Click to resume. The manual Analyze button still works either way."
+              }
+              className="gap-1.5"
+            >
+              <span
+                className={
+                  engagement.auto_assess_enabled
+                    ? "inline-block h-2 w-2 rounded-full bg-emerald-500"
+                    : "inline-block h-2 w-2 rounded-full bg-muted-foreground/50"
+                }
+                aria-hidden
+              />
+              {engagement.auto_assess_enabled ? "Auto-assess on" : "Auto-assess paused"}
+            </Button>
             {engagement.status === "active" && (
               <Button variant="outline" size="sm" onClick={onArchive}>
                 Archive

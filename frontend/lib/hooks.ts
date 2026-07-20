@@ -96,6 +96,7 @@ import {
   revokeAuthorization,
   revokeTool,
   startVm,
+  updateEngagement,
   updateIntegration,
   updateMyPreferences,
   updateUserRole,
@@ -467,6 +468,19 @@ export function useArchiveEngagementMutation(slug: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: () => archiveEngagement(slug),
+    onSuccess: () =>
+      qc.invalidateQueries({ queryKey: qk.engagement(slug) }),
+  });
+}
+
+export function useUpdateEngagementMutation(slug: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: {
+      auto_assess_enabled?: boolean;
+      name?: string;
+      status?: import("@/lib/types").EngagementStatus;
+    }) => updateEngagement(slug, body),
     onSuccess: () =>
       qc.invalidateQueries({ queryKey: qk.engagement(slug) }),
   });

@@ -52,6 +52,7 @@ export interface Engagement {
   status: EngagementStatus;
   work_state: "active" | "completion_review" | "completed";
   work_state_version: number;
+  auto_assess_enabled: boolean;
   time_frame: EngagementTimeFrame;
   start_date: string | null;
   end_date: string | null;

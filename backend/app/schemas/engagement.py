@@ -105,6 +105,15 @@ class EngagementUpdate(BaseModel):
             "POST /engagements/{slug}/flush for irreversible deletion."
         ),
     )
+    auto_assess_enabled: bool | None = Field(
+        default=None,
+        description=(
+            "Kill-switch for automatic background strategic generation "
+            "(finding watcher + auto-reassess). False = no LLM tokens spent "
+            "on auto-generated suggestions; the manual Analyze button is "
+            "unaffected."
+        ),
+    )
 
 
 class EngagementRead(BaseModel):
@@ -117,6 +126,7 @@ class EngagementRead(BaseModel):
     status: EngagementStatus
     work_state: EngagementWorkState = EngagementWorkState.active
     work_state_version: int = 1
+    auto_assess_enabled: bool = True
     time_frame: EngagementTimeFrame
     start_date: date | None
     end_date: date | None
