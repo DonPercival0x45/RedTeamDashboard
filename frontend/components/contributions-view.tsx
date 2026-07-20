@@ -7,6 +7,7 @@
 // the table below to that day; default (nothing clicked) shows today.
 
 import { useMemo, useState } from "react";
+import { ChevronDown, ChevronRight } from "lucide-react";
 import {
   Card,
   CardContent,
@@ -130,6 +131,10 @@ export function ContributionsView({ slug }: { slug: string }) {
     date: string;
     count: number;
   } | null>(null);
+  // v2.18.0: activity table can grow past a full page for a busy engagement
+  // day. Collapse hides the table entirely; when expanded, the container is
+  // height-capped and scrolls internally so the heatmap stays visible.
+  const [activityCollapsed, setActivityCollapsed] = useState(false);
 
   // v1.0.0: react-query owns both fetches, keyed by (slug, filters). Changing
   // a filter chip just changes the query key, so cached results for prior
@@ -324,46 +329,60 @@ export function ContributionsView({ slug }: { slug: string }) {
       {/* Activity list for the selected day (or range in future). */}
       <Card>
         <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-3">
-          <CardTitle className="text-base">
-            Activity — {formatCellDate(selectedDate)}
-          </CardTitle>
+          <button
+            type="button"
+            onClick={() => setActivityCollapsed((v) => !v)}
+            aria-expanded={!activityCollapsed}
+            className="flex items-center gap-2 rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            {activityCollapsed ? (
+              <ChevronRight className="h-4 w-4 text-muted-foreground" />
+            ) : (
+              <ChevronDown className="h-4 w-4 text-muted-foreground" />
+            )}
+            <CardTitle className="text-base">
+              Activity — {formatCellDate(selectedDate)}
+            </CardTitle>
+          </button>
           <span className="text-xs text-muted-foreground">
             {entries ? `${entries.total} entr${entries.total === 1 ? "y" : "ies"}` : ""}
           </span>
         </CardHeader>
-        <CardContent>
-          {entriesError && (
-            <p className="text-xs text-critical">{entriesError}</p>
-          )}
-          {entriesLoading && !entries && (
-            <p className="text-xs text-muted-foreground">Loading…</p>
-          )}
-          {entries && entries.entries.length === 0 && (
-            <p className="text-xs text-muted-foreground">
-              No contributions recorded for this day / filter.
-            </p>
-          )}
-          {entries && entries.entries.length > 0 && (
-            <div className="overflow-x-auto">
-              <table className="w-full text-xs">
-                <thead className="border-b border-border/60 text-left text-muted-foreground">
-                  <tr>
-                    <th className="py-2 pr-3 font-normal">When</th>
-                    <th className="py-2 pr-3 font-normal">Who</th>
-                    <th className="py-2 pr-3 font-normal">Source</th>
-                    <th className="py-2 pr-3 font-normal">Action</th>
-                    <th className="py-2 pr-3 font-normal">Detail</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {entries.entries.map((e, idx) => (
-                    <EntryRow key={`${e.when}-${idx}`} entry={e} />
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </CardContent>
+        {!activityCollapsed && (
+          <CardContent>
+            {entriesError && (
+              <p className="text-xs text-critical">{entriesError}</p>
+            )}
+            {entriesLoading && !entries && (
+              <p className="text-xs text-muted-foreground">Loading…</p>
+            )}
+            {entries && entries.entries.length === 0 && (
+              <p className="text-xs text-muted-foreground">
+                No contributions recorded for this day / filter.
+              </p>
+            )}
+            {entries && entries.entries.length > 0 && (
+              <div className="max-h-[520px] overflow-auto rounded-md border border-border/40">
+                <table className="w-full text-xs">
+                  <thead className="sticky top-0 border-b border-border/60 bg-card text-left text-muted-foreground">
+                    <tr>
+                      <th className="py-2 pl-3 pr-3 font-normal">When</th>
+                      <th className="py-2 pr-3 font-normal">Who</th>
+                      <th className="py-2 pr-3 font-normal">Source</th>
+                      <th className="py-2 pr-3 font-normal">Action</th>
+                      <th className="py-2 pr-3 font-normal">Detail</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {entries.entries.map((e, idx) => (
+                      <EntryRow key={`${e.when}-${idx}`} entry={e} />
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </CardContent>
+        )}
       </Card>
     </div>
   );
@@ -383,7 +402,7 @@ function EntryRow({ entry }: { entry: ContributionEntry }) {
   });
   return (
     <tr className="border-b border-border/30 last:border-none">
-      <td className="py-2 pr-3 font-mono text-[11px] text-muted-foreground">
+      <td className="py-2 pl-3 pr-3 font-mono text-[11px] text-muted-foreground">
         {when}
       </td>
       <td className={`py-2 pr-3 ${kindClass}`}>

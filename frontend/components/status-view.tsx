@@ -693,9 +693,7 @@ export function StatusView({
                     onClick={() => setShowAllRuns((prev) => !prev)}
                     className="rounded border border-border px-2 py-1 text-xs hover:bg-secondary/60"
                   >
-                    {showAllRuns
-                      ? `Show first ${INITIAL_RUN_CAP}`
-                      : `Show all ${visible.length}`}
+                    {showAllRuns ? "Show less" : `Show all ${visible.length}`}
                   </button>
                 </div>
               )}
