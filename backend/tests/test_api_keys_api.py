@@ -13,7 +13,7 @@ from collections.abc import Iterator
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.api.api_keys import _generate_key
@@ -262,3 +262,107 @@ def test_unknown_api_key_returns_401(client: TestClient) -> None:
     )
     assert response.status_code == 401
     assert "invalid" in response.json()["detail"].lower()
+
+
+# ---------------------------------------------------------------------------
+# Scope retention through CurrentUser role dependencies
+# ---------------------------------------------------------------------------
+
+
+def test_viewer_key_can_read_but_cannot_mutate(
+    client: TestClient, db: Session
+) -> None:
+    user = _seed_user(db, "viewer-boundary@example.com")
+    _, token = _seed_key(
+        db, name="viewer-boundary", scope=APIKeyScope.viewer, created_by=user
+    )
+    headers = {"X-API-Key": token}
+
+    assert client.get("/engagements", headers=headers).status_code == 200
+    response = client.post(
+        "/engagements",
+        json={"name": "Viewer must not create"},
+        headers=headers,
+    )
+    assert response.status_code == 403
+    assert "cli" in response.json()["detail"]
+
+
+def test_cli_key_can_perform_ordinary_mutation(
+    client: TestClient, db: Session
+) -> None:
+    suffix = __import__("uuid").uuid4().hex[:8]
+    user = _seed_user(db, f"cli-boundary-{suffix}@example.com")
+    _, token = _seed_key(
+        db, name=f"cli-boundary-{suffix}", scope=APIKeyScope.cli, created_by=user
+    )
+
+    response = client.post(
+        "/engagements",
+        json={"name": f"CLI boundary {suffix}"},
+        headers={"X-API-Key": token},
+    )
+    assert response.status_code == 201, response.text
+
+    engagement_id = __import__("uuid").UUID(response.json()["id"])
+    db.execute(text("SELECT flush_engagement(:id)"), {"id": engagement_id})
+    db.commit()
+
+
+def test_admin_dependency_uses_key_scope_not_minting_user_role(
+    client: TestClient, db: Session
+) -> None:
+    suffix = __import__("uuid").uuid4().hex[:8]
+    ordinary_user = _seed_user(db, f"admin-key-minter-{suffix}@example.com")
+    _, cli_token = _seed_key(
+        db, name=f"admin-gate-cli-{suffix}", scope=APIKeyScope.cli, created_by=ordinary_user
+    )
+    _, admin_token = _seed_key(
+        db,
+        name=f"admin-gate-admin-{suffix}",
+        scope=APIKeyScope.admin,
+        created_by=ordinary_user,
+    )
+    missing_slug = f"missing-{suffix}"
+
+    denied = client.post(
+        f"/engagements/{missing_slug}/flush", headers={"X-API-Key": cli_token}
+    )
+    assert denied.status_code == 403
+    assert "admin" in denied.json()["detail"]
+
+    admitted = client.post(
+        f"/engagements/{missing_slug}/flush", headers={"X-API-Key": admin_token}
+    )
+    assert admitted.status_code == 404
+
+
+def test_non_guest_dependency_looks_up_api_key_once(
+    client: TestClient,
+    db: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.api import deps
+
+    suffix = __import__("uuid").uuid4().hex[:8]
+    user = _seed_user(db, f"single-lookup-{suffix}@example.com")
+    _, token = _seed_key(
+        db, name=f"single-lookup-{suffix}", scope=APIKeyScope.cli, created_by=user
+    )
+    original = deps._lookup_api_key
+    calls = 0
+
+    def counted_lookup(session: Session, raw: str) -> APIKey:
+        nonlocal calls
+        calls += 1
+        return original(session, raw)
+
+    monkeypatch.setattr(deps, "_lookup_api_key", counted_lookup)
+    response = client.post(
+        f"/engagements/missing-{suffix}/observations",
+        json={"content": "not persisted"},
+        headers={"X-API-Key": token},
+    )
+
+    assert response.status_code == 404
+    assert calls == 1

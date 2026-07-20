@@ -14,7 +14,15 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.main import app
-from app.models import AuditLog, Engagement, EngagementStatus, Finding, FindingStatus
+from app.models import (
+    AuditLog,
+    Engagement,
+    EngagementStatus,
+    Finding,
+    FindingStatus,
+    User,
+    UserRole,
+)
 
 
 @pytest.fixture()
@@ -209,6 +217,29 @@ def test_import_requires_auth(client: TestClient, engagement: Engagement) -> Non
         json=[{"title": "unauthed"}],
     )
     assert resp.status_code == 401
+
+
+def test_import_rejects_guest_role(
+    client: TestClient, db: Session, engagement: Engagement
+) -> None:
+    guest = User(
+        email=f"import-guest-{uuid.uuid4().hex[:8]}@example.com",
+        role=UserRole.guest,
+    )
+    db.add(guest)
+    db.commit()
+    db.refresh(guest)
+    try:
+        resp = client.post(
+            f"/engagements/{engagement.slug}/findings/import",
+            json=[{"title": "guest write"}],
+            headers={"X-User-Id": str(guest.id)},
+        )
+        assert resp.status_code == 403
+        assert "read-only" in resp.json()["detail"]
+    finally:
+        db.delete(guest)
+        db.commit()
 
 
 def test_import_409_for_flushed_engagement(

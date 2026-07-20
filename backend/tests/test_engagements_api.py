@@ -100,6 +100,26 @@ def _seed_provider_key(client: TestClient, provider: str = "ollama") -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/engagements",
+        "/engagements/auth-boundary-missing",
+        "/engagements/auth-boundary-missing/scope",
+        "/engagements/auth-boundary-missing/findings",
+        "/engagements/auth-boundary-missing/entities",
+        "/engagements/auth-boundary-missing/observations",
+        f"/findings/{uuid.UUID(int=0)}/observations",
+        f"/engagements/{uuid.UUID(int=0)}/authorizations",
+    ],
+)
+def test_sensitive_engagement_reads_require_auth(
+    client: TestClient, path: str
+) -> None:
+    response = client.get(path)
+    assert response.status_code == 401, (path, response.text)
+
+
 def test_create_with_auto_generated_slug(
     client: TestClient, cleanup_slugs: list[str]
 ) -> None:
@@ -380,7 +400,9 @@ def test_list_engagements_filters_by_status(
 
     client.delete(f"/engagements/{archived['slug']}", headers=_headers())
 
-    response = client.get("/engagements", params={"status": "active"})
+    response = client.get(
+        "/engagements", params={"status": "active"}, headers=_headers()
+    )
     assert response.status_code == 200
     slugs = {e["slug"] for e in response.json()}
     assert active["slug"] in slugs
@@ -388,7 +410,9 @@ def test_list_engagements_filters_by_status(
 
 
 def test_get_engagement_404_for_unknown_slug(client: TestClient) -> None:
-    response = client.get(f"/engagements/does-not-exist-{uuid.uuid4().hex[:6]}")
+    response = client.get(
+        f"/engagements/does-not-exist-{uuid.uuid4().hex[:6]}", headers=_headers()
+    )
     assert response.status_code == 404
 
 
@@ -457,7 +481,7 @@ def test_delete_soft_archives(
     assert body["archived_at"] is not None
 
     # Row still fetchable
-    again = client.get(f"/engagements/{eng['slug']}")
+    again = client.get(f"/engagements/{eng['slug']}", headers=_headers())
     assert again.status_code == 200
 
 
@@ -533,7 +557,7 @@ def test_create_and_list_scope_items(
     )
     assert b.status_code == 201
 
-    listing = client.get(f"/engagements/{eng['slug']}/scope")
+    listing = client.get(f"/engagements/{eng['slug']}/scope", headers=_headers())
     assert listing.status_code == 200
     rows = listing.json()
     assert len(rows) == 2
@@ -559,7 +583,9 @@ def test_scope_item_source_found_round_trips(
     assert created.status_code == 201, created.text
     assert created.json()["source"] == "found"
 
-    rows = client.get(f"/engagements/{eng['slug']}/scope").json()
+    rows = client.get(
+        f"/engagements/{eng['slug']}/scope", headers=_headers()
+    ).json()
     found_rows = [r for r in rows if r["source"] == "found"]
     assert len(found_rows) == 1
     assert found_rows[0]["value"] == "shadow.acme.com"
@@ -582,7 +608,7 @@ def test_engagement_read_carries_scope_counts(
     cleanup_slugs.append(eng["slug"])
 
     # Empty engagement -> both counts zero.
-    fresh = client.get(f"/engagements/{eng['slug']}")
+    fresh = client.get(f"/engagements/{eng['slug']}", headers=_headers())
     assert fresh.status_code == 200
     assert fresh.json()["scope_count"] == 0
     assert fresh.json()["exclusion_count"] == 0
@@ -600,12 +626,12 @@ def test_engagement_read_carries_scope_counts(
         assert r.status_code == 201, r.text
 
     # GET one engagement -> 2 in scope, 1 exclusion.
-    got = client.get(f"/engagements/{eng['slug']}").json()
+    got = client.get(f"/engagements/{eng['slug']}", headers=_headers()).json()
     assert got["scope_count"] == 2
     assert got["exclusion_count"] == 1
 
     # LIST carries the counts too (no extra N+1).
-    listed = client.get("/engagements").json()
+    listed = client.get("/engagements", headers=_headers()).json()
     this = next(e for e in listed if e["slug"] == eng["slug"])
     assert this["scope_count"] == 2
     assert this["exclusion_count"] == 1
@@ -671,7 +697,9 @@ def test_delete_scope_item(
     )
     assert response.status_code == 204
 
-    listing = client.get(f"/engagements/{eng['slug']}/scope").json()
+    listing = client.get(
+        f"/engagements/{eng['slug']}/scope", headers=_headers()
+    ).json()
     assert listing == []
 
 
@@ -726,7 +754,9 @@ def test_list_findings_unpacks_persisted_rows(
     )
     db.commit()
 
-    response = client.get(f"/engagements/{eng['slug']}/findings")
+    response = client.get(
+        f"/engagements/{eng['slug']}/findings", headers=_headers()
+    )
     assert response.status_code == 200, response.text
     rows = response.json()
     assert len(rows) == 1
@@ -745,7 +775,9 @@ def test_list_findings_empty_for_new_engagement(
 ) -> None:
     eng = _create(client, f"No findings {uuid.uuid4().hex[:6]}")
     cleanup_slugs.append(eng["slug"])
-    response = client.get(f"/engagements/{eng['slug']}/findings")
+    response = client.get(
+        f"/engagements/{eng['slug']}/findings", headers=_headers()
+    )
     assert response.status_code == 200
     assert response.json() == []
 
@@ -775,7 +807,9 @@ def test_finding_tags_round_trip(client: TestClient, cleanup_slugs: list[str]) -
     assert created["tags"] == ["xss", "recon", "z" * 40]
 
     # List carries the tags.
-    listed = client.get(f"/engagements/{eng['slug']}/findings").json()
+    listed = client.get(
+        f"/engagements/{eng['slug']}/findings", headers=_headers()
+    ).json()
     assert listed[0]["tags"] == ["xss", "recon", "z" * 40]
 
     fid = created["id"]
@@ -843,11 +877,13 @@ def test_observation_finding_link_round_trip(
     assert again.json()["finding_ids"] == [fid]
 
     # The observation list carries the link too.
-    listed = client.get(f"/engagements/{eng['slug']}/observations").json()
+    listed = client.get(
+        f"/engagements/{eng['slug']}/observations", headers=_headers()
+    ).json()
     assert listed[0]["finding_ids"] == [fid]
 
     # Back-ref: the finding surfaces the observations that reference it.
-    back = client.get(f"/findings/{fid}/observations").json()
+    back = client.get(f"/findings/{fid}/observations", headers=_headers()).json()
     assert len(back) == 1
     assert back[0]["id"] == oid
 
@@ -858,7 +894,9 @@ def test_observation_finding_link_round_trip(
         client.delete(f"/observations/{oid}/findings/{fid}", headers=_headers()).status_code
         == 204
     )
-    assert client.get(f"/findings/{fid}/observations").json() == []
+    assert client.get(
+        f"/findings/{fid}/observations", headers=_headers()
+    ).json() == []
 
 
 def test_observation_link_rejects_cross_engagement(

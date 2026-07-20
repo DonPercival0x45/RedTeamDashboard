@@ -740,6 +740,7 @@ def create_engagement(
 @router.get("/engagements", response_model=list[EngagementRead])
 def list_engagements(
     session: DbSession,
+    _user: CurrentUser,
     status_filter: Annotated[
         EngagementStatus | None,
         Query(alias="status", description="Filter by status."),
@@ -757,7 +758,7 @@ def list_engagements(
 
 
 @router.get("/engagements/{slug}", response_model=EngagementRead)
-def get_engagement(slug: str, session: DbSession) -> EngagementRead:
+def get_engagement(slug: str, session: DbSession, _user: CurrentUser) -> EngagementRead:
     eng = _get_engagement_or_404(session, slug)
     read = EngagementRead.model_validate(eng)
     read.scope_count, read.exclusion_count = _scope_counts_for(session, eng.id)
@@ -1053,7 +1054,7 @@ def import_scope(
     "/engagements/{slug}/scope",
     response_model=list[ScopeItemRead],
 )
-def list_scope(slug: str, session: DbSession) -> list[ScopeItem]:
+def list_scope(slug: str, session: DbSession, _user: CurrentUser) -> list[ScopeItem]:
     eng = _get_engagement_or_404(session, slug)
     rows = session.execute(
         select(ScopeItem).where(ScopeItem.engagement_id == eng.id).order_by(ScopeItem.created_at)
@@ -1151,6 +1152,7 @@ _SEVERITY_RANK = case(
 def list_findings(
     slug: str,
     session: DbSession,
+    _user: CurrentUser,
     phase: Annotated[FindingPhase | None, Query(description="Filter by phase.")] = None,
     status: Annotated[
         FindingStatus | None, Query(description="Filter by validation status.")
@@ -1220,6 +1222,7 @@ def list_entities(
     slug: str,
     session: DbSession,
     redis: RedisClient,
+    _user: CurrentUser,
     type: Annotated[str | None, Query(description="Filter by entity type.")] = None,
     q: Annotated[str | None, Query(description="Substring match on the value.")] = None,
 ) -> list[dict[str, Any]]:
@@ -1383,7 +1386,9 @@ def _observation_finding_ids(
 
 
 @router.get("/engagements/{slug}/observations", response_model=list[ObservationRead])
-def list_observations(slug: str, session: DbSession) -> list[dict[str, Any]]:
+def list_observations(
+    slug: str, session: DbSession, _user: CurrentUser
+) -> list[dict[str, Any]]:
     eng = _get_engagement_or_404(session, slug)
     rows = list(
         session.execute(
@@ -1513,7 +1518,7 @@ def unlink_observation_from_finding(
 
 @router.get("/findings/{finding_id}/observations", response_model=list[ObservationRead])
 def list_observations_for_finding(
-    finding_id: uuid.UUID, session: DbSession
+    finding_id: uuid.UUID, session: DbSession, _user: CurrentUser
 ) -> list[dict[str, Any]]:
     """Back-references for the finding slide-over — the observations that
     reference this finding. Fetched on open (like attachments) so the
@@ -1799,7 +1804,7 @@ def import_findings(
     slug: str,
     body: list[FindingImport],
     session: DbSession,
-    user: CurrentUser,
+    user: CurrentNonGuestUser,
 ) -> list[dict[str, Any]]:
     """Bulk-import findings from an external source (scanner output, prior report, etc.).
 

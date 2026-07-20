@@ -96,6 +96,22 @@ class Settings(BaseSettings):
     entra_audience: str = ""
 
     @property
+    def allow_x_user_id(self) -> bool:
+        """Whether the caller-chosen development identity header is enabled.
+
+        Fail closed for production and for unknown environment names. Compose
+        and the backend test suite use ``local``; explicit development/test
+        aliases are also accepted for non-production deployments.
+        """
+        return self.env.strip().lower() in {
+            "local",
+            "dev",
+            "development",
+            "test",
+            "testing",
+        }
+
+    @property
     def entra_enabled(self) -> bool:
         return bool(self.entra_tenant_id and self.entra_client_id)
 

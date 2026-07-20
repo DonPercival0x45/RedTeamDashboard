@@ -7,11 +7,9 @@
                           Production auth surface.
 - ``RequireScope``      — factory dep that wraps ``api_key_auth`` and additionally
                           gates by privilege tier (``admin > cli > viewer``).
-- ``current_user``      — back-compat shim. Tries X-API-Key first (returning the
-                          minting user); falls back to the dev-time X-User-Id
-                          header so existing endpoints + tests keep working
-                          without a rewrite. Replace with ``RequireScope`` per
-                          endpoint as the migration to API keys proceeds.
+- ``current_user``      — resolves API-key, Entra, or explicitly local/test
+                          X-User-Id authentication while retaining API-key scope
+                          for the role-aware mutation dependencies.
 """
 from __future__ import annotations
 
@@ -126,8 +124,28 @@ def RequireScope(required: APIKeyScope) -> Callable[..., APIKey]:  # noqa: N802 
 
 
 # ---------------------------------------------------------------------------
-# Back-compat user resolution
+# User resolution
 # ---------------------------------------------------------------------------
+
+
+_API_KEY_SCOPE_ATTR = "_rtd_authenticated_api_key_scope"
+
+
+def _with_api_key_scope(user: User, scope: APIKeyScope) -> User:
+    """Retain the authenticating key's scope on this request-local ORM row.
+
+    SQLAlchemy ignores non-mapped attributes, and every HTTP request owns its
+    session, so this cannot leak across requests or be persisted. Keeping the
+    resolved scope with the user avoids a second key lookup/``last_used_at``
+    touch when a role-aware dependency runs after ``current_user``.
+    """
+    setattr(user, _API_KEY_SCOPE_ATTR, scope)
+    return user
+
+
+def _authenticated_api_key_scope(user: User) -> APIKeyScope | None:
+    scope = getattr(user, _API_KEY_SCOPE_ATTR, None)
+    return scope if isinstance(scope, APIKeyScope) else None
 
 
 def _parse_user_identifier(raw: str) -> tuple[uuid.UUID | None, str | None]:
@@ -241,14 +259,15 @@ def current_user(
     2. ``Authorization: Bearer`` Entra access token (browser SSO) — validated
        against the tenant JWKS, mapped to a ``User`` by ``oid``. Only consulted
        when Entra is configured; an invalid token is a hard 401.
-    3. ``X-User-Id`` (dev/test) — upsert the named user.
+    3. ``X-User-Id`` (explicit local/dev/test environments only) — upsert the
+       named user. Production and unknown environments reject this header.
     """
     if x_api_key:
         key = _lookup_api_key(session, x_api_key)
         if key.created_by is not None:
             user = session.get(User, key.created_by)
             if user is not None:
-                return user
+                return _with_api_key_scope(user, key.scope)
         # Bootstrap admin key (no creator): give audit a stable identity.
         system_email = "system@deployment.local"
         user = session.execute(
@@ -259,7 +278,7 @@ def current_user(
             session.add(user)
             session.commit()
             session.refresh(user)
-        return user
+        return _with_api_key_scope(user, key.scope)
 
     token = _bearer_token(authorization)
     if token and settings.entra_enabled:
@@ -275,6 +294,11 @@ def current_user(
         raise HTTPException(
             status_code=401,
             detail="X-API-Key, Authorization: Bearer, or X-User-Id header required",
+        )
+    if not settings.allow_x_user_id:
+        raise HTTPException(
+            status_code=401,
+            detail="X-User-Id authentication is disabled in this environment",
         )
     return _require_active(upsert_user(session, x_user_id))
 
@@ -298,30 +322,48 @@ def _require_active(user: User) -> User:
 def require_admin_user(
     user: Annotated[User, Depends(current_user)],
 ) -> User:
-    """Gate ``CurrentUser``-style endpoints behind ``role=admin``.
+    """Gate admin actions by API-key scope or interactive-user role.
 
-    Distinct from :func:`RequireScope` (which gates API-key-authenticated
-    routes by privilege tier). This one gates browser-SSO routes by user
-    role — needed because the API-key-scope model doesn't reach Entra
-    sessions, and we want admin-only actions reachable from the UI.
+    API-key authentication is authorized solely by the retained key scope;
+    browser/Entra and local development identities retain the existing role
+    behavior.
     """
+    key_scope = _authenticated_api_key_scope(user)
+    if key_scope is not None:
+        if not scope_satisfies(key_scope, APIKeyScope.admin):
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "this action requires API key scope 'admin'; "
+                    f"key has '{key_scope.value}'"
+                ),
+            )
+        return user
     if user.role != UserRole.admin:
-        raise HTTPException(
-            status_code=403, detail="this action requires admin"
-        )
+        raise HTTPException(status_code=403, detail="this action requires admin")
     return user
 
 
 def require_non_guest_user(
     user: Annotated[User, Depends(current_user)],
 ) -> User:
-    """Gate mutation endpoints behind ``role IN (admin, user)``.
+    """Gate ordinary mutations by API-key scope or interactive-user role.
 
-    The ``guest`` role is read-only (view engagements/findings/feedback
-    but no submit/run/approve). Every mutation endpoint should depend on
-    this (or on ``require_admin_user`` for the admin-only subset)
-    instead of plain ``current_user`` — otherwise guests can mutate.
+    Viewer keys are read-only; cli and admin keys can perform ordinary
+    mutations. Browser/Entra and local development identities retain the
+    existing guest-role check.
     """
+    key_scope = _authenticated_api_key_scope(user)
+    if key_scope is not None:
+        if not scope_satisfies(key_scope, APIKeyScope.cli):
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "this action requires API key scope 'cli'; "
+                    f"key has '{key_scope.value}'"
+                ),
+            )
+        return user
     if user.role == UserRole.guest:
         raise HTTPException(
             status_code=403,
