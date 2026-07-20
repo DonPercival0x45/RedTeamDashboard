@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -13,6 +13,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { DatePicker } from "@/components/ui/date-picker";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -73,6 +74,26 @@ export default function NewEngagementPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Schedule fields are forward-looking planning inputs, so cap them at
+  // today + 3 years. Anything past that is almost certainly a typo (e.g.
+  // 2029 vs 2026) and would silently sit in the DB.
+  const maxScheduleDate = useMemo(() => {
+    const d = new Date();
+    d.setFullYear(d.getFullYear() + 3);
+    return d;
+  }, []);
+  const maxScheduleDateStr = useMemo(() => {
+    const y = maxScheduleDate.getFullYear();
+    const m = String(maxScheduleDate.getMonth() + 1).padStart(2, "0");
+    const day = String(maxScheduleDate.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+  }, [maxScheduleDate]);
+  const startDateAsDate = useMemo(() => {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(startDate);
+    if (!m) return undefined;
+    return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  }, [startDate]);
+
   const addScope = () => {
     const candidate = value.trim();
     if (!candidate) return;
@@ -108,6 +129,10 @@ export default function NewEngagementPage() {
     }
     if (endDate && endDate < startDate) {
       setError("End date can't be before start date.");
+      return;
+    }
+    if (startDate > maxScheduleDateStr || (endDate && endDate > maxScheduleDateStr)) {
+      setError("Schedule dates can't be more than 3 years in the future.");
       return;
     }
 
@@ -255,12 +280,13 @@ export default function NewEngagementPage() {
                   ? "Start date"
                   : "First run date"}
               </Label>
-              <Input
+              <DatePicker
                 id="start_date"
-                type="date"
                 value={startDate}
-                onChange={(e) => setStartDate(e.target.value)}
+                onChange={setStartDate}
+                maxDate={maxScheduleDate}
                 required
+                placeholder="Pick a start date"
               />
             </div>
             <div className="space-y-2">
@@ -283,12 +309,13 @@ export default function NewEngagementPage() {
                   ? "End date (optional — leave blank for a single-day pass)"
                   : "End date (optional — leave blank for open-ended)"}
             </Label>
-            <Input
+            <DatePicker
               id="end_date"
-              type="date"
               value={endDate}
-              onChange={(e) => setEndDate(e.target.value)}
-              min={startDate || undefined}
+              onChange={setEndDate}
+              minDate={startDateAsDate}
+              maxDate={maxScheduleDate}
+              placeholder="Pick an end date"
             />
           </div>
 
