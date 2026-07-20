@@ -16,9 +16,69 @@ import re
 from collections.abc import Iterable
 from typing import Any
 
-from app.models import Finding, Severity
+from app.models import Finding, ScopeKind, Severity
+from app.services import scope_matcher
 
 EntityType = str  # email | ip | cidr | domain | subdomain | url | host
+
+# v2.19.0: entity-type → scope-kind mapping for Live/Legacy/OOS classification.
+# `host` and `url` map to a small set of scope kinds we try in order; the first
+# match wins. Emails never live in scope, so they're excluded.
+_ENTITY_KIND_LOOKUP: dict[str, tuple[ScopeKind, ...]] = {
+    "ip": (ScopeKind.ip,),
+    "cidr": (ScopeKind.cidr,),
+    "domain": (ScopeKind.domain,),
+    "subdomain": (ScopeKind.domain,),
+    "host": (ScopeKind.ip, ScopeKind.domain),
+    "url": (ScopeKind.url,),
+}
+
+
+def classify_entity_scope_status(
+    entity_type: str,
+    entity_value: str,
+    current_scope_items: Iterable[scope_matcher.ScopeItemLike],
+    retired_scope_values: set[str],
+) -> str:
+    """Return "live" | "legacy" | "oos" for one entity.
+
+    - live: value matches at least one CURRENT ScopeItem via ScopeMatcher.
+    - legacy: not currently in scope, but a scope.item.deleted audit event
+      recorded this exact value (case-insensitive) at some point.
+    - oos: neither — discovered from a finding but never a scope target.
+
+    Emails and unknown entity types short-circuit to "oos" — they can't be
+    scope targets by construction.
+    """
+    kinds = _ENTITY_KIND_LOOKUP.get(entity_type)
+    if not kinds:
+        return "oos"
+    items = list(current_scope_items)
+    for kind in kinds:
+        for item in items:
+            if scope_matcher.item_matches(entity_value, kind, item):
+                return "live"
+    if entity_value.strip().lower() in retired_scope_values:
+        return "legacy"
+    return "oos"
+
+
+def annotate_scope_status(
+    entities: list[dict[str, Any]],
+    *,
+    current_scope_items: Iterable[scope_matcher.ScopeItemLike],
+    retired_scope_values: set[str],
+) -> list[dict[str, Any]]:
+    """Attach ``scope_status`` to each entity dict in place and return the list."""
+    items = list(current_scope_items)
+    for entity in entities:
+        entity["scope_status"] = classify_entity_scope_status(
+            str(entity.get("type") or ""),
+            str(entity.get("value") or ""),
+            items,
+            retired_scope_values,
+        )
+    return entities
 
 _EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 _IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")

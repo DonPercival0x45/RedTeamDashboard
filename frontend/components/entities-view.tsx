@@ -172,6 +172,29 @@ function typeLabel(t: string): string {
   return TYPE_LABEL[t] ?? t;
 }
 
+// v2.19.0: scope-tag badge. Live = matches current scope; Legacy = matched
+// a scope item deleted after v2.19 shipped; OOS = never in scope. Legacy is
+// intentionally muted — it's informational, not a call to action.
+function ScopeStatusBadge({ status }: { status: string }) {
+  const label =
+    status === "live"
+      ? "Live"
+      : status === "legacy"
+        ? "Legacy"
+        : "Out of scope";
+  const className =
+    status === "live"
+      ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200"
+      : status === "legacy"
+        ? "border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-200"
+        : "border-border text-muted-foreground";
+  return (
+    <Badge variant="outline" className={className}>
+      {label}
+    </Badge>
+  );
+}
+
 // CHARTER Idea 4: entities correlated across the engagement's findings —
 // searchable, filterable by type, clickable into provenance. Phase 10 adds
 // an "Imported" section above the derived list for entities that landed
@@ -205,6 +228,11 @@ export function EntitiesView({
   }, [findings]);
   const [search, setSearch] = useState("");
   const [type, setType] = useState<string>("all");
+  // v2.19.0: scope-status filter runs alongside type. "all" shows everything,
+  // "live" / "legacy" / "oos" narrow to entities with that classification.
+  const [scopeStatus, setScopeStatus] = useState<
+    "all" | "live" | "legacy" | "oos"
+  >("all");
   const [selected, setSelected] = useState<Entity | null>(null);
 
   if (error)
@@ -225,6 +253,7 @@ export function EntitiesView({
   const q = search.trim().toLowerCase();
   const visible = entities
     .filter((e) => type === "all" || e.type === type)
+    .filter((e) => scopeStatus === "all" || e.scope_status === scopeStatus)
     .filter((e) => !q || e.value.toLowerCase().includes(q))
     .sort(
       (a, b) =>
@@ -272,6 +301,30 @@ export function EntitiesView({
         ))}
       </div>
 
+      <div className="flex flex-wrap gap-1">
+        {(["all", "live", "legacy", "oos"] as const).map((s) => (
+          <button
+            key={s}
+            type="button"
+            onClick={() => setScopeStatus(s)}
+            className={cn(
+              "rounded-full border px-2.5 py-1 text-xs transition-colors",
+              scopeStatus === s
+                ? "border-primary/50 bg-primary/10 text-foreground"
+                : "border-border text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {s === "all"
+              ? "All scope"
+              : s === "live"
+                ? "Live"
+                : s === "legacy"
+                  ? "Legacy"
+                  : "Out of scope"}
+          </button>
+        ))}
+      </div>
+
       {visible.length === 0 ? (
         <p className="text-sm text-muted-foreground">
           {entities.length
@@ -285,6 +338,7 @@ export function EntitiesView({
               <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted-foreground">
                 <th className="px-3 py-2 w-28">Type</th>
                 <th className="px-3 py-2">Value</th>
+                <th className="px-3 py-2 w-24">Scope</th>
                 <th className="px-3 py-2 w-20">Findings</th>
                 <th className="px-3 py-2 w-24">Severity</th>
               </tr>
@@ -302,6 +356,9 @@ export function EntitiesView({
                     </span>
                   </td>
                   <td className="px-3 py-2.5 font-mono text-xs">{e.value}</td>
+                  <td className="px-3 py-2.5">
+                    <ScopeStatusBadge status={e.scope_status} />
+                  </td>
                   <td className="px-3 py-2.5 tabular-nums text-muted-foreground">
                     {e.count}
                   </td>

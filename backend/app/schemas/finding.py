@@ -369,3 +369,8 @@ class EntityRead(BaseModel):
     first_seen: datetime
     last_seen: datetime
     findings: list[EntityFindingRef]
+    # v2.19.0: analyst-visible scope tag. live = matches current scope,
+    # legacy = matched a previously deleted scope item, oos = never a
+    # scope target. Legacy is only populated for deletions performed after
+    # v2.19 shipped (older hard-deletes left no audit trace).
+    scope_status: str = "oos"

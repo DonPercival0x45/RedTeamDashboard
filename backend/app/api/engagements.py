@@ -134,7 +134,7 @@ from app.schemas.finding import (
     RepairGroupsResult,
 )
 from app.schemas.observation import ObservationCreate, ObservationRead
-from app.services.entities import extract_entities
+from app.services.entities import annotate_scope_status, extract_entities
 from app.services.scope_import import parse_scope_text
 
 router = APIRouter()
@@ -1097,13 +1097,30 @@ def delete_scope_item(
     slug: str,
     scope_id: uuid.UUID,
     session: DbSession,
-    _user: CurrentNonGuestUser,
+    user: CurrentNonGuestUser,
 ) -> Response:
     eng = _get_engagement_or_404(session, slug)
     _reject_flushed(eng)
     item = session.get(ScopeItem, scope_id)
     if item is None or item.engagement_id != eng.id:
         raise HTTPException(status_code=404, detail="scope item not found")
+    # v2.19.0: record the deletion so the Entities tab can flip previously
+    # in-scope values from "live" to "legacy". Payload carries the exact
+    # value string so downstream classifiers can match without a join.
+    session.add(
+        AuditLog(
+            engagement_id=eng.id,
+            actor_type=ActorType.user,
+            actor_id=str(user.id),
+            event_type="scope.item.deleted",
+            payload={
+                "scope_id": str(item.id),
+                "kind": item.kind.value,
+                "value": item.value,
+                "is_exclusion": item.is_exclusion,
+            },
+        )
+    )
     session.delete(item)
     session.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -1217,7 +1234,30 @@ def list_entities(
     """
     eng = _get_engagement_or_404(session, slug)
     full = _cached_derived_entities(session, redis, eng.id)
-    result = full
+    # v2.19.0: annotate outside the cache so scope mutations show up
+    # instantly on the next request without invalidating the (heavy) entity
+    # extraction cache. Both queries are cheap (typical engagement has
+    # ~10-100 scope items and ~0 retired values).
+    scope_items = list(
+        session.execute(
+            select(ScopeItem).where(ScopeItem.engagement_id == eng.id)
+        ).scalars()
+    )
+    retired_values = {
+        v.strip().lower()
+        for v in session.execute(
+            select(AuditLog.payload["value"].astext).where(
+                AuditLog.engagement_id == eng.id,
+                AuditLog.event_type == "scope.item.deleted",
+            )
+        ).scalars()
+        if v
+    }
+    result = annotate_scope_status(
+        list(full),
+        current_scope_items=scope_items,
+        retired_scope_values=retired_values,
+    )
     if type:
         result = [e for e in result if e.get("type") == type]
     if q:
