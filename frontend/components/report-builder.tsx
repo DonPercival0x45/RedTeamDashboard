@@ -16,44 +16,80 @@ import { downloadEngagementExport } from "@/lib/api";
 import { useReportReadiness } from "@/lib/hooks";
 
 const REPORT_TARGET_VIEWS = new Set(["findings", "status", "scope"]);
-const REPORT_TARGET_FILTERS: Record<string, Record<string, Set<string>>> = {
-  findings: {
-    phase: new Set(["osint", "vuln_scan", "exploit", "phishing", "general"]),
-    status: new Set([
-      "pending_validation",
-      "validated",
-      "rejected",
-      "false_positive",
-      "needs_review",
+const REPORT_TARGET_FILTERS = new Map<string, ReadonlyMap<string, ReadonlySet<string>>>([
+  [
+    "findings",
+    new Map([
+      ["phase", new Set(["osint", "vuln_scan", "exploit", "phishing", "general"])],
+      [
+        "status",
+        new Set([
+          "pending_validation",
+          "validated",
+          "rejected",
+          "false_positive",
+          "needs_review",
+        ]),
+      ],
+      ["severity", new Set(["info", "low", "medium", "high", "critical"])],
+      [
+        "readiness",
+        new Set([
+          "pending_validation",
+          "missing_summary",
+          "missing_target",
+          "missing_evidence",
+          "excluded",
+        ]),
+      ],
     ]),
-    severity: new Set(["info", "low", "medium", "high", "critical"]),
-    readiness: new Set([
-      "missing_summary",
-      "missing_target",
-      "missing_evidence",
-      "excluded",
-    ]),
-  },
-  status: {},
-  scope: {},
-};
+  ],
+  ["status", new Map()],
+  ["scope", new Map()],
+]);
 
-function reportReviewHref(slug: string, targetView: string): string {
-  const [requestedView, ...filterParts] = targetView.split("&");
-  const view = REPORT_TARGET_VIEWS.has(requestedView)
-    ? requestedView
-    : "findings";
-  const hrefParams = new URLSearchParams({ slug, view });
-  const allowedFilters = REPORT_TARGET_FILTERS[view];
-  const requestedFilters = new URLSearchParams(filterParts.join("&"));
+function reportReviewHref(
+  slug: string,
+  targetView: unknown,
+  checkKey: string,
+): string {
+  const fallback = new URLSearchParams({ slug, view: "findings" });
+  if (typeof targetView !== "string") return `/e?${fallback.toString()}`;
 
-  for (const [key, value] of requestedFilters) {
-    if (!hrefParams.has(key) && allowedFilters[key]?.has(value)) {
-      hrefParams.set(key, value);
+  try {
+    const [requestedView, ...filterParts] = targetView.split("&");
+    if (!REPORT_TARGET_VIEWS.has(requestedView)) {
+      return `/e?${fallback.toString()}`;
     }
-  }
+    const view = requestedView;
+    const hrefParams = new URLSearchParams({ slug, view });
+    const allowedFilters = REPORT_TARGET_FILTERS.get(view) ?? new Map();
+    const requestedFilters = new URLSearchParams(filterParts.join("&"));
 
-  return `/e?${hrefParams.toString()}`;
+    for (const [key, value] of requestedFilters) {
+      // The backend's pending-readiness check includes both pending_validation
+      // and needs_review. Preserve that exact meaning instead of narrowing the
+      // Review link to one literal status.
+      if (
+        view === "findings" &&
+        checkKey === "pending_validation" &&
+        key === "status" &&
+        value === "pending_validation"
+      ) {
+        hrefParams.set("readiness", "pending_validation");
+        continue;
+      }
+      const allowedValues = allowedFilters.get(key);
+      if (!hrefParams.has(key) && allowedValues?.has(value)) {
+        hrefParams.set(key, value);
+      }
+    }
+
+    return `/e?${hrefParams.toString()}`;
+  } catch {
+    // API input must never be able to break report rendering.
+    return `/e?${fallback.toString()}`;
+  }
 }
 
 export function ReportBuilder({ slug }: { slug: string }) {
@@ -150,7 +186,7 @@ export function ReportBuilder({ slug }: { slug: string }) {
                   // Rebuild a relative internal URL from allow-listed pieces;
                   // never treat the API value as a URL.
                   const reviewHref = check.target_view
-                    ? reportReviewHref(slug, check.target_view)
+                    ? reportReviewHref(slug, check.target_view, check.key)
                     : null;
                   const tone =
                     check.level === "blocker"

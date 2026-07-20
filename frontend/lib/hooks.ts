@@ -1124,10 +1124,11 @@ export function useGlobalAgentRunSteps(
   });
 }
 
-export function useReportReadiness(slug: string) {
+export function useReportReadiness(slug: string, enabled = true) {
   return useQuery({
     queryKey: qk.reportReadiness(slug),
     queryFn: () => getReportReadiness(slug),
+    enabled,
   });
 }
 

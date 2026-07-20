@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
-import { qk, useMe } from "@/lib/hooks";
+import { qk, useMe, useReportReadiness } from "@/lib/hooks";
 import { Ban, Layers, Link2, ListChecks, Maximize2, Plus, Search, Sparkles, Trash2, Upload, Wand2, Wrench, X } from "lucide-react";
 import { DateTime } from "@/components/date-time";
 import { LoaderOverlay } from "@/components/loader";
@@ -117,6 +118,43 @@ const STATUS_FILTERS: (FindingValidationStatus | "all")[] = [
   "needs_review",
 ];
 
+type FindingReadinessFilter =
+  | "pending_validation"
+  | "missing_summary"
+  | "missing_target"
+  | "missing_evidence"
+  | "excluded";
+
+const READINESS_FILTERS = new Set<FindingReadinessFilter>([
+  "pending_validation",
+  "missing_summary",
+  "missing_target",
+  "missing_evidence",
+  "excluded",
+]);
+const PHASE_FILTER_VALUES = new Set<FindingPhase>(PHASE_OPTIONS);
+const STATUS_FILTER_VALUES = new Set<FindingValidationStatus>(
+  STATUS_FILTERS.filter(
+    (value): value is FindingValidationStatus => value !== "all",
+  ),
+);
+const SEVERITY_FILTER_VALUES = new Set<Severity>(SEVERITY_OPTIONS);
+
+const READINESS_LABEL: Record<FindingReadinessFilter, string> = {
+  pending_validation: "Needs analyst review",
+  missing_summary: "Missing summary",
+  missing_target: "Missing affected target",
+  missing_evidence: "Missing attached evidence",
+  excluded: "Excluded from client deliverable",
+};
+
+function validFilter<T extends string>(
+  value: string | null,
+  allowed: ReadonlySet<T>,
+): T | null {
+  return value !== null && allowed.has(value as T) ? (value as T) : null;
+}
+
 const SORT_LABEL: Record<FindingSort, string> = {
   newest: "Newest first",
   severity: "Severity",
@@ -140,8 +178,23 @@ export function FindingsView({
   onUpdated: (finding: Finding) => void;
   onDeleted: (findingId: string) => void;
 }) {
-  const [phase, setPhase] = useState<FindingPhase | "all">("all");
-  const [status, setStatus] = useState<FindingValidationStatus | "all">("all");
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const queryPhase = validFilter(searchParams.get("phase"), PHASE_FILTER_VALUES);
+  const queryStatus = validFilter(searchParams.get("status"), STATUS_FILTER_VALUES);
+  const querySeverity = validFilter(
+    searchParams.get("severity"),
+    SEVERITY_FILTER_VALUES,
+  );
+  const readinessFilter = validFilter(searchParams.get("readiness"), READINESS_FILTERS);
+  const [phase, setPhase] = useState<FindingPhase | "all">(queryPhase ?? "all");
+  const [status, setStatus] = useState<FindingValidationStatus | "all">(
+    queryStatus ?? "all",
+  );
+  const [severityFilter, setSeverityFilter] = useState<Severity | "all">(
+    querySeverity ?? "all",
+  );
   const [sort, setSort] = useState<FindingSort>("newest");
   const [selected, setSelected] = useState<Finding | null>(null);
   const [showImporter, setShowImporter] = useState(false);
@@ -159,6 +212,10 @@ export function FindingsView({
   // group keys into the unified subdomains:{apex} shape.
   const qc = useQueryClient();
   const { data: me } = useMe();
+  const readinessQuery = useReportReadiness(
+    slug,
+    readinessFilter === "missing_evidence",
+  );
   const [repairing, setRepairing] = useState(false);
   const [repairMessage, setRepairMessage] = useState<string | null>(null);
   const [repairError, setRepairError] = useState<string | null>(null);
@@ -198,12 +255,47 @@ export function FindingsView({
   // v0.8.1: severity-only filter driven by clicking the metric tiles.
   // "all" means no severity filter active. Pending validation has its own
   // tile that toggles the status filter to pending_validation instead.
-  const [severityFilter, setSeverityFilter] = useState<Severity | "all">("all");
   // v1.4.7: tag filter set by clicking a tag chip on a row (null = off).
   const [tagFilter, setTagFilter] = useState<string | null>(null);
   const [workFilter, setWorkFilter] = useState<"all" | "linked" | "active" | "completed" | "unlinked">("all");
   const [workRollup, setWorkRollup] = useState<WorkItemRollup | null>(null);
   const [workRollupError, setWorkRollupError] = useState(false);
+
+  useEffect(() => {
+    setPhase(queryPhase ?? "all");
+    setStatus(queryStatus ?? "all");
+    setSeverityFilter(querySeverity ?? "all");
+  }, [queryPhase, querySeverity, queryStatus]);
+
+  const replaceQueryFilter = useCallback(
+    (key: "phase" | "status" | "severity" | "readiness", value: string | null) => {
+      const next = new URLSearchParams(searchParams.toString());
+      if (value === null) next.delete(key);
+      else next.set(key, value);
+      const query = next.toString();
+      router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
+    },
+    [pathname, router, searchParams],
+  );
+
+  const changePhase = (next: FindingPhase | "all") => {
+    setPhase(next);
+    replaceQueryFilter("phase", next === "all" ? null : next);
+  };
+  const changeStatus = (next: FindingValidationStatus | "all") => {
+    setStatus(next);
+    const params = new URLSearchParams(searchParams.toString());
+    if (next === "all") params.delete("status");
+    else params.set("status", next);
+    // A direct status choice supersedes a report-readiness predicate.
+    params.delete("readiness");
+    const query = params.toString();
+    router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
+  };
+  const changeSeverity = (next: Severity | "all") => {
+    setSeverityFilter(next);
+    replaceQueryFilter("severity", next === "all" ? null : next);
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -233,12 +325,10 @@ export function FindingsView({
     pending: findings.filter((f) => f.status === "pending_validation").length,
   };
 
-  const toggleSeverity = (s: Severity) =>
-    setSeverityFilter((prev) => (prev === s ? "all" : s));
+  const toggleSeverity = (severity: Severity) =>
+    changeSeverity(severityFilter === severity ? "all" : severity);
   const togglePending = () =>
-    setStatus((prev) =>
-      prev === "pending_validation" ? "all" : "pending_validation",
-    );
+    changeStatus(status === "pending_validation" ? "all" : "pending_validation");
 
   const compareFindings = (a: Finding, b: Finding): number => {
     switch (sort) {
@@ -273,7 +363,33 @@ export function FindingsView({
     );
   };
 
+  const missingEvidenceIds = useMemo(
+    () =>
+      new Set(
+        readinessQuery.data?.checks.find((check) => check.key === "missing_evidence")
+          ?.finding_ids ?? [],
+      ),
+    [readinessQuery.data],
+  );
+  const matchesReadiness = (finding: Finding): boolean => {
+    switch (readinessFilter) {
+      case "pending_validation":
+        return finding.status === "pending_validation" || finding.status === "needs_review";
+      case "missing_summary":
+        return finding.status === "validated" && !finding.exclusion && !finding.summary?.trim();
+      case "missing_target":
+        return finding.status === "validated" && !finding.exclusion && !finding.target?.trim();
+      case "missing_evidence":
+        return missingEvidenceIds.has(finding.id);
+      case "excluded":
+        return finding.exclusion != null;
+      default:
+        return true;
+    }
+  };
+
   const visible = findings
+    .filter(matchesReadiness)
     .filter((f) => phase === "all" || f.phase === phase)
     .filter((f) => status === "all" || f.status === status)
     .filter((f) => severityFilter === "all" || f.severity === severityFilter)
@@ -415,13 +531,13 @@ export function FindingsView({
         <FilterRow
           options={PHASE_FILTERS}
           value={phase}
-          onChange={setPhase}
+          onChange={changePhase}
           label={(v) => (v === "all" ? "All phases" : PHASE_LABEL[v])}
         />
         <FilterRow
           options={STATUS_FILTERS}
           value={status}
-          onChange={setStatus}
+          onChange={changeStatus}
           label={(v) =>
             v === "all" ? "All status" : STATUS_LABEL[v as FindingValidationStatus]
           }
@@ -516,6 +632,27 @@ export function FindingsView({
           </Button>
         </div>
       </div>
+
+      {readinessFilter && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-sky-500/40 bg-sky-500/10 px-3 py-2 text-xs">
+          <span>
+            Report readiness: <strong>{READINESS_LABEL[readinessFilter]}</strong>
+            {readinessFilter === "missing_evidence" && readinessQuery.isLoading
+              ? " · loading exact finding set…"
+              : ""}
+            {readinessFilter === "missing_evidence" && readinessQuery.error
+              ? " · exact finding set could not be loaded"
+              : ""}
+          </span>
+          <button
+            type="button"
+            className="underline underline-offset-2"
+            onClick={() => replaceQueryFilter("readiness", null)}
+          >
+            Clear readiness filter
+          </button>
+        </div>
+      )}
 
       {/* v1.4.0: search bar. Substring match against title, summary,
           target, and the row's short-id (as shown in the ID column). */}
