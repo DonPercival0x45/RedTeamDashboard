@@ -105,14 +105,9 @@ services:
       AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:-}
       AZURE_OPENAI_DEPLOYMENT: ${AZURE_OPENAI_DEPLOYMENT:-}
       AZURE_OPENAI_API_VERSION: ${AZURE_OPENAI_API_VERSION:-2024-08-01-preview}
-      # Stage 3+1: worker fails fast at boot if blank. Bootstrap the
-      # local-dev key by minting a cli-scoped key inside a running backend
-      # and persisting it to infra/.env (read by docker-compose by default,
-      # gitignored):
-      #   docker compose exec backend python -m app.scripts.mint_api_key \
-      #     --name local-worker --scope cli
-      #   echo "WORKER_MCP_API_KEY=<paste>" > infra/.env
-      #   docker compose up -d worker
+      # Stage 3+1: worker fails fast at boot if blank. For local development,
+      # scripts/local-up.sh mints a cli-scoped key after the backend is healthy
+      # and persists it to gitignored infra/.env before starting this service.
       WORKER_MCP_API_KEY: ${WORKER_MCP_API_KEY:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -129,8 +124,8 @@ services:
     environment:
       NODE_ENV: development
       NEXT_TELEMETRY_DISABLED: "1"
-      # The browser fetches from here; backend is mapped to host port 8000.
-      NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE:-http://localhost:8000}
+      # config.ts consumes this runtime value; backend is on host port 8000.
+      RTD_API_BASE_URL: ${RTD_API_BASE_URL:-http://localhost:8000}
     volumes:
       # Live source bind mount. node_modules and .next stay in named volumes
       # so the host's filesystem doesn't shadow the container's installed deps

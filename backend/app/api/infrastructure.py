@@ -23,7 +23,7 @@ from __future__ import annotations
 from typing import Any
 
 import structlog
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Response, status
 from pydantic import BaseModel
 
 from app.api.deps import CurrentAdminUser, DbSession
@@ -271,7 +271,7 @@ async def delete_auto_shutdown(
     arm_id: str,
     session: DbSession,
     user: CurrentAdminUser,
-) -> None:
+) -> Response:
     normalized = _normalize_arm_id(arm_id)
     try:
         ref = parse_vm_arm_id(normalized)
@@ -298,6 +298,7 @@ async def delete_auto_shutdown(
         )
     )
     session.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 # v2.12.0 — one-shot Run Command. Registered here (above the catch-all

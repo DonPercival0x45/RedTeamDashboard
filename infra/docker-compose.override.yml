@@ -7,10 +7,7 @@ services:
       - "8001:8000"
   frontend:
     environment:
-      # config.ts reads RTD_API_BASE_URL (preferred) -> NEXT_PUBLIC_API_BASE_URL.
-      # NOT NEXT_PUBLIC_API_BASE; that name is ignored and the app falls back to
-      # http://localhost:8000, which fails with a browser NetworkError when the
-      # override publishes the backend on 8001.
-      RTD_API_BASE_URL: http://localhost:8001
+      # Keep the runtime API URL aligned with the overridden backend host port.
+      RTD_API_BASE_URL: ${RTD_API_BASE_URL:-http://localhost:8001}
     ports: !override
       - "3001:3000"
