@@ -15,6 +15,83 @@ import { DownloadReport } from "@/components/download-report";
 import { downloadEngagementExport } from "@/lib/api";
 import { useReportReadiness } from "@/lib/hooks";
 
+const REPORT_TARGET_VIEWS = new Set(["findings", "status", "scope"]);
+const REPORT_TARGET_FILTERS = new Map<string, ReadonlyMap<string, ReadonlySet<string>>>([
+  [
+    "findings",
+    new Map([
+      ["phase", new Set(["osint", "vuln_scan", "exploit", "phishing", "general"])],
+      [
+        "status",
+        new Set([
+          "pending_validation",
+          "validated",
+          "rejected",
+          "false_positive",
+          "needs_review",
+        ]),
+      ],
+      ["severity", new Set(["info", "low", "medium", "high", "critical"])],
+      [
+        "readiness",
+        new Set([
+          "pending_validation",
+          "missing_summary",
+          "missing_target",
+          "missing_evidence",
+          "excluded",
+        ]),
+      ],
+    ]),
+  ],
+  ["status", new Map()],
+  ["scope", new Map()],
+]);
+
+function reportReviewHref(
+  slug: string,
+  targetView: unknown,
+  checkKey: string,
+): string {
+  const fallback = new URLSearchParams({ slug, view: "findings" });
+  if (typeof targetView !== "string") return `/e?${fallback.toString()}`;
+
+  try {
+    const [requestedView, ...filterParts] = targetView.split("&");
+    if (!REPORT_TARGET_VIEWS.has(requestedView)) {
+      return `/e?${fallback.toString()}`;
+    }
+    const view = requestedView;
+    const hrefParams = new URLSearchParams({ slug, view });
+    const allowedFilters = REPORT_TARGET_FILTERS.get(view) ?? new Map();
+    const requestedFilters = new URLSearchParams(filterParts.join("&"));
+
+    for (const [key, value] of requestedFilters) {
+      // The backend's pending-readiness check includes both pending_validation
+      // and needs_review. Preserve that exact meaning instead of narrowing the
+      // Review link to one literal status.
+      if (
+        view === "findings" &&
+        checkKey === "pending_validation" &&
+        key === "status" &&
+        value === "pending_validation"
+      ) {
+        hrefParams.set("readiness", "pending_validation");
+        continue;
+      }
+      const allowedValues = allowedFilters.get(key);
+      if (!hrefParams.has(key) && allowedValues?.has(value)) {
+        hrefParams.set(key, value);
+      }
+    }
+
+    return `/e?${hrefParams.toString()}`;
+  } catch {
+    // API input must never be able to break report rendering.
+    return `/e?${fallback.toString()}`;
+  }
+}
+
 export function ReportBuilder({ slug }: { slug: string }) {
   const readinessQuery = useReportReadiness(slug);
   const readiness = readinessQuery.data;
@@ -104,12 +181,13 @@ export function ReportBuilder({ slug }: { slug: string }) {
               {readiness.checks
                 .filter((check) => check.count > 0)
                 .map((check) => {
-                  // v2.4.0: Review links used to jump to a sibling engagement
-                  // view; now that Report lives on the Automation page and
-                  // Report/Tools tabs are gone, link into the engagement
-                  // workbench view instead (only ones that still exist).
-                  const view =
-                    check.target_view?.split("&", 1)[0] ?? "findings";
+                  // target_view is a compact engagement view plus optional
+                  // filters (for example findings&status=pending_validation).
+                  // Rebuild a relative internal URL from allow-listed pieces;
+                  // never treat the API value as a URL.
+                  const reviewHref = check.target_view
+                    ? reportReviewHref(slug, check.target_view, check.key)
+                    : null;
                   const tone =
                     check.level === "blocker"
                       ? "border-rose-500/40 bg-rose-500/10"
@@ -128,9 +206,9 @@ export function ReportBuilder({ slug }: { slug: string }) {
                           </p>
                           <p className="mt-1 text-xs">{check.message}</p>
                         </div>
-                        {check.target_view && (
+                        {reviewHref && (
                           <Link
-                            href={`/e?slug=${encodeURIComponent(slug)}&view=${encodeURIComponent(view)}`}
+                            href={reviewHref}
                             className="shrink-0 text-xs underline"
                           >
                             Review

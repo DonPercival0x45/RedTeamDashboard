@@ -237,9 +237,19 @@ export function EntitiesView({
 
   if (error)
     return (
-      <p className="text-sm text-critical">
-        {error instanceof Error ? error.message : String(error)}
-      </p>
+      <div className="space-y-6">
+        <ImportedEntitiesSection slug={slug} />
+        <section className="space-y-1">
+          <h2 className="text-base font-medium">Derived from findings</h2>
+          <p className="text-xs text-muted-foreground">
+            Extracted on the fly from <code className="font-mono">Finding.target</code>{" "}
+            and <code className="font-mono">Finding.details</code>.
+          </p>
+          <p role="alert" className="pt-2 text-sm text-critical">
+            Could not load derived entities: {error instanceof Error ? error.message : String(error)}
+          </p>
+        </section>
+      </div>
     );
   if (entities === undefined)
     return (

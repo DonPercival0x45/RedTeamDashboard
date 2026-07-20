@@ -97,7 +97,7 @@ export default function SettingsFeedbackPage() {
   const [priorityBucket, setPriorityBucket] = useState<PriorityBucket>("all");
   const [showCombined, setShowCombined] = useState(false);
   const [sortByPriority, setSortByPriority] = useState(false);
-  const [localError, setLocalError] = useState<string | null>(null);
+  const [localError, setError] = useState<string | null>(null);
   const [body, setBody] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [pushing, setPushing] = useState(false);
@@ -122,10 +122,9 @@ export default function SettingsFeedbackPage() {
       : rowsQuery.error
         ? String(rowsQuery.error)
         : null);
-  const setError = setLocalError;
 
   const reload = useCallback(async () => {
-    setLocalError(null);
+    setError(null);
     await qc.invalidateQueries({
       queryKey: qk.roadmapSuggestions(listFilters),
     });
@@ -147,7 +146,7 @@ export default function SettingsFeedbackPage() {
       });
     }
     return out;
-  }, [rows, filter, sortByPriority]);
+  }, [rows, filter, priorityBucket, sortByPriority]);
 
   const onSetPriority = useCallback(
     async (id: string, priority: number | null) => {

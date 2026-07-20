@@ -1051,6 +1051,12 @@ export function prefetchEngagementView(
         queryFn: () => getEngagementCosts(slug),
       });
       return;
+    case "diagnostics":
+      void qc.prefetchQuery({
+        queryKey: qk.diagnostics(slug),
+        queryFn: () => getEngagementDiagnostics(slug),
+      });
+      return;
     case "strategy":
     case "contributions":
       // Strategy loads a coordinated dossier; contributions depends on filter
@@ -1118,10 +1124,11 @@ export function useGlobalAgentRunSteps(
   });
 }
 
-export function useReportReadiness(slug: string) {
+export function useReportReadiness(slug: string, enabled = true) {
   return useQuery({
     queryKey: qk.reportReadiness(slug),
     queryFn: () => getReportReadiness(slug),
+    enabled,
   });
 }
 

@@ -79,7 +79,10 @@ export default function SettingsConfigurationsPage() {
   const fileRef = useRef<HTMLInputElement | null>(null);
 
   const engagements = engagementsQ.data ?? [];
-  const configs = configsQ.data?.configurations ?? [];
+  const configs = useMemo(
+    () => configsQ.data?.configurations ?? [],
+    [configsQ.data?.configurations],
+  );
   const configsBySlug = useMemo(() => {
     const map = new Map<string, AgentConfigRead>();
     for (const c of configs) map.set(c.engagement_slug, c);

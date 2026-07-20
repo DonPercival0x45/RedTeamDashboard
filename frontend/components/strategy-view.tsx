@@ -519,6 +519,36 @@ export function StrategyView({
     : data.suggestions;
   const decisionCount = openSignals.length + openSuggestions.length + proposedRevisions.length;
   const failedSlices = Object.keys(sliceErrors);
+  const currentStrategyError = sliceErrors.current;
+
+  if (!data.current && currentStrategyError) {
+    return (
+      <div className="space-y-6">
+        <StrategyHeader busy={busy} refresh={refresh} />
+        <SliceErrorBanner
+          failed={failedSlices.filter((slice) => slice !== "current")}
+          onRetry={() => void refresh()}
+        />
+        {readOnly && <ReadOnlyNotice engagementStatus={engagementStatus} />}
+        <section role="alert" className="rounded-md border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-800 dark:text-amber-200">
+          <h3 className="font-semibold">Could not confirm the current strategy</h3>
+          <p className="mt-1">
+            {currentStrategyError} Initial-strategy creation is unavailable until this check succeeds.
+          </p>
+          <Button
+            size="sm"
+            variant="outline"
+            className="mt-3"
+            disabled={busy !== null}
+            onClick={() => void refresh()}
+          >
+            Retry current strategy
+          </Button>
+        </section>
+        {error && <p role="alert" className="rounded-md border border-critical/40 bg-critical/10 p-3 text-sm text-critical">{error}</p>}
+      </div>
+    );
+  }
 
   if (strategyRequired) {
     return (
@@ -1424,18 +1454,25 @@ function WorkItemFlyout({ item, objectives, scope, tools, scopeError, toolsError
   const [criteria, setCriteria] = useState((item?.acceptance_criteria ?? []).join("\n"));
   const [priority, setPriority] = useState<WorkItemPriority>(item?.priority ?? "medium");
   const [resolution, setResolution] = useState<WorkItemResolution>("completed");
+  const itemId = item?.id;
+  const itemRowVersion = item?.row_version;
+  const itemTitle = item?.title ?? "";
+  const itemDescription = item?.description ?? "";
+  const itemRationale = item?.rationale ?? "";
+  const itemCriteria = (item?.acceptance_criteria ?? []).join("\n");
+  const itemPriority = item?.priority ?? "medium";
 
   // Re-sync the draft when the backing item changes (selection swap, or a
-  // row-version bump after a successful save). Keyed on id+row_version so
-  // typing in the fields doesn't clobber the in-flight draft on re-render.
+  // row-version bump after a successful save). Primitive dependencies avoid
+  // clobbering an in-flight draft when polling recreates an unchanged object.
   useEffect(() => {
-    if (!item) return;
-    setTitle(item.title);
-    setDescription(item.description ?? "");
-    setRationale(item.rationale ?? "");
-    setCriteria(item.acceptance_criteria.join("\n"));
-    setPriority(item.priority);
-  }, [item?.id, item?.row_version]);
+    if (!itemId) return;
+    setTitle(itemTitle);
+    setDescription(itemDescription);
+    setRationale(itemRationale);
+    setCriteria(itemCriteria);
+    setPriority(itemPriority);
+  }, [itemCriteria, itemDescription, itemId, itemPriority, itemRationale, itemRowVersion, itemTitle]);
 
   if (!item) return null;
   const objective = objectives.find((row) => row.id === item.objective_id);
