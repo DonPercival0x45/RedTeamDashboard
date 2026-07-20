@@ -214,6 +214,11 @@ function EngagementDetail({ slug }: { slug: string }) {
             };
             return [created, ...list];
           });
+          void Promise.all([
+            qc.invalidateQueries({ queryKey: qk.reportReadiness(slug) }),
+            qc.invalidateQueries({ queryKey: qk.entities(slug) }),
+            qc.invalidateQueries({ queryKey: ["stored-entities", slug] }),
+          ]);
         } else if (
           event.type === "run.completed" ||
           event.type === "run.errored"

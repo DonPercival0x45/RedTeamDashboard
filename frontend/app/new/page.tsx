@@ -42,6 +42,7 @@ export default function NewEngagementPage() {
   const [endDate, setEndDate] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const hasUsableScope = scope.some((item) => !item.isExclusion);
 
   const maxScheduleDate = useMemo(() => {
     const d = new Date();
@@ -115,7 +116,7 @@ export default function NewEngagementPage() {
           is_exclusion: item.isExclusion,
         })),
       });
-      const nextView = scope.length > 0 ? "strategy&setup=initial-guidance" : "scope";
+      const nextView = hasUsableScope ? "strategy&setup=initial-guidance" : "scope";
       router.push(`/e?slug=${encodeURIComponent(eng.slug)}&view=${nextView}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -226,24 +227,31 @@ export default function NewEngagementPage() {
           {scope.length === 0 ? (
             <p className="text-sm text-muted-foreground">No scope yet — save now to continue on the Scope tab.</p>
           ) : (
-            <ul className="divide-y divide-border">
-              {scope.map((item, i) => (
-                <li key={`${item.kind}-${item.value}-${i}`} className="flex items-center justify-between py-2">
-                  <div className="flex items-center gap-3">
-                    <Badge variant={item.isExclusion ? "destructive" : "secondary"}>{item.kind}{item.isExclusion ? " · exclude" : ""}</Badge>
-                    <span className="font-mono text-sm">{item.value}</span>
-                  </div>
-                  <Button type="button" variant="ghost" size="icon" onClick={() => setScope((items) => items.filter((_, j) => j !== i))} aria-label="Remove scope item"><Trash2 className="h-4 w-4" /></Button>
-                </li>
-              ))}
-            </ul>
+            <>
+              <ul className="divide-y divide-border">
+                {scope.map((item, i) => (
+                  <li key={`${item.kind}-${item.value}-${i}`} className="flex items-center justify-between py-2">
+                    <div className="flex items-center gap-3">
+                      <Badge variant={item.isExclusion ? "destructive" : "secondary"}>{item.kind}{item.isExclusion ? " · exclude" : ""}</Badge>
+                      <span className="font-mono text-sm">{item.value}</span>
+                    </div>
+                    <Button type="button" variant="ghost" size="icon" onClick={() => setScope((items) => items.filter((_, j) => j !== i))} aria-label="Remove scope item"><Trash2 className="h-4 w-4" /></Button>
+                  </li>
+                ))}
+              </ul>
+              {!hasUsableScope && (
+                <p className="text-sm text-amber-700 dark:text-amber-300">
+                  Add at least one included target. Exclusions alone do not define usable scope, so saving will continue on the Scope tab.
+                </p>
+              )}
+            </>
           )}
         </CardContent>
       </Card>
 
       {error && <p className="text-sm text-critical">{error}</p>}
       <div className="flex justify-end">
-        <Button disabled={busy} onClick={submit}>{busy ? "Saving…" : scope.length > 0 ? "Save and continue to Strategy" : "Save engagement"}</Button>
+        <Button disabled={busy} onClick={submit}>{busy ? "Saving…" : hasUsableScope ? "Save and continue to Strategy" : "Save engagement"}</Button>
       </div>
     </div>
   );
