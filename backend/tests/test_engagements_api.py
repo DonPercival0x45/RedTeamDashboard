@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 import redis as redis_lib
 from fastapi.testclient import TestClient
-from sqlalchemy import event, select, text
+from sqlalchemy import event, func, select, text
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -521,7 +521,7 @@ def test_flush_removes_engagement_and_streams(
         payload={"type": "finding.created", "finding_id": str(uuid.uuid4())},
     )
     db.commit()
-    outbox_id = outbox.id
+    assert outbox.id is not None
     assert redis_client.exists(inbound_stream(engagement_id)) == 1
     assert redis_client.exists(outbound_stream(engagement_id)) == 1
 
@@ -539,7 +539,13 @@ def test_flush_removes_engagement_and_streams(
     # Streams and the engagement-owned outbox row are gone.
     assert redis_client.exists(inbound_stream(engagement_id)) == 0
     assert redis_client.exists(outbound_stream(engagement_id)) == 0
-    assert db.get(CommandOutbox, outbox_id) is None
+    db.expire_all()
+    remaining_outbox = db.scalar(
+        select(func.count())
+        .select_from(CommandOutbox)
+        .where(CommandOutbox.engagement_id == engagement_id)
+    )
+    assert remaining_outbox == 0
 
 
 # ---------------------------------------------------------------------------

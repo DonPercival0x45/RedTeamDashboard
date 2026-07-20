@@ -32,6 +32,7 @@ from app.models import (
     ApprovalStatus,
     Engagement,
     EngagementStatus,
+    Finding,
     RiskLevel,
     ScopeItem,
     ScopeKind,
@@ -230,9 +231,19 @@ def test_passive_run_emits_lifecycle_events(
     assert "run.started" in types
     assert "finding.created" in types
     assert "run.completed" in types
-    finding = next(e for e in events if e["type"] == "finding.created")
-    assert finding["tool"] == "subfinder"
-    assert "www.acme.com" in finding["data"]["subdomains"]
+    finding_event = next(e for e in events if e["type"] == "finding.created")
+    assert finding_event["tool"] == "subfinder"
+    assert finding_event["source"] in {"worker", "worker_lifecycle"}
+    assert finding_event["target"] == "acme.com"
+    assert finding_event["title"] == "Subdomains discovered — acme.com"
+    assert finding_event["status"] == "validated"
+    db.expire_all()
+    persisted = db.get(Finding, uuid.UUID(finding_event["finding_id"]))
+    assert persisted is not None
+    assert persisted.source_tool == "subfinder"
+    assert {item["subdomain"] for item in persisted.details["items"]} >= {
+        "www.acme.com"
+    }
 
 
 def test_out_of_scope_call_emits_tool_denied(
@@ -388,8 +399,17 @@ def test_active_run_interrupts_then_resumes(
     assert "approval.pending" in types
     assert "finding.created" in types
     assert "run.completed" in types
-    finding = next(e for e in all_events if e["type"] == "finding.created")
-    assert finding["data"]["open_ports"] == [22, 443]
+    finding_event = next(e for e in all_events if e["type"] == "finding.created")
+    assert finding_event["tool"] == "portscan"
+    assert finding_event["source"] in {"worker", "worker_lifecycle"}
+    assert finding_event["target"] == "10.0.0.5"
+    assert finding_event["title"] == "Open ports — 10.0.0.5"
+    assert finding_event["status"] == "pending_validation"
+    db.expire_all()
+    persisted = db.get(Finding, uuid.UUID(finding_event["finding_id"]))
+    assert persisted is not None
+    assert persisted.source_tool == "portscan"
+    assert {item["port"] for item in persisted.details["items"]} == {22, 443}
 
 
 # ---------------------------------------------------------------------------
