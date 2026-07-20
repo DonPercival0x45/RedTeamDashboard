@@ -603,6 +603,12 @@ export interface EntityFindingRef {
   phase: FindingPhase;
 }
 
+// v2.19.0: scope tag on each derived entity. "live" = matches current
+// scope, "legacy" = matched a scope item that was deleted after v2.19
+// shipped (older hard-deletes left no trace, so those show as "oos"),
+// "oos" = never a scope target.
+export type EntityScopeStatus = "live" | "legacy" | "oos";
+
 // Correlated entity derived from findings (GET /engagements/{slug}/entities).
 export interface Entity {
   type: string;
@@ -612,6 +618,7 @@ export interface Entity {
   first_seen: string;
   last_seen: string;
   findings: EntityFindingRef[];
+  scope_status: EntityScopeStatus;
 }
 
 export interface Observation {

@@ -353,6 +353,65 @@ def extract_items(
     return [dict(data)]
 
 
+# v2.19.0: enrichment fields a later tool may layer on a subdomain hit that
+# a discovery tool (subfinder / crt_sh) recorded first. Without merging these
+# back into the existing item, dns_lookup's A records are dropped by the
+# dedup branch and never reach services/entities._walk — so IPs like the
+# A record 205.159.120.60 for tpa.5qpartners.com never become entities.
+_LIST_MERGE_FIELDS = ("a", "aaaa", "cname", "mx", "ns", "txt")
+
+
+def _find_item_by_key(
+    items: list[dict[str, Any]], tool: str | None, key: str
+) -> dict[str, Any] | None:
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if item_dedup_key(tool, item) == key:
+            return item
+    return None
+
+
+def _merge_enrichment_into(
+    existing: dict[str, Any], incoming: Mapping[str, Any]
+) -> bool:
+    """Enrich an already-recorded item with fields a later tool contributed.
+
+    - List fields (DNS record types) are unioned with the existing list,
+      dedup by string, preserved insertion order.
+    - Scalar fields the existing item lacks are copied over.
+    - Scalar fields the existing item already has are LEFT ALONE — a later
+      tool doesn't overwrite what the discovery tool saw first.
+
+    Returns True iff any field changed. Caller uses this to decide whether
+    the merge produced an observable change (for logging / cache signals).
+    """
+    changed = False
+    for field in _LIST_MERGE_FIELDS:
+        incoming_values = incoming.get(field)
+        if not isinstance(incoming_values, list):
+            continue
+        existing_values = existing.get(field)
+        if not isinstance(existing_values, list):
+            existing_values = []
+        merged = list(existing_values)
+        seen = {str(v) for v in existing_values}
+        for value in incoming_values:
+            if str(value) not in seen:
+                merged.append(value)
+                seen.add(str(value))
+        if merged != existing_values:
+            existing[field] = merged
+            changed = True
+    for field, value in incoming.items():
+        if field in _LIST_MERGE_FIELDS or field == "first_seen_at":
+            continue
+        if field not in existing:
+            existing[field] = value
+            changed = True
+    return changed
+
+
 def item_dedup_key(tool: str | None, item: Mapping[str, Any]) -> str:
     """Natural identity of an item inside its group. Used to skip re-adds
     on a second run of the same tool against the same target.
@@ -538,9 +597,19 @@ def upsert_grouped_finding(
     existing_keys = {item_dedup_key(tool, it) for it in existing_items if isinstance(it, dict)}
 
     added = 0
+    enriched = 0
     for item in incoming_items:
         key = item_dedup_key(tool, item)
         if key in existing_keys:
+            # v2.19.0: previously `continue`d and dropped the incoming dict
+            # entirely, so a dns_lookup A record on a subdomain that subfinder
+            # discovered first would vanish and its IP never landed in
+            # details['items'] for services/entities._walk to find. Merge
+            # enrichment (DNS record lists + missing scalars) into the
+            # existing item instead.
+            existing = _find_item_by_key(existing_items, tool, key)
+            if existing is not None and _merge_enrichment_into(existing, item):
+                enriched += 1
             continue
         existing_keys.add(key)
         item_with_meta = dict(item)
@@ -561,6 +630,7 @@ def upsert_grouped_finding(
         engagement_id=str(engagement_id),
         group_key=group_key,
         added=added,
+        enriched=enriched,
         total_items=len(existing_items),
     )
     return row, added
