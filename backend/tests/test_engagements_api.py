@@ -793,43 +793,55 @@ def _create_finding(
 
 
 def test_finding_tags_round_trip(client: TestClient, cleanup_slugs: list[str]) -> None:
-    """v1.4.7: free-form tags survive create -> read -> patch -> clear."""
+    """Allowed tags survive create/read/patch/clear; overlong tags are rejected."""
     eng = _create(client, f"Tags holder {uuid.uuid4().hex[:6]}")
     cleanup_slugs.append(eng["slug"])
 
-    # Create with messy tags — normalizer trims, de-dups, caps length.
+    # Valid tags are trimmed and de-duplicated without truncating their content.
     created = _create_finding(
         client,
         eng["slug"],
         title="tagged",
-        tags=[" xss ", "xss", "recon", "z" * 50],
+        tags=[" xss ", "xss", "recon", "z" * 40],
     )
     assert created["tags"] == ["xss", "recon", "z" * 40]
 
-    # List carries the tags.
     listed = client.get(
         f"/engagements/{eng['slug']}/findings", headers=_headers()
     ).json()
     assert listed[0]["tags"] == ["xss", "recon", "z" * 40]
 
     fid = created["id"]
-    # PATCH replaces the whole list.
-    patched = client.patch(
+    patched_response = client.patch(
         f"/findings/{fid}",
         json={"tags": ["xss", "cred-leak"]},
         headers=_headers(),
-    ).json()
-    assert patched["tags"] == ["xss", "cred-leak"]
+    )
+    assert patched_response.status_code == 200, patched_response.text
+    assert patched_response.json()["tags"] == ["xss", "cred-leak"]
 
-    # PATCH with [] clears.
-    cleared = client.patch(
+    overlong_patch = client.patch(
+        f"/findings/{fid}",
+        json={"tags": ["z" * 41]},
+        headers=_headers(),
+    )
+    assert overlong_patch.status_code == 422, overlong_patch.text
+
+    cleared_response = client.patch(
         f"/findings/{fid}",
         json={"tags": []},
         headers=_headers(),
-    ).json()
-    assert cleared["tags"] == []
+    )
+    assert cleared_response.status_code == 200, cleared_response.text
+    assert cleared_response.json()["tags"] == []
 
-    # A finding created without tags defaults to [].
+    overlong_create = client.post(
+        f"/engagements/{eng['slug']}/findings",
+        json={"title": "overlong tag", "tags": ["z" * 41]},
+        headers=_headers(),
+    )
+    assert overlong_create.status_code == 422, overlong_create.text
+
     bare = _create_finding(client, eng["slug"], title="no tags")
     assert bare["tags"] == []
 
@@ -837,15 +849,21 @@ def test_finding_tags_round_trip(client: TestClient, cleanup_slugs: list[str]) -
 def test_finding_tags_cap_at_twenty(
     client: TestClient, cleanup_slugs: list[str]
 ) -> None:
-    """The normalizer caps at 20 tags so the column can't be abused."""
+    """Exactly 20 tags are accepted; a 21st is rejected rather than dropped."""
     eng = _create(client, f"Cap holder {uuid.uuid4().hex[:6]}")
     cleanup_slugs.append(eng["slug"])
-    created = _create_finding(
-        client, eng["slug"], tags=[f"tag-{i}" for i in range(30)]
+
+    exact = _create_finding(
+        client, eng["slug"], tags=[f"tag-{i}" for i in range(20)]
     )
-    assert len(created["tags"]) == 20
-    assert created["tags"][0] == "tag-0"
-    assert created["tags"][-1] == "tag-19"
+    assert exact["tags"] == [f"tag-{i}" for i in range(20)]
+
+    overflow = client.post(
+        f"/engagements/{eng['slug']}/findings",
+        json={"title": "too many tags", "tags": [f"tag-{i}" for i in range(21)]},
+        headers=_headers(),
+    )
+    assert overflow.status_code == 422, overflow.text
 
 
 def test_observation_finding_link_round_trip(
