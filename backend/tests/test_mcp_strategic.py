@@ -16,10 +16,13 @@ acting as Strategic with the analyst's own API key:
 Auth context (the ContextVars MCPAuthMiddleware sets) is wired by hand here
 so tests don't need to spin up the full ASGI stack.
 """
+
 from __future__ import annotations
 
+import json
 import uuid
 from collections.abc import Iterator
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import text
@@ -29,8 +32,12 @@ from app.api.deps import hash_api_key
 from app.mcp import auth as mcp_auth
 from app.mcp.server import (
     get_finding_context,
+    list_findings,
     list_open_suggestions,
     propose_strategic_suggestion,
+    resource_engagement,
+    resource_engagements,
+    resource_findings,
     strategic_planning,
 )
 from app.models import (
@@ -130,12 +137,49 @@ def with_mcp_auth(cli_key_user: tuple[APIKey, User]) -> Iterator[None]:
         mcp_auth._current_user.reset(tu)
 
 
+# ── finding visibility ──────────────────────────────────────────────────
+
+
+def test_mcp_lists_and_resources_filter_deleted_findings(
+    db: Session,
+    engagement: Engagement,
+    finding: Finding,
+) -> None:
+    hidden = Finding(
+        engagement_id=engagement.id,
+        title="Deleted critical finding",
+        severity=Severity.critical,
+        details={},
+        source_tool="manual",
+        target="hidden.acme.test",
+        phase=FindingPhase.general,
+        status=FindingStatus.validated,
+        deleted_at=datetime.now(tz=UTC),
+    )
+    db.add(hidden)
+    db.commit()
+    db.refresh(hidden)
+
+    listed = list_findings(engagement_slug=engagement.slug)
+    assert listed["count"] == 1
+    assert [row["id"] for row in listed["findings"]] == [str(finding.id)]
+
+    findings_resource = json.loads(resource_findings(engagement.slug))
+    assert findings_resource["total"] == 1
+    assert [row["id"] for row in findings_resource["findings"]] == [str(finding.id)]
+
+    engagement_resource = json.loads(resource_engagement(engagement.slug))
+    assert engagement_resource["recent_high_critical_findings"] == []
+
+    engagement_list = json.loads(resource_engagements())
+    matching = next(row for row in engagement_list if row["slug"] == engagement.slug)
+    assert matching["finding_count"] == 1
+
+
 # ── get_finding_context ─────────────────────────────────────────────────
 
 
-def test_get_finding_context_returns_full_picture(
-    engagement: Engagement, finding: Finding
-) -> None:
+def test_get_finding_context_returns_full_picture(engagement: Engagement, finding: Finding) -> None:
     ctx = get_finding_context(engagement.slug, str(finding.id))
     assert "error" not in ctx
     assert ctx["engagement"]["slug"] == engagement.slug
@@ -149,6 +193,46 @@ def test_get_finding_context_returns_full_picture(
 def test_get_finding_context_404s_unknown_finding(engagement: Engagement) -> None:
     ctx = get_finding_context(engagement.slug, str(uuid.uuid4()))
     assert "error" in ctx
+
+
+def test_deleted_finding_is_hidden_and_cannot_receive_suggestion(
+    db: Session,
+    with_mcp_auth: None,
+    engagement: Engagement,
+    finding: Finding,
+) -> None:
+    existing = propose_strategic_suggestion(
+        engagement.slug,
+        str(finding.id),
+        title="Existing suggestion",
+        body="Created before deletion.",
+        task_kind="enum",
+        tool="dns_lookup",
+        target="acme.test",
+    )
+    assert "error" not in existing
+
+    finding.deleted_at = datetime.now(tz=UTC)
+    db.commit()
+    executions_before = db.query(AgentExecution).count()
+    suggestions_before = db.query(Suggestion).count()
+
+    ctx = get_finding_context(engagement.slug, str(finding.id))
+    assert "error" in ctx
+    assert list_open_suggestions(engagement.slug, str(finding.id)) == []
+
+    out = propose_strategic_suggestion(
+        engagement.slug,
+        str(finding.id),
+        title="Must not persist",
+        body="Deleted findings are unavailable.",
+        task_kind="enum",
+        tool="dns_lookup",
+        target="acme.test",
+    )
+    assert "error" in out
+    assert db.query(AgentExecution).count() == executions_before
+    assert db.query(Suggestion).count() == suggestions_before
 
 
 # ── propose_strategic_suggestion ────────────────────────────────────────

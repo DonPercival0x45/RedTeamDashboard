@@ -47,6 +47,10 @@ from app.models import (
 from app.services import darkweb_import, entity_store
 from app.services.entities import extract_finding_context
 from app.services.entity_identity import entity_identity_key, normalize_entity_value
+from app.services.findings import (
+    get_active_finding_or_404,
+    lock_active_finding_or_404,
+)
 from app.services.maltego_import import parse_mtgx
 
 router = APIRouter()
@@ -241,31 +245,13 @@ def _mutable_engagement(session, engagement_id: uuid.UUID) -> Engagement:
 
 
 def _finding_or_404(session, finding_id: uuid.UUID) -> Finding:
-    finding = session.get(Finding, finding_id)
-    if finding is None or finding.deleted_at is not None:
-        raise HTTPException(status_code=404, detail="finding not found")
-    return finding
+    return get_active_finding_or_404(session, finding_id)
 
 
 def _locked_finding_for_mutation(session, finding_id: uuid.UUID) -> Finding:
-    engagement_id = session.execute(
-        select(Finding.engagement_id).where(
-            Finding.id == finding_id,
-            Finding.deleted_at.is_(None),
-        )
-    ).scalar_one_or_none()
-    if engagement_id is None:
-        raise HTTPException(status_code=404, detail="finding not found")
-    _mutable_engagement(session, engagement_id)
-    finding = session.execute(
-        select(Finding)
-        .where(Finding.id == finding_id, Finding.deleted_at.is_(None))
-        .with_for_update()
-        .execution_options(populate_existing=True)
-    ).scalar_one_or_none()
-    if finding is None:
-        raise HTTPException(status_code=404, detail="finding not found")
-    return finding
+    finding = get_active_finding_or_404(session, finding_id)
+    _mutable_engagement(session, finding.engagement_id)
+    return lock_active_finding_or_404(session, finding_id)
 
 
 def _group_read(session, group: EntityGroup) -> EntityGroupRead:
@@ -667,9 +653,7 @@ def import_darkweb(
     slug: str,
     session: DbSession,
     user: CurrentNonGuestUser,
-    file: Annotated[
-        UploadFile, File(..., description="DarkWeb source export (JSON or CSV).")
-    ],
+    file: Annotated[UploadFile, File(..., description="DarkWeb source export (JSON or CSV).")],
     source: Annotated[
         str,
         Query(
@@ -774,9 +758,7 @@ def list_stored_entities_endpoint(
     session: DbSession,
     _user: CurrentUser,
     type: Annotated[str | None, Query(description="Filter by type.")] = None,
-    q: Annotated[
-        str | None, Query(description="Substring match on the value.")
-    ] = None,
+    q: Annotated[str | None, Query(description="Substring match on the value.")] = None,
     include_suppressed: Annotated[
         bool, Query(description="Include analyst-suppressed stored records.")
     ] = False,
@@ -876,10 +858,7 @@ def create_entity_group(
         raise HTTPException(status_code=422, detail="a duplicate group requires two entities")
     entities = list(
         session.execute(
-            select(Entity)
-            .where(Entity.id.in_(entity_ids))
-            .order_by(Entity.id)
-            .with_for_update()
+            select(Entity).where(Entity.id.in_(entity_ids)).order_by(Entity.id).with_for_update()
         ).scalars()
     )
     if len(entities) != len(entity_ids) or any(
@@ -899,9 +878,9 @@ def create_entity_group(
     ).first()
     if already_grouped:
         raise HTTPException(status_code=409, detail="an entity is already in a duplicate group")
-    canonical_id = body.canonical_entity_id or min(
-        entities, key=lambda row: (row.created_at, str(row.id))
-    ).id
+    canonical_id = (
+        body.canonical_entity_id or min(entities, key=lambda row: (row.created_at, str(row.id))).id
+    )
     if canonical_id not in entity_ids:
         raise HTTPException(status_code=422, detail="canonical entity must be a group member")
 

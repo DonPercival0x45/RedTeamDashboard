@@ -84,6 +84,10 @@ from app.schemas.orchestrator import (
     TaskRead,
     TriageFindingResponse,
 )
+from app.services.findings import (
+    get_active_finding_or_404,
+    lock_active_finding_or_404,
+)
 from app.services.status_notifier import notify_status_event
 
 router = APIRouter()
@@ -125,12 +129,13 @@ def _ensure_mutable_engagement(engagement: Engagement) -> None:
         raise HTTPException(status_code=409, detail="completed engagement is read-only")
 
 
-def _ensure_finding_mutable(session: Session, finding: Finding) -> Engagement:
+def _active_finding_for_mutation(session: Session, finding_id: uuid.UUID) -> Finding:
+    finding = get_active_finding_or_404(session, finding_id)
     engagement = session.get(Engagement, finding.engagement_id)
     if engagement is None:
         raise HTTPException(status_code=404, detail="engagement not found")
     _ensure_mutable_engagement(engagement)
-    return engagement
+    return lock_active_finding_or_404(session, finding_id)
 
 
 # ---------------------------------------------------------------------------
@@ -157,10 +162,7 @@ def analyze_finding(
     The BYO key resolves against the CLICKING analyst's ephemeral Redis
     cache — not the engagement creator's.
     """
-    finding = session.get(Finding, finding_id)
-    if finding is None:
-        raise HTTPException(status_code=404, detail="finding not found")
-    _ensure_finding_mutable(session, finding)
+    finding = _active_finding_for_mutation(session, finding_id)
 
     agent = StrategicAgent(redis_client=redis_client)
     execution, suggestions = agent.analyze_finding(
@@ -228,9 +230,7 @@ def get_finding(
     """
     from app.api.engagements import _finding_to_read
 
-    finding = session.get(Finding, finding_id)
-    if finding is None:
-        raise HTTPException(status_code=404, detail="finding not found")
+    finding = get_active_finding_or_404(session, finding_id)
     # Must run through the same envelope-unpacker the list endpoint uses:
     # ORM stores ``details = {thread_id, args, **tool_data}`` and
     # ``source_tool``, but FindingRead expects ``tool``, ``args``, and
@@ -258,9 +258,7 @@ def finding_activity(
     """
     from app.services.finding_activity import build_finding_activity
 
-    finding = session.get(Finding, finding_id)
-    if finding is None:
-        raise HTTPException(status_code=404, detail="finding not found")
+    get_active_finding_or_404(session, finding_id)
     rows = build_finding_activity(session, finding_id)
     return [FindingActivityEntry(**r) for r in rows]
 
@@ -284,9 +282,7 @@ def finding_chat_state(
         get_latest_conversation,
     )
 
-    finding = session.get(Finding, finding_id)
-    if finding is None:
-        raise HTTPException(status_code=404, detail="finding not found")
+    get_active_finding_or_404(session, finding_id)
 
     conv = get_latest_conversation(session, finding_id=finding_id, user_id=user.id)
     if conv is None:
@@ -321,10 +317,7 @@ def summarize_finding_chat_endpoint(
         summarize_finding_chat,
     )
 
-    finding = session.get(Finding, finding_id)
-    if finding is None:
-        raise HTTPException(status_code=404, detail="finding not found")
-    _ensure_finding_mutable(session, finding)
+    finding = _active_finding_for_mutation(session, finding_id)
     conv = get_latest_conversation(session, finding_id=finding_id, user_id=user.id)
     if conv is None:
         raise HTTPException(status_code=400, detail="no conversation to summarize")
@@ -354,10 +347,7 @@ def clear_finding_chat(
     finding so the AI workspace can start fresh. The audit log remains
     append-only and records that a reset happened.
     """
-    finding = session.get(Finding, finding_id)
-    if finding is None:
-        raise HTTPException(status_code=404, detail="finding not found")
-    _ensure_finding_mutable(session, finding)
+    finding = _active_finding_for_mutation(session, finding_id)
     conversations = list(
         session.execute(
             select(Conversation).where(
@@ -407,10 +397,7 @@ def ask_finding_chat(
         get_or_create_conversation,
     )
 
-    finding = session.get(Finding, finding_id)
-    if finding is None:
-        raise HTTPException(status_code=404, detail="finding not found")
-    _ensure_finding_mutable(session, finding)
+    finding = _active_finding_for_mutation(session, finding_id)
 
     text = body.message.strip()
     if not text:
@@ -500,10 +487,7 @@ def accept_finding_chat_action(
     """
     from app.services.finding_chat import accept_chat_action
 
-    finding = session.get(Finding, finding_id)
-    if finding is None:
-        raise HTTPException(status_code=404, detail="finding not found")
-    _ensure_finding_mutable(session, finding)
+    finding = _active_finding_for_mutation(session, finding_id)
     message = session.execute(
         select(ConversationMessage)
         .where(ConversationMessage.id == message_id)
@@ -573,10 +557,7 @@ def deny_finding_chat_action(
     so the assistant sees the analyst declined it and won't re-propose."""
     from app.services.finding_chat import deny_chat_action
 
-    finding = session.get(Finding, finding_id)
-    if finding is None:
-        raise HTTPException(status_code=404, detail="finding not found")
-    _ensure_finding_mutable(session, finding)
+    finding = _active_finding_for_mutation(session, finding_id)
     message = session.execute(
         select(ConversationMessage)
         .where(ConversationMessage.id == message_id)
@@ -649,10 +630,7 @@ def triage_finding(
     from app.services.ephemeral_provider_key import NoProviderKeyError
     from app.services.triage import triage_finding_summary
 
-    finding = session.get(Finding, finding_id)
-    if finding is None:
-        raise HTTPException(status_code=404, detail="finding not found")
-    _ensure_finding_mutable(session, finding)
+    finding = _active_finding_for_mutation(session, finding_id)
 
     try:
         execution, summary = triage_finding_summary(
@@ -724,10 +702,7 @@ def rewrite_finding_summary_endpoint(
     from app.services.ephemeral_provider_key import NoProviderKeyError
     from app.services.triage import rewrite_finding_summary
 
-    finding = session.get(Finding, finding_id)
-    if finding is None:
-        raise HTTPException(status_code=404, detail="finding not found")
-    _ensure_finding_mutable(session, finding)
+    finding = _active_finding_for_mutation(session, finding_id)
 
     try:
         execution, summary = rewrite_finding_summary(
@@ -951,11 +926,7 @@ def list_running_tasks(
     stmt = (
         select(Task, Engagement.slug, Engagement.name)
         .join(Engagement, Engagement.id == Task.engagement_id)
-        .where(
-            Task.status.in_(
-                (TaskStatus.pending, TaskStatus.dispatched, TaskStatus.running)
-            )
-        )
+        .where(Task.status.in_((TaskStatus.pending, TaskStatus.dispatched, TaskStatus.running)))
         .order_by(Task.dispatched_at.desc().nulls_last(), Task.created_at.desc())
     )
     rows = session.execute(stmt).all()
@@ -1122,9 +1093,7 @@ def engagement_attribution(
         )
         used_in = ex.tokens_in or 0
         used_out = ex.tokens_out or 0
-        derived = pricing.cost_usd(
-            ex.model_name, used_in, used_out, ex.model_provider
-        )
+        derived = pricing.cost_usd(ex.model_name, used_in, used_out, ex.model_provider)
         acc["executions"] += 1
         acc["tokens_in"] += used_in
         acc["tokens_out"] += used_out
@@ -1153,9 +1122,7 @@ def engagement_attribution(
             tokens_out=acc["tokens_out"],
             cost_usd=float(acc["cost"]),
         )
-        for key, acc in sorted(
-            buckets.items(), key=lambda kv: kv[1]["cost"], reverse=True
-        )
+        for key, acc in sorted(buckets.items(), key=lambda kv: kv[1]["cost"], reverse=True)
     ]
 
 

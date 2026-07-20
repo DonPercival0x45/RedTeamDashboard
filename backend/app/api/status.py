@@ -42,7 +42,6 @@ from app.models import (
     Engagement,
     EngagementStatus,
     EngagementWorkState,
-    Finding,
     MCPLease,
     MCPLeaseStatus,
     OwnerEligibility,
@@ -1207,9 +1206,7 @@ def retry_agent_execution(
         # A Tactical run dispatched from a task: re-dispatch the source task
         # (TacticalAgent.dispatch re-derives the prompt; the run's own prompt
         # isn't durably stored, so we can't rebuild the run directly).
-        task = session.execute(
-            select(Task).where(Task.run_id == execution_id)
-        ).scalar_one_or_none()
+        task = session.execute(select(Task).where(Task.run_id == execution_id)).scalar_one_or_none()
         if task is None:
             raise HTTPException(
                 status_code=400,
@@ -1249,15 +1246,9 @@ def retry_agent_execution(
             status_code=400,
             detail=f"corrupt finding_id on the execution row: {finding_id_raw!r}",
         ) from exc
-    finding = session.get(Finding, finding_id)
-    if finding is None:
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                f"finding {finding_id} no longer exists — can't retry the "
-                "triage against a deleted finding"
-            ),
-        )
+    from app.services.findings import lock_active_finding_or_404
+
+    finding = lock_active_finding_or_404(session, finding_id)
 
     from app.services.ephemeral_provider_key import NoProviderKeyError
     from app.services.status_notifier import notify_status_event

@@ -6,6 +6,7 @@ live events without two code paths. The worker stores findings with
 ``details = {thread_id, args, **tool_data}``; the API unpacks that back out (see
 ``_finding_to_read`` in ``app.api.engagements``).
 """
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -16,24 +17,35 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.models import FindingExclusion, FindingPhase, FindingStatus, Severity
 
+MAX_FINDING_SUMMARY_CHARS = 20_000
+MAX_FINDING_TAGS = 20
+MAX_FINDING_TAG_CHARS = 40
+
 
 def _normalize_tags(raw: list[str] | None) -> list[str]:
-    """Trim, drop empties, de-dup (case-sensitive, order-preserving), and
-    cap so a chatty analyst can't blow up the column. Shared by the
-    create + update shapes."""
+    """Trim, drop empties, and de-duplicate bounded analyst tags."""
     if not raw:
         return []
     seen: set[str] = set()
     out: list[str] = []
     for tag in raw:
-        if not isinstance(tag, str):
+        normalized = tag.strip()
+        if len(normalized) > MAX_FINDING_TAG_CHARS:
+            raise ValueError(f"tag exceeds the {MAX_FINDING_TAG_CHARS}-character limit")
+        if not normalized or normalized in seen:
             continue
-        tag = tag.strip()[:40]
-        if not tag or tag in seen:
-            continue
-        seen.add(tag)
-        out.append(tag)
-    return out[:20]
+        seen.add(normalized)
+        out.append(normalized)
+    return out
+
+
+def _strip_nonblank(value: str | None, *, field_name: str) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError(f"{field_name} cannot be blank")
+    return normalized
 
 
 class FindingRead(BaseModel):
@@ -78,14 +90,19 @@ class FindingUpdate(BaseModel):
     existing exclusion.
     """
 
-    title: str | None = None
-    summary: str | None = None
+    title: str | None = Field(default=None, min_length=1, max_length=300)
+    summary: str | None = Field(default=None, max_length=MAX_FINDING_SUMMARY_CHARS)
     severity: Severity | None = None
     phase: FindingPhase | None = None
     exclusion: FindingExclusion | None = None
     # v1.4.7: replace the whole tag list. Distinguish not-set from
     # set-to-empty via ``model_fields_set`` — pass ``[]`` to clear.
-    tags: list[str] | None = None
+    tags: list[str] | None = Field(default=None, max_length=MAX_FINDING_TAGS)
+
+    @field_validator("title")
+    @classmethod
+    def _normalize_title(cls, value: str | None) -> str | None:
+        return _strip_nonblank(value, field_name="title")
 
     @field_validator("tags")
     @classmethod
@@ -152,13 +169,25 @@ class FindingCreate(BaseModel):
     """
 
     title: str = Field(..., min_length=1, max_length=300)
-    summary: str | None = None
+    summary: str | None = Field(default=None, max_length=MAX_FINDING_SUMMARY_CHARS)
     severity: Severity = Severity.info
     phase: FindingPhase = FindingPhase.general
-    target: str | None = None
+    target: str | None = Field(default=None, min_length=1, max_length=500)
     observed_at: datetime | None = None
     # v1.4.7: optional tags at create time.
-    tags: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list, max_length=MAX_FINDING_TAGS)
+
+    @field_validator("title")
+    @classmethod
+    def _normalize_title(cls, value: str) -> str:
+        normalized = _strip_nonblank(value, field_name="title")
+        assert normalized is not None
+        return normalized
+
+    @field_validator("target")
+    @classmethod
+    def _normalize_target(cls, value: str | None) -> str | None:
+        return _strip_nonblank(value, field_name="target")
 
     @field_validator("tags")
     @classmethod
