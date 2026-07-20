@@ -13,6 +13,8 @@ import type {
   CompletionMutationResponse,
   CompletionReadiness,
   CoverageItem,
+  ExecutionSuggestionCreate,
+  ExecutionSuggestionResponse,
   CoverageStatus,
   Objective,
   ObjectiveCreate,
@@ -169,6 +171,16 @@ export function listWorkItems(
 
 export function getWorkItem(workItemId: string): Promise<WorkItem> {
   return strategyRequest<WorkItem>(`/work-items/${workItemId}`);
+}
+
+export function createExecutionSuggestion(
+  workItemId: string,
+  body: ExecutionSuggestionCreate,
+): Promise<ExecutionSuggestionResponse> {
+  return strategyRequest<ExecutionSuggestionResponse>(
+    `/work-items/${workItemId}/execution-suggestions`,
+    json(body),
+  );
 }
 
 export function createWorkItem(slug: string, body: WorkItemCreate): Promise<WorkItem> {

@@ -260,6 +260,33 @@ def test_execution_suggestion_is_inert_then_acceptance_routes_through_tactical(
     assert repeated.status_code == 201, repeated.text
     assert repeated.json()["suggestion"]["id"] == str(suggestion_id)
 
+    first = db.get(Suggestion, suggestion_id)
+    assert first is not None
+    first.status = SuggestionStatus.dismissed
+    db.commit()
+    reproposed = client.post(
+        f"/work-items/{work.id}/execution-suggestions", json=request, headers=HDR
+    )
+    assert reproposed.status_code == 201, reproposed.text
+    second_suggestion_id = uuid.UUID(reproposed.json()["suggestion"]["id"])
+    assert second_suggestion_id != suggestion_id
+
+    second = db.get(Suggestion, second_suggestion_id)
+    assert second is not None
+    second.status = SuggestionStatus.dismissed
+    db.commit()
+    reproposed_again = client.post(
+        f"/work-items/{work.id}/execution-suggestions", json=request, headers=HDR
+    )
+    assert reproposed_again.status_code == 201, reproposed_again.text
+    suggestion_id = uuid.UUID(reproposed_again.json()["suggestion"]["id"])
+    assert suggestion_id not in {first.id, second.id}
+    repeated_open = client.post(
+        f"/work-items/{work.id}/execution-suggestions", json=request, headers=HDR
+    )
+    assert repeated_open.status_code == 201, repeated_open.text
+    assert repeated_open.json()["suggestion"]["id"] == str(suggestion_id)
+
     calls: list[uuid.UUID] = []
 
     def fake_dispatch(
@@ -329,6 +356,14 @@ def test_execution_proposal_rechecks_version_scope_and_terminal_state(
         "expected_work_item_version": 1,
         "idempotency_key": f"stale-{uuid.uuid4()}",
     }
+    incompatible = client.post(
+        f"/work-items/{work.id}/execution-suggestions",
+        json={**base, "tool": "subfinder", "idempotency_key": f"kind-{uuid.uuid4()}"},
+        headers=HDR,
+    )
+    assert incompatible.status_code == 422, incompatible.text
+    assert "accepts domain targets, not ip" in incompatible.text
+
     created = client.post(f"/work-items/{work.id}/execution-suggestions", json=base, headers=HDR)
     assert created.status_code == 201, created.text
     suggestion_id = uuid.UUID(created.json()["suggestion"]["id"])
