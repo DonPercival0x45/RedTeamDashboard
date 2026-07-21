@@ -150,6 +150,22 @@ _PHASE_0_TOOLS: tuple[ToolSpec, ...] = (
         needs_secret=True,
     ),
     ToolSpec(
+        name="ipinfo",
+        risk=RiskLevel.passive,
+        target_arg="ip",
+        kind=ScopeKind.ip,
+        description=(
+            "IP intel enrichment via ipinfo.io — ASN, netblock owner, "
+            "hosting/VPN/proxy/Tor flags, and a second geo signal that "
+            "cross-checks freeipapi. Passive third-party API call, no "
+            "traffic touches the target. Requires an analyst-supplied "
+            "ipinfo token (upload at /settings/keys with provider='ipinfo'). "
+            "Response merges into the Dossier tab's IP row alongside "
+            "freeipapi geo."
+        ),
+        needs_secret=True,
+    ),
+    ToolSpec(
         name="service_detect",
         risk=RiskLevel.active,
         target_arg="target",
@@ -193,6 +209,7 @@ _TOOL_PHASE: dict[str, str] = {
     "httpx_probe": "osint",
     "reverse_dns": "osint",
     "freeipapi": "osint",
+    "ipinfo": "osint",
     "portscan": "vuln_scan",
     "subnet_sweep": "vuln_scan",
     "service_detect": "vuln_scan",

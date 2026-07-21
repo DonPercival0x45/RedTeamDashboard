@@ -33,6 +33,7 @@ ToolImpl = Callable[[Mapping[str, Any]], "ToolResult"]
 from app.orchestrator.tools.crt_sh import crt_sh_impl  # noqa: E402
 from app.orchestrator.tools.dns_lookup import dns_lookup_impl  # noqa: E402
 from app.orchestrator.tools.freeipapi import freeipapi_impl  # noqa: E402
+from app.orchestrator.tools.ipinfo import ipinfo_impl  # noqa: E402
 from app.orchestrator.tools.httpx_probe import httpx_probe_impl  # noqa: E402
 from app.orchestrator.tools.portscan import portscan_impl  # noqa: E402
 from app.orchestrator.tools.reverse_dns import reverse_dns_impl  # noqa: E402
@@ -49,6 +50,7 @@ IMPLEMENTATIONS: dict[str, ToolImpl] = {
     "httpx_probe": httpx_probe_impl,
     "reverse_dns": reverse_dns_impl,
     "freeipapi": freeipapi_impl,
+    "ipinfo": ipinfo_impl,
     "portscan": portscan_impl,
     "subnet_sweep": subnet_sweep_impl,
     "service_detect": service_detect_impl,

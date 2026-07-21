@@ -188,6 +188,15 @@ def compute_group_key(
             return None
         return f"ip_enrichment:{ip}"
 
+    if tool == "ipinfo":
+        # v2.22.0: IP intel (ASN + netblock + hosting/VPN flags). Distinct
+        # group_key from freeipapi so re-runs of either don't collide — the
+        # Dossier tab merges them by IP at render time.
+        ip = str(data.get("ip") or args.get("ip") or "").strip()
+        if not ip:
+            return None
+        return f"ip_intel:{ip}"
+
     if tool == "httpx_probe":
         # One row per response bucket per apex — 200s under one row,
         # 4xx/5xx broken out. Lets the analyst scan the reachable
@@ -349,6 +358,11 @@ def extract_items(
         # fields) instead of duplicating the row.
         return [dict(data)]
 
+    if tool == "ipinfo":
+        # v2.22.0: one item per IP intel lookup. Same shape story as
+        # freeipapi — re-runs enrich the existing row.
+        return [dict(data)]
+
     if tool == "httpx_probe":
         return [
             {
@@ -461,6 +475,9 @@ def item_dedup_key(tool: str | None, item: Mapping[str, Any]) -> str:
         # the existing item and layers in any fresh fields via the merge
         # branch's enrichment path (v2.19.0 fix).
         return str(item.get("ip") or "").strip()
+    if tool == "ipinfo":
+        # v2.22.0: same dedup story as freeipapi — one item per IP.
+        return str(item.get("ip") or "").strip()
     if tool == "httpx_probe":
         return str(item.get("url") or item.get("final_url") or "").lower()
     if tool in ("portscan", "subnet_sweep"):
@@ -513,6 +530,9 @@ def group_title(tool: str | None, group_key: str, data: Mapping[str, Any] | None
     if tool == "freeipapi":
         ip = group_key.split(":", 1)[-1]
         return f"IP enrichment — {ip}"
+    if tool == "ipinfo":
+        ip = group_key.split(":", 1)[-1]
+        return f"IP intel — {ip}"
     if tool == "httpx_probe":
         # httpx:<apex>:<bucket>
         parts = group_key.split(":", 2)
@@ -835,6 +855,8 @@ def _representative_target(tool: str | None, group_key: str, data: Mapping[str, 
     if tool in ("portscan", "subnet_sweep", "service_detect", "reverse_dns"):
         return str(data.get("host") or data.get("ip") or "").strip() or None
     if tool == "freeipapi":
+        return str(data.get("ip") or "").strip() or None
+    if tool == "ipinfo":
         return str(data.get("ip") or "").strip() or None
     if tool in ("subfinder", "crt_sh", "dns_lookup", "whois_lookup"):
         # The apex domain out of the group key.

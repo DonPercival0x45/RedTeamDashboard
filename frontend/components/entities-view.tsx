@@ -144,6 +144,12 @@ const ENTITY_ACTION_CHAINS: Record<string, EntityAction[]> = {
         `Enrich ${v} via freeipapi to look up country, region, city, ISP, coordinates, and proxy/mobile flags.`,
     },
     {
+      tool: "ipinfo",
+      label: "ASN + Hosting Intel",
+      prompt: (v) =>
+        `Look up ${v} via ipinfo to get ASN, netblock owner, org type, and hosting/VPN/proxy/Tor flags. Complements freeipapi's geo with netblock and infra signal.`,
+    },
+    {
       tool: "portscan",
       label: "Port-scan IP",
       prompt: (v) =>
@@ -893,6 +899,8 @@ function ImportedEntitiesSection({ slug }: { slug: string }) {
 // v2.21.0: pull lat/lon out of a freeipapi finding whose target matches
 // this IP entity. Returns null if the entity isn't an IP, or if no
 // enrichment has been run against it yet, or the enrichment lacks coords.
+// v2.22.0: also accepts ipinfo findings as a fallback source. freeipapi
+// is preferred (full country name), but ipinfo's lat/lon works too.
 function useIpThumbnailPoint(
   entity: Entity,
   slug: string,
@@ -900,26 +908,31 @@ function useIpThumbnailPoint(
   const { data: findings = [] } = useFindings(slug);
   return useMemo(() => {
     if (entity.type !== "ip") return null;
-    for (const f of findings) {
-      if (f.tool !== "freeipapi") continue;
-      const data = f.data as Record<string, unknown> | undefined;
-      const items = data?.items;
-      if (!Array.isArray(items) || items.length === 0) continue;
-      const item = items[0] as Record<string, unknown>;
-      const targetIp = (item.ip as string | undefined) || f.target || "";
-      if (targetIp !== entity.value) continue;
-      const lat = coerceFloat(item.latitude);
-      const lon = coerceFloat(item.longitude);
-      if (lat === null || lon === null) continue;
-      const parts = [
-        item.city_name as string | undefined,
-        item.region_name as string | undefined,
-        item.country_name as string | undefined,
-      ].filter((v): v is string => Boolean(v));
-      return {
-        point: { id: entity.value, lat, lon, label: entity.value },
-        location: parts.join(", ") || "Location unknown",
-      };
+    // Prefer freeipapi (richer country/region strings); fall back to ipinfo.
+    const preferredOrder: Array<"freeipapi" | "ipinfo"> = ["freeipapi", "ipinfo"];
+    for (const preferredTool of preferredOrder) {
+      for (const f of findings) {
+        if (f.tool !== preferredTool) continue;
+        const data = f.data as Record<string, unknown> | undefined;
+        const items = data?.items;
+        if (!Array.isArray(items) || items.length === 0) continue;
+        const item = items[0] as Record<string, unknown>;
+        const targetIp = (item.ip as string | undefined) || f.target || "";
+        if (targetIp !== entity.value) continue;
+        const lat = coerceFloat(item.latitude);
+        const lon = coerceFloat(item.longitude);
+        if (lat === null || lon === null) continue;
+        const parts = [
+          item.city_name as string | undefined,
+          item.region_name as string | undefined,
+          (item.country_name as string | undefined) ??
+            (item.country_code as string | undefined),
+        ].filter((v): v is string => Boolean(v));
+        return {
+          point: { id: entity.value, lat, lon, label: entity.value },
+          location: parts.join(", ") || "Location unknown",
+        };
+      }
     }
     return null;
   }, [entity, findings]);

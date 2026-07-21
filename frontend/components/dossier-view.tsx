@@ -1,11 +1,12 @@
 "use client";
 
-// v2.20.0: IP enrichment inventory. Reads existing findings (filtered for
-// tool === "freeipapi") client-side; no new API endpoint. Each finding's
-// data.items[0] carries the parsed freeipapi response (country / city /
-// lat / lon / ISP / timezone).
+// v2.20.0: IP enrichment inventory. Reads existing findings client-side;
+// no new API endpoint.
 // v2.21.0: adds Leaflet world map above the table (dynamic-imported so
 // leaflet's window-touching module load never runs on the server).
+// v2.22.0: also reads ipinfo findings — ASN / netblock / hosting-flag
+// signal that freeipapi doesn't return. Merges by IP into a single row;
+// geo columns prefer freeipapi, intel columns come from ipinfo.
 
 import { useMemo } from "react";
 import dynamic from "next/dynamic";
@@ -16,6 +17,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
 import { useFindings } from "@/lib/hooks";
 import type { Finding } from "@/lib/types";
 import type { MapPoint } from "@/components/leaflet-map";
@@ -30,43 +32,109 @@ const LeafletMap = dynamic(
   },
 );
 
+type DossierSource = "freeipapi" | "ipinfo";
+
 interface DossierEntry {
   ip: string;
   countryName: string | null;
+  countryCode: string | null;
   regionName: string | null;
   cityName: string | null;
   latitude: number | null;
   longitude: number | null;
   timeZone: string | null;
-  isProxy: boolean | null;
-  isMobile: boolean | null;
-  findingId: string;
+  hostname: string | null;
+  asn: string | null;
+  asnName: string | null;
+  orgType: string | null;
+  isProxy: boolean;
+  isMobile: boolean;
+  isVpn: boolean;
+  isTor: boolean;
+  isHosting: boolean;
+  sources: Set<DossierSource>;
   observedAt: string | null;
 }
 
-function extractDossierEntry(finding: Finding): DossierEntry | null {
-  if (finding.tool !== "freeipapi") return null;
-  const data = finding.data as Record<string, unknown> | undefined;
-  const items = data?.items;
-  if (!Array.isArray(items) || items.length === 0) return null;
-  const item = items[0] as Record<string, unknown>;
-  const ip = (item.ip as string | undefined) || finding.target || "";
-  if (!ip) return null;
-  const latitude = toFiniteFloat(item.latitude);
-  const longitude = toFiniteFloat(item.longitude);
+function emptyEntry(ip: string): DossierEntry {
   return {
     ip,
-    countryName: (item.country_name as string | null) ?? null,
-    regionName: (item.region_name as string | null) ?? null,
-    cityName: (item.city_name as string | null) ?? null,
-    latitude,
-    longitude,
-    timeZone: (item.time_zone as string | null) ?? null,
-    isProxy: (item.is_proxy as boolean | null) ?? null,
-    isMobile: (item.is_mobile as boolean | null) ?? null,
-    findingId: finding.id,
-    observedAt: finding.observed_at,
+    countryName: null,
+    countryCode: null,
+    regionName: null,
+    cityName: null,
+    latitude: null,
+    longitude: null,
+    timeZone: null,
+    hostname: null,
+    asn: null,
+    asnName: null,
+    orgType: null,
+    isProxy: false,
+    isMobile: false,
+    isVpn: false,
+    isTor: false,
+    isHosting: false,
+    sources: new Set<DossierSource>(),
+    observedAt: null,
   };
+}
+
+function mergeFinding(map: Map<string, DossierEntry>, finding: Finding): void {
+  const tool = finding.tool;
+  if (tool !== "freeipapi" && tool !== "ipinfo") return;
+  const data = finding.data as Record<string, unknown> | undefined;
+  const items = data?.items;
+  if (!Array.isArray(items) || items.length === 0) return;
+  const item = items[0] as Record<string, unknown>;
+  const ip = (item.ip as string | undefined) || finding.target || "";
+  if (!ip) return;
+
+  const entry = map.get(ip) ?? emptyEntry(ip);
+  entry.sources.add(tool);
+
+  // First-writer-wins for scalars (freeipapi runs first per the entity
+  // action chain, so its geo lands first). If ipinfo runs solo we'll
+  // still get the fields from its side.
+  entry.countryName = entry.countryName ?? asStr(item.country_name);
+  entry.countryCode = entry.countryCode ?? asStr(item.country_code);
+  entry.regionName = entry.regionName ?? asStr(item.region_name);
+  entry.cityName = entry.cityName ?? asStr(item.city_name);
+  entry.timeZone = entry.timeZone ?? asStr(item.time_zone);
+  entry.hostname = entry.hostname ?? asStr(item.hostname);
+
+  const lat = toFiniteFloat(item.latitude);
+  const lon = toFiniteFloat(item.longitude);
+  if (entry.latitude === null && lat !== null) entry.latitude = lat;
+  if (entry.longitude === null && lon !== null) entry.longitude = lon;
+
+  entry.asn = entry.asn ?? asStr(item.asn);
+  entry.asnName = entry.asnName ?? asStr(item.asn_name);
+  entry.orgType = entry.orgType ?? asStr(item.org_type);
+
+  // Flags — union across sources. Any-true wins.
+  entry.isProxy = entry.isProxy || asBool(item.is_proxy);
+  entry.isMobile = entry.isMobile || asBool(item.is_mobile);
+  entry.isVpn = entry.isVpn || asBool(item.is_vpn);
+  entry.isTor = entry.isTor || asBool(item.is_tor);
+  entry.isHosting = entry.isHosting || asBool(item.is_hosting);
+
+  const observed = finding.observed_at;
+  if (observed && (!entry.observedAt || observed > entry.observedAt)) {
+    entry.observedAt = observed;
+  }
+
+  map.set(ip, entry);
+}
+
+function asStr(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed || null;
+}
+
+function asBool(value: unknown): boolean {
+  return value === true;
 }
 
 function toFiniteFloat(value: unknown): number | null {
@@ -79,24 +147,36 @@ function toFiniteFloat(value: unknown): number | null {
 }
 
 function formatLocation(entry: DossierEntry): string {
-  const parts = [entry.cityName, entry.regionName, entry.countryName].filter(
-    (value): value is string => Boolean(value),
-  );
+  const parts = [
+    entry.cityName,
+    entry.regionName,
+    entry.countryName ?? entry.countryCode,
+  ].filter((value): value is string => Boolean(value));
   return parts.length > 0 ? parts.join(", ") : "—";
+}
+
+function formatAsn(entry: DossierEntry): string {
+  if (entry.asn && entry.asnName) return `${entry.asn} · ${entry.asnName}`;
+  return entry.asn ?? entry.asnName ?? "—";
+}
+
+function formatFlags(entry: DossierEntry): string {
+  const parts = [
+    entry.isProxy && "proxy",
+    entry.isVpn && "vpn",
+    entry.isTor && "tor",
+    entry.isMobile && "mobile",
+  ].filter((v): v is string => Boolean(v));
+  return parts.length > 0 ? parts.join(" · ") : "—";
 }
 
 export function DossierView({ slug }: { slug: string }) {
   const { data: findings = [], error, isLoading } = useFindings(slug);
 
   const entries = useMemo(() => {
-    const rows = findings
-      .map(extractDossierEntry)
-      .filter((entry): entry is DossierEntry => entry !== null);
-    const seen = new Map<string, DossierEntry>();
-    for (const row of rows) {
-      if (!seen.has(row.ip)) seen.set(row.ip, row);
-    }
-    return Array.from(seen.values()).sort((a, b) =>
+    const map = new Map<string, DossierEntry>();
+    for (const f of findings) mergeFinding(map, f);
+    return Array.from(map.values()).sort((a, b) =>
       a.ip.localeCompare(b.ip, undefined, { numeric: true }),
     );
   }, [findings]);
@@ -119,10 +199,10 @@ export function DossierView({ slug }: { slug: string }) {
       <div className="space-y-1">
         <h2 className="text-base font-medium">Dossier</h2>
         <p className="text-xs text-muted-foreground">
-          IP enrichment inventory — country, region, city, ISP, and coordinates
-          for every IP the freeipapi tool has touched in this engagement. Run
-          the <code className="font-mono">freeipapi</code> tool from Scope to
-          add an entry.
+          IP intel inventory — geo (freeipapi) plus ASN, netblock owner, and
+          hosting/VPN/proxy/Tor flags (ipinfo). One row per IP; each source
+          contributes columns it knows. Run the tools from Scope, or use the
+          quick actions on an IP entity.
         </p>
       </div>
 
@@ -153,15 +233,16 @@ export function DossierView({ slug }: { slug: string }) {
           <CardDescription>
             {isLoading
               ? "Loading findings…"
-              : `${entries.length} enriched IP${entries.length === 1 ? "" : "s"}.`}
+              : `${entries.length} IP${entries.length === 1 ? "" : "s"} — geo + intel merged across freeipapi and ipinfo.`}
           </CardDescription>
         </CardHeader>
         <CardContent>
           {entries.length === 0 && !isLoading && (
             <p className="text-sm text-muted-foreground">
-              No IP enrichments yet. Upload a freeipapi API key at
-              /settings/keys (provider=freeipapi) and dispatch the tool from
-              the Scope tab against an in-scope IP.
+              No IP enrichments yet. Upload keys at /settings/keys (providers{" "}
+              <code className="font-mono">freeipapi</code> and{" "}
+              <code className="font-mono">ipinfo</code>) and dispatch the tools
+              from the Scope tab against an in-scope IP.
             </p>
           )}
           {entries.length > 0 && (
@@ -171,9 +252,10 @@ export function DossierView({ slug }: { slug: string }) {
                   <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted-foreground">
                     <th className="px-3 py-2 w-40">IP</th>
                     <th className="px-3 py-2">Location</th>
-                    <th className="px-3 py-2 w-40">Timezone</th>
+                    <th className="px-3 py-2">ASN / Org</th>
+                    <th className="px-3 py-2 w-24">Hosting</th>
                     <th className="px-3 py-2 w-32">Coords</th>
-                    <th className="px-3 py-2 w-24">Flags</th>
+                    <th className="px-3 py-2 w-32">Flags</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -183,11 +265,39 @@ export function DossierView({ slug }: { slug: string }) {
                       className="border-b border-border/60 last:border-0"
                     >
                       <td className="px-3 py-2.5 font-mono text-xs">
-                        {entry.ip}
+                        <div>{entry.ip}</div>
+                        {entry.hostname && (
+                          <div className="text-[10px] text-muted-foreground">
+                            {entry.hostname}
+                          </div>
+                        )}
                       </td>
-                      <td className="px-3 py-2.5">{formatLocation(entry)}</td>
-                      <td className="px-3 py-2.5 text-muted-foreground">
-                        {entry.timeZone || "—"}
+                      <td className="px-3 py-2.5">
+                        <div>{formatLocation(entry)}</div>
+                        {entry.timeZone && (
+                          <div className="text-[11px] text-muted-foreground">
+                            {entry.timeZone}
+                          </div>
+                        )}
+                      </td>
+                      <td className="px-3 py-2.5 text-xs">
+                        {formatAsn(entry)}
+                      </td>
+                      <td className="px-3 py-2.5">
+                        {entry.isHosting ? (
+                          <Badge
+                            variant="outline"
+                            className="border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-200"
+                          >
+                            hosting
+                          </Badge>
+                        ) : entry.orgType ? (
+                          <Badge variant="outline" className="text-muted-foreground">
+                            {entry.orgType}
+                          </Badge>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">—</span>
+                        )}
                       </td>
                       <td className="px-3 py-2.5 font-mono text-[11px] text-muted-foreground">
                         {entry.latitude !== null && entry.longitude !== null
@@ -195,12 +305,7 @@ export function DossierView({ slug }: { slug: string }) {
                           : "—"}
                       </td>
                       <td className="px-3 py-2.5 text-xs text-muted-foreground">
-                        {[
-                          entry.isProxy ? "proxy" : null,
-                          entry.isMobile ? "mobile" : null,
-                        ]
-                          .filter(Boolean)
-                          .join(" · ") || "—"}
+                        {formatFlags(entry)}
                       </td>
                     </tr>
                   ))}
