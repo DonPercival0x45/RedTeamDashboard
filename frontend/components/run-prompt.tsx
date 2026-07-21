@@ -322,7 +322,7 @@ export function RunPrompt({
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-2">
-              <Label htmlFor="provider">Provider</Label>
+              <Label htmlFor="provider">LLM provider</Label>
               <select
                 id="provider"
                 value={provider}
@@ -337,6 +337,11 @@ export function RunPrompt({
                   </option>
                 ))}
               </select>
+              <p className="text-[10px] text-muted-foreground">
+                Model that interprets the prompt. Enrichment tools
+                (freeipapi, ipinfo, wigle) live in the Current tools card
+                above — they&apos;re dispatched by the LLM, not selected here.
+              </p>
             </div>
             <div className="space-y-2">
               <Label htmlFor="model-name">Model</Label>
