@@ -9,9 +9,11 @@ live; this endpoint is just the wiring.
 """
 from __future__ import annotations
 
+import base64
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
@@ -29,6 +31,7 @@ from app.models import (
     ScopeItem,
 )
 from app.schemas.report import ReportReadiness
+from app.services.dossier_map_render import DossierMapPoint, render_dossier_map
 from app.services.report_readiness import build_report_readiness
 
 router = APIRouter()
@@ -38,6 +41,96 @@ _env = Environment(
     loader=FileSystemLoader(str(_TEMPLATES_DIR)),
     autoescape=select_autoescape(["html"]),
 )
+
+
+@dataclass
+class _DossierEntry:
+    """One row per IP in the report's Geographic footprint section.
+    Merges freeipapi (geo) + ipinfo (ASN/hosting) — mirrors the frontend
+    DossierView shape so the report matches what the analyst sees on-screen.
+    """
+
+    ip: str
+    location: str = ""
+    asn: str = ""
+    asn_name: str = ""
+    is_hosting: bool = False
+    flags: list[str] = field(default_factory=list)
+    latitude: float | None = None
+    longitude: float | None = None
+
+
+def _build_dossier_entries(findings: list[Finding]) -> list[_DossierEntry]:
+    """Extract merged IP-intel rows from freeipapi + ipinfo findings.
+
+    Same merge semantics as ``frontend/components/dossier-view.tsx``:
+    one entry per IP, geo prefers freeipapi (richer country strings),
+    flags union across both sources.
+    """
+    entries: dict[str, _DossierEntry] = {}
+    for f in findings:
+        if f.source_tool not in ("freeipapi", "ipinfo"):
+            continue
+        items = (f.details or {}).get("items") if isinstance(f.details, dict) else None
+        if not isinstance(items, list) or not items:
+            continue
+        item = items[0]
+        if not isinstance(item, dict):
+            continue
+        ip = str(item.get("ip") or f.target or "").strip()
+        if not ip:
+            continue
+        entry = entries.setdefault(ip, _DossierEntry(ip=ip))
+
+        loc_parts = [
+            item.get("city_name"),
+            item.get("region_name"),
+            item.get("country_name") or item.get("country_code"),
+        ]
+        loc = ", ".join(str(p).strip() for p in loc_parts if p)
+        if loc and not entry.location:
+            entry.location = loc
+
+        lat = _coerce_float(item.get("latitude"))
+        lon = _coerce_float(item.get("longitude"))
+        if entry.latitude is None and lat is not None:
+            entry.latitude = lat
+        if entry.longitude is None and lon is not None:
+            entry.longitude = lon
+
+        if not entry.asn and item.get("asn"):
+            entry.asn = str(item["asn"])
+        if not entry.asn_name and item.get("asn_name"):
+            entry.asn_name = str(item["asn_name"])
+        if item.get("is_hosting") is True:
+            entry.is_hosting = True
+
+        for flag in ("is_proxy", "is_vpn", "is_tor", "is_mobile"):
+            label = flag.removeprefix("is_")
+            if item.get(flag) is True and label not in entry.flags:
+                entry.flags.append(label)
+
+    return sorted(entries.values(), key=lambda e: _ip_sort_key(e.ip))
+
+
+def _coerce_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _ip_sort_key(ip: str) -> tuple:
+    """Sort IPv4 numerically, IPv6 lexicographically. Cheap best-effort."""
+    parts = ip.split(".")
+    if len(parts) == 4:
+        try:
+            return (0, tuple(int(p) for p in parts))
+        except ValueError:
+            pass
+    return (1, ip)
 
 
 @router.get(
@@ -124,6 +217,23 @@ def engagement_report(
         ).scalars()
     )
 
+    # v2.23.0: Dossier section. Extract merged IP intel from freeipapi +
+    # ipinfo findings, render a static PNG world map with pins, and pass
+    # both to the template. Base64 data-URI keeps the image self-contained
+    # so WeasyPrint doesn't need network access during PDF generation.
+    dossier_entries = _build_dossier_entries(findings)
+    dossier_points = [
+        DossierMapPoint(lat=e.latitude, lon=e.longitude, label=e.ip)
+        for e in dossier_entries
+        if e.latitude is not None and e.longitude is not None
+    ]
+    dossier_map_png = render_dossier_map(dossier_points)
+    dossier_map_data_uri = (
+        f"data:image/png;base64,{base64.b64encode(dossier_map_png).decode('ascii')}"
+        if dossier_map_png
+        else ""
+    )
+
     template = _env.get_template("report.html")
     html = template.render(
         engagement=eng,
@@ -133,6 +243,8 @@ def engagement_report(
         approvals=approvals,
         audit=audit,
         generated_at=datetime.now(tz=UTC),
+        dossier_entries=dossier_entries,
+        dossier_map_data_uri=dossier_map_data_uri,
     )
 
     from weasyprint import HTML  # deferred: needs GTK, not available on all hosts

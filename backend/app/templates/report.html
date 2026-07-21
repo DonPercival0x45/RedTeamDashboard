@@ -188,6 +188,52 @@
     <p class="empty">No observations recorded.</p>
     {% endif %}
 
+    {% if dossier_entries %}
+    <h2>Geographic footprint</h2>
+    <p class="meta">
+      IP intel merged from freeipapi (geo) and ipinfo (ASN, hosting/VPN
+      flags). Only IPs with a validated enrichment finding appear.
+    </p>
+    {% if dossier_map_data_uri %}
+    <img
+      src="{{ dossier_map_data_uri }}"
+      alt="World map — enriched IP pins"
+      style="width: 100%; height: auto; margin: 8px 0 12px; border: 1px solid #d1d5db; border-radius: 4px;"
+    />
+    {% endif %}
+    <table>
+      <thead>
+        <tr>
+          <th style="width: 130px">IP</th>
+          <th>Location</th>
+          <th style="width: 180px">ASN · Org</th>
+          <th style="width: 90px">Hosting</th>
+          <th style="width: 120px">Flags</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for entry in dossier_entries %}
+        <tr>
+          <td style="font-family: 'DejaVu Sans Mono', monospace; font-size: 9pt;">{{ entry.ip }}</td>
+          <td>{{ entry.location or "—" }}</td>
+          <td style="font-size: 9pt;">
+            {% if entry.asn and entry.asn_name %}{{ entry.asn }} · {{ entry.asn_name }}
+            {% elif entry.asn %}{{ entry.asn }}
+            {% elif entry.asn_name %}{{ entry.asn_name }}
+            {% else %}—{% endif %}
+          </td>
+          <td>
+            {% if entry.is_hosting %}<span class="badge exclude">hosting</span>{% else %}—{% endif %}
+          </td>
+          <td class="meta" style="font-size: 9pt;">
+            {{ entry.flags | join(" · ") if entry.flags else "—" }}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+
     <h2>Findings</h2>
     {% if findings %}
     <table>
