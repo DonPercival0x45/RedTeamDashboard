@@ -18,7 +18,15 @@ import httpx
 from app.orchestrator.tools.runtime import ToolResult
 
 TIMEOUT_S = 10.0
-_ENDPOINT_TEMPLATE = "https://ipinfo.io/{ip}/json"
+# v2.24.6: ipinfo has two API surfaces the analyst-visible tokens
+# split across:
+#   Standard  https://ipinfo.io/{ip}/json           — city + region + lat/lon
+#   Lite      https://api.ipinfo.io/lite/{ip}       — country + ASN only
+# A Lite-only token gets 403 "Unknown token" on the Standard endpoint
+# and vice versa. Try Standard first (richer data); on 401/403 retry
+# against Lite. Response parser normalizes both shapes.
+_STANDARD_ENDPOINT = "https://ipinfo.io/{ip}/json"
+_LITE_ENDPOINT = "https://api.ipinfo.io/lite/{ip}"
 
 
 def ipinfo_impl(args: Mapping[str, Any]) -> ToolResult:
@@ -42,22 +50,47 @@ def ipinfo_impl(args: Mapping[str, Any]) -> ToolResult:
 
     headers = {
         "Accept": "application/json",
-        "User-Agent": "redteam-dashboard/2.22.0 (dossier)",
+        "User-Agent": "redteam-dashboard/2.24.6 (dossier)",
     }
+    params = {"token": str(api_key)}
+
+    # Try Standard first — it's the richer response (city + lat/lon).
+    # On 401/403 the token is likely a Lite-tier key; fall through to
+    # the Lite endpoint before giving up.
     try:
         response = httpx.get(
-            _ENDPOINT_TEMPLATE.format(ip=raw_ip),
+            _STANDARD_ENDPOINT.format(ip=raw_ip),
             timeout=TIMEOUT_S,
             headers=headers,
-            params={"token": str(api_key)},
+            params=params,
         )
     except httpx.HTTPError as exc:
         return ToolResult(ok=False, error=f"ipinfo request failed: {exc}")
 
+    if response.status_code in (401, 403):
+        try:
+            response = httpx.get(
+                _LITE_ENDPOINT.format(ip=raw_ip),
+                timeout=TIMEOUT_S,
+                headers=headers,
+                params=params,
+            )
+        except httpx.HTTPError as exc:
+            return ToolResult(
+                ok=False,
+                error=f"ipinfo Lite request failed after Standard rejected: {exc}",
+            )
+
     if response.status_code == 401:
         return ToolResult(
             ok=False,
-            error="ipinfo rejected the api_key (401) — check the token",
+            error="ipinfo rejected the api_key on both Standard and Lite (401) — check the token",
+        )
+    if response.status_code == 403:
+        snippet = response.text[:200] if response.text else ""
+        return ToolResult(
+            ok=False,
+            error=f"ipinfo rejected the api_key on both Standard and Lite (403): {snippet}",
         )
     if response.status_code == 429:
         return ToolResult(
@@ -87,26 +120,35 @@ def ipinfo_impl(args: Mapping[str, Any]) -> ToolResult:
 
 
 def parse_ipinfo_response(ip: str, body: Mapping[str, Any]) -> dict[str, Any]:
-    """Extract Dossier-relevant fields, normalizing free vs paid shapes.
+    """Extract Dossier-relevant fields, normalizing across ipinfo tiers.
 
-    - ``loc`` is a ``"lat,lon"`` string on all tiers; we split it.
-    - ``org`` is ``"AS15169 Google LLC"`` on free tier; we split ASN off.
-    - Paid ``asn`` object (when present) overrides the parsed ``org``.
-    - Paid ``privacy`` object flattens into per-flag booleans.
+    Three response shapes handled:
+    - Standard (free/basic): ``loc`` = "lat,lon" string, ``org`` =
+      "AS15169 Google LLC", ``city`` / ``region`` / ``timezone`` present.
+    - Paid Business/Premium: adds ``asn`` object and ``privacy`` object.
+    - Lite (``api.ipinfo.io/lite/{ip}``): flat ``asn`` string + ``as_name``
+      + ``as_domain``; ``country`` is the full name and ``country_code`` is
+      the 2-letter code; no city / lat / lon / timezone / privacy fields.
     """
     lat, lon = _split_loc(body.get("loc"))
 
+    # ASN: paid ``asn`` object > Lite flat ``asn`` string > parsed ``org``.
     asn_number: str | None = None
     asn_name: str | None = None
     asn = body.get("asn")
     if isinstance(asn, Mapping):
         asn_number = _str_or_none(asn.get("asn"))
         asn_name = _str_or_none(asn.get("name"))
+    elif isinstance(asn, str):
+        # Lite tier — ``asn`` is a bare string like "AS15169".
+        asn_number = _str_or_none(asn)
+        asn_name = _str_or_none(body.get("as_name"))
     if asn_number is None:
         asn_number, org_name = _split_org(body.get("org"))
         if asn_name is None:
             asn_name = org_name
 
+    # org_type: paid ``company.type`` > paid ``asn.type`` > Lite ``as_domain``.
     org_type: str | None = None
     company = body.get("company")
     if isinstance(company, Mapping):
@@ -121,11 +163,29 @@ def parse_ipinfo_response(ip: str, body: Mapping[str, Any]) -> dict[str, Any]:
     is_tor = _as_bool(privacy.get("tor")) if privacy else None
     is_relay = _as_bool(privacy.get("relay")) if privacy else None
 
+    # country field disambiguation:
+    # - Standard: ``country`` = 2-letter code (US), no country_name field.
+    # - Lite:     ``country`` = full name ("United States"), ``country_code`` = code.
+    country_raw = _str_or_none(body.get("country"))
+    country_code_raw = _str_or_none(body.get("country_code"))
+    if country_code_raw:
+        # Lite shape — country is the full name.
+        country_name = country_raw
+        country_code = country_code_raw
+    elif country_raw and len(country_raw) == 2 and country_raw.isupper():
+        # Standard shape — country is the 2-letter code.
+        country_name = None
+        country_code = country_raw
+    else:
+        country_name = country_raw
+        country_code = None
+
     return {
         "ip": ip,
         "source_tool": "ipinfo",
         "hostname": _str_or_none(body.get("hostname")),
-        "country_code": _str_or_none(body.get("country")),
+        "country_name": country_name,
+        "country_code": country_code,
         "region_name": _str_or_none(body.get("region")),
         "city_name": _str_or_none(body.get("city")),
         "zip_code": _str_or_none(body.get("postal")),
