@@ -81,6 +81,9 @@ def _resolve_tool_secrets(
         return {}
 
     resolved: dict[str, str] = {}
+    # v2.24.7: list of {tool, outcome} for diagnostic logging at end.
+    # `outcome` is one of: resolved | no_key | key_empty | error
+    diag: list[dict[str, str]] = []
     for spec in all_tools():
         if not spec.needs_secret:
             continue
@@ -97,14 +100,27 @@ def _resolve_tool_secrets(
                 allowed_kinds=("model_provider", "other"),
             )
         except NoProviderKeyError:
+            diag.append({"tool": spec.name, "outcome": "no_key"})
             continue
-        except Exception:  # noqa: BLE001 — resolver bugs shouldn't nuke the run
+        except Exception as exc:  # noqa: BLE001
             logger.exception(
                 "worker.tool_secret_resolve_failed", tool=spec.name
+            )
+            diag.append(
+                {"tool": spec.name, "outcome": "error", "err": str(exc)[:120]}
             )
             continue
         if key.api_key:
             resolved[spec.name] = key.api_key
+            diag.append({"tool": spec.name, "outcome": "resolved"})
+        else:
+            diag.append({"tool": spec.name, "outcome": "key_empty"})
+    logger.info(
+        "worker.tool_secrets_resolved",
+        acting_user_id=str(acting_user_id),
+        outcomes=diag,
+        resolved_tools=list(resolved.keys()),
+    )
     return resolved
 
 
