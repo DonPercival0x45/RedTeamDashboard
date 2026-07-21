@@ -1223,6 +1223,11 @@ export interface OrchestratorTool {
   risk: string; // passive | active | destructive
   target_arg: string;
   example_prompt: string;
+  // v2.24.1: true when this tool needs a BYO API key resolved from
+  // /settings/keys (freeipapi, ipinfo, wigle). The Scope-tab ToolsPanel
+  // shows a "key ready" / "needs key" pill based on this + the
+  // analyst's uploaded provider keys.
+  needs_secret?: boolean;
 }
 
 // Response from POST /tools/infer — the auto-detect upload path.

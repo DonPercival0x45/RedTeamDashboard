@@ -54,6 +54,15 @@ class OrchestratorToolRead(BaseModel):
     example_prompt: str = Field(
         description="curated one-liner for the Scope-tab Current Tools panel",
     )
+    needs_secret: bool = Field(
+        default=False,
+        description=(
+            "True when this tool requires an analyst-supplied BYO key "
+            "(freeipapi, ipinfo, wigle). The frontend badges these so "
+            "analysts know to upload the matching provider at /settings/keys "
+            "before dispatch."
+        ),
+    )
 
 
 # Curated one-liner prompts for the built-in tools. Kept next to the
@@ -82,6 +91,19 @@ _EXAMPLE_PROMPTS: dict[str, str] = {
     ),
     "service_detect": (
         "Fingerprint services on open ports for {target}."
+    ),
+    "freeipapi": (
+        "Enrich {target} via freeipapi — country, region, city, coordinates, "
+        "timezone, and proxy/mobile flags."
+    ),
+    "ipinfo": (
+        "Look up {target} via ipinfo — ASN, netblock owner, hosting/VPN/"
+        "proxy/Tor flags, and a second geo cross-check."
+    ),
+    "wigle": (
+        "Look up wifi networks near a lat/lon coordinate via WiGLE. Provide "
+        "lat + lon (usually pulled from a prior freeipapi/ipinfo enrichment) "
+        "and an optional radius_km."
     ),
 }
 
@@ -117,6 +139,7 @@ def list_orchestrator_tools(_user: CurrentUser) -> list[OrchestratorToolRead]:
                 risk=spec.risk.value,
                 target_arg=spec.target_arg,
                 example_prompt=_example_for(spec),
+                needs_secret=spec.needs_secret,
             )
         )
     # Stable ordering makes the UI reproducible across requests. Phase
