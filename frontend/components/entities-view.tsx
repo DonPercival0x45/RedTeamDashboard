@@ -138,6 +138,12 @@ const ENTITY_ACTION_CHAINS: Record<string, EntityAction[]> = {
   ],
   ip: [
     {
+      tool: "freeipapi",
+      label: "IP Enrichment",
+      prompt: (v) =>
+        `Enrich ${v} via freeipapi to look up country, region, city, ISP, coordinates, and proxy/mobile flags.`,
+    },
+    {
       tool: "portscan",
       label: "Port-scan IP",
       prompt: (v) =>
