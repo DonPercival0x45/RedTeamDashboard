@@ -217,20 +217,29 @@ def resolve_for_user(
     user_id: uuid.UUID,
     provider: str,
     key_id: uuid.UUID | None = None,
+    allowed_kinds: tuple[str, ...] = ("model_provider",),
 ) -> ResolvedProviderKey:
-    """Return the user's ``model_provider`` entry for ``provider``.
+    """Return the user's entry for ``provider``.
 
     Selection rule:
-      * ``key_id`` given — that exact entry (must be ``model_provider``,
-        belong to ``user_id``, and match ``provider``). Lets the analyst
-        pick a specific key for a run instead of always taking the MRU
-        one (roadmap #3 — "keys for specific tasks").
+      * ``key_id`` given — that exact entry (must have a kind in
+        ``allowed_kinds``, belong to ``user_id``, and match ``provider``).
+        Lets the analyst pick a specific key for a run instead of always
+        taking the MRU one (roadmap #3 — "keys for specific tasks").
       * else — the most-recently-updated entry for ``provider`` (MRU),
         the original behavior.
 
+    ``allowed_kinds`` defaults to ``("model_provider",)`` — the historical
+    behavior for LLM key lookup. Tool-secret callers (v2.24.4 worker
+    ``_resolve_tool_secrets``) pass ``("model_provider", "other")`` because
+    the ``/settings/keys`` QuickAdd auto-flips tool-secret entries
+    (freeipapi / ipinfo / wigle) to ``kind=other``. The safety story stays
+    intact: mcp_server entries are never accepted regardless of the
+    caller, and the default (LLM path) still excludes ``other``.
+
     Raises :class:`NoProviderKeyError` if none cached (or the named
-    ``key_id`` isn't a valid ``model_provider`` entry for this provider).
-    MCP-server entries are ignored — they never satisfy an LLM call.
+    ``key_id`` isn't a valid entry for this provider under the allowed
+    kinds).
     """
     provider_norm = provider.strip().lower()
 
@@ -238,7 +247,7 @@ def resolve_for_user(
         entry = get_one(redis, user_id=user_id, key_id=key_id)
         if (
             entry is None
-            or entry.get("kind") != "model_provider"
+            or entry.get("kind") not in allowed_kinds
             or (entry.get("provider") or "").lower() != provider_norm
         ):
             raise NoProviderKeyError(user_id=user_id, provider=provider_norm)
@@ -255,7 +264,7 @@ def resolve_for_user(
 
     candidates: list[dict[str, Any]] = []
     for entry in list_all(redis, user_id=user_id):
-        if entry.get("kind") != "model_provider":
+        if entry.get("kind") not in allowed_kinds:
             continue
         if (entry.get("provider") or "").lower() != provider_norm:
             continue

@@ -85,8 +85,16 @@ def _resolve_tool_secrets(
         if not spec.needs_secret:
             continue
         try:
+            # v2.24.4: tool secrets are stored under kind=other because
+            # QuickAddKey auto-flips the Kind selector when the analyst
+            # picks a tool_secret preset (freeipapi/ipinfo/wigle). The
+            # resolver's default LLM-only filter would silently skip
+            # them, so pass ``other`` explicitly.
             key = resolve_for_user(
-                redis_client, user_id=user_uuid, provider=spec.name
+                redis_client,
+                user_id=user_uuid,
+                provider=spec.name,
+                allowed_kinds=("model_provider", "other"),
             )
         except NoProviderKeyError:
             continue
