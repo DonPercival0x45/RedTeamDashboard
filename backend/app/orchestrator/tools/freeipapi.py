@@ -17,7 +17,11 @@ import httpx
 from app.orchestrator.tools.runtime import ToolResult
 
 TIMEOUT_S = 10.0
-_ENDPOINT_TEMPLATE = "https://api.freeipapi.com/api/json/{ip}"
+# v2.24.5: hostname corrected. `api.freeipapi.com` (v2.20 → v2.24.4)
+# never resolved — freeipapi.com redirects to `free.freeipapi.com`,
+# which is the real host. Every prior freeipapi call in prod failed
+# silently with "Name or service not known".
+_ENDPOINT_TEMPLATE = "https://free.freeipapi.com/api/json/{ip}"
 
 
 def freeipapi_impl(args: Mapping[str, Any]) -> ToolResult:
