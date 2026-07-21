@@ -293,8 +293,8 @@ export function QuickAddKey({
           <p className="mt-1 text-[11px] text-muted-foreground">
             Stored per-analyst; the built-in{" "}
             <code className="font-mono">{presetSlug}</code> tool auto-injects
-            it at dispatch. Kind is set to <em>other</em> because there's no
-            LLM catalog to sync.
+            it at dispatch. Kind is set to <em>other</em> because there is
+            no LLM catalog to sync.
           </p>
         )}
       </div>
