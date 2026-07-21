@@ -3,13 +3,12 @@
 // v2.20.0: IP enrichment inventory. Reads existing findings (filtered for
 // tool === "freeipapi") client-side; no new API endpoint. Each finding's
 // data.items[0] carries the parsed freeipapi response (country / city /
-// lat / lon / ISP / timezone). Table-only in v2.20; the Leaflet map lands
-// in v2.21 alongside the entity slideover thumbnail (deferred out of
-// v2.20 because the npm install hit an IPv6-only registry endpoint on
-// the analyst's network and we chose to ship the load-bearing enrichment
-// data first).
+// lat / lon / ISP / timezone).
+// v2.21.0: adds Leaflet world map above the table (dynamic-imported so
+// leaflet's window-touching module load never runs on the server).
 
 import { useMemo } from "react";
+import dynamic from "next/dynamic";
 import {
   Card,
   CardContent,
@@ -19,6 +18,17 @@ import {
 } from "@/components/ui/card";
 import { useFindings } from "@/lib/hooks";
 import type { Finding } from "@/lib/types";
+import type { MapPoint } from "@/components/leaflet-map";
+
+const LeafletMap = dynamic(
+  () => import("@/components/leaflet-map").then((m) => m.LeafletMap),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="h-[360px] w-full animate-pulse rounded-lg bg-muted/40" />
+    ),
+  },
+);
 
 interface DossierEntry {
   ip: string;
@@ -91,6 +101,19 @@ export function DossierView({ slug }: { slug: string }) {
     );
   }, [findings]);
 
+  const mapPoints = useMemo<MapPoint[]>(
+    () =>
+      entries
+        .filter((e) => e.latitude !== null && e.longitude !== null)
+        .map((e) => ({
+          id: e.ip,
+          lat: e.latitude as number,
+          lon: e.longitude as number,
+          label: `${e.ip} — ${formatLocation(e)}`,
+        })),
+    [entries],
+  );
+
   return (
     <div className="space-y-6">
       <div className="space-y-1">
@@ -99,7 +122,7 @@ export function DossierView({ slug }: { slug: string }) {
           IP enrichment inventory — country, region, city, ISP, and coordinates
           for every IP the freeipapi tool has touched in this engagement. Run
           the <code className="font-mono">freeipapi</code> tool from Scope to
-          add an entry. World map lands in v2.21.
+          add an entry.
         </p>
       </div>
 
@@ -107,6 +130,21 @@ export function DossierView({ slug }: { slug: string }) {
         <p className="text-sm text-critical">
           {error instanceof Error ? error.message : String(error)}
         </p>
+      )}
+
+      {mapPoints.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">World map</CardTitle>
+            <CardDescription>
+              {mapPoints.length} IP{mapPoints.length === 1 ? "" : "s"} with
+              coordinates. OpenStreetMap tiles.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <LeafletMap points={mapPoints} height={360} />
+          </CardContent>
+        </Card>
       )}
 
       <Card>

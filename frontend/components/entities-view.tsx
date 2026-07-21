@@ -1,9 +1,23 @@
 "use client";
 
 import { useMemo, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useQueryClient } from "@tanstack/react-query";
 import { Check, Layers, RotateCcw, Search, Trash2, Upload, X, Zap } from "lucide-react";
+import type { MapPoint } from "@/components/leaflet-map";
+
+// v2.21.0: thumbnail map for IP-type entities. Dynamic-imported (ssr:false)
+// so leaflet's window-touching module load never runs on the server.
+const LeafletMap = dynamic(
+  () => import("@/components/leaflet-map").then((m) => m.LeafletMap),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="h-[180px] w-full animate-pulse rounded-lg bg-muted/40" />
+    ),
+  },
+);
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -870,6 +884,50 @@ function ImportedEntitiesSection({ slug }: { slug: string }) {
 }
 
 
+// v2.21.0: pull lat/lon out of a freeipapi finding whose target matches
+// this IP entity. Returns null if the entity isn't an IP, or if no
+// enrichment has been run against it yet, or the enrichment lacks coords.
+function useIpThumbnailPoint(
+  entity: Entity,
+  slug: string,
+): { point: MapPoint; location: string } | null {
+  const { data: findings = [] } = useFindings(slug);
+  return useMemo(() => {
+    if (entity.type !== "ip") return null;
+    for (const f of findings) {
+      if (f.tool !== "freeipapi") continue;
+      const data = f.data as Record<string, unknown> | undefined;
+      const items = data?.items;
+      if (!Array.isArray(items) || items.length === 0) continue;
+      const item = items[0] as Record<string, unknown>;
+      const targetIp = (item.ip as string | undefined) || f.target || "";
+      if (targetIp !== entity.value) continue;
+      const lat = coerceFloat(item.latitude);
+      const lon = coerceFloat(item.longitude);
+      if (lat === null || lon === null) continue;
+      const parts = [
+        item.city_name as string | undefined,
+        item.region_name as string | undefined,
+        item.country_name as string | undefined,
+      ].filter((v): v is string => Boolean(v));
+      return {
+        point: { id: entity.value, lat, lon, label: entity.value },
+        location: parts.join(", ") || "Location unknown",
+      };
+    }
+    return null;
+  }, [entity, findings]);
+}
+
+function coerceFloat(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const parsed = parseFloat(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
 function EntitySlideOver({
   entity,
   slug,
@@ -889,6 +947,7 @@ function EntitySlideOver({
   // with a check so the analyst sees what's left.
   const chain = ENTITY_ACTION_CHAINS[entity.type] ?? [];
   const nextStep = chain.find((a) => a.tool && !doneTools.has(a.tool));
+  const ipThumbnail = useIpThumbnailPoint(entity, slug);
   return (
     <>
       <div className="fixed inset-0 z-40 bg-black/60" onClick={onClose} aria-hidden />
@@ -928,6 +987,24 @@ function EntitySlideOver({
             Open full entity view →
           </Link>
         </div>
+
+        {ipThumbnail && (
+          <div className="mt-4 space-y-2">
+            <div className="text-xs uppercase tracking-wide text-muted-foreground">
+              Geolocation
+            </div>
+            <LeafletMap
+              points={[ipThumbnail.point]}
+              height={180}
+              interactive={false}
+              initialZoom={4}
+            />
+            <p className="text-xs text-muted-foreground">
+              {ipThumbnail.location} · {ipThumbnail.point.lat.toFixed(4)},{" "}
+              {ipThumbnail.point.lon.toFixed(4)}
+            </p>
+          </div>
+        )}
 
         {onQuickAction && chain.length > 0 && (
           <div className="mt-4 space-y-2">
