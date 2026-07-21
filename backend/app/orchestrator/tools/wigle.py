@@ -35,7 +35,10 @@ def wigle_impl(args: Mapping[str, Any]) -> ToolResult:
     if lat is None or lon is None:
         return ToolResult(
             ok=False,
-            error="wigle needs both 'lat' and 'lon' args (floats) — supply from a prior freeipapi/ipinfo enrichment",
+            error=(
+                "wigle needs both 'lat' and 'lon' args (floats) — supply "
+                "from a prior freeipapi/ipinfo enrichment"
+            ),
         )
     if not -90.0 <= lat <= 90.0 or not -180.0 <= lon <= 180.0:
         return ToolResult(ok=False, error=f"lat/lon out of range: ({lat}, {lon})")
@@ -112,9 +115,10 @@ def wigle_impl(args: Mapping[str, Any]) -> ToolResult:
         )
 
     if body.get("success") is False:
+        msg = body.get("message") or body.get("error") or "no message"
         return ToolResult(
             ok=False,
-            error=f"wigle success=false: {body.get('message') or body.get('error') or 'no message'}",
+            error=f"wigle success=false: {msg}",
         )
 
     return ToolResult(
