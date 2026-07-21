@@ -906,6 +906,63 @@ async def reverse_dns(ip: str, engagement_slug: str = "") -> dict:
     return await _run_osint_async("reverse_dns", engagement_slug, {"ip": ip})
 
 
+@mcp.tool()
+async def freeipapi(ip: str, engagement_slug: str = "") -> dict:
+    """[PASSIVE] IP geolocation enrichment via freeipapi.com.
+
+    Third-party API call — no traffic touches the target. Returns country,
+    region, city, latitude/longitude, timezone, and proxy/mobile flags.
+    Feeds the Dossier tab's map + entity slideover thumbnail.
+
+    Requires an analyst-uploaded freeipapi token at /settings/keys
+    (provider='freeipapi'); short-circuits with a pointer if missing.
+    Findings are automatically stored in the engagement.
+    """
+    return await _run_osint_async("freeipapi", engagement_slug, {"ip": ip})
+
+
+@mcp.tool()
+async def ipinfo(ip: str, engagement_slug: str = "") -> dict:
+    """[PASSIVE] IP intel enrichment via ipinfo.io.
+
+    Third-party API call — no traffic touches the target. Returns ASN,
+    netblock owner, hosting/VPN/proxy/Tor flags, and a second geo signal
+    that cross-checks freeipapi. Complements freeipapi in the Dossier tab.
+
+    Requires an analyst-uploaded ipinfo token at /settings/keys
+    (provider='ipinfo'); short-circuits with a pointer if missing.
+    Findings are automatically stored in the engagement.
+    """
+    return await _run_osint_async("ipinfo", engagement_slug, {"ip": ip})
+
+
+@mcp.tool()
+async def wigle(
+    lat: float,
+    lon: float,
+    radius_km: float = 0.5,
+    engagement_slug: str = "",
+) -> dict:
+    """[PASSIVE] WiGLE.net wifi network lookup near a lat/lon coordinate.
+
+    Third-party API call. Returns known SSIDs / BSSIDs / encryption /
+    channel for wifi networks in a bounding box around (lat, lon).
+    Typical flow: run freeipapi or ipinfo on an in-scope IP first, then
+    pass the resulting lat/lon to this tool. Radius defaults to 0.5 km,
+    capped at 50 km.
+
+    Requires an analyst-uploaded WiGLE credential pair at /settings/keys
+    (provider='wigle', value=JSON blob with name+token); short-circuits
+    with a pointer if missing. Findings feed the Dossier tab's Nearby
+    wifi networks card.
+    """
+    return await _run_osint_async(
+        "wigle",
+        engagement_slug,
+        {"lat": lat, "lon": lon, "radius_km": radius_km},
+    )
+
+
 # ---------------------------------------------------------------------------
 # OSINT tools — active (always confirm with analyst before calling)
 # ---------------------------------------------------------------------------
