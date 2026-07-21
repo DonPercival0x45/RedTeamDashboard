@@ -150,6 +150,12 @@ const ENTITY_ACTION_CHAINS: Record<string, EntityAction[]> = {
         `Look up ${v} via ipinfo to get ASN, netblock owner, org type, and hosting/VPN/proxy/Tor flags. Complements freeipapi's geo with netblock and infra signal.`,
     },
     {
+      tool: "wigle",
+      label: "Wifi networks nearby",
+      prompt: (v) =>
+        `Look up wifi networks near ${v}'s geographic location using wigle. If ${v} hasn't been enriched yet, first run freeipapi or ipinfo on it to obtain lat/lon, then dispatch wigle with those coordinates and a small radius (default 0.5 km).`,
+    },
+    {
       tool: "portscan",
       label: "Port-scan IP",
       prompt: (v) =>

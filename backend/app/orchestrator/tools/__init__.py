@@ -166,6 +166,39 @@ _PHASE_0_TOOLS: tuple[ToolSpec, ...] = (
         needs_secret=True,
     ),
     ToolSpec(
+        name="wigle",
+        risk=RiskLevel.passive,
+        target_arg="lat",
+        kind=ScopeKind.ip,
+        description=(
+            "WiGLE.net wifi network lookup — returns known SSIDs / BSSIDs / "
+            "encryption / channel for wifi networks near a given lat/lon "
+            "coordinate. Typical flow: run freeipapi or ipinfo on an "
+            "in-scope IP first, then dispatch wigle with the resulting "
+            "lat/lon (and optional radius_km, default 0.5km). Passive "
+            "third-party API call. Requires an analyst-supplied WiGLE "
+            "credentials pair (upload as JSON at /settings/keys with "
+            "provider='wigle' and value='{\"name\": \"AID...\", \"token\": \"...\"}' "
+            "— get both at https://wigle.net/account). Response feeds the "
+            "Dossier tab's Nearby wifi networks card."
+        ),
+        needs_secret=True,
+        extra_properties={
+            "lon": {
+                "type": "number",
+                "description": "Longitude of the search center (WGS84). Required.",
+            },
+            "radius_km": {
+                "type": "number",
+                "description": (
+                    "Optional. Search radius in kilometers around (lat, lon). "
+                    "Default 0.5, capped at 50 to respect the free-tier "
+                    "5000/day query limit."
+                ),
+            },
+        },
+    ),
+    ToolSpec(
         name="service_detect",
         risk=RiskLevel.active,
         target_arg="target",
@@ -210,6 +243,7 @@ _TOOL_PHASE: dict[str, str] = {
     "reverse_dns": "osint",
     "freeipapi": "osint",
     "ipinfo": "osint",
+    "wigle": "osint",
     "portscan": "vuln_scan",
     "subnet_sweep": "vuln_scan",
     "service_detect": "vuln_scan",

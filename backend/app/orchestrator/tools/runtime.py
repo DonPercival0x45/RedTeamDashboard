@@ -41,6 +41,7 @@ from app.orchestrator.tools.service_detect import service_detect_impl  # noqa: E
 from app.orchestrator.tools.subfinder import subfinder_impl  # noqa: E402
 from app.orchestrator.tools.subnet_sweep import subnet_sweep_impl  # noqa: E402
 from app.orchestrator.tools.whois_lookup import whois_lookup_impl  # noqa: E402
+from app.orchestrator.tools.wigle import wigle_impl  # noqa: E402
 
 IMPLEMENTATIONS: dict[str, ToolImpl] = {
     "subfinder": subfinder_impl,
@@ -54,6 +55,7 @@ IMPLEMENTATIONS: dict[str, ToolImpl] = {
     "portscan": portscan_impl,
     "subnet_sweep": subnet_sweep_impl,
     "service_detect": service_detect_impl,
+    "wigle": wigle_impl,
 }
 
 

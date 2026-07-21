@@ -7,6 +7,9 @@
 // v2.22.0: also reads ipinfo findings — ASN / netblock / hosting-flag
 // signal that freeipapi doesn't return. Merges by IP into a single row;
 // geo columns prefer freeipapi, intel columns come from ipinfo.
+// v2.24.0: adds a "Nearby wifi networks" card below the intel table,
+// populated from wigle findings. Each wigle finding = one collapsible
+// section per geo bucket; inner table lists SSID / BSSID / enc / channel.
 
 import { useMemo } from "react";
 import dynamic from "next/dynamic";
@@ -170,6 +173,94 @@ function formatFlags(entry: DossierEntry): string {
   return parts.length > 0 ? parts.join(" · ") : "—";
 }
 
+// v2.24.0: wigle wifi-network view. Each wigle finding becomes one section
+// keyed by its geo bucket; the finding's data.items[] carries the per-BSSID
+// records the analyst wants to browse.
+interface WifiNetwork {
+  bssid: string;
+  ssid: string | null;
+  encryption: string | null;
+  channel: number | null;
+  lastSeen: string | null;
+  city: string | null;
+  country: string | null;
+}
+
+interface WifiGroup {
+  findingId: string;
+  lat: number | null;
+  lon: number | null;
+  radiusKm: number | null;
+  observedAt: string | null;
+  networks: WifiNetwork[];
+  nearestIp: string | null;
+  nearestLocation: string | null;
+}
+
+function extractWifiGroups(
+  findings: Finding[],
+  enrichedIps: DossierEntry[],
+): WifiGroup[] {
+  const groups: WifiGroup[] = [];
+  for (const f of findings) {
+    if (f.tool !== "wigle") continue;
+    const data = f.data as Record<string, unknown> | undefined;
+    const items = data?.items;
+    if (!Array.isArray(items) || items.length === 0) continue;
+    const lat = toFiniteFloat(data?.lat);
+    const lon = toFiniteFloat(data?.lon);
+    const radiusKm = toFiniteFloat(data?.radius_km);
+    const nearest = nearestEnrichedIp(lat, lon, enrichedIps);
+    groups.push({
+      findingId: f.id,
+      lat,
+      lon,
+      radiusKm,
+      observedAt: f.observed_at,
+      nearestIp: nearest?.ip ?? null,
+      nearestLocation: nearest ? formatLocation(nearest) : null,
+      networks: items
+        .map((it): WifiNetwork | null => {
+          const item = it as Record<string, unknown>;
+          const bssid = typeof item.bssid === "string" ? item.bssid.trim() : "";
+          if (!bssid) return null;
+          return {
+            bssid,
+            ssid: typeof item.ssid === "string" ? item.ssid : null,
+            encryption:
+              typeof item.encryption === "string" ? item.encryption : null,
+            channel:
+              typeof item.channel === "number" ? item.channel : null,
+            lastSeen:
+              typeof item.last_updated === "string" ? item.last_updated : null,
+            city: typeof item.city === "string" ? item.city : null,
+            country: typeof item.country === "string" ? item.country : null,
+          };
+        })
+        .filter((n): n is WifiNetwork => n !== null),
+    });
+  }
+  return groups.sort((a, b) => (b.observedAt ?? "").localeCompare(a.observedAt ?? ""));
+}
+
+function nearestEnrichedIp(
+  lat: number | null,
+  lon: number | null,
+  entries: DossierEntry[],
+): DossierEntry | null {
+  if (lat === null || lon === null) return null;
+  let best: { entry: DossierEntry; dist: number } | null = null;
+  for (const e of entries) {
+    if (e.latitude === null || e.longitude === null) continue;
+    const dLat = e.latitude - lat;
+    const dLon = e.longitude - lon;
+    const dist = Math.sqrt(dLat * dLat + dLon * dLon);
+    // ~0.5 degree ≈ 55km at equator — permissive so a rough geo still matches.
+    if (dist < 0.5 && (!best || dist < best.dist)) best = { entry: e, dist };
+  }
+  return best?.entry ?? null;
+}
+
 export function DossierView({ slug }: { slug: string }) {
   const { data: findings = [], error, isLoading } = useFindings(slug);
 
@@ -192,6 +283,11 @@ export function DossierView({ slug }: { slug: string }) {
           label: `${e.ip} — ${formatLocation(e)}`,
         })),
     [entries],
+  );
+
+  const wifiGroups = useMemo(
+    () => extractWifiGroups(findings, entries),
+    [findings, entries],
   );
 
   return (
@@ -315,6 +411,87 @@ export function DossierView({ slug }: { slug: string }) {
           )}
         </CardContent>
       </Card>
+
+      {wifiGroups.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Nearby wifi networks</CardTitle>
+            <CardDescription>
+              WiGLE.net lookups near enriched IPs. Each section is one geo
+              query — expand to see BSSIDs, SSIDs, encryption, and channel.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {wifiGroups.map((g) => (
+              <details
+                key={g.findingId}
+                className="rounded-lg border border-border"
+                open={wifiGroups.length === 1}
+              >
+                <summary className="cursor-pointer list-none px-3 py-2 text-sm hover:bg-muted/40">
+                  <div className="flex flex-wrap items-baseline gap-2">
+                    <span className="font-medium">
+                      {g.nearestIp
+                        ? `Near ${g.nearestIp}`
+                        : g.lat !== null && g.lon !== null
+                          ? `Near ${g.lat.toFixed(4)}, ${g.lon.toFixed(4)}`
+                          : "Near unknown coord"}
+                    </span>
+                    <Badge variant="outline" className="text-muted-foreground">
+                      {g.networks.length} network{g.networks.length === 1 ? "" : "s"}
+                    </Badge>
+                    {g.nearestLocation && (
+                      <span className="text-xs text-muted-foreground">
+                        {g.nearestLocation}
+                      </span>
+                    )}
+                    {g.radiusKm !== null && (
+                      <span className="text-[11px] text-muted-foreground">
+                        · radius {g.radiusKm.toFixed(2)} km
+                      </span>
+                    )}
+                  </div>
+                </summary>
+                <div className="overflow-x-auto border-t border-border">
+                  <table className="w-full border-collapse text-sm">
+                    <thead>
+                      <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted-foreground">
+                        <th className="px-3 py-2">SSID</th>
+                        <th className="px-3 py-2 w-44">BSSID</th>
+                        <th className="px-3 py-2 w-24">Enc</th>
+                        <th className="px-3 py-2 w-16">Ch</th>
+                        <th className="px-3 py-2 w-32">Last seen</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {g.networks.map((n) => (
+                        <tr
+                          key={n.bssid}
+                          className="border-b border-border/60 last:border-0"
+                        >
+                          <td className="px-3 py-2">
+                            {n.ssid || <span className="text-muted-foreground">—</span>}
+                          </td>
+                          <td className="px-3 py-2 font-mono text-[11px] text-muted-foreground">
+                            {n.bssid}
+                          </td>
+                          <td className="px-3 py-2 text-xs">{n.encryption || "—"}</td>
+                          <td className="px-3 py-2 text-xs text-muted-foreground">
+                            {n.channel ?? "—"}
+                          </td>
+                          <td className="px-3 py-2 text-[11px] text-muted-foreground">
+                            {n.lastSeen || "—"}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </details>
+            ))}
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }

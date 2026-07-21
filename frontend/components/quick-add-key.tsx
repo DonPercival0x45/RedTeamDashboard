@@ -56,6 +56,7 @@ export function QuickAddKey({
   );
   const isCustom = presetSlug === CUSTOM_VALUE;
   const isMcp = kind === "mcp_server";
+  const isToolSecret = preset?.kind === "tool_secret";
   const effectiveProvider = isCustom
     ? customProvider.trim().toLowerCase()
     : presetSlug;
@@ -189,16 +190,36 @@ export function QuickAddKey({
               setPresetSlug(e.target.value);
               const p = PROVIDER_PRESETS.find((x) => x.slug === e.target.value);
               setEndpoint(p?.endpoint ?? "");
+              // v2.24.1: auto-flip Kind when the picked preset is a tool
+              // secret (freeipapi/ipinfo/wigle) — analysts shouldn't have
+              // to remember to flip both. The 'other' kind stores the key
+              // as-is; the backend resolver keys by provider slug so it
+              // still gets picked up by the tool dispatcher.
+              if (p?.kind === "tool_secret") setKind("other");
+              else if (kind === "other") setKind("model_provider");
             }}
             disabled={submitting}
             className="mt-1 w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm"
           >
-            {PROVIDER_PRESETS.map((p) => (
-              <option key={p.slug} value={p.slug}>
-                {p.label}
-              </option>
-            ))}
-            <option value={CUSTOM_VALUE}>Custom…</option>
+            <optgroup label="LLM providers">
+              {PROVIDER_PRESETS.filter(
+                (p) => (p.kind ?? "model_provider") === "model_provider",
+              ).map((p) => (
+                <option key={p.slug} value={p.slug}>
+                  {p.label}
+                </option>
+              ))}
+              <option value={CUSTOM_VALUE}>Custom…</option>
+            </optgroup>
+            <optgroup label="Enrichment tools (BYO API keys)">
+              {PROVIDER_PRESETS.filter(
+                (p) => p.kind === "tool_secret",
+              ).map((p) => (
+                <option key={p.slug} value={p.slug}>
+                  {p.label}
+                </option>
+              ))}
+            </optgroup>
           </select>
         </div>
         <div>
@@ -249,6 +270,33 @@ export function QuickAddKey({
           disabled={submitting}
           className="mt-1 font-mono"
         />
+        {preset?.keyHint && (
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            {preset.keyHint}
+            {preset.signupUrl && (
+              <>
+                {" "}
+                <a
+                  href={preset.signupUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="underline hover:text-foreground"
+                >
+                  Get it here
+                </a>
+                .
+              </>
+            )}
+          </p>
+        )}
+        {isToolSecret && (
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            Stored per-analyst; the built-in{" "}
+            <code className="font-mono">{presetSlug}</code> tool auto-injects
+            it at dispatch. Kind is set to <em>other</em> because there's no
+            LLM catalog to sync.
+          </p>
+        )}
       </div>
 
       {showEndpoint && (

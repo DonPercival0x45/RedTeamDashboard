@@ -19,6 +19,17 @@ export interface ProviderPreset {
   /** Default model names. Shown in the RunPrompt dropdown's "Defaults"
    *  optgroup; offered as presets in the Keys-tab Quick Add form. */
   modelsDefault?: string[];
+  /** What this preset is FOR. Defaults to model_provider; tool_secret
+   *  entries are built-in tools that need a BYO API key (freeipapi,
+   *  ipinfo, wigle). Only Quick Add / the key list see tool_secret
+   *  presets — LLM surfaces (RunPrompt, default-model-card) filter
+   *  them out. */
+  kind?: "model_provider" | "tool_secret";
+  /** Optional per-preset hint rendered under the API-key field in
+   *  Quick Add. Used by wigle to explain the 2-credential JSON blob. */
+  keyHint?: string;
+  /** Where to send analysts to obtain the credentials. */
+  signupUrl?: string;
 }
 
 export const PROVIDER_PRESETS: ProviderPreset[] = [
@@ -95,6 +106,34 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     label: "Custom (OpenAI-compatible)",
     isLocal: false,
     endpointRequired: true,
+  },
+  // Tool-secret providers (v2.20 → v2.24). Not LLMs — these are BYO API
+  // keys for built-in enrichment tools. Only the Keys quick-add surface
+  // renders them; LLM dropdowns filter by kind.
+  {
+    slug: "freeipapi",
+    label: "freeipapi (IP geo)",
+    isLocal: false,
+    kind: "tool_secret",
+    keyHint: "Paste the token string alone — the tool adds it as Authorization: Bearer.",
+    signupUrl: "https://freeipapi.com",
+  },
+  {
+    slug: "ipinfo",
+    label: "ipinfo (ASN + hosting)",
+    isLocal: false,
+    kind: "tool_secret",
+    keyHint: "Paste the token string alone — the tool appends ?token=<key>.",
+    signupUrl: "https://ipinfo.io/account/token",
+  },
+  {
+    slug: "wigle",
+    label: "WiGLE (wifi networks)",
+    isLocal: false,
+    kind: "tool_secret",
+    keyHint:
+      'Paste as JSON: {"name":"AID...","token":"..."} — WiGLE needs both credentials.',
+    signupUrl: "https://wigle.net/account",
   },
 ];
 

@@ -197,6 +197,18 @@ def compute_group_key(
             return None
         return f"ip_intel:{ip}"
 
+    if tool == "wigle":
+        # v2.24.0: wifi networks near a geo coord. Bucket at 1 decimal place
+        # (~11km) so re-runs at "the same neighborhood" land in one row and
+        # merge new BSSIDs in via the enrichment path. Fresh BSSIDs on
+        # re-scan get appended; existing ones dedup on bssid.
+        try:
+            lat = float(data.get("lat") if data.get("lat") is not None else args.get("lat"))
+            lon = float(data.get("lon") if data.get("lon") is not None else args.get("lon"))
+        except (TypeError, ValueError):
+            return None
+        return f"wifi_networks:{lat:.1f}:{lon:.1f}"
+
     if tool == "httpx_probe":
         # One row per response bucket per apex — 200s under one row,
         # 4xx/5xx broken out. Lets the analyst scan the reachable
@@ -363,6 +375,15 @@ def extract_items(
         # freeipapi — re-runs enrich the existing row.
         return [dict(data)]
 
+    if tool == "wigle":
+        # v2.24.0: fan out one item per wifi network in the response.
+        # Re-runs at the same coord dedup on bssid via item_dedup_key,
+        # so new networks discovered between scans just append.
+        nets = data.get("networks") or []
+        if not isinstance(nets, list):
+            return []
+        return [dict(n) for n in nets if isinstance(n, dict) and n.get("bssid")]
+
     if tool == "httpx_probe":
         return [
             {
@@ -478,6 +499,10 @@ def item_dedup_key(tool: str | None, item: Mapping[str, Any]) -> str:
     if tool == "ipinfo":
         # v2.22.0: same dedup story as freeipapi — one item per IP.
         return str(item.get("ip") or "").strip()
+    if tool == "wigle":
+        # v2.24.0: BSSID uniquely identifies a wifi radio. Re-runs surface
+        # the same BSSID → dedup; new BSSIDs → append.
+        return str(item.get("bssid") or "").strip().lower()
     if tool == "httpx_probe":
         return str(item.get("url") or item.get("final_url") or "").lower()
     if tool in ("portscan", "subnet_sweep"):
@@ -533,6 +558,11 @@ def group_title(tool: str | None, group_key: str, data: Mapping[str, Any] | None
     if tool == "ipinfo":
         ip = group_key.split(":", 1)[-1]
         return f"IP intel — {ip}"
+    if tool == "wigle":
+        # group_key = wifi_networks:{lat}:{lon}
+        parts = group_key.split(":")
+        coord = ",".join(parts[1:3]) if len(parts) >= 3 else "?"
+        return f"Wifi networks near {coord}"
     if tool == "httpx_probe":
         # httpx:<apex>:<bucket>
         parts = group_key.split(":", 2)
@@ -858,6 +888,12 @@ def _representative_target(tool: str | None, group_key: str, data: Mapping[str, 
         return str(data.get("ip") or "").strip() or None
     if tool == "ipinfo":
         return str(data.get("ip") or "").strip() or None
+    if tool == "wigle":
+        lat = data.get("lat")
+        lon = data.get("lon")
+        if lat is not None and lon is not None:
+            return f"{lat},{lon}"
+        return None
     if tool in ("subfinder", "crt_sh", "dns_lookup", "whois_lookup"):
         # The apex domain out of the group key.
         return group_key.split(":", 1)[-1]
