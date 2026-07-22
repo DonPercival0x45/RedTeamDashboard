@@ -224,5 +224,18 @@ class Settings(BaseSettings):
     engagement_strategist_cooldown_seconds: int = 60
     engagement_strategist_daily_cost_limit_usd: float = 10.0
 
+    # Architecture v3, step 1 — Engagement Memory. Soft ceiling on the sum of
+    # token_estimate across an engagement's HOT memory elements. Exceeding it
+    # makes a compaction pass eligible on the next milestone (never mid-run).
+    hot_memory_token_budget: int = 10000
+    # Deterministic-compaction staleness windows (agent-driven folds are
+    # separate). Threads with no activity for this many days demote hot->cold;
+    # low-confidence facts not referenced within the window demote too.
+    memory_thread_stale_days: int = 14
+    memory_fact_stale_days: int = 30
+    # A fact below this confidence is eligible for staleness demotion (only
+    # when also unreferenced past memory_fact_stale_days).
+    memory_low_confidence_threshold: float = 0.5
+
 
 settings = Settings()

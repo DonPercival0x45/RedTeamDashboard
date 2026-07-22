@@ -64,6 +64,15 @@ from app.models.finding import (
 from app.models.finding_summary import FindingSummary
 from app.models.integration import Integration, IntegrationPurpose, IntegrationType
 from app.models.mcp_lease import MCPLease, MCPLeaseStatus
+from app.models.memory import (
+    MemoryElement,
+    MemoryKind,
+    MemoryLink,
+    MemoryLinkRelation,
+    MemoryLinkTargetType,
+    MemoryStatus,
+    MemoryTier,
+)
 from app.models.observation import Observation
 from app.models.observation_finding_link import ObservationFindingLink
 from app.models.processing_receipt import ProcessingReceipt, ProcessingReceiptStatus
@@ -136,6 +145,13 @@ __all__ = [
     "IntegrationType",
     "MCPLease",
     "MCPLeaseStatus",
+    "MemoryElement",
+    "MemoryKind",
+    "MemoryLink",
+    "MemoryLinkRelation",
+    "MemoryLinkTargetType",
+    "MemoryStatus",
+    "MemoryTier",
     "ObjectivePriority",
     "ObjectiveStatus",
     "Observation",
