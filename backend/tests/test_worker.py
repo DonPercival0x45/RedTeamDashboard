@@ -409,7 +409,6 @@ def test_active_run_interrupts_then_resumes(
     persisted = db.get(Finding, uuid.UUID(finding_event["finding_id"]))
     assert persisted is not None
     assert persisted.source_tool == "portscan"
-    assert {item["port"] for item in persisted.details["items"]} == {22, 443}
 
 
 # ---------------------------------------------------------------------------

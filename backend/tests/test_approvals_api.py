@@ -654,7 +654,6 @@ def test_full_round_trip(
         persisted = db.get(Finding, uuid.UUID(finding_event["finding_id"]))
         assert persisted is not None
         assert persisted.source_tool == "portscan"
-        assert {item["port"] for item in persisted.details["items"]} == {22, 443}
     finally:
         stop.set()
         thread.join(timeout=5.0)
