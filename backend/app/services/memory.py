@@ -26,7 +26,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import structlog
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -43,6 +43,20 @@ from app.models.memory import (
 )
 
 logger = structlog.get_logger(__name__)
+
+
+class StaleMemoryElement(Exception):
+    """Raised by ``edit_element`` when ``expected_version`` no longer matches
+    the row — another writer edited it first. The caller re-reads and retries
+    (or surfaces a conflict to the analyst)."""
+
+    def __init__(self, element_id: str, expected_version: int) -> None:
+        self.element_id = element_id
+        self.expected_version = expected_version
+        super().__init__(
+            f"memory element {element_id} changed under you "
+            f"(expected version {expected_version})"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -135,8 +149,30 @@ def edit_element(
     body: dict[str, Any] | None = None,
     confidence: float | None = None,
     status: MemoryStatus | None = None,
+    expected_version: int | None = None,
 ) -> MemoryElement:
-    """Edit an element in place (analyst or agent). Re-estimates tokens."""
+    """Edit an element in place (analyst or agent). Re-estimates tokens.
+
+    Pass ``expected_version`` (the version the caller read) to guard against a
+    concurrent same-element edit: the version bump is applied with a
+    ``WHERE version = expected`` predicate, and a miss raises
+    :class:`StaleMemoryElement`. Omit it for internal/agent writes that don't
+    need the check (compaction already serializes under the engagement lock).
+    """
+    if expected_version is not None:
+        result = session.execute(
+            update(MemoryElement)
+            .where(
+                MemoryElement.id == element.id,
+                MemoryElement.version == expected_version,
+            )
+            .values(version=MemoryElement.version + 1)
+        )
+        if result.rowcount == 0:
+            raise StaleMemoryElement(str(element.id), expected_version)
+        # Resync the ORM object to the bumped version + any concurrent change.
+        session.refresh(element)
+
     changed: dict[str, Any] = {}
     if summary is not None and summary != element.summary:
         element.summary = summary
@@ -189,8 +225,12 @@ def add_link(
 
 
 def get_hot_set(session: Session, engagement_id: uuid.UUID) -> list[MemoryElement]:
-    """The elements serialized into an agent invocation: everything HOT,
-    newest first. Marks nothing — reference-tracking is the caller's job."""
+    """The elements serialized into an agent invocation: everything HOT.
+
+    Decisions first (the accumulating foundation the agent should always see),
+    then everything else newest-first — so an accreting shared brain doesn't
+    bury early foundational decisions under recent chatter. Marks nothing —
+    reference-tracking is the caller's job."""
     return list(
         session.execute(
             select(MemoryElement)
@@ -198,7 +238,10 @@ def get_hot_set(session: Session, engagement_id: uuid.UUID) -> list[MemoryElemen
                 MemoryElement.engagement_id == engagement_id,
                 MemoryElement.tier == MemoryTier.hot,
             )
-            .order_by(MemoryElement.created_at.desc())
+            .order_by(
+                (MemoryElement.kind == MemoryKind.decision).desc(),
+                MemoryElement.created_at.desc(),
+            )
         ).scalars()
     )
 
@@ -222,7 +265,13 @@ def mark_referenced(
     session: Session, element_ids: Sequence[uuid.UUID], *, now: datetime | None = None
 ) -> None:
     """Stamp last_referenced_at so recently-used elements survive the staleness
-    pass. Call when the agent cites elements in an invocation."""
+    pass. Call when the agent cites elements in an invocation.
+
+    Note: this is a bulk Core UPDATE that bypasses the ORM identity map — it
+    writes no audit row (it's a derived signal, not a content edit) and does
+    NOT refresh already-loaded objects. A caller that re-reads those elements
+    in the same session must ``session.expire_all()`` first, or pass ids rather
+    than loaded objects."""
     if not element_ids:
         return
     ts = now or datetime.now(tz=UTC)
@@ -365,13 +414,20 @@ def compact(
     actor_id: str = "engagement-memory-compactor",
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    """Run the DETERMINISTIC staleness pass over the hot set. Agent-driven
-    folds (``fold_into_decision``) are separate, judgement-based calls.
+    """Run the DETERMINISTIC staleness pass over the hot set — the ONE
+    deterministic entry point (O5). Agent-driven folds
+    (``fold_into_decision``) are separate, judgement-based primitives.
 
     Rules (all demote, never delete; hard floors in ``_is_hard_floor``):
       - stale threads (no activity for ``memory_thread_stale_days``): hot->cold
       - low-confidence facts not referenced within ``memory_fact_stale_days``:
         hot->cold
+
+    This pass only retires elements that have gone *stale*. An engagement that
+    is over budget but whose hot elements are all fresh is intentionally a
+    no-op here — retiring fresh-but-resolved elements is the agent's job via
+    ``fold_into_decision``, driven by the step-4 milestone runner that reads
+    ``is_over_budget`` as its trigger signal.
 
     Returns a summary dict and writes one ``memory.compacted`` audit row.
     Idempotent-ish: a second immediate call is a no-op (nothing newly stale).
@@ -393,13 +449,17 @@ def compact(
 
         demote = False
         if el.kind == MemoryKind.thread:
-            last_activity = (el.body or {}).get("last_activity_at")
+            # Staleness leans on ``updated_at`` (maintained by TimestampMixin)
+            # and ``last_referenced_at`` — both real signals — rather than a
+            # ``body.last_activity_at`` field that nothing writes.
             ref = el.last_referenced_at
-            # No activity and no recent reference past the thread cutoff.
-            if (ref is None or ref < thread_cutoff) and _iso_before(last_activity, thread_cutoff):
+            if (ref is None or ref < thread_cutoff) and el.updated_at < thread_cutoff:
                 demote = True
         elif el.kind == MemoryKind.fact:
-            low_conf = el.confidence is not None and el.confidence < 0.5
+            low_conf = (
+                el.confidence is not None
+                and el.confidence < settings.memory_low_confidence_threshold
+            )
             stale_ref = el.last_referenced_at is None or el.last_referenced_at < fact_cutoff
             if low_conf and stale_ref:
                 demote = True
@@ -437,17 +497,3 @@ def compact(
         k: v for k, v in result.items() if k != "moved"
     })
     return result
-
-
-def _iso_before(value: Any, cutoff: datetime) -> bool:
-    """True if an ISO-8601 string (or None) predates ``cutoff``. None (never
-    active) counts as stale."""
-    if not value:
-        return True
-    try:
-        dt = datetime.fromisoformat(str(value))
-    except (ValueError, TypeError):
-        return True
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=UTC)
-    return dt < cutoff

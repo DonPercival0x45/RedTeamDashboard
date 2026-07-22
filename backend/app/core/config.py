@@ -233,6 +233,9 @@ class Settings(BaseSettings):
     # low-confidence facts not referenced within the window demote too.
     memory_thread_stale_days: int = 14
     memory_fact_stale_days: int = 30
+    # A fact below this confidence is eligible for staleness demotion (only
+    # when also unreferenced past memory_fact_stale_days).
+    memory_low_confidence_threshold: float = 0.5
 
 
 settings = Settings()

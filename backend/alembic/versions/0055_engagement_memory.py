@@ -43,6 +43,7 @@ def upgrade() -> None:
             body JSONB NOT NULL DEFAULT '{}'::jsonb,
             confidence DOUBLE PRECISION NULL,
             token_estimate INTEGER NOT NULL DEFAULT 0,
+            version INTEGER NOT NULL DEFAULT 1,
             author_type actor_type NOT NULL,
             author_id TEXT NOT NULL,
             superseded_by UUID NULL REFERENCES memory_elements(id) ON DELETE SET NULL,

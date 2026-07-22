@@ -129,6 +129,12 @@ class MemoryElement(Base, TimestampMixin):
     # (len//4); swap for a real tokenizer if the ceiling ever gets tight.
     token_estimate: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
+    # Optimistic-lock counter for concurrent same-element edits. ``edit_element``
+    # takes ``expected_version`` and guards the UPDATE with WHERE version=?; a
+    # mismatch means another writer got there first. Internal tier transitions
+    # (compaction) run under the per-engagement lock and don't use it.
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
     # Attribution — analyst OR agent, reusing the shared ActorType vocabulary.
     author_type: Mapped[ActorType] = mapped_column(
         Enum(ActorType, name="actor_type", create_type=False), nullable=False
