@@ -39,8 +39,10 @@ from app.models import (
     User,
 )
 from app.models.finding import default_status_for_phase
-from app.runs.events import encode_event
-from app.runs.streams import outbound_stream
+from app.services.finding_feedback import (
+    publish_feedback_entries,
+    stage_finding_feedback,
+)
 from app.services.finding_grouping import compute_group_key, upsert_grouped_finding
 
 logger = logging.getLogger(__name__)
@@ -186,12 +188,29 @@ async def analyze_and_persist(
             tool=tool,
             rf=rf,
         )
-        if row is None:
-            continue
-        created.append(row)
-        _emit_finding_created(redis, engagement.id, invocation, tool, row)
+        if row is not None:
+            created.append(row)
 
     if created:
+        session.flush()
+        entries = [
+            stage_finding_feedback(
+                session,
+                finding=row,
+                acting_user_id=invoker.id,
+                operation_id=invocation.id,
+                source="tool_invocation",
+                event_type="finding.updated" if row.group_key else "finding.created",
+                thread_id=invocation.id,
+                tool=tool.name,
+                args=dict(invocation.args or {}),
+            )
+            for row in {finding.id: finding for finding in created}.values()
+        ]
+        session.commit()
+        publish_feedback_entries(session, redis, entries)
+        for row in created:
+            session.refresh(row)
         logger.info(
             "tool_finding_analysis.persisted",
             extra={
@@ -258,42 +277,5 @@ def _persist_one(
             validated_at=datetime.now(tz=UTC) if status == FindingStatus.validated else None,
         )
         session.add(row)
-    session.commit()
-    session.refresh(row)
+    session.flush()
     return row
-
-
-def _emit_finding_created(
-    redis: redis_lib.Redis,
-    engagement_id,
-    invocation: ToolInvocation,
-    tool: Tool,
-    row: Finding,
-) -> None:
-    """Mirror the worker's finding.created payload so the live run panel
-    + strategic consumer treat tool-derived findings identically."""
-    try:
-        redis.xadd(
-            outbound_stream(engagement_id),
-            encode_event(
-                {
-                    "type": "finding.created",
-                    "thread_id": str(invocation.id),
-                    "tool": tool.name,
-                    "args": dict(invocation.args or {}),
-                    "data": {},
-                    "target": row.target,
-                    "severity": row.severity.value,
-                    "title": row.title,
-                    "finding_id": str(row.id),
-                    "phase": row.phase.value,
-                    "status": row.status.value,
-                    "source": "tool_invocation",
-                }
-            ),
-        )
-    except Exception as exc:  # noqa: BLE001 — emit is best-effort
-        logger.warning(
-            "tool_finding_analysis.emit_failed",
-            extra={"finding_id": str(row.id), "error": str(exc)},
-        )

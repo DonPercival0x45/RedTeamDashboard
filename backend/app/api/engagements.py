@@ -1935,6 +1935,7 @@ def _create_findings_from_imports(
     )
 
     created: list[Finding] = []
+    feedback_candidates: list[tuple[Finding, str]] = []
     seen_created_ids: set[uuid.UUID] = set()
     skipped_duplicate = 0
     now = datetime.now(tz=UTC)
@@ -1969,6 +1970,8 @@ def _create_findings_from_imports(
             )
             if not added:
                 skipped_duplicate += 1
+            else:
+                feedback_candidates.append((row, "finding.updated"))
             if row.id not in seen_created_ids:
                 created.append(row)
                 seen_created_ids.add(row.id)
@@ -1994,6 +1997,7 @@ def _create_findings_from_imports(
         )
         session.add(f)
         created.append(f)
+        feedback_candidates.append((f, "finding.created"))
         if serial:
             existing_serials.add(serial)  # dedup within the same batch too
     if created:
@@ -2010,7 +2014,38 @@ def _create_findings_from_imports(
                 },
             )
         )
+        from app.services.finding_feedback import stage_finding_feedback
+
+        operation_id = uuid.uuid4()
+        session.flush()
+        by_id = {row.id: (row, event_type) for row, event_type in feedback_candidates}
+        for finding, event_type in by_id.values():
+            entry = stage_finding_feedback(
+                session,
+                finding=finding,
+                acting_user_id=user.id,
+                operation_id=operation_id,
+                source=source,
+                event_type=event_type,
+                tool=finding.source_tool,
+            )
+            finding._feedback_outbox_id = entry.id  # type: ignore[attr-defined]
     return created, skipped_duplicate
+
+
+def _publish_import_feedback(
+    session: Any,
+    redis_client: Any,
+    findings: list[Finding],
+) -> None:
+    """Best-effort immediate delivery; committed SQL outbox owns retry."""
+    from app.services.finding_feedback import publish_feedback_entries
+
+    publish_feedback_entries(
+        session,
+        redis_client,
+        [entry_id for row in findings if (entry_id := getattr(row, "_feedback_outbox_id", None))],
+    )
 
 
 @router.post(
@@ -2022,6 +2057,7 @@ def import_findings(
     slug: str,
     body: FindingImportBatch,
     session: DbSession,
+    redis_client: RedisClient,
     user: CurrentNonGuestUser,
 ) -> list[dict[str, Any]]:
     """Bulk-import findings from an external source (scanner output, prior report, etc.).
@@ -2048,6 +2084,7 @@ def import_findings(
     session.commit()
     for f in created:
         session.refresh(f)
+    _publish_import_feedback(session, redis_client, created)
     return [_finding_to_read(f) for f in created]
 
 
@@ -2059,6 +2096,7 @@ def import_findings(
 def import_nessus(
     slug: str,
     session: DbSession,
+    redis_client: RedisClient,
     user: CurrentNonGuestUser,
     file: Annotated[UploadFile, File(..., description="Nessus .nessus v2 XML export.")],
     include_info: Annotated[
@@ -2093,6 +2131,7 @@ def import_nessus(
     session.commit()
     for f in created:
         session.refresh(f)
+    _publish_import_feedback(session, redis_client, created)
 
     return {
         "imported": [_finding_to_read(f) for f in created],
@@ -2110,6 +2149,7 @@ def import_nessus(
 def import_nmap(
     slug: str,
     session: DbSession,
+    redis_client: RedisClient,
     user: CurrentNonGuestUser,
     file: Annotated[UploadFile, File(..., description="Nmap -oX XML export.")],
 ) -> dict[str, Any]:
@@ -2133,6 +2173,7 @@ def import_nmap(
     session.commit()
     for finding in created:
         session.refresh(finding)
+    _publish_import_feedback(session, redis_client, created)
     return {
         "imported": [_finding_to_read(finding) for finding in created],
         "total_ports": result.total_ports,
@@ -2150,6 +2191,7 @@ def import_nmap(
 def import_burp(
     slug: str,
     session: DbSession,
+    redis_client: RedisClient,
     user: CurrentNonGuestUser,
     file: Annotated[
         UploadFile,
@@ -2188,6 +2230,7 @@ def import_burp(
     session.commit()
     for f in created:
         session.refresh(f)
+    _publish_import_feedback(session, redis_client, created)
 
     return {
         "imported": [_finding_to_read(f) for f in created],
@@ -2341,6 +2384,7 @@ def commit_scanner_import(
     slug: str,
     source: ScannerSourceParam,
     session: DbSession,
+    redis_client: RedisClient,
     user: CurrentNonGuestUser,
     file: Annotated[UploadFile, File(..., description="Same scanner XML export used for preview.")],
     file_sha256: Annotated[str, Form(..., description="SHA-256 returned by preview.")],
@@ -2437,6 +2481,7 @@ def commit_scanner_import(
     session.commit()
     for finding in created:
         session.refresh(finding)
+    _publish_import_feedback(session, redis_client, created)
     return {
         "source": source,
         "file_sha256": prepared.file_sha256,
@@ -2658,6 +2703,7 @@ def create_finding(
     slug: str,
     body: FindingCreate,
     session: DbSession,
+    redis_client: RedisClient,
     user: CurrentNonGuestUser,
 ) -> dict[str, Any]:
     """Create a single analyst-drafted finding (v1.4.0).
@@ -2711,8 +2757,20 @@ def create_finding(
             },
         )
     )
+    from app.services.finding_feedback import stage_finding_feedback
+
+    feedback_entry = stage_finding_feedback(
+        session,
+        finding=finding,
+        acting_user_id=user.id,
+        operation_id=finding.id,
+        source="manual",
+    )
     session.commit()
     session.refresh(finding)
+    from app.services.finding_feedback import publish_feedback_entries
+
+    publish_feedback_entries(session, redis_client, [feedback_entry])
     return _finding_to_read(finding)
 
 

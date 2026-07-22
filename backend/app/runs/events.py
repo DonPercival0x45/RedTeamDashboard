@@ -40,6 +40,7 @@ EVENT_TYPES = frozenset(
         "tool.executed",
         "llm.responded",
         "finding.created",
+        "finding.updated",
         "run.completed",
         "run.errored",
     }

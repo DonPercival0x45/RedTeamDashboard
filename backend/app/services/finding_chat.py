@@ -956,6 +956,15 @@ def _accept_add_finding(
     )
     session.add(created)
     session.flush()
+    from app.services.finding_feedback import stage_finding_feedback
+
+    stage_finding_feedback(
+        session,
+        finding=created,
+        acting_user_id=acting_user_id,
+        operation_id=created.id,
+        source="finding_chat_action",
+    )
     return {"finding_id": str(created.id), "title": created.title}
 
 
@@ -1042,10 +1051,10 @@ def _accept_run_tool(
     except TacticalAlreadyScanned as dedup:
         # Already scanned recently — don't re-dispatch; surface the prior run.
         already_scanned = True
-        run_id = str(dedup.prior_execution_id)
+        run_id = str(dedup.prior_thread_id)
         task.status = TaskStatus.completed
         task.completed_at = datetime.now(tz=UTC)
-        task.run_id = dedup.prior_execution_id
+        task.run_id = dedup.prior_thread_id
     except TacticalRefusedExploit:
         dispatched = False
     return {

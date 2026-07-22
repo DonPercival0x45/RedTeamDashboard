@@ -31,6 +31,7 @@ from app.models import (
     ApprovalStatus,
     Engagement,
     EngagementStatus,
+    Finding,
     RiskLevel,
     ScopeItem,
     ScopeKind,
@@ -643,8 +644,16 @@ def test_full_round_trip(
         types = [e["type"] for e in final]
         assert "finding.created" in types
         assert "run.completed" in types
-        finding = next(e for e in final if e["type"] == "finding.created")
-        assert finding["data"]["open_ports"] == [22, 443]
+        finding_event = next(e for e in final if e["type"] == "finding.created")
+        assert finding_event["tool"] == "portscan"
+        assert finding_event["source"] in {"worker", "worker_lifecycle"}
+        assert finding_event["target"] == "10.0.0.5"
+        assert finding_event["title"] == "portscan → 10.0.0.5"
+        assert finding_event["status"] == "pending_validation"
+        db.expire_all()
+        persisted = db.get(Finding, uuid.UUID(finding_event["finding_id"]))
+        assert persisted is not None
+        assert persisted.source_tool == "portscan"
     finally:
         stop.set()
         thread.join(timeout=5.0)
