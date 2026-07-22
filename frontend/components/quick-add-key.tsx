@@ -36,6 +36,11 @@ export function QuickAddKey({
   const [customProvider, setCustomProvider] = useState("");
   const [kind, setKind] = useState<Kind>("model_provider");
   const [apiKey, setApiKey] = useState("");
+  // v2.25.0: two-field credential for WiGLE (name + token). Combined into
+  // a JSON blob at submit and shipped in ``api_key`` so the backend contract
+  // (single string) doesn't change.
+  const [wigleName, setWigleName] = useState("");
+  const [wigleToken, setWigleToken] = useState("");
   const [endpoint, setEndpoint] = useState("");
   const [name, setName] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -57,6 +62,7 @@ export function QuickAddKey({
   const isCustom = presetSlug === CUSTOM_VALUE;
   const isMcp = kind === "mcp_server";
   const isToolSecret = preset?.kind === "tool_secret";
+  const isMultiCred = preset?.credentialShape === "name+token";
   const effectiveProvider = isCustom
     ? customProvider.trim().toLowerCase()
     : presetSlug;
@@ -65,19 +71,33 @@ export function QuickAddKey({
   const showEndpoint = endpointRequired || isCustom || preset?.endpoint;
 
   const apiKeyRequired = !preset?.isLocal || isCustom || isMcp;
+  // v2.25.0: WiGLE (name+token) — pack the two inputs into a JSON blob so
+  // downstream code paths (probe, submit, defaultName last-4) see the same
+  // shape they always have. Backend tool already accepts JSON strings.
+  const effectiveApiKey = isMultiCred
+    ? wigleName.trim() && wigleToken.trim()
+      ? JSON.stringify({ name: wigleName.trim(), token: wigleToken.trim() })
+      : ""
+    : apiKey;
+  const multiCredComplete = isMultiCred
+    ? wigleName.trim().length > 0 && wigleToken.trim().length > 0
+    : true;
 
   const defaultName = useMemo(() => {
     if (!effectiveProvider) return "";
-    const tail = apiKey.length >= 4 ? apiKey.slice(-4) : "";
+    // Multi-cred: prefer the raw token tail (analyst recognizes it) over the
+    // JSON-encoded api_key blob, which is unreadable.
+    const source = isMultiCred ? wigleToken : apiKey;
+    const tail = source.length >= 4 ? source.slice(-4) : "";
     return tail
       ? `${effectiveProvider} · …${tail}`
       : `${effectiveProvider}`;
-  }, [effectiveProvider, apiKey]);
+  }, [effectiveProvider, apiKey, isMultiCred, wigleToken]);
 
   const canTest =
     !!effectiveProvider &&
     !probing &&
-    (apiKeyRequired ? !!apiKey : true) &&
+    (apiKeyRequired ? !!effectiveApiKey : true) &&
     (endpointRequired ? !!endpoint.trim() : true);
 
   const onTest = async () => {
@@ -87,8 +107,12 @@ export function QuickAddKey({
       setProbeError("Provider is required.");
       return;
     }
-    if (apiKeyRequired && !apiKey) {
-      setProbeError("API key is required to test this provider.");
+    if (apiKeyRequired && !effectiveApiKey) {
+      setProbeError(
+        isMultiCred
+          ? "Both credentials are required to test this provider."
+          : "API key is required to test this provider.",
+      );
       return;
     }
     if (endpointRequired && !endpoint.trim()) {
@@ -103,7 +127,7 @@ export function QuickAddKey({
         kind,
         is_local: preset?.isLocal ?? false,
         endpoint: endpoint.trim() || null,
-        api_key: apiKey || null,
+        api_key: effectiveApiKey || null,
       });
       setProbeResult(result);
     } catch (err) {
@@ -119,8 +143,12 @@ export function QuickAddKey({
       setError("Provider is required.");
       return;
     }
-    if (apiKeyRequired && !apiKey) {
-      setError("API key is required for this provider.");
+    if (apiKeyRequired && !effectiveApiKey) {
+      setError(
+        isMultiCred
+          ? "Both credentials are required for this provider."
+          : "API key is required for this provider.",
+      );
       return;
     }
     if (endpointRequired && !endpoint.trim()) {
@@ -142,7 +170,7 @@ export function QuickAddKey({
           kind,
           is_local: preset?.isLocal ?? false,
           endpoint: endpoint.trim() || null,
-          api_key: apiKey || null,
+          api_key: effectiveApiKey || null,
         });
         if (auto.ok && auto.models.length > 0) {
           liveModels = auto.models;
@@ -162,10 +190,12 @@ export function QuickAddKey({
         is_local: preset?.isLocal ?? false,
         models: liveModels ?? preset?.modelsDefault ?? [],
         endpoint: endpoint.trim() || null,
-        api_key: apiKey || null,
+        api_key: effectiveApiKey || null,
       });
       onCreated(created);
       setApiKey("");
+      setWigleName("");
+      setWigleToken("");
       setName("");
       setEndpoint("");
       setCustomProvider("");
@@ -190,6 +220,13 @@ export function QuickAddKey({
               setPresetSlug(e.target.value);
               const p = PROVIDER_PRESETS.find((x) => x.slug === e.target.value);
               setEndpoint(p?.endpoint ?? "");
+              // v2.25.0: clear leftover credentials when the shape changes so
+              // an unrelated preset's stale input can't accidentally submit.
+              setApiKey("");
+              setWigleName("");
+              setWigleToken("");
+              setProbeResult(null);
+              setProbeError(null);
               // v2.24.1: auto-flip Kind when the picked preset is a tool
               // secret (freeipapi/ipinfo/wigle) — analysts shouldn't have
               // to remember to flip both. The 'other' kind stores the key
@@ -256,48 +293,110 @@ export function QuickAddKey({
         </div>
       )}
 
-      <div>
-        <Label htmlFor="qa-key" className="text-xs">
-          API key {!apiKeyRequired && <span className="text-muted-foreground">(optional for local)</span>}
-        </Label>
-        <Input
-          id="qa-key"
-          type="password"
-          autoComplete="off"
-          value={apiKey}
-          onChange={(e) => setApiKey(e.target.value)}
-          placeholder={apiKeyRequired ? "Paste the key" : "Leave blank for keyless local runs"}
-          disabled={submitting}
-          className="mt-1 font-mono"
-        />
-        {preset?.keyHint && (
-          <p className="mt-1 text-[11px] text-muted-foreground">
-            {preset.keyHint}
-            {preset.signupUrl && (
-              <>
-                {" "}
-                <a
-                  href={preset.signupUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="underline hover:text-foreground"
-                >
-                  Get it here
-                </a>
-                .
-              </>
+      {isMultiCred ? (
+        <div className="space-y-3">
+          <div>
+            <Label htmlFor="qa-wigle-name" className="text-xs">
+              Encoded for use (name)
+            </Label>
+            <Input
+              id="qa-wigle-name"
+              type="text"
+              autoComplete="off"
+              value={wigleName}
+              onChange={(e) => setWigleName(e.target.value)}
+              placeholder="AIDxxxxxxxxxxxxxxxxxxxxxxxxx"
+              disabled={submitting}
+              className="mt-1 font-mono"
+            />
+          </div>
+          <div>
+            <Label htmlFor="qa-wigle-token" className="text-xs">
+              API token
+            </Label>
+            <Input
+              id="qa-wigle-token"
+              type="password"
+              autoComplete="off"
+              value={wigleToken}
+              onChange={(e) => setWigleToken(e.target.value)}
+              placeholder="Paste the token"
+              disabled={submitting}
+              className="mt-1 font-mono"
+            />
+            {preset?.keyHint && (
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                {preset.keyHint}
+                {preset.signupUrl && (
+                  <>
+                    {" "}
+                    <a
+                      href={preset.signupUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="underline hover:text-foreground"
+                    >
+                      Get them here
+                    </a>
+                    .
+                  </>
+                )}
+              </p>
             )}
-          </p>
-        )}
-        {isToolSecret && (
-          <p className="mt-1 text-[11px] text-muted-foreground">
-            Stored per-analyst; the built-in{" "}
-            <code className="font-mono">{presetSlug}</code> tool auto-injects
-            it at dispatch. Kind is set to <em>other</em> because there is
-            no LLM catalog to sync.
-          </p>
-        )}
-      </div>
+            {isToolSecret && (
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                Stored per-analyst; the built-in{" "}
+                <code className="font-mono">{presetSlug}</code> tool auto-injects
+                both credentials at dispatch. Kind is set to <em>other</em> because
+                there is no LLM catalog to sync.
+              </p>
+            )}
+          </div>
+        </div>
+      ) : (
+        <div>
+          <Label htmlFor="qa-key" className="text-xs">
+            API key {!apiKeyRequired && <span className="text-muted-foreground">(optional for local)</span>}
+          </Label>
+          <Input
+            id="qa-key"
+            type="password"
+            autoComplete="off"
+            value={apiKey}
+            onChange={(e) => setApiKey(e.target.value)}
+            placeholder={apiKeyRequired ? "Paste the key" : "Leave blank for keyless local runs"}
+            disabled={submitting}
+            className="mt-1 font-mono"
+          />
+          {preset?.keyHint && (
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              {preset.keyHint}
+              {preset.signupUrl && (
+                <>
+                  {" "}
+                  <a
+                    href={preset.signupUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="underline hover:text-foreground"
+                  >
+                    Get it here
+                  </a>
+                  .
+                </>
+              )}
+            </p>
+          )}
+          {isToolSecret && (
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              Stored per-analyst; the built-in{" "}
+              <code className="font-mono">{presetSlug}</code> tool auto-injects
+              it at dispatch. Kind is set to <em>other</em> because there is
+              no LLM catalog to sync.
+            </p>
+          )}
+        </div>
+      )}
 
       {showEndpoint && (
         <div>
@@ -371,7 +470,8 @@ export function QuickAddKey({
           disabled={
             submitting ||
             !effectiveProvider ||
-            (apiKeyRequired && !apiKey) ||
+            (apiKeyRequired && !effectiveApiKey) ||
+            !multiCredComplete ||
             (endpointRequired && !endpoint.trim())
           }
         >

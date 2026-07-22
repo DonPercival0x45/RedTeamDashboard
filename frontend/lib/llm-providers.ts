@@ -30,6 +30,12 @@ export interface ProviderPreset {
   keyHint?: string;
   /** Where to send analysts to obtain the credentials. */
   signupUrl?: string;
+  /** Credential shape. Default is a single opaque API key. ``name+token``
+   *  splits the input into two labeled fields (encoded name + API token)
+   *  and packs them into the ``api_key`` field as a JSON blob at submit,
+   *  matching what the backend tool expects. Used by WiGLE which needs
+   *  both credentials to build a Basic auth header. */
+  credentialShape?: "single" | "name+token";
 }
 
 export const PROVIDER_PRESETS: ProviderPreset[] = [
@@ -131,8 +137,10 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     label: "WiGLE (wifi networks)",
     isLocal: false,
     kind: "tool_secret",
+    credentialShape: "name+token",
     keyHint:
-      'Paste as JSON: {"name":"AID...","token":"..."} — WiGLE needs both credentials.',
+      "WiGLE issues two credentials on the account page — copy both fields " +
+      "as shown there. The tool builds the Basic auth header for you.",
     signupUrl: "https://wigle.net/account",
   },
 ];
