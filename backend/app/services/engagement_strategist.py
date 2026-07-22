@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import threading
 import uuid
 from collections import Counter
 from datetime import UTC, datetime
@@ -26,6 +25,7 @@ from app.models import (
     AgentTrigger,
     Approval,
     ApprovalStatus,
+    CommandOutbox,
     CoverageItem,
     Engagement,
     EngagementObjective,
@@ -1314,6 +1314,7 @@ def run_engagement_strategist(
     analyst_message: str | None = None,
     conversation_history: list[dict[str, str]] | None = None,
     create_suggestions: bool = True,
+    execution_id: uuid.UUID | None = None,
 ) -> tuple[AgentExecution, StrategistOutput, str, list[Suggestion]]:
     dossier, context_hash = build_engagement_dossier(session, engagement)
     provider, model = _resolve_model(session, engagement.id, acting_user_id)
@@ -1332,24 +1333,49 @@ def run_engagement_strategist(
             "engagement strategist daily cost limit reached; retry after the UTC reset"
         )
 
-    execution = AgentExecution(
-        engagement_id=engagement.id,
-        agent=AgentName.engagement_strategist,
-        trigger=AgentTrigger.manual,
-        input={
-            "mode": mode,
-            "context_hash": context_hash,
-            "strategy_revision_id": dossier.get("current_strategy", {}).get("id")
-            if dossier.get("current_strategy")
-            else None,
-            "acting_user_id": str(acting_user_id),
-        },
-        model_provider=provider,
-        model_name=model,
-        status=AgentExecutionStatus.running,
-        started_at=datetime.now(tz=UTC),
-    )
-    session.add(execution)
+    execution = session.get(AgentExecution, execution_id) if execution_id else None
+    if execution is not None and (
+        execution.engagement_id != engagement.id
+        or execution.agent != AgentName.engagement_strategist
+    ):
+        raise RuntimeError("strategist execution identity belongs to another run")
+    execution_input = {
+        "mode": mode,
+        "context_hash": context_hash,
+        "strategy_revision_id": dossier.get("current_strategy", {}).get("id")
+        if dossier.get("current_strategy")
+        else None,
+        "acting_user_id": str(acting_user_id),
+    }
+    if execution is None:
+        execution = AgentExecution(
+            id=execution_id or uuid.uuid4(),
+            engagement_id=engagement.id,
+            agent=AgentName.engagement_strategist,
+            trigger=AgentTrigger.manual,
+            input=execution_input,
+            model_provider=provider,
+            model_name=model,
+            status=AgentExecutionStatus.running,
+            started_at=datetime.now(tz=UTC),
+        )
+        session.add(execution)
+    else:
+        # Durable event replay reuses one accounting identity. Persisted
+        # suggestions are proposal-key idempotent, so a crash can safely resume
+        # without creating a second AgentExecution row.
+        execution.trigger = AgentTrigger.manual
+        execution.input = execution_input
+        execution.model_provider = provider
+        execution.model_name = model
+        execution.status = AgentExecutionStatus.running
+        execution.started_at = datetime.now(tz=UTC)
+        execution.completed_at = None
+        execution.tokens_in = None
+        execution.tokens_out = None
+        execution.cost_usd = None
+        execution.output = None
+        execution.error = None
     session.commit()
     session.refresh(execution)
 
@@ -1562,83 +1588,74 @@ def run_engagement_strategist(
 AUTO_REASSESS_COOLDOWN_SECONDS = 600
 
 
-def _auto_reassess_should_fire(redis_client: Any, engagement_id: uuid.UUID) -> bool:
-    """Acquire the per-engagement cooldown lock. Returns True if acquired (the
-    caller should run the reassess), False if one is already in-flight / recent."""
-    try:
-        return bool(
-            redis_client.set(
-                f"auto-reassess:{engagement_id}",
-                "1",
-                nx=True,
-                ex=AUTO_REASSESS_COOLDOWN_SECONDS,
-            )
-        )
-    except Exception:
-        structlog.get_logger(__name__).warning(
-            "auto_reassess.lock_failed", engagement_id=str(engagement_id)
-        )
-        return False
+def stage_auto_reassess(
+    session: Session,
+    *,
+    work_item_id: uuid.UUID,
+    resolution_version: int,
+    engagement_id: uuid.UUID,
+    acting_user_id: uuid.UUID,
+) -> CommandOutbox:
+    """Stage one durable reassess event in the work-item resolution transaction."""
+    from app.runs.streams import outbound_stream
+    from app.services.command_outbox import enqueue_event
+
+    event_id = f"strategy.reassess:{work_item_id}:{resolution_version}"
+    return enqueue_event(
+        session,
+        idempotency_key=event_id,
+        engagement_id=engagement_id,
+        stream_name=outbound_stream(engagement_id),
+        payload={
+            "type": "strategy.reassess.requested",
+            "engagement_id": str(engagement_id),
+            "work_item_id": str(work_item_id),
+            "acting_user_id": str(acting_user_id),
+        },
+    )
 
 
-def _run_auto_reassess(
-    redis_client: Any, engagement_id: uuid.UUID, acting_user_id: uuid.UUID
+def acquire_auto_reassess_cooldown(
+    redis_client: Any,
+    engagement_id: uuid.UUID,
+    *,
+    owner_token: str | None = None,
+) -> str | None:
+    """Acquire the cooldown, returning its owner token or ``None`` if held.
+
+    Redis failures deliberately propagate: treating an unavailable cooldown as
+    an intentional skip would ACK and lose the durable event.
+    """
+    token = owner_token or str(uuid.uuid4())
+    key = f"auto-reassess:{engagement_id}"
+    current = redis_client.get(key)
+    if isinstance(current, bytes):
+        current = current.decode("utf-8")
+    if current == token:
+        # A prior delivery acquired this cooldown and died before releasing or
+        # completing its receipt. The same durable event remains its owner.
+        return token
+    acquired = redis_client.set(
+        key,
+        token,
+        nx=True,
+        ex=AUTO_REASSESS_COOLDOWN_SECONDS,
+    )
+    return token if acquired else None
+
+
+def release_auto_reassess_cooldown(
+    redis_client: Any, engagement_id: uuid.UUID, token: str
 ) -> None:
-    """Background-thread body: run a reassess with its own session. Best-effort —
-    logs and swallows errors so a failure here never surfaces to the caller."""
-    from app.db.session import SessionLocal  # local import avoids any import cycle
-
-    session = SessionLocal()
-    try:
-        eng = session.execute(
-            select(Engagement).where(Engagement.id == engagement_id)
-        ).scalar_one_or_none()
-        if eng is None:
-            return
-        run_engagement_strategist(
-            session,
-            redis_client,
-            engagement=eng,
-            acting_user_id=acting_user_id,
-            mode="reassess",
-        )
-        structlog.get_logger(__name__).info(
-            "auto_reassess.completed", engagement_id=str(engagement_id)
-        )
-    except Exception as exc:  # noqa: BLE001 — best-effort background work
-        structlog.get_logger(__name__).warning(
-            "auto_reassess.failed", engagement_id=str(engagement_id), error=str(exc)
-        )
-    finally:
-        session.close()
-
-
-def maybe_schedule_auto_reassess(
-    redis_client: Any, engagement_id: uuid.UUID, acting_user_id: uuid.UUID
-) -> None:
-    """Best-effort: after a work item resolves, kick off a reassess run in the
-    background so the strategist proposes next steps without a manual click.
-    Rate-limited per engagement (AUTO_REASSESS_COOLDOWN_SECONDS) so resolving
-    several items in a row fires at most one run. Never raises — the resolve
-    that triggers this must not fail because of it."""
-    # Token-saving kill-switch: skip when the engagement has auto-assess
-    # disabled (the analyst is just evaluating + doesn't want auto-generated
-    # suggestions burning tokens).
-    from app.db.session import SessionLocal
-
-    with SessionLocal() as session:
-        eng = session.get(Engagement, engagement_id)
-        if eng is not None and not eng.auto_assess_enabled:
-            return
-    if not _auto_reassess_should_fire(redis_client, engagement_id):
-        return
-    try:
-        threading.Thread(
-            target=_run_auto_reassess,
-            args=(redis_client, engagement_id, acting_user_id),
-            daemon=True,
-        ).start()
-    except Exception:  # noqa: BLE001 — best-effort
-        structlog.get_logger(__name__).warning(
-            "auto_reassess.schedule_failed", engagement_id=str(engagement_id)
-        )
+    """Release a failed run's cooldown only when this consumer still owns it."""
+    redis_client.eval(
+        """
+        if redis.call('GET', KEYS[1]) == ARGV[1] then
+          return redis.call('DEL', KEYS[1])
+        end
+        return 0
+        """,
+        1,
+        f"auto-reassess:{engagement_id}",
+        token,
+    )

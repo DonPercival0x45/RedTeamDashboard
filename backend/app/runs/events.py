@@ -14,6 +14,7 @@ Outbound (published to ``runs:{eid}:events``):
 - ``llm.responded``     { thread_id, tokens_in, tokens_out, elapsed_ms,
                           tool_call_count, tool_calls, content_preview }
 - ``finding.created``   { thread_id, tool, args, data, target, severity, title, finding_id }
+- ``strategy.reassess.requested`` { engagement_id, work_item_id, acting_user_id }
 - ``run.completed``     { thread_id }
 - ``run.errored``       { thread_id, error }
 
@@ -41,6 +42,7 @@ EVENT_TYPES = frozenset(
         "llm.responded",
         "finding.created",
         "finding.updated",
+        "strategy.reassess.requested",
         "run.completed",
         "run.errored",
     }

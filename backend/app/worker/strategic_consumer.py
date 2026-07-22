@@ -6,10 +6,11 @@ streams, this one reads the *outbound* event streams (``runs:{eid}:events``)
 under a NEW consumer group (``strategic-watcher``) so it doesn't compete with
 the SSE endpoint or with other workers' delivery of inbound commands.
 
-For every ``finding.created`` envelope it sees, it loads the persisted
-``Finding`` row and asks ``StrategicAgent`` to propose next-step suggestions.
-Strategic writes ``Suggestion`` rows the analyst will see in the findings
-slide-over. Nothing dispatches until the analyst accepts — pure watcher.
+For ``finding.created`` envelopes it loads the persisted ``Finding`` and asks
+``StrategicAgent`` to propose next-step suggestions. Durable
+``strategy.reassess.requested`` events run the existing engagement strategist
+after rechecking the engagement kill switch and acquiring its cooldown.
+Nothing dispatches until the analyst accepts — pure watcher.
 
 Failure handling: successful/no-op events are ACKed. Transient handler failures
 stay pending and are reclaimed after an idle interval; poison events move to a
@@ -34,6 +35,8 @@ from sqlalchemy.orm import Session
 from app.agents import StrategicAgent
 from app.models import (
     ActorType,
+    AgentExecution,
+    AgentExecutionStatus,
     AgentTrigger,
     AuditLog,
     Engagement,
@@ -42,6 +45,11 @@ from app.models import (
     Task,
 )
 from app.runs.streams import engagement_id_from_outbound, outbound_stream
+from app.services.engagement_strategist import (
+    acquire_auto_reassess_cooldown,
+    release_auto_reassess_cooldown,
+    run_engagement_strategist,
+)
 from app.services.processing_receipt import (
     claim,
     complete,
@@ -230,6 +238,22 @@ class StrategicConsumer:
                             execution_id=receipt.agent_execution_id,
                         )
                         complete(receipt_session, receipt)
+                    elif event_type == "strategy.reassess.requested":
+                        acting_user_id_raw = envelope.get("acting_user_id")
+                        if not acting_user_id_raw:
+                            raise ValueError(
+                                "strategy.reassess.requested missing actor identity"
+                            )
+                        if receipt.agent_execution_id is None:
+                            receipt.agent_execution_id = uuid.uuid4()
+                            receipt_session.commit()
+                        self._reassess(
+                            receipt_session,
+                            engagement_id=engagement_id,
+                            acting_user_id=uuid.UUID(acting_user_id_raw),
+                            execution_id=receipt.agent_execution_id,
+                        )
+                        complete(receipt_session, receipt)
                     elif event_type in ("run.completed", "run.errored"):
                         if not thread_id:
                             raise ValueError(f"{event_type} missing thread_id")
@@ -346,6 +370,75 @@ class StrategicConsumer:
         except Exception:
             session.rollback()
             logger.exception("strategic.release_lease_failed")
+            raise
+
+    def _reassess(
+        self,
+        session: Session,
+        *,
+        engagement_id: uuid.UUID,
+        acting_user_id: uuid.UUID,
+        execution_id: uuid.UUID,
+    ) -> None:
+        engagement = session.execute(
+            select(Engagement)
+            .where(Engagement.id == engagement_id)
+            .execution_options(populate_existing=True)
+        ).scalar_one_or_none()
+        if engagement is None:
+            logger.info("auto_reassess.engagement_missing", engagement_id=str(engagement_id))
+            return
+        if not engagement.auto_assess_enabled:
+            logger.info("auto_reassess.disabled", engagement_id=str(engagement_id))
+            return
+
+        existing = session.get(AgentExecution, execution_id)
+        if existing is not None and existing.status == AgentExecutionStatus.completed:
+            logger.info(
+                "auto_reassess.execution_already_completed",
+                engagement_id=str(engagement_id),
+                execution_id=str(execution_id),
+            )
+            return
+
+        owner_token = str(execution_id)
+        cooldown_token = acquire_auto_reassess_cooldown(
+            self._redis,
+            engagement_id,
+            owner_token=owner_token,
+        )
+        if cooldown_token is None:
+            logger.info("auto_reassess.cooldown_active", engagement_id=str(engagement_id))
+            return
+        try:
+            execution, _output, _context_hash, suggestions = run_engagement_strategist(
+                session,
+                self._redis,
+                engagement=engagement,
+                acting_user_id=acting_user_id,
+                mode="reassess",
+                execution_id=execution_id,
+            )
+            logger.info(
+                "auto_reassess.completed",
+                engagement_id=str(engagement_id),
+                execution_id=str(execution.id),
+                suggestion_count=len(suggestions),
+            )
+        except Exception:
+            session.rollback()
+            try:
+                release_auto_reassess_cooldown(
+                    self._redis, engagement_id, cooldown_token
+                )
+            except Exception:
+                # The stable execution token retains ownership, so retry may
+                # proceed even if Redis was unavailable during cleanup.
+                logger.exception(
+                    "auto_reassess.cooldown_release_failed",
+                    engagement_id=str(engagement_id),
+                )
+            logger.exception("auto_reassess.failed", engagement_id=str(engagement_id))
             raise
 
     def _analyze(

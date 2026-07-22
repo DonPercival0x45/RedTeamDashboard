@@ -17,6 +17,7 @@ from app.agents import StrategicAgent
 from app.models import (
     AgentExecutionStatus,
     AgentTrigger,
+    CommandOutbox,
     Engagement,
     EngagementStatus,
     EngagementWorkState,
@@ -28,7 +29,7 @@ from app.models import (
     User,
     UserRole,
 )
-from app.services.engagement_strategist import maybe_schedule_auto_reassess
+from app.services.engagement_strategist import stage_auto_reassess
 
 
 @pytest.fixture()
@@ -100,12 +101,21 @@ def test_watcher_skipped_when_auto_assess_disabled(
     )
 
 
-def test_auto_reassess_noop_when_disabled(db: Session, engagement: Engagement) -> None:
-    """maybe_schedule_auto_reassess with auto-assess off returns early (no redis touch)."""
+def test_disabled_auto_reassess_is_still_durably_staged(
+    db: Session, engagement: Engagement
+) -> None:
+    """The consumer, not the producer, applies the execution-time kill switch."""
     engagement.auto_assess_enabled = False
     db.commit()
     user = _user(db)
 
-    # redis=None would error if the lock path were reached; the disabled guard
-    # returns before that, so this must not raise.
-    maybe_schedule_auto_reassess(None, engagement.id, user.id)
+    event = stage_auto_reassess(
+        db,
+        work_item_id=uuid.uuid4(),
+        resolution_version=2,
+        engagement_id=engagement.id,
+        acting_user_id=user.id,
+    )
+    db.commit()
+
+    assert db.get(CommandOutbox, event.id) is not None
