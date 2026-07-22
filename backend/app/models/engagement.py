@@ -30,6 +30,17 @@ class EngagementWorkState(enum.StrEnum):
     completed = "completed"
 
 
+class EngagementPhase(enum.StrEnum):
+    """v3 lifecycle mode (architecture-v3-tracker PR 0). Orthogonal to
+    ``EngagementStatus`` (alive?) and ``EngagementWorkState`` (how-close-to-done?):
+    ``phase`` is which-mode-of-work — deterministic baseline coverage, then
+    AI-guided exploration. Baseline-complete flips ``phase`` only, never
+    ``work_state``."""
+
+    baseline = "baseline"
+    exploration = "exploration"
+
+
 class Engagement(Base, TimestampMixin):
     __tablename__ = "engagements"
 
@@ -75,4 +86,19 @@ class Engagement(Base, TimestampMixin):
     # auto-generated suggestions. The manual Analyze button is unaffected.
     auto_assess_enabled: Mapped[bool] = mapped_column(
         Boolean, default=True, nullable=False, server_default="true"
+    )
+    # v3 shared contract (PR 0): which mode of work the engagement is in.
+    # Orthogonal to status/work_state; baseline-complete flips this to
+    # ``exploration`` and stamps ``baseline_completed_at``. The detour override
+    # (architecture-answers §C.1) lets an analyst chase a hot lead mid-baseline
+    # without satisfying baseline items.
+    phase: Mapped[EngagementPhase] = mapped_column(
+        Enum(EngagementPhase, name="engagement_phase"),
+        default=EngagementPhase.baseline,
+        nullable=False,
+        server_default="baseline",
+        index=True,
+    )
+    baseline_completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
     )
