@@ -29,13 +29,18 @@ from app.db.base import Base, TimestampMixin, uuid7
 
 class CoverageRecordStatus(enum.StrEnum):
     """Lifecycle of a coverage attempt. ``satisfied`` includes a clean
-    "found nothing" result — you looked. (architecture-answers Q3.)"""
+    "found nothing" result — you looked. ``stale`` is a *stored* lapse: a
+    background sweep flips ``satisfied`` → ``stale`` once a node's TTL elapses
+    (architecture-answers Q3), re-qualifying it for re-collection. Storing it
+    (vs computing TTL on read) keeps B1/B2 reading one column and avoids two
+    implementations of TTL logic."""
 
     pending = "pending"
     attempted = "attempted"
     satisfied = "satisfied"
     partial = "partial"
     failed = "failed"
+    stale = "stale"
 
 
 class CoverageNodeTier(enum.StrEnum):
@@ -48,7 +53,13 @@ class CoverageNodeTier(enum.StrEnum):
 
 
 class CoverageRecord(Base, TimestampMixin):
-    """One attempt to satisfy a methodology coverage node over a scope subset."""
+    """One attempt to satisfy a methodology coverage node over a scope subset.
+
+    Records accumulate per (node, asset_class, scope_subset) = attempt history
+    (consistent with architecture-answers Q3's "emitted per attempt"). Baseline-
+    complete therefore reads the **latest record per (node, asset_class, scope)**
+    for a satisfied/stale status — not "any satisfied row."
+    """
 
     __tablename__ = "coverage_records"
     __table_args__ = (
@@ -73,8 +84,13 @@ class CoverageRecord(Base, TimestampMixin):
         Enum(CoverageNodeTier, name="coverage_node_tier"), nullable=False
     )
     asset_class: Mapped[str] = mapped_column(String(80), nullable=False)
-    # What this record covers — list of scope_item_ids / entity refs. JSONB so
-    # the (node, asset_class, scope) tuple is queryable without a join table.
+    # What this record covers — **scope_item_ids only** (analyst-declared
+    # targets — the scope selection the playbook ran against; dozens, not the
+    # 100k discovered entities). Discovered entities are counted in the
+    # milestone ``FindingsSummary``, never enumerated here, so this column can't
+    # balloon. JSONB so the (node, asset_class, scope) tuple is queryable
+    # without a join table. If per-discovered-entity coverage is ever needed,
+    # that's a separate normalized table — do not overload this column.
     scope_subset: Mapped[dict[str, Any] | list[Any]] = mapped_column(
         JSONB, nullable=False, default=dict
     )

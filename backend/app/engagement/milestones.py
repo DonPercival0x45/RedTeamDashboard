@@ -10,6 +10,16 @@ Why typed payloads (not free dicts): the three events are the single trigger
 surface between two parallel tracks. Pinning the fields now means B3 can be
 written against a stable shape before A6 emits, and A6 can't silently drift a
 field name B3 depends on.
+
+Two consequences worth flagging for A6/B3:
+- ``FindingsSummary`` is **counts-only** — it's a significance *trigger*, not
+  the gather set. B3 re-queries the engagement for the actual significant
+  finding IDs (``is_new OR not_validated OR high_severity``) to batch; the IDs
+  are intentionally NOT in the payload (they'd bloat it and B3 needs fresh
+  reads anyway).
+- ``BaselineCompletedPayload.methodology_id`` is required-non-null even though
+  ``CoverageRecord.methodology_id`` is nullable-until-A1 — harmless because A6
+  emits baseline-completed well after A1 (methodology catalog) has landed.
 """
 from __future__ import annotations
 
@@ -46,8 +56,10 @@ class FindingsSummary(TypedDict):
 
 class CollectionJobCompletedPayload(TypedDict):
     """Track A emits this when a playbook run finishes. B3 gathers significant
-    findings (``is_new OR not_validated OR high_severity``) and invokes the
-    agent in a gather-then-analyze batch (architecture-answers §B3)."""
+    findings (``is_new OR not_validated OR high_severity``) — re-querying the
+    engagement for the actual IDs, since ``findings_summary`` here is counts-
+    only (a trigger, not the gather set) — and invokes the agent in a
+    gather-then-analyze batch (architecture-answers §B3)."""
 
     engagement_id: str
     playbook_run_id: str

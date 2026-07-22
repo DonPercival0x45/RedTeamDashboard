@@ -158,7 +158,7 @@ def test_coverage_record_defaults_and_round_trip(db: Session, engagement: Engage
     assert rec.satisfied_at is None
 
 
-def test_coverage_satisfied_includes_clean_finds(
+def test_coverage_record_status_satisfied_means_you_looked(
     db: Session, engagement: Engagement
 ) -> None:
     """Per architecture-answers Q3: 'satisfied' includes a clean 'found nothing'
@@ -227,6 +227,18 @@ def test_coverage_gap_opened_builder_shape() -> None:
     )
     assert env["type"] == ms.COVERAGE_GAP_OPENED
     assert env["node_tier"] == "baseline"
+
+
+def test_coverage_status_stale_is_stored_lapse() -> None:
+    """``stale`` is a stored enum value (architecture-answers Q3) — a sweep flips
+    satisfied->stale past a node's TTL so baseline-complete and B1/B2 read one
+    column instead of re-deriving TTL on every read."""
+    assert CoverageRecordStatus.stale == "stale"
+    assert set(CoverageRecordStatus) >= {
+        CoverageRecordStatus.satisfied,
+        CoverageRecordStatus.stale,
+        CoverageRecordStatus.pending,
+    }
 
 
 def test_baseline_completed_builder_shape() -> None:

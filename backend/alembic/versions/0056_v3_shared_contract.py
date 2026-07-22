@@ -71,7 +71,7 @@ def upgrade() -> None:
     # --- coverage records (schema only; A2 writes, B1/B2 read) -----------
     op.execute(
         "CREATE TYPE coverage_record_status AS ENUM "
-        "('pending', 'attempted', 'satisfied', 'partial', 'failed')"
+        "('pending', 'attempted', 'satisfied', 'partial', 'failed', 'stale')"
     )
     op.execute(
         "CREATE TYPE coverage_node_tier AS ENUM ('baseline', 'exploration')"
