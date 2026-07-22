@@ -60,3 +60,16 @@ CVE-2026-39821
 # out of the backend image (Kali attack-box arc).
 # -----------------------------------------------------------------------------
 CVE-2026-39822
+
+# -----------------------------------------------------------------------------
+# sharp (Next.js image optimizer) — v2.24.9 addition.
+# GHSA-f88m-g3jw-g9cj bundles four libvips CVEs (CVE-2026-33327/33328/35590/
+# 35591), all triggered by processing malicious image files. Frontend renders
+# our own asset PNGs (Leaflet marker icons, Dossier tab thumbnails via
+# freeipapi/ipinfo lat/lon → static Leaflet render) and analyst-uploaded
+# screenshot attachments. Attachments already go through backend defusedxml
+# + size-cap validation; frontend never processes attacker-supplied images
+# from outside the tenant. Full fix pending sharp@^0.35 + npm lockfile
+# regen (deferred — clean IPv6 needed for npm install).
+# -----------------------------------------------------------------------------
+GHSA-f88m-g3jw-g9cj
