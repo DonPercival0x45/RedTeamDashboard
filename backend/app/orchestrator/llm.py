@@ -34,6 +34,23 @@ _OPENAI_COMPATIBLE_BASES: dict[str, str] = {
 }
 
 
+def _is_gpt5_family(model_name: str) -> bool:
+    """True for OpenAI-shaped model names that langchain-openai auto-tags
+    with ``reasoning_effort`` (gpt-5.*, o1, o3 today). Custom sibling models
+    that share the ``gpt-5`` prefix (e.g. ``gpt-5.6-sol``, ``gpt-5.6-fable``)
+    inherit the same auto-tagging quirk and the same downstream failure
+    when the vendor's ``/v1/chat/completions`` refuses ``reasoning_effort``
+    alongside function tools.
+
+    v2.25.1: added after Sol rejected the tool-bound call with
+    ``Function tools with reasoning_effort are not supported for
+    gpt-5.6-sol in /v1/chat/completions`` — the vendor's own remediation
+    is ``set reasoning_effort to 'none'`` (or switch to /v1/responses).
+    """
+    m = (model_name or "").lower().strip()
+    return m.startswith("gpt-5") or m.startswith("o1") or m.startswith("o3")
+
+
 def tool_schemas(registry: Mapping[str, ToolSpec] | None = None) -> list[dict[str, Any]]:
     """JSON-schema descriptions of every registered tool, for LLM tool-calling."""
     specs = list(registry.values()) if registry else all_tools()
@@ -98,6 +115,11 @@ def make_llm(
             kwargs["api_key"] = api_key
         if endpoint:
             kwargs["base_url"] = endpoint
+        if _is_gpt5_family(model_name):
+            # gpt-5-family models refuse ``reasoning_effort`` together with
+            # function tools on ``/v1/chat/completions``. bind_tools() below
+            # will fire, so we pre-emptively disable the reasoning flag.
+            kwargs["reasoning_effort"] = "none"
         llm = ChatOpenAI(**kwargs)
     elif provider == "ollama":
         from langchain_ollama import ChatOllama
@@ -143,6 +165,8 @@ def make_llm(
         kwargs = {"model": model_name, "base_url": base}
         if api_key:
             kwargs["api_key"] = api_key
+        if _is_gpt5_family(model_name):
+            kwargs["reasoning_effort"] = "none"
         llm = ChatOpenAI(**kwargs)
     else:
         raise ValueError(
