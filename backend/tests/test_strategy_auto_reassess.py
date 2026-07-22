@@ -27,6 +27,8 @@ from app.models import (
     User,
     UserRole,
     WorkItem,
+    WorkItemExecutor,
+    WorkItemPriority,
     WorkItemResolution,
     WorkItemStatus,
 )
@@ -138,6 +140,8 @@ def test_resolution_commits_event_when_immediate_redis_publish_fails(
         engagement_id=engagement.id,
         title="Resolve durably",
         status=WorkItemStatus.ready,
+        priority=WorkItemPriority.medium,
+        executor_type=WorkItemExecutor.analyst,
     )
     db.add(work)
     db.commit()
