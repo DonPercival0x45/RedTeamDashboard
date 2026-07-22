@@ -79,20 +79,22 @@ class WorkItemDisposition(enum.StrEnum):
     """v3 *how/where-it-gets-done* axis (architecture-v3-tracker PR 0).
 
     Orthogonal to ``WorkItemExecutor`` (who-runs-it, the v1 axis that retires
-    at Convergence C5). The collection plane routes ``tool-backed`` /
-    ``tool-backed-mcp`` items to the runner; ``manual-local`` / ``build`` /
-    ``blocked`` / ``needs-decision`` / ``out-of-scope`` stay on the analyst
-    queue. Nullable — legacy rows backfilled from ``executor_type``; the
-    ``needs-decision`` name is shared with the ``feat/needs-decision-redesign``
-    UX branch."""
+    at Convergence C5). The collection plane routes ``tool_backed`` /
+    ``tool_backed_mcp`` items to the runner; ``manual_local`` / ``build`` /
+    ``blocked`` / ``needs_decision`` / ``out_of_scope`` stay on the analyst
+    queue. Nullable — legacy rows backfilled from ``executor_type`` (only
+    ``tactical``→``tool_backed`` and ``analyst``→``manual_local``; the
+    agent-proposing executors stay NULL for triage). Storage uses underscores
+    (codebase name==value convention); the ``needs-decision`` *concept* is
+    shared with the ``feat/needs-decision-redesign`` UX branch."""
 
-    tool_backed = "tool-backed"
-    tool_backed_mcp = "tool-backed-mcp"
-    manual_local = "manual-local"
+    tool_backed = "tool_backed"
+    tool_backed_mcp = "tool_backed_mcp"
+    manual_local = "manual_local"
     build = "build"
     blocked = "blocked"
-    needs_decision = "needs-decision"
-    out_of_scope = "out-of-scope"
+    needs_decision = "needs_decision"
+    out_of_scope = "out_of_scope"
 
 
 class WorkItemResolution(enum.StrEnum):

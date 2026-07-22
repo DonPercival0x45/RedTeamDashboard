@@ -29,24 +29,24 @@ def upgrade() -> None:
     # --- work-item disposition -------------------------------------------
     op.execute(
         "CREATE TYPE work_item_disposition AS ENUM "
-        "('tool-backed', 'tool-backed-mcp', 'manual-local', 'build', "
-        "'blocked', 'needs-decision', 'out-of-scope')"
+        "('tool_backed', 'tool_backed_mcp', 'manual_local', 'build', "
+        "'blocked', 'needs_decision', 'out_of_scope')"
     )
     op.execute(
         "ALTER TABLE work_items "
         "ADD COLUMN disposition work_item_disposition NULL"
     )
-    # Backfill from the existing who-runs-it axis. ``tactical`` dispatches a
-    # tool → tool-backed; the analyst/agent judgment executors → manual-local;
-    # ``unassigned`` stays NULL for analyst triage. ``executor_type`` itself is
-    # NOT dropped here — it retires at Convergence (C5) once v3 paths cover it.
+    # Backfill from the existing who-runs-it axis. Only the two we can infer:
+    # ``tactical`` dispatches a tool → tool_backed; ``analyst`` does it →
+    # manual_local. ``finding_agent`` / ``engagement_strategist`` *proposed*
+    # items whose actual how/where isn't inferable from the row, so they stay
+    # NULL for triage on first touch (not guessed into the collection plane).
+    # ``executor_type`` itself is NOT dropped here — retires at Convergence C5.
     op.execute(
         """
         UPDATE work_items SET disposition = CASE
-            WHEN executor_type = 'tactical' THEN 'tool-backed'::work_item_disposition
-            WHEN executor_type = 'analyst' THEN 'manual-local'::work_item_disposition
-            WHEN executor_type = 'finding_agent' THEN 'manual-local'::work_item_disposition
-            WHEN executor_type = 'engagement_strategist' THEN 'manual-local'::work_item_disposition
+            WHEN executor_type = 'tactical' THEN 'tool_backed'::work_item_disposition
+            WHEN executor_type = 'analyst' THEN 'manual_local'::work_item_disposition
             ELSE NULL
         END
         """

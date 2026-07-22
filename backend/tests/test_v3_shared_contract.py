@@ -110,15 +110,16 @@ def test_disposition_is_nullable_and_round_trips(db: Session, engagement: Engage
 
 
 def test_disposition_values_are_string_enum() -> None:
-    """The hyphenated wire values match what the migration enum + the
-    feat/needs-decision-redesign UX branch expect."""
-    assert WorkItemDisposition.tool_backed == "tool-backed"
-    assert WorkItemDisposition.tool_backed_mcp == "tool-backed-mcp"
-    assert WorkItemDisposition.manual_local == "manual-local"
+    """Storage uses the codebase name==value convention (underscores). The
+    hyphenated wire/display form is a frontend concern, not a storage one; the
+    ``needs-decision`` *concept* is what's shared with the UX branch."""
+    assert WorkItemDisposition.tool_backed == "tool_backed"
+    assert WorkItemDisposition.tool_backed_mcp == "tool_backed_mcp"
+    assert WorkItemDisposition.manual_local == "manual_local"
     assert WorkItemDisposition.build == "build"
     assert WorkItemDisposition.blocked == "blocked"
-    assert WorkItemDisposition.needs_decision == "needs-decision"
-    assert WorkItemDisposition.out_of_scope == "out-of-scope"
+    assert WorkItemDisposition.needs_decision == "needs_decision"
+    assert WorkItemDisposition.out_of_scope == "out_of_scope"
 
 
 def test_disposition_coexists_with_executor_type(db: Session, engagement: Engagement) -> None:
