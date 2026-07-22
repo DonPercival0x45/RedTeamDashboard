@@ -3,8 +3,8 @@
 
 Chain:
   1. AgentModelPreference row for (user, engagement, role) -> use that
-  2. users.default_model on the acting user -> use that (with default
-     provider from settings)
+  2. users.default_llm_model (+ users.default_llm_provider) on the acting
+     user -> use that
   3. None -> caller falls back to hardcoded default_provider_model()
 
 Model strings can be stored bare (``claude-opus-4-8``) or provider-qualified
@@ -115,13 +115,26 @@ def resolve_agent_model(
             )
             return (provider, model)
 
-    # 2. User default (added by Kendall in v1.13.0). Column is called
-    #    ``default_model`` on the users table.
+    # 2. User default. The user-level default lives in TWO columns on the
+    #    users table — ``default_llm_provider`` + ``default_llm_model``
+    #    (user.py:51-52), NOT a single ``default_model`` string.
+    #
+    #    v2.25.3: this tier was dead code from v1.24.0 until now. The old
+    #    line did ``getattr(user, "default_model", None)`` against a column
+    #    that never existed, so it ALWAYS returned None and every tier-1
+    #    miss fell straight through to the process default. That's the root
+    #    cause of "config didn't stick" (Kendall's gpt-4o-mini pin lost to
+    #    the process default Sol whenever the dispatch's acting_user_id
+    #    wasn't the pinning analyst). Read the real columns: the provider
+    #    column wins when set; otherwise infer from the model-name prefix.
     user = session.get(User, user_id)
     if user is not None:
-        default = getattr(user, "default_model", None)
-        if default:
-            provider, model = parse_model_string(default)
+        default_model = getattr(user, "default_llm_model", None)
+        if default_model:
+            stored_provider = getattr(user, "default_llm_provider", None)
+            provider, model = parse_model_string(default_model)
+            if provider is None:
+                provider = (stored_provider or "").strip().lower() or None
             if provider is None:
                 provider = provider_for_model(model)
             logger.info(
@@ -130,7 +143,8 @@ def resolve_agent_model(
                 user_id=str(user_id),
                 engagement_id=str(engagement_id) if engagement_id else None,
                 role=role.value if hasattr(role, "value") else str(role),
-                stored_model=default,
+                stored_model=default_model,
+                stored_provider=stored_provider,
                 provider=provider,
                 model=model,
             )
