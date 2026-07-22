@@ -393,10 +393,17 @@ def _tool_dispatch_node(
                     )
             except Exception:  # noqa: BLE001
                 data_preview = "(unserializable)"
+        # v2.24.8: redact api_key from the tool_event args (this feeds
+        # tool.executed audit + SSE). api_key is a per-analyst BYO third-
+        # party token that the graph auto-injects for needs_secret tools;
+        # leaking it into audit_log rows and SSE frames is unnecessary.
+        _event_args = {k: v for k, v in effective_args.items() if k != "api_key"}
+        if "api_key" in effective_args:
+            _event_args["api_key"] = "***"
         out_tool_events.append(
             {
                 "tool": name,
-                "args": dict(effective_args),
+                "args": _event_args,
                 "ok": bool(result.ok),
                 "elapsed_ms": _elapsed_ms,
                 "findings_emitted": len(expanded),
@@ -429,11 +436,15 @@ def _expand_findings(
     its own severity and title. Tools that don't set it fall back to one
     info-severity row built from ``result.data`` — the original behavior.
     """
+    # v2.24.8: redact BYO api_key so it doesn't land in Finding.data.args.
+    safe_args = {k: v for k, v in effective_args.items() if k != "api_key"}
+    if "api_key" in effective_args:
+        safe_args["api_key"] = "***"
     if result.findings:
         return [
             {
                 "tool": name,
-                "args": dict(effective_args),
+                "args": dict(safe_args),
                 "target": item.get("target"),
                 "severity": item.get("severity") or "info",
                 "title": item.get("title"),
@@ -444,7 +455,7 @@ def _expand_findings(
     return [
         {
             "tool": name,
-            "args": dict(effective_args),
+            "args": dict(safe_args),
             "target": None,
             "severity": "info",
             "title": None,

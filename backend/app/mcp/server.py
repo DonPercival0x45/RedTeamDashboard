@@ -388,9 +388,16 @@ def _run_osint(
         # tool-call audit source — no duplication.
         leased = get_current_lease() is not None
 
+        # v2.24.8: api_key is injected by the graph dispatch node for
+        # needs_secret tools (freeipapi/ipinfo/wigle) — redact it from the
+        # audit payload so the analyst's BYO third-party token doesn't
+        # persist in audit_log rows.
+        audit_args = {k: v for k, v in args.items() if k != "api_key"}
+        if "api_key" in args:
+            audit_args["api_key"] = "***"
         payload = {
             "tool": tool_name,
-            "args": args,
+            "args": audit_args,
             "ok": result.ok,
             "risk": decision.risk.value if decision.risk else None,
             "via": "mcp.lease" if leased else "mcp.api",
@@ -907,7 +914,9 @@ async def reverse_dns(ip: str, engagement_slug: str = "") -> dict:
 
 
 @mcp.tool()
-async def freeipapi(ip: str, engagement_slug: str = "") -> dict:
+async def freeipapi(
+    ip: str, engagement_slug: str = "", api_key: str = ""
+) -> dict:
     """[PASSIVE] IP geolocation enrichment via freeipapi.com.
 
     Third-party API call — no traffic touches the target. Returns country,
@@ -918,11 +927,16 @@ async def freeipapi(ip: str, engagement_slug: str = "") -> dict:
     (provider='freeipapi'); short-circuits with a pointer if missing.
     Findings are automatically stored in the engagement.
     """
-    return await _run_osint_async("freeipapi", engagement_slug, {"ip": ip})
+    args: dict[str, Any] = {"ip": ip}
+    if api_key:
+        args["api_key"] = api_key
+    return await _run_osint_async("freeipapi", engagement_slug, args)
 
 
 @mcp.tool()
-async def ipinfo(ip: str, engagement_slug: str = "") -> dict:
+async def ipinfo(
+    ip: str, engagement_slug: str = "", api_key: str = ""
+) -> dict:
     """[PASSIVE] IP intel enrichment via ipinfo.io.
 
     Third-party API call — no traffic touches the target. Returns ASN,
@@ -933,7 +947,10 @@ async def ipinfo(ip: str, engagement_slug: str = "") -> dict:
     (provider='ipinfo'); short-circuits with a pointer if missing.
     Findings are automatically stored in the engagement.
     """
-    return await _run_osint_async("ipinfo", engagement_slug, {"ip": ip})
+    args: dict[str, Any] = {"ip": ip}
+    if api_key:
+        args["api_key"] = api_key
+    return await _run_osint_async("ipinfo", engagement_slug, args)
 
 
 @mcp.tool()
@@ -942,6 +959,7 @@ async def wigle(
     lon: float,
     radius_km: float = 0.5,
     engagement_slug: str = "",
+    api_key: str = "",
 ) -> dict:
     """[PASSIVE] WiGLE.net wifi network lookup near a lat/lon coordinate.
 
@@ -956,11 +974,14 @@ async def wigle(
     with a pointer if missing. Findings feed the Dossier tab's Nearby
     wifi networks card.
     """
-    return await _run_osint_async(
-        "wigle",
-        engagement_slug,
-        {"lat": lat, "lon": lon, "radius_km": radius_km},
-    )
+    args: dict[str, Any] = {
+        "lat": lat,
+        "lon": lon,
+        "radius_km": radius_km,
+    }
+    if api_key:
+        args["api_key"] = api_key
+    return await _run_osint_async("wigle", engagement_slug, args)
 
 
 # ---------------------------------------------------------------------------
