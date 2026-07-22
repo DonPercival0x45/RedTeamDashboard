@@ -648,7 +648,7 @@ def test_full_round_trip(
         assert finding_event["tool"] == "portscan"
         assert finding_event["source"] in {"worker", "worker_lifecycle"}
         assert finding_event["target"] == "10.0.0.5"
-        assert finding_event["title"] == "Open ports — 10.0.0.5"
+        assert finding_event["title"] == "portscan → 10.0.0.5"
         assert finding_event["status"] == "pending_validation"
         db.expire_all()
         persisted = db.get(Finding, uuid.UUID(finding_event["finding_id"]))
