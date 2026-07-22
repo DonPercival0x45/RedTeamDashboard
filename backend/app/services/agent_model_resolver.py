@@ -17,10 +17,13 @@ from __future__ import annotations
 
 import uuid
 
+import structlog
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import AgentModelPreference, AgentName, User
+
+logger = structlog.get_logger(__name__)
 
 
 def provider_for_model(model: str) -> str | None:
@@ -96,6 +99,20 @@ def resolve_agent_model(
             provider, model = parse_model_string(pref.model)
             if provider is None:
                 provider = provider_for_model(model)
+            # v2.25.2: log which layer (pref/user-default/process-default)
+            # actually picked the model. When an analyst reports "config
+            # didn't stick", this tells us whether the pref row matched.
+            logger.info(
+                "agent_model.resolved",
+                source="engagement_pref",
+                user_id=str(user_id),
+                engagement_id=str(engagement_id),
+                role=role.value if hasattr(role, "value") else str(role),
+                pref_id=str(pref.id),
+                stored_model=pref.model,
+                provider=provider,
+                model=model,
+            )
             return (provider, model)
 
     # 2. User default (added by Kendall in v1.13.0). Column is called
@@ -107,8 +124,25 @@ def resolve_agent_model(
             provider, model = parse_model_string(default)
             if provider is None:
                 provider = provider_for_model(model)
+            logger.info(
+                "agent_model.resolved",
+                source="user_default",
+                user_id=str(user_id),
+                engagement_id=str(engagement_id) if engagement_id else None,
+                role=role.value if hasattr(role, "value") else str(role),
+                stored_model=default,
+                provider=provider,
+                model=model,
+            )
             return (provider, model)
 
     # 3. No preference and no user default — caller falls back to the
     #    process-wide default_provider_model().
+    logger.info(
+        "agent_model.resolved",
+        source="process_default_fallback",
+        user_id=str(user_id),
+        engagement_id=str(engagement_id) if engagement_id else None,
+        role=role.value if hasattr(role, "value") else str(role),
+    )
     return None
