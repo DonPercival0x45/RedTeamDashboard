@@ -60,6 +60,7 @@ def upgrade() -> None:
         """
         CREATE TABLE memory_links (
             id UUID PRIMARY KEY,
+            engagement_id UUID NOT NULL REFERENCES engagements(id) ON DELETE CASCADE,
             from_element_id UUID NOT NULL REFERENCES memory_elements(id) ON DELETE CASCADE,
             relation memory_link_relation NOT NULL,
             target_type memory_link_target_type NOT NULL,
@@ -69,6 +70,7 @@ def upgrade() -> None:
     )
     op.execute("CREATE INDEX ix_memory_links_from ON memory_links (from_element_id)")
     op.execute("CREATE INDEX ix_memory_links_target ON memory_links (target_type, target_id)")
+    op.execute("CREATE INDEX ix_memory_links_engagement ON memory_links (engagement_id)")
 
 
 def downgrade() -> None:

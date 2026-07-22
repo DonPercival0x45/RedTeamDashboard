@@ -202,14 +202,17 @@ def edit_element(
 def add_link(
     session: Session,
     *,
-    from_element_id: uuid.UUID,
+    from_element: MemoryElement,
     relation: MemoryLinkRelation,
     target_type: MemoryLinkTargetType,
     target_id: uuid.UUID,
 ) -> MemoryLink:
-    """Add a typed edge. Target FK is validated by the caller (spans tables)."""
+    """Add a typed edge from ``from_element``. ``engagement_id`` is taken from
+    the source element (never passed independently) so a link can't straddle
+    engagements. The polymorphic target FK is validated by the caller."""
     link = MemoryLink(
-        from_element_id=from_element_id,
+        engagement_id=from_element.engagement_id,
+        from_element_id=from_element.id,
         relation=relation,
         target_type=target_type,
         target_id=target_id,
@@ -362,7 +365,7 @@ def fold_into_decision(
     for h in hypotheses:
         add_link(
             session,
-            from_element_id=h.id,
+            from_element=h,
             relation=MemoryLinkRelation.folds_into,
             target_type=MemoryLinkTargetType.memory_element,
             target_id=decision.id,
@@ -428,6 +431,14 @@ def compact(
     no-op here — retiring fresh-but-resolved elements is the agent's job via
     ``fold_into_decision``, driven by the step-4 milestone runner that reads
     ``is_over_budget`` as its trigger signal.
+
+    CONCURRENCY CONTRACT: the caller MUST hold the per-engagement lock. This is
+    a batch over many elements that has to serialize against concurrent edits
+    of those same elements, so the lock is the right tool here — whereas
+    ``edit_element`` guards a *single* element with optimistic versioning. The
+    asymmetry is deliberate: do NOT "reconcile" it by adding version checks
+    here or dropping the lock requirement. The step-4 milestone runner is the
+    lock-acquiring caller; it doesn't exist yet, so the guard lands with it.
 
     Returns a summary dict and writes one ``memory.compacted`` audit row.
     Idempotent-ish: a second immediate call is a no-op (nothing newly stale).

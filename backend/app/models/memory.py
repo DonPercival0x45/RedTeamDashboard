@@ -161,10 +161,20 @@ class MemoryLink(Base):
     __table_args__ = (
         Index("ix_memory_links_from", "from_element_id"),
         Index("ix_memory_links_target", "target_type", "target_id"),
+        Index("ix_memory_links_engagement", "engagement_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid7
+    )
+    # Denormalized from ``from_element.engagement_id`` — a DB-level guard
+    # against cross-engagement links and a scoping key for per-engagement
+    # queries (matters at 100k entities). The service sets it from the source
+    # element; it is never edited independently.
+    engagement_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("engagements.id", ondelete="CASCADE"),
+        nullable=False,
     )
     from_element_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),

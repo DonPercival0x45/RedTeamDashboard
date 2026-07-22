@@ -194,6 +194,7 @@ def test_fold_into_decision_sets_lineage_on_every_hypothesis(
         ).scalars().all()
         assert len(links) == 1
         assert links[0].target_id == decision.id
+        assert links[0].engagement_id == engagement.id  # scoped, not straddling
 
 
 # ---------------------------------------------------------------------------
