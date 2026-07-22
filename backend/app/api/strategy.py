@@ -81,9 +81,11 @@ from app.schemas.strategy import (
     WorkItemRollupBucket,
     WorkItemUpdate,
 )
+from app.schemas.strategy_projection import StrategyProjectionRead
 from app.services.command_outbox import publish_entry
 from app.services.engagement_strategist import stage_auto_reassess
 from app.services.report_readiness import build_report_readiness
+from app.services.strategy_projection import build_strategy_projection
 
 router = APIRouter(tags=["strategy"])
 logger = structlog.get_logger(__name__)
@@ -327,6 +329,20 @@ def _rollup(session: Session, engagement_id: uuid.UUID) -> WorkItemRollup:
 @router.get("/engagements/{slug}/strategy", response_model=StrategyRevisionRead | None)
 def get_current_strategy(slug: str, session: DbSession, _user: CurrentUser):
     return _current_revision(session, _engagement(session, slug).id)
+
+
+@router.get(
+    "/engagements/{slug}/strategy-projection",
+    response_model=StrategyProjectionRead,
+)
+def get_strategy_projection(slug: str, session: DbSession, _user: CurrentUser):
+    """v3 B1 — the analyst-facing view of Engagement Memory: the hot set grouped
+    by kind (decisions first) under a token-budget-aware fetch cap. Coexists
+    with the legacy ``/strategy`` revision endpoint; that retires at
+    Convergence once this is the strategy surface."""
+    eng = _engagement(session, slug)
+    projection = build_strategy_projection(session, engagement_id=eng.id)
+    return StrategyProjectionRead(**projection)
 
 
 @router.get("/engagements/{slug}/strategy/revisions", response_model=list[StrategyRevisionRead])
