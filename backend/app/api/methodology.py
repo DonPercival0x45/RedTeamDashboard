@@ -60,8 +60,13 @@ def list_methodologies(
     """List every catalog entry with a node count.
 
     Sorted by ``(slug, -version)`` so a slug's newest version surfaces first.
-    Node count comes from a grouped join — one round-trip.
+    Node count comes from a grouped join — one round-trip. Auto-installs the
+    seed catalog on first call so a fresh deployment surfaces PTES, MITRE
+    ATT&CK, and OSINT-minimal without a separate provisioning step (same
+    pattern as the playbook catalog).
     """
+    svc.load_seed_catalog(session)
+    session.commit()
     counts_stmt = (
         select(
             MethodologyNode.methodology_id,
