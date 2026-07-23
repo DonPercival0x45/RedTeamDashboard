@@ -527,9 +527,12 @@ def _run_one(
     run.findings_high_severity += result.findings_high_severity
     run.findings_total += result.findings_total
 
-    status = (
-        CoverageRecordStatus.satisfied if result.ok else CoverageRecordStatus.failed
-    )
+    if getattr(result, "stub", False):
+        status = CoverageRecordStatus.stub
+    elif result.ok:
+        status = CoverageRecordStatus.satisfied
+    else:
+        status = CoverageRecordStatus.failed
     for node_id in step_satisfies_node_ids:
         cov.record_coverage_attempt(
             session,
@@ -541,7 +544,11 @@ def _run_one(
             status=status,
             methodology_id=engagement.methodology_id,
             playbook_run_id=run.id,
-            notes=None if result.ok else result.error,
+            notes=(
+                str(result.data.get("note"))
+                if result.stub and result.data.get("note")
+                else (None if result.ok else result.error)
+            ),
             actor_type=actor_type,
             actor_id=actor_id,
             now=now,

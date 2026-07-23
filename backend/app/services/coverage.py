@@ -207,7 +207,7 @@ def check_baseline_complete(
 
     Baseline is complete iff every ``expected`` triple has a latest record
     with ``status=satisfied``. Anything else (missing entirely, ``pending`` /
-    ``attempted`` / ``partial`` / ``failed`` / ``stale``) counts as unsatisfied
+    ``attempted`` / ``partial`` / ``failed`` / ``stale`` / ``stub``) counts as unsatisfied
     and is returned in the second position so callers can surface which nodes
     still need work. ``stale`` is treated as unsatisfied by design — the stored
     lapse is the mechanism that re-qualifies a lapsed satisfied node for

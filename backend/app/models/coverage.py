@@ -31,9 +31,10 @@ class CoverageRecordStatus(enum.StrEnum):
     """Lifecycle of a coverage attempt. ``satisfied`` includes a clean
     "found nothing" result — you looked. ``stale`` is a *stored* lapse: a
     background sweep flips ``satisfied`` → ``stale`` once a node's TTL elapses
-    (architecture-answers Q3), re-qualifying it for re-collection. Storing it
-    (vs computing TTL on read) keeps B1/B2 reading one column and avoids two
-    implementations of TTL logic."""
+    (architecture-answers Q3), re-qualifying it for re-collection. ``stub``
+    records that a placeholder executed without falsely claiming real coverage.
+    Storing these states (vs computing them on read) keeps B1/B2 reading one
+    column and avoids duplicate lifecycle logic."""
 
     pending = "pending"
     attempted = "attempted"
@@ -41,6 +42,8 @@ class CoverageRecordStatus(enum.StrEnum):
     partial = "partial"
     failed = "failed"
     stale = "stale"
+    # Placeholder ran, but real collection did not; baseline remains open.
+    stub = "stub"
 
 
 class CoverageNodeTier(enum.StrEnum):

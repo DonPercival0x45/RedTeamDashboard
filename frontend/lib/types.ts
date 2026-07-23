@@ -841,7 +841,7 @@ export interface ScopeImportResult {
 
 // v0.8.1: providers mirror the /settings/keys Quick Add presets so the
 // Scope-tab dropdown matches what the analyst can upload a key for.
-// Backend routes the 8 OpenAI-compatible providers via ChatOpenAI with
+// Backend routes OpenAI-compatible providers via ChatOpenAI with
 // a per-provider base_url (see strategic._make_chat_model).
 export type LLMProvider =
   | "anthropic"
@@ -855,6 +855,7 @@ export type LLMProvider =
   | "together"
   | "groq"
   | "deepseek"
+  | "moonshot"
   | "custom";
 
 export interface RunModel {

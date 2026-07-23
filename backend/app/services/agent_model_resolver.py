@@ -53,6 +53,8 @@ def provider_for_model(model: str) -> str | None:
         return "xai"
     if m.startswith("deepseek"):
         return "deepseek"
+    if m.startswith("kimi") or m.startswith("moonshot"):
+        return "moonshot"
     if m.startswith("mistral") or m.startswith("codestral"):
         return "mistral"
     if m.startswith("gemini") or m.startswith("google/"):

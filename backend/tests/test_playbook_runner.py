@@ -189,6 +189,54 @@ def test_happy_path_completes_and_writes_coverage(
         assert rec.asset_class == "domain"
 
 
+def test_stub_step_is_visible_but_does_not_complete_baseline(
+    db: Session, engagement_with_methodology: Engagement, osint_playbook: Playbook
+) -> None:
+    ex = MockExecutor(
+        results={
+            "subfinder": StepResult(
+                ok=True,
+                stub=True,
+                data={"note": "subfinder stub — no real enumeration"},
+            ),
+        },
+        default=StepResult(ok=True),
+    )
+    run = start_run(
+        db,
+        engagement=engagement_with_methodology,
+        playbook=osint_playbook,
+        scope_subset=["foo.com"],
+        executor=ex,
+        now=datetime(2026, 7, 23, tzinfo=UTC),
+    )
+
+    stub_record = db.execute(
+        select(CoverageRecord).where(
+            CoverageRecord.playbook_run_id == run.id,
+            CoverageRecord.node_id == "osint.domain.enum",
+        )
+    ).scalar_one()
+    assert stub_record.status is CoverageRecordStatus.stub
+    assert "no real enumeration" in (stub_record.notes or "")
+
+    db.refresh(engagement_with_methodology)
+    assert engagement_with_methodology.phase is EngagementPhase.baseline
+    assert engagement_with_methodology.baseline_completed_at is None
+
+    expected = meth.derive_expected_triples(
+        engagement_with_methodology.methodology_snapshot,
+        scope_items_by_asset_class={"domain": ["foo.com"]},
+    )
+    complete, unsatisfied = cov.check_baseline_complete(
+        db,
+        engagement_id=engagement_with_methodology.id,
+        expected=expected,
+    )
+    assert complete is False
+    assert ("osint.domain.enum", "domain", cov.scope_key(["foo.com"])) in unsatisfied
+
+
 def test_happy_path_emits_collection_completed_milestone(
     db: Session, engagement_with_methodology: Engagement, osint_playbook: Playbook
 ) -> None:
