@@ -165,15 +165,25 @@ def analyze_finding(
     """
     finding = _active_finding_for_mutation(session, finding_id)
     engagement = session.get(Engagement, finding.engagement_id)
+    # v3 Convergence C6b: same escape hatch as the other legacy gates so an
+    # operator flipping ``enforce_v3_playbook_only`` off gets consistent
+    # behavior across every surface. The pointer differs — Strategic analysis
+    # replacement lives in the Strategy view, not the playbook runner.
+    from app.core.config import settings as _config_settings
+
     if (
-        engagement is not None
+        _config_settings.enforce_v3_playbook_only
+        and engagement is not None
         and engagement.intelligence_architecture is EngagementArchitecture.v3
     ):
         raise HTTPException(
             status_code=409,
             detail=(
-                "v3 engagement uses batched analysis; run the analysis "
-                "intelligence mode from Strategy"
+                "engagement is on v3 intelligence — run the on-demand analysis "
+                "intelligence mode from the Strategy view instead of the legacy "
+                "per-finding analyzer. Operators can disable this gate "
+                "temporarily by setting enforce_v3_playbook_only=false in "
+                "backend config."
             ),
         )
 

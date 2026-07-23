@@ -11,7 +11,12 @@ from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.agents import TacticalAgent, TacticalAlreadyScanned, TacticalRefusedExploit
+from app.agents import (
+    TacticalAgent,
+    TacticalAlreadyScanned,
+    TacticalRefusedExploit,
+    TacticalSkippedV3,
+)
 from app.models import (
     ActorType,
     AgentTrigger,
@@ -631,6 +636,14 @@ def _accept_execution_task(
             task.run_id = dedup.prior_thread_id
             dispatched = False
         except TacticalRefusedExploit:
+            dispatched = False
+        except TacticalSkippedV3:
+            # v3 Convergence C6b: engagement is on v3 — legacy Tactical is off.
+            # Leave the task at pending (it was reset in ``dispatch``'s early
+            # guard, before any lease work) so the analyst can retire it or
+            # convert to a playbook step manually. Mirrors the refused-exploit
+            # branch's silent no-op — the accept still succeeds, we just don't
+            # kick a run.
             dispatched = False
     return task, dispatched
 

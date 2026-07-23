@@ -28,7 +28,7 @@ from fastapi import APIRouter, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.agents import TacticalAgent, TacticalAlreadyScanned
+from app.agents import TacticalAgent, TacticalAlreadyScanned, TacticalSkippedV3
 from app.api.deps import CurrentNonGuestUser, CurrentUser, DbSession, RedisClient
 from app.models import (
     ActorType,
@@ -1578,6 +1578,38 @@ def _redispatch_task(
         task.status = TaskStatus.completed
         task.completed_at = datetime.now(tz=UTC)
         task.run_id = dedup.prior_thread_id
+    except TacticalSkippedV3 as skip:
+        # v3 Convergence C6b: engagement is on v3 — legacy Tactical dispatch
+        # is off. Restore the prior terminal state so the retry hasn't stripped
+        # the task's history, and surface a 409 pointing the analyst at the
+        # playbook runner. Symmetric to the C6a gate on ``POST /runs``.
+        session.rollback()
+        session.expire_all()
+        failed_row = session.get(Task, task.id)
+        if failed_row is not None:
+            failed_row.status = previous_status
+            failed_row.run_id = previous_run_id
+            failed_row.dispatched_at = previous_dispatched_at
+            failed_row.completed_at = previous_completed_at
+            session.add(
+                AuditLog(
+                    engagement_id=failed_row.engagement_id,
+                    actor_type=ActorType.user,
+                    actor_id=str(user.id),
+                    event_type="task.retry_skipped_v3",
+                    payload={"task_id": str(failed_row.id)},
+                )
+            )
+            session.commit()
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "engagement is on v3 intelligence — kick a playbook run at "
+                "POST /engagements/{slug}/playbook-runs instead of retrying a "
+                "legacy task. Operators can disable this gate temporarily by "
+                "setting enforce_v3_playbook_only=false in backend config."
+            ),
+        ) from skip
     except Exception as exc:
         # Tactical stages lease/task/outbox without committing. Roll back the
         # caller-owned transaction and restore the prior retryable state.
