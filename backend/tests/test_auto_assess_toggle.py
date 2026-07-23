@@ -14,6 +14,8 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.agents import StrategicAgent
+from app.api.strategy import resolve_work_item
+from app.core.config import settings
 from app.models import (
     AgentExecutionStatus,
     AgentTrigger,
@@ -28,7 +30,13 @@ from app.models import (
     Suggestion,
     User,
     UserRole,
+    WorkItem,
+    WorkItemExecutor,
+    WorkItemPriority,
+    WorkItemResolution,
+    WorkItemStatus,
 )
+from app.schemas.strategy import WorkItemResolve
 from app.services.engagement_strategist import stage_auto_reassess
 
 
@@ -119,3 +127,47 @@ def test_disabled_auto_reassess_is_still_durably_staged(
     db.commit()
 
     assert db.get(CommandOutbox, event.id) is not None
+
+
+def test_v3_resolution_commits_without_staging_auto_reassess(
+    db: Session,
+    engagement: Engagement,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "v3_intelligence_enabled", True)
+    user = _user(db)
+    work = WorkItem(
+        engagement_id=engagement.id,
+        title="Resolve under v3",
+        status=WorkItemStatus.ready,
+        priority=WorkItemPriority.medium,
+        executor_type=WorkItemExecutor.analyst,
+    )
+    db.add(work)
+    db.commit()
+    db.refresh(work)
+
+    def unexpected_stage(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("v3 resolution must not stage auto-reassess")
+
+    monkeypatch.setattr("app.api.strategy.stage_auto_reassess", unexpected_stage)
+    result = resolve_work_item(
+        work.id,
+        WorkItemResolve(
+            expected_row_version=work.row_version,
+            outcome=WorkItemResolution.completed,
+            note="done",
+        ),
+        db,
+        user,
+        object(),  # type: ignore[arg-type] — v3 path never touches Redis
+    )
+
+    assert result.status == WorkItemStatus.completed
+    db.expire_all()
+    persisted = db.get(WorkItem, work.id)
+    assert persisted is not None
+    assert persisted.status == WorkItemStatus.completed
+    assert db.execute(
+        select(CommandOutbox).where(CommandOutbox.engagement_id == engagement.id)
+    ).scalars().all() == []

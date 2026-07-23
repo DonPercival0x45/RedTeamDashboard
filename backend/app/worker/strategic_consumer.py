@@ -33,6 +33,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.agents import StrategicAgent
+from app.core.config import settings
 from app.models import (
     ActorType,
     AgentExecution,
@@ -44,12 +45,18 @@ from app.models import (
     Finding,
     Task,
 )
-from app.runs.streams import engagement_id_from_outbound, outbound_stream
+from app.runs.streams import (
+    engagement_id_from_outbound,
+    load_run_model,
+    outbound_stream,
+)
+from app.services.agent_model_resolver import resolve_llm_for_mode
 from app.services.engagement_strategist import (
     acquire_auto_reassess_cooldown,
     release_auto_reassess_cooldown,
     run_engagement_strategist,
 )
+from app.services.milestone_runner import handle_milestone, milestone_mode
 from app.services.processing_receipt import (
     claim,
     complete,
@@ -224,35 +231,82 @@ class StrategicConsumer:
                         # live-run notification, not a Strategic instruction.
                         complete(receipt_session, receipt)
                     elif event_type in ("finding.created", "finding.updated"):
-                        finding_id_raw = envelope.get("finding_id")
-                        acting_user_id_raw = envelope.get("acting_user_id")
-                        if not finding_id_raw or not acting_user_id_raw:
-                            raise ValueError(f"{event_type} missing finding/actor identity")
-                        if receipt.agent_execution_id is None:
-                            receipt.agent_execution_id = uuid.uuid4()
-                            receipt_session.commit()
-                        self._analyze(
-                            receipt_session,
-                            uuid.UUID(finding_id_raw),
-                            acting_user_id=uuid.UUID(acting_user_id_raw),
-                            execution_id=receipt.agent_execution_id,
-                        )
-                        complete(receipt_session, receipt)
-                    elif event_type == "strategy.reassess.requested":
-                        acting_user_id_raw = envelope.get("acting_user_id")
-                        if not acting_user_id_raw:
-                            raise ValueError(
-                                "strategy.reassess.requested missing actor identity"
+                        if settings.v3_intelligence_enabled:
+                            # v3: per-finding analysis retired. B3's milestone
+                            # runner handles analysis on run.completed (gather-
+                            # then-analyze), so this envelope is acknowledged only.
+                            logger.info(
+                                "strategic.v3_skip_per_finding",
+                                engagement_id=str(engagement_id),
+                                event_type=event_type,
                             )
-                        if receipt.agent_execution_id is None:
-                            receipt.agent_execution_id = uuid.uuid4()
-                            receipt_session.commit()
-                        self._reassess(
-                            receipt_session,
-                            engagement_id=engagement_id,
-                            acting_user_id=uuid.UUID(acting_user_id_raw),
-                            execution_id=receipt.agent_execution_id,
-                        )
+                            complete(receipt_session, receipt)
+                        else:
+                            finding_id_raw = envelope.get("finding_id")
+                            acting_user_id_raw = envelope.get("acting_user_id")
+                            if not finding_id_raw or not acting_user_id_raw:
+                                raise ValueError(f"{event_type} missing finding/actor identity")
+                            if receipt.agent_execution_id is None:
+                                receipt.agent_execution_id = uuid.uuid4()
+                                receipt_session.commit()
+                            self._analyze(
+                                receipt_session,
+                                uuid.UUID(finding_id_raw),
+                                acting_user_id=uuid.UUID(acting_user_id_raw),
+                                execution_id=receipt.agent_execution_id,
+                            )
+                            complete(receipt_session, receipt)
+                    elif event_type == "strategy.reassess.requested":
+                        if settings.v3_intelligence_enabled:
+                            # v3: work-item-resolve reassess retired; strategy/
+                            # ideation fire on coverage.gap/baseline milestones.
+                            logger.info(
+                                "strategic.v3_skip_reassess",
+                                engagement_id=str(engagement_id),
+                            )
+                            complete(receipt_session, receipt)
+                        else:
+                            acting_user_id_raw = envelope.get("acting_user_id")
+                            if not acting_user_id_raw:
+                                raise ValueError(
+                                    "strategy.reassess.requested missing actor identity"
+                                )
+                            if receipt.agent_execution_id is None:
+                                receipt.agent_execution_id = uuid.uuid4()
+                                receipt_session.commit()
+                            self._reassess(
+                                receipt_session,
+                                engagement_id=engagement_id,
+                                acting_user_id=uuid.UUID(acting_user_id_raw),
+                                execution_id=receipt.agent_execution_id,
+                            )
+                            complete(receipt_session, receipt)
+                    elif event_type in (
+                        "collection.job.completed",
+                        "coverage.gap.opened",
+                        "baseline.completed",
+                    ):
+                        if settings.v3_intelligence_enabled:
+                            acting_user_id_raw = envelope.get("acting_user_id")
+                            if not acting_user_id_raw:
+                                raise ValueError(
+                                    f"{event_type} missing acting_user_id"
+                                )
+                            milestone_thread_id = None
+                            if event_type == "collection.job.completed":
+                                playbook_run_id = envelope.get("playbook_run_id")
+                                if not playbook_run_id:
+                                    raise ValueError(
+                                        "collection.job.completed missing playbook_run_id"
+                                    )
+                                milestone_thread_id = uuid.UUID(str(playbook_run_id))
+                            self._v3_handle_milestone(
+                                receipt_session,
+                                engagement_id=engagement_id,
+                                milestone_type=event_type,
+                                acting_user_id=uuid.UUID(str(acting_user_id_raw)),
+                                thread_id=milestone_thread_id,
+                            )
                         complete(receipt_session, receipt)
                     elif event_type in ("run.completed", "run.errored"):
                         if not thread_id:
@@ -260,6 +314,21 @@ class StrategicConsumer:
                         self._release_lease_for_run(
                             receipt_session, uuid.UUID(thread_id), reason=event_type
                         )
+                        if (
+                            settings.v3_intelligence_enabled
+                            and event_type == "run.completed"
+                        ):
+                            # v3: fire gather-then-analyze on run completion.
+                            self._v3_analyze_on_run(
+                                receipt_session,
+                                engagement_id=engagement_id,
+                                thread_id=uuid.UUID(thread_id),
+                                acting_user_id=(
+                                    uuid.UUID(str(envelope["acting_user_id"]))
+                                    if envelope.get("acting_user_id")
+                                    else None
+                                ),
+                            )
                         complete(receipt_session, receipt)
                     else:
                         complete(receipt_session, receipt)
@@ -330,6 +399,92 @@ class StrategicConsumer:
             logger.exception("strategic.dead_letter_audit_failed", msg_id=msg_id)
         finally:
             session.close()
+
+    def _v3_handle_milestone(
+        self,
+        session: Session,
+        *,
+        engagement_id: uuid.UUID,
+        milestone_type: str,
+        acting_user_id: uuid.UUID,
+        thread_id: uuid.UUID | None = None,
+    ) -> None:
+        """Resolve the mode-specific LLM lazily and run one v3 milestone."""
+        engagement = session.get(Engagement, engagement_id)
+        if engagement is None:
+            raise ValueError(f"engagement {engagement_id} not found")
+        if not engagement.auto_assess_enabled:
+            logger.info(
+                "strategic.v3_auto_assess_disabled",
+                engagement_id=str(engagement_id),
+                milestone_type=milestone_type,
+            )
+            return
+        mode = milestone_mode(milestone_type)
+        if mode is None:
+            raise ValueError(f"unsupported v3 milestone {milestone_type}")
+
+        def llm_factory() -> tuple[Any, str, str]:
+            return resolve_llm_for_mode(
+                session,
+                redis_client=self._redis,
+                user_id=acting_user_id,
+                engagement_id=engagement_id,
+                mode=mode,
+            )
+
+        handle_milestone(
+            session,
+            engagement_id=engagement_id,
+            milestone_type=milestone_type,
+            acting_user_id=acting_user_id,
+            llm_factory=llm_factory,
+            thread_id=thread_id,
+        )
+
+    def _v3_analyze_on_run(
+        self,
+        session: Session,
+        *,
+        engagement_id: uuid.UUID,
+        thread_id: uuid.UUID,
+        acting_user_id: uuid.UUID | None = None,
+    ) -> None:
+        """Fire v3 gather-then-analyze for a completed run.
+
+        New terminal envelopes carry the acting analyst directly. The run-model
+        cache remains a compatibility fallback for events issued before B4-3.
+        Resolution or invocation failures intentionally propagate: ``_process_one``
+        records the receipt error and Redis retries/dead-letters the event instead
+        of silently losing milestone intelligence.
+        """
+        engagement = session.get(Engagement, engagement_id)
+        if engagement is None:
+            raise ValueError(f"engagement {engagement_id} not found")
+        if not engagement.auto_assess_enabled:
+            logger.info(
+                "strategic.v3_auto_assess_disabled",
+                engagement_id=str(engagement_id),
+                milestone_type="run.completed",
+            )
+            return
+
+        if acting_user_id is None:
+            run_model = load_run_model(self._redis, thread_id) or {}
+            acting_user_id_raw = run_model.get("acting_user_id")
+            if not acting_user_id_raw:
+                raise ValueError(
+                    f"run.completed missing acting user for thread {thread_id}"
+                )
+            acting_user_id = uuid.UUID(str(acting_user_id_raw))
+
+        self._v3_handle_milestone(
+            session,
+            engagement_id=engagement_id,
+            milestone_type="run.completed",
+            acting_user_id=acting_user_id,
+            thread_id=thread_id,
+        )
 
     def _release_lease_for_run(
         self, session: Session, thread_id: uuid.UUID, *, reason: str

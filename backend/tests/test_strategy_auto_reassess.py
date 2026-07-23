@@ -12,11 +12,13 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.agents import StrategicAgent
+from app.core.config import settings
 from app.db.session import SessionLocal
 from app.models import (
     AgentExecution,
     AgentExecutionStatus,
     AgentName,
+    AgentPromptMode,
     AgentTrigger,
     CommandOutbox,
     CommandOutboxStatus,
@@ -323,3 +325,268 @@ def test_cooldown_same_event_can_resume_but_distinct_event_is_suppressed() -> No
         )
         == later_owner
     )
+
+
+def test_v3_cutover_skips_legacy_finding_and_reassess_events(
+    db: Session, engagement: Engagement, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "v3_intelligence_enabled", True)
+    redis_client = FakeRedis()
+    consumer = _consumer(redis_client)
+
+    def unexpected_legacy_run(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("v1 intelligence must not run after the v3 cutover")
+
+    monkeypatch.setattr(consumer, "_analyze", unexpected_legacy_run)
+    monkeypatch.setattr(consumer, "_reassess", unexpected_legacy_run)
+    stream = outbound_stream(engagement.id)
+    actor_id = uuid.uuid4()
+    events = [
+        {
+            "type": "finding.created",
+            "event_id": str(uuid.uuid4()),
+            "finding_id": str(uuid.uuid4()),
+            "acting_user_id": str(actor_id),
+        },
+        {
+            "type": "strategy.reassess.requested",
+            "event_id": str(uuid.uuid4()),
+            "work_item_id": str(uuid.uuid4()),
+            "acting_user_id": str(actor_id),
+        },
+    ]
+
+    for index, event in enumerate(events, start=1):
+        consumer._process_one(
+            stream,
+            f"{index}-0",
+            {"data": json.dumps(event)},
+        )
+
+    assert len(redis_client.acked) == 2
+    receipts = db.execute(
+        select(ProcessingReceipt).where(
+            ProcessingReceipt.engagement_id == engagement.id
+        )
+    ).scalars().all()
+    assert len(receipts) == 2
+    assert all(row.status == ProcessingReceiptStatus.completed for row in receipts)
+
+
+def test_v3_cutover_routes_run_completed_to_milestone_hook(
+    engagement: Engagement, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "v3_intelligence_enabled", True)
+    redis_client = FakeRedis()
+    consumer = _consumer(redis_client)
+    thread_id = uuid.uuid4()
+    actor_id = uuid.uuid4()
+    calls: list[tuple[uuid.UUID, uuid.UUID, uuid.UUID | None]] = []
+
+    def record(
+        _session: Session,
+        *,
+        engagement_id: uuid.UUID,
+        thread_id: uuid.UUID,
+        acting_user_id: uuid.UUID | None,
+    ) -> None:
+        calls.append((engagement_id, thread_id, acting_user_id))
+
+    monkeypatch.setattr(consumer, "_v3_analyze_on_run", record)
+    consumer._process_one(
+        outbound_stream(engagement.id),
+        "3-0",
+        {
+            "data": json.dumps(
+                {
+                    "type": "run.completed",
+                    "event_id": str(uuid.uuid4()),
+                    "thread_id": str(thread_id),
+                    "acting_user_id": str(actor_id),
+                }
+            )
+        },
+    )
+
+    assert calls == [(engagement.id, thread_id, actor_id)]
+    assert len(redis_client.acked) == 1
+
+
+@pytest.mark.parametrize(
+    "event_type",
+    ["collection.job.completed", "coverage.gap.opened", "baseline.completed"],
+)
+def test_v3_cutover_routes_engagement_milestones(
+    engagement: Engagement,
+    monkeypatch: pytest.MonkeyPatch,
+    event_type: str,
+) -> None:
+    monkeypatch.setattr(settings, "v3_intelligence_enabled", True)
+    redis_client = FakeRedis()
+    consumer = _consumer(redis_client)
+    actor_id = uuid.uuid4()
+    playbook_run_id = uuid.uuid4()
+    calls: list[dict[str, Any]] = []
+
+    def record(_session: Session, **kwargs: Any) -> None:
+        calls.append(kwargs)
+
+    monkeypatch.setattr(consumer, "_v3_handle_milestone", record)
+    consumer._process_one(
+        outbound_stream(engagement.id),
+        "milestone-1",
+        {
+            "data": json.dumps(
+                {
+                    "type": event_type,
+                    "event_id": str(uuid.uuid4()),
+                    "engagement_id": str(engagement.id),
+                    "acting_user_id": str(actor_id),
+                    **(
+                        {"playbook_run_id": str(playbook_run_id)}
+                        if event_type == "collection.job.completed"
+                        else {}
+                    ),
+                }
+            )
+        },
+    )
+
+    assert calls == [
+        {
+            "engagement_id": engagement.id,
+            "milestone_type": event_type,
+            "acting_user_id": actor_id,
+            "thread_id": (
+                playbook_run_id
+                if event_type == "collection.job.completed"
+                else None
+            ),
+        }
+    ]
+    assert len(redis_client.acked) == 1
+
+
+def test_v3_run_hook_resolves_actor_llm_and_milestone(
+    db: Session, engagement: Engagement, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    redis_client = FakeRedis()
+    actor_id = uuid.uuid4()
+    thread_id = uuid.uuid4()
+    llm = object()
+    resolved: list[dict[str, Any]] = []
+    invoked: list[dict[str, Any]] = []
+
+    monkeypatch.setattr(
+        "app.worker.strategic_consumer.load_run_model",
+        lambda *_args: {"acting_user_id": str(actor_id)},
+    )
+
+    def resolve_mode_llm(_session: Session, **kwargs: Any) -> tuple[Any, str, str]:
+        resolved.append(kwargs)
+        return llm, "test", "test-model"
+
+    monkeypatch.setattr(
+        "app.worker.strategic_consumer.resolve_llm_for_mode", resolve_mode_llm
+    )
+
+    def record_milestone(_session: Session, **kwargs: Any) -> None:
+        factory = kwargs.pop("llm_factory")
+        llm_value, provider, model_name = factory()
+        kwargs["llm"] = llm_value
+        kwargs["model_provider"] = provider
+        kwargs["model_name"] = model_name
+        invoked.append(kwargs)
+
+    monkeypatch.setattr(
+        "app.worker.strategic_consumer.handle_milestone", record_milestone
+    )
+    consumer = StrategicConsumer(
+        agent=object(),  # type: ignore[arg-type]
+        redis_client=redis_client,
+        session_factory=SessionLocal,
+    )
+
+    consumer._v3_analyze_on_run(
+        db,
+        engagement_id=engagement.id,
+        thread_id=thread_id,
+    )
+
+    assert resolved == [
+        {
+            "redis_client": redis_client,
+            "user_id": actor_id,
+            "engagement_id": engagement.id,
+            "mode": AgentPromptMode.analysis,
+        }
+    ]
+    assert invoked == [
+        {
+            "engagement_id": engagement.id,
+            "milestone_type": "run.completed",
+            "acting_user_id": actor_id,
+            "llm": llm,
+            "model_provider": "test",
+            "model_name": "test-model",
+            "thread_id": thread_id,
+        }
+    ]
+
+
+def test_v3_run_hook_respects_auto_assess_disabled(
+    db: Session, engagement: Engagement, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engagement.auto_assess_enabled = False
+    db.flush()
+
+    def unexpected(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("disabled engagement must not invoke milestone intelligence")
+
+    monkeypatch.setattr("app.worker.strategic_consumer.handle_milestone", unexpected)
+    consumer = StrategicConsumer(
+        agent=object(),  # type: ignore[arg-type]
+        redis_client=FakeRedis(),
+        session_factory=SessionLocal,
+    )
+
+    consumer._v3_analyze_on_run(
+        db,
+        engagement_id=engagement.id,
+        thread_id=uuid.uuid4(),
+        acting_user_id=uuid.uuid4(),
+    )
+
+
+def test_v3_run_hook_failure_remains_retryable(
+    db: Session, engagement: Engagement, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "v3_intelligence_enabled", True)
+    redis_client = FakeRedis()
+    consumer = _consumer(redis_client)
+    event_id = str(uuid.uuid4())
+
+    def fail(*_args: Any, **_kwargs: Any) -> None:
+        raise RuntimeError("injected milestone failure")
+
+    monkeypatch.setattr(consumer, "_v3_analyze_on_run", fail)
+    consumer._process_one(
+        outbound_stream(engagement.id),
+        "4-0",
+        {
+            "data": json.dumps(
+                {
+                    "type": "run.completed",
+                    "event_id": event_id,
+                    "thread_id": str(uuid.uuid4()),
+                }
+            )
+        },
+    )
+
+    assert redis_client.acked == []
+    db.expire_all()
+    receipt = db.get(ProcessingReceipt, f"event:{event_id}")
+    assert receipt is not None
+    assert receipt.status == ProcessingReceiptStatus.processing
+    assert "injected milestone failure" in (receipt.last_error or "")

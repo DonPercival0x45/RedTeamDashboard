@@ -90,6 +90,7 @@ def build_intelligence_context(
     *,
     engagement_id: uuid.UUID,
     since: Any = None,
+    thread_id: uuid.UUID | None = None,
 ) -> dict[str, Any]:
     """Assemble the deterministic structured input for any prompt-mode invocation.
 
@@ -100,15 +101,24 @@ def build_intelligence_context(
       - coverage rollup (B2 ``coverage_rollup``),
       - engagement basics: phase + scope-item count.
 
-    ``since`` bounds "new" findings to those created at/after it (the delta
-    window for batched analysis). The agent interprets this compact structured
-    input; it never generates it (architecture-answers Q5).
+    ``thread_id`` defines "new" findings through canonical run lineage.
+    Otherwise, ``since`` bounds them to rows created at/after the delta window.
+    The agent interprets this compact structured input; it never generates it
+    (architecture-answers Q5).
     """
     memory = build_strategy_projection(session, engagement_id=engagement_id)
-    summary = findings_summary(session, engagement_id=engagement_id, since=since)
+    summary = findings_summary(
+        session,
+        engagement_id=engagement_id,
+        since=since,
+        thread_id=thread_id,
+    )
     coverage = coverage_rollup(session, engagement_id=engagement_id)
     significant_ids = significant_finding_ids(
-        session, engagement_id=engagement_id, since=since
+        session,
+        engagement_id=engagement_id,
+        since=since,
+        thread_id=thread_id,
     )
 
     engagement = session.get(Engagement, engagement_id)
@@ -194,7 +204,9 @@ from app.schemas.intelligence import (  # noqa: E402
     IdeationOutput,
     StrategyOutput,
 )
-from app.services.agent_model_resolver import resolve_model_for_mode  # noqa: E402
+from app.services.agent_model_resolver import (  # noqa: E402
+    resolve_model_for_mode_with_default,
+)
 from app.services.memory import create_element, fold_into_decision  # noqa: E402
 
 MODE_OUTPUT_SCHEMAS: dict[AgentPromptMode, type] = {
@@ -299,26 +311,39 @@ def run_intelligence_analysis(
     acting_user_id: uuid.UUID,
     llm: Any,
     since: Any = None,
+    thread_id: uuid.UUID | None = None,
+    model_provider: str | None = None,
+    model_name: str | None = None,
 ) -> tuple[Any, AgentExecution]:
     """Invoke the intelligence agent in ``mode`` and persist its output.
 
     ``llm`` is injected (the caller — B3 milestone runner, an API endpoint, or
     a test — constructs it, typically from ``resolve_model_for_mode`` + the
-    acting analyst's BYO key). This function still calls ``resolve_model_for_mode``
-    to record model attribution on the AgentExecution.
+    acting analyst's BYO key). When the caller also supplies the exact
+    ``model_provider``/``model_name`` used to build that LLM, those values are
+    recorded directly; otherwise this function resolves them for attribution.
 
     Returns ``(parsed_output, execution)``. On LLM failure the execution is
     marked failed and ``(None, execution)`` is returned — no partial writes.
     """
     context = build_intelligence_context(
-        session, engagement_id=engagement_id, since=since
+        session,
+        engagement_id=engagement_id,
+        since=since,
+        thread_id=thread_id,
     )
     messages = build_intelligence_messages(context, mode)
     schema = MODE_OUTPUT_SCHEMAS[mode]
 
-    provider, model_name = resolve_model_for_mode(
-        session, user_id=acting_user_id, engagement_id=engagement_id, mode=mode
-    ) or (None, None)
+    provider = model_provider
+    resolved_model_name = model_name
+    if not (provider and resolved_model_name):
+        provider, resolved_model_name = resolve_model_for_mode_with_default(
+            session,
+            user_id=acting_user_id,
+            engagement_id=engagement_id,
+            mode=mode,
+        )
     execution = AgentExecution(
         engagement_id=engagement_id,
         agent=AgentName.engagement_strategist,
@@ -331,7 +356,7 @@ def run_intelligence_analysis(
         status=AgentExecutionStatus.running,
         started_at=datetime.now(tz=UTC),
         model_provider=provider,
-        model_name=model_name,
+        model_name=resolved_model_name,
     )
     session.add(execution)
     session.flush()

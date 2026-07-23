@@ -16,6 +16,7 @@ running instead of hard-failing on an analyst typo.
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 import structlog
 from sqlalchemy import select
@@ -249,3 +250,70 @@ def resolve_model_for_mode(
         mode=mode.value if hasattr(mode, "value") else str(mode),
     )
     return None
+
+
+def resolve_model_for_mode_with_default(
+    session: Session,
+    *,
+    user_id: uuid.UUID,
+    engagement_id: uuid.UUID,
+    mode: AgentPromptMode,
+) -> tuple[str, str]:
+    """Resolve a v3 mode and apply the process provider/model fallback.
+
+    A configured bare model whose provider cannot be inferred keeps its model
+    name and uses only the process-default provider, matching Tactical. With no
+    configured model at all, the complete process default pair is returned.
+    """
+    from app.orchestrator.llm import default_provider_model
+
+    resolved = resolve_model_for_mode(
+        session,
+        user_id=user_id,
+        engagement_id=engagement_id,
+        mode=mode,
+    )
+    if resolved is None:
+        return default_provider_model()
+    provider, model_name = resolved
+    if provider is None:
+        provider, _default_model = default_provider_model()
+    return provider, model_name
+
+
+def resolve_llm_for_mode(
+    session: Session,
+    *,
+    redis_client: Any,
+    user_id: uuid.UUID,
+    engagement_id: uuid.UUID,
+    mode: AgentPromptMode,
+) -> tuple[Any, str, str]:
+    """Build the structured-output LLM selected for a v3 prompt mode.
+
+    Model selection uses the v3 mode axis, never the legacy agent-role axis.
+    The acting analyst's ephemeral BYO key supplies credentials and endpoint;
+    callers receive the exact provider/model alongside the model so execution
+    attribution cannot drift from the model that actually ran.
+    """
+    from app.agents.strategic import _make_chat_model
+    from app.services.ephemeral_provider_key import resolve_for_user
+
+    provider, model_name = resolve_model_for_mode_with_default(
+        session,
+        user_id=user_id,
+        engagement_id=engagement_id,
+        mode=mode,
+    )
+
+    key = resolve_for_user(redis_client, user_id=user_id, provider=provider)
+    return (
+        _make_chat_model(
+            provider,
+            model_name,
+            api_key=key.api_key,
+            endpoint=key.endpoint,
+        ),
+        provider,
+        model_name,
+    )

@@ -115,14 +115,23 @@ def test_analysis_milestone_fires_when_significant_findings_exist(
 ) -> None:
     _finding(db, engagement, severity=Severity.high)  # significant (high + unvalidated)
     llm = FakeLLM(AnalysisOutput())
+    factory_calls = 0
+
+    def llm_factory() -> tuple[FakeLLM, str, str]:
+        nonlocal factory_calls
+        factory_calls += 1
+        return llm, "test-provider", "test-model"
 
     result = handle_milestone(
         db, engagement_id=engagement.id, milestone_type="run.completed",
-        acting_user_id=user.id, llm=llm,
+        acting_user_id=user.id, llm_factory=llm_factory,
     )
     db.flush()
 
     assert result is not None
+    assert factory_calls == 1
+    assert result[1].model_provider == "test-provider"
+    assert result[1].model_name == "test-model"
     assert llm.invoked is True  # the agent was actually called
 
 
@@ -139,14 +148,37 @@ def test_analysis_milestone_skips_when_nothing_significant(
     db.flush()
     cutoff = datetime.now(tz=UTC) - timedelta(hours=1)
 
-    llm = FakeLLM(AnalysisOutput())
+    def unexpected_llm_factory() -> tuple[FakeLLM, str, str]:
+        raise AssertionError("nothing-changed milestone must not resolve an LLM")
+
     result = handle_milestone(
         db, engagement_id=engagement.id, milestone_type="run.completed",
-        acting_user_id=user.id, llm=llm, since=cutoff,
+        acting_user_id=user.id, llm_factory=unexpected_llm_factory, since=cutoff,
     )
 
     assert result is None  # gather-then-analyze: nothing significant → no invocation
-    assert llm.invoked is False  # no tokens burned
+
+
+def test_analysis_milestone_propagates_llm_failure_for_retry(
+    db: Session, engagement: Engagement, user: User
+) -> None:
+    _finding(db, engagement, severity=Severity.high)
+
+    class FailingLLM:
+        def with_structured_output(self, _schema):
+            return self
+
+        def invoke(self, _messages):
+            raise RuntimeError("provider unavailable")
+
+    with pytest.raises(RuntimeError, match="provider unavailable"):
+        handle_milestone(
+            db,
+            engagement_id=engagement.id,
+            milestone_type="run.completed",
+            acting_user_id=user.id,
+            llm=FailingLLM(),
+        )
 
 
 # ---------------------------------------------------------------------------

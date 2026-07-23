@@ -18,6 +18,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, object_session
 
 from app.api.deps import CurrentNonGuestUser, CurrentUser, DbSession, RedisClient
+from app.core.config import settings
 from app.models import (
     ActorType,
     AgentExecution,
@@ -1260,6 +1261,12 @@ def resolve_work_item(
             "row_version": row.row_version,
         },
     )
+    if settings.v3_intelligence_enabled:
+        # v3: auto-reassess retired — B3 fires strategy/ideation on coverage.gap
+        # / baseline milestones, so no reassess event is staged on resolve.
+        session.commit()
+        session.refresh(row)
+        return _work_read(session, row)
     event = stage_auto_reassess(
         session,
         work_item_id=row.id,

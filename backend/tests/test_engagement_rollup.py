@@ -21,6 +21,7 @@ from app.models import (
     EngagementStatus,
     EngagementWorkState,
     Finding,
+    FindingOrigin,
     FindingPhase,
     FindingStatus,
     Severity,
@@ -162,6 +163,49 @@ def test_significant_finding_ids_dedupes_across_predicates(
 
     assert set(ids) == {triple.id, high_only.id}
     assert len(ids) == 2  # no dupes
+
+
+def test_significant_finding_ids_uses_run_lineage_for_new_set(
+    db: Session, engagement: Engagement
+) -> None:
+    old = datetime.now(tz=UTC) - timedelta(days=10)
+    produced = _finding(
+        db,
+        engagement,
+        severity=Severity.low,
+        status=FindingStatus.validated,
+        created_at=old,
+    )
+    _finding(
+        db,
+        engagement,
+        severity=Severity.low,
+        status=FindingStatus.validated,
+        created_at=old,
+    )
+    thread_id = uuid.uuid4()
+    db.add(
+        FindingOrigin(
+            finding_id=produced.id,
+            thread_id=thread_id,
+            source_tool="test",
+        )
+    )
+    db.flush()
+
+    ids = rollup.significant_finding_ids(
+        db,
+        engagement_id=engagement.id,
+        thread_id=thread_id,
+    )
+
+    assert ids == [produced.id]
+    assert rollup.findings_summary(
+        db,
+        engagement_id=engagement.id,
+        thread_id=thread_id,
+    )["new"] == 1
+
 
 
 def test_significant_finding_ids_excludes_soft_deleted(db: Session, engagement: Engagement) -> None:

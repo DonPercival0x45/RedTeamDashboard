@@ -251,6 +251,7 @@ def mark_baseline_completed(
         engagement_id=str(engagement_id),
         methodology_id=str(methodology_id),
         baseline_completed_at=ts.isoformat(),
+        acting_user_id=(actor_id if actor_type == ActorType.user else None),
     )
     outbox_key = f"baseline.completed:{engagement_id}"
     entry = enqueue_event(
@@ -289,6 +290,7 @@ def open_coverage_gap(
     node_tier: CoverageNodeTier,
     asset_class: str,
     reason: str,
+    acting_user_id: uuid.UUID | None = None,
     dedupe_key: str | None = None,
 ) -> CommandOutbox:
     """Stage a ``coverage.gap.opened`` milestone.
@@ -305,6 +307,7 @@ def open_coverage_gap(
         node_tier=node_tier.value,
         asset_class=asset_class,
         reason=reason,
+        acting_user_id=str(acting_user_id) if acting_user_id is not None else None,
     )
     key = dedupe_key or f"coverage.gap.opened:{engagement_id}:{uuid.uuid4()}"
     return enqueue_event(

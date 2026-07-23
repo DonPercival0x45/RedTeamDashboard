@@ -315,11 +315,14 @@ def test_mark_baseline_completed_flips_phase_and_enqueues_milestone(
     assert engagement.baseline_completed_at is None
     methodology_id = uuid.uuid4()
 
+    actor_id = str(uuid.uuid4())
     eng, entry = cov.mark_baseline_completed(
         db,
         engagement_id=engagement.id,
         methodology_id=methodology_id,
         now=_at(),
+        actor_type=ActorType.user,
+        actor_id=actor_id,
     )
     db.refresh(eng)
     assert eng.phase is EngagementPhase.exploration
@@ -332,6 +335,7 @@ def test_mark_baseline_completed_flips_phase_and_enqueues_milestone(
     assert envelope["engagement_id"] == str(engagement.id)
     assert envelope["methodology_id"] == str(methodology_id)
     assert envelope["baseline_completed_at"] == _at().isoformat()
+    assert envelope["acting_user_id"] == actor_id
 
 
 def test_mark_baseline_completed_is_idempotent(
@@ -379,6 +383,7 @@ def test_open_coverage_gap_enqueues_milestone(db: Session, engagement: Engagemen
         node_tier=CoverageNodeTier.baseline,
         asset_class="ip",
         reason="unsatisfied for 10.0.0.0/24",
+        acting_user_id=uuid.UUID("00000000-0000-0000-0000-000000000123"),
         dedupe_key="test-gap-1",
     )
     assert entry.stream_name == outbound_stream(engagement.id)
@@ -388,6 +393,7 @@ def test_open_coverage_gap_enqueues_milestone(db: Session, engagement: Engagemen
     assert envelope["node_tier"] == "baseline"
     assert envelope["asset_class"] == "ip"
     assert envelope["reason"] == "unsatisfied for 10.0.0.0/24"
+    assert envelope["acting_user_id"] == "00000000-0000-0000-0000-000000000123"
 
 
 def test_open_coverage_gap_dedupe_key_prevents_duplicates(

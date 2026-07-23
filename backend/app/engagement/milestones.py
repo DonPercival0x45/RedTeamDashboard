@@ -17,13 +17,17 @@ Two consequences worth flagging for A6/B3:
   finding IDs (``is_new OR not_validated OR high_severity``) to batch; the IDs
   are intentionally NOT in the payload (they'd bloat it and B3 needs fresh
   reads anyway).
+- Intelligence-triggering consumers require ``acting_user_id`` so model/key
+  resolution stays bound to the analyst who kicked the work. It is optional in
+  this pre-A6 contract for deterministic/system-only producers, but A6 must set
+  it on events intended to invoke the intelligence plane.
 - ``BaselineCompletedPayload.methodology_id`` is required-non-null even though
   ``CoverageRecord.methodology_id`` is nullable-until-A1 — harmless because A6
   emits baseline-completed well after A1 (methodology catalog) has landed.
 """
 from __future__ import annotations
 
-from typing import Any, TypedDict
+from typing import Any, NotRequired, TypedDict
 
 # ---------------------------------------------------------------------------
 # Canonical event names
@@ -68,6 +72,7 @@ class CollectionJobCompletedPayload(TypedDict):
     asset_class: str
     scope_subset: list[str]
     findings_summary: FindingsSummary
+    acting_user_id: NotRequired[str]
 
 
 class CoverageGapOpenedPayload(TypedDict):
@@ -80,6 +85,7 @@ class CoverageGapOpenedPayload(TypedDict):
     node_tier: str
     asset_class: str
     reason: str
+    acting_user_id: NotRequired[str]
 
 
 class BaselineCompletedPayload(TypedDict):
@@ -91,6 +97,7 @@ class BaselineCompletedPayload(TypedDict):
     engagement_id: str
     methodology_id: str
     baseline_completed_at: str
+    acting_user_id: NotRequired[str]
 
 
 # ---------------------------------------------------------------------------
@@ -107,8 +114,9 @@ def collection_job_completed(
     asset_class: str,
     scope_subset: list[str],
     findings_summary: FindingsSummary | dict[str, Any],
+    acting_user_id: str | None = None,
 ) -> dict[str, Any]:
-    return {
+    payload = {
         "type": COLLECTION_JOB_COMPLETED,
         "engagement_id": engagement_id,
         "playbook_run_id": playbook_run_id,
@@ -118,6 +126,9 @@ def collection_job_completed(
         "scope_subset": list(scope_subset),
         "findings_summary": dict(findings_summary),
     }
+    if acting_user_id is not None:
+        payload["acting_user_id"] = acting_user_id
+    return payload
 
 
 def coverage_gap_opened(
@@ -127,8 +138,9 @@ def coverage_gap_opened(
     node_tier: str,
     asset_class: str,
     reason: str,
+    acting_user_id: str | None = None,
 ) -> dict[str, Any]:
-    return {
+    payload = {
         "type": COVERAGE_GAP_OPENED,
         "engagement_id": engagement_id,
         "node_id": node_id,
@@ -136,6 +148,9 @@ def coverage_gap_opened(
         "asset_class": asset_class,
         "reason": reason,
     }
+    if acting_user_id is not None:
+        payload["acting_user_id"] = acting_user_id
+    return payload
 
 
 def baseline_completed(
@@ -143,10 +158,14 @@ def baseline_completed(
     engagement_id: str,
     methodology_id: str,
     baseline_completed_at: str,
+    acting_user_id: str | None = None,
 ) -> dict[str, Any]:
-    return {
+    payload = {
         "type": BASELINE_COMPLETED,
         "engagement_id": engagement_id,
         "methodology_id": methodology_id,
         "baseline_completed_at": baseline_completed_at,
     }
+    if acting_user_id is not None:
+        payload["acting_user_id"] = acting_user_id
+    return payload
