@@ -47,6 +47,7 @@ from app.models import (
     Conversation,
     ConversationMessage,
     Engagement,
+    EngagementArchitecture,
     EngagementStatus,
     EngagementWorkState,
     Finding,
@@ -163,6 +164,18 @@ def analyze_finding(
     cache — not the engagement creator's.
     """
     finding = _active_finding_for_mutation(session, finding_id)
+    engagement = session.get(Engagement, finding.engagement_id)
+    if (
+        engagement is not None
+        and engagement.intelligence_architecture is EngagementArchitecture.v3
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "v3 engagement uses batched analysis; run the analysis "
+                "intelligence mode from Strategy"
+            ),
+        )
 
     agent = StrategicAgent(redis_client=redis_client)
     execution, suggestions = agent.analyze_finding(

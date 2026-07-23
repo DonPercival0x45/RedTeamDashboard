@@ -19,6 +19,7 @@ from app.models import (
     ConversationContextType,
     ConversationMessage,
     Engagement,
+    EngagementArchitecture,
     EngagementStatus,
     EngagementWorkState,
     Suggestion,
@@ -57,6 +58,17 @@ def _mutable(row: Engagement) -> None:
         raise HTTPException(status_code=409, detail="completed engagement is read-only")
 
 
+def _legacy_only(row: Engagement) -> None:
+    if row.intelligence_architecture is EngagementArchitecture.v3:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "v3 engagement uses the shared intelligence modes; "
+                "legacy Engagement Strategist calls are retired"
+            ),
+        )
+
+
 def _run(
     mode: str,
     slug: str,
@@ -66,6 +78,7 @@ def _run(
 ) -> StrategistRunResponse:
     engagement = _engagement(session, slug)
     _mutable(engagement)
+    _legacy_only(engagement)
     if not settings.engagement_strategist_enabled:
         raise HTTPException(status_code=404, detail="engagement strategist is disabled")
     try:
@@ -164,6 +177,7 @@ def post_chat(
 ) -> StrategistChatResponse:
     engagement = _engagement(session, slug)
     _mutable(engagement)
+    _legacy_only(engagement)
     if not settings.engagement_strategist_enabled:
         raise HTTPException(status_code=404, detail="engagement strategist is disabled")
     conversation: Conversation | None = None

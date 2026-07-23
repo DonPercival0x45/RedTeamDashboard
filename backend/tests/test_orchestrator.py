@@ -31,6 +31,7 @@ from app.models import (
     AgentTrigger,
     CommandOutbox,
     Engagement,
+    EngagementArchitecture,
     EngagementStatus,
     Finding,
     FindingPhase,
@@ -453,6 +454,26 @@ def test_analyze_endpoint_returns_suggestions(
     assert "execution_id" in body
     assert len(body["suggestions"]) == 1
     assert body["suggestions"][0]["status"] == "open"
+
+
+def test_v3_analyze_endpoint_rejects_legacy_per_finding_agent(
+    monkeypatch: pytest.MonkeyPatch,
+    client: TestClient,
+    db: Session,
+    engagement: Engagement,
+    finding: Finding,
+) -> None:
+    engagement.intelligence_architecture = EngagementArchitecture.v3
+    db.commit()
+
+    def unexpected(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("v3 must not resolve the legacy Strategic LLM")
+
+    monkeypatch.setattr(StrategicAgent, "_resolve_llm", unexpected)
+    response = client.post(f"/findings/{finding.id}/analyze", headers=HDR)
+
+    assert response.status_code == 409
+    assert "uses batched analysis" in response.text
 
 
 def test_accept_dispatches_agent_eligible(
