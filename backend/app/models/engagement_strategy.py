@@ -75,6 +75,28 @@ class WorkItemExecutor(enum.StrEnum):
     unassigned = "unassigned"
 
 
+class WorkItemDisposition(enum.StrEnum):
+    """v3 *how/where-it-gets-done* axis (architecture-v3-tracker PR 0).
+
+    Orthogonal to ``WorkItemExecutor`` (who-runs-it, the v1 axis that retires
+    at Convergence C5). The collection plane routes ``tool_backed`` /
+    ``tool_backed_mcp`` items to the runner; ``manual_local`` / ``build`` /
+    ``blocked`` / ``needs_decision`` / ``out_of_scope`` stay on the analyst
+    queue. Nullable — legacy rows backfilled from ``executor_type`` (only
+    ``tactical``→``tool_backed`` and ``analyst``→``manual_local``; the
+    agent-proposing executors stay NULL for triage). Storage uses underscores
+    (codebase name==value convention); the ``needs-decision`` *concept* is
+    shared with the ``feat/needs-decision-redesign`` UX branch."""
+
+    tool_backed = "tool_backed"
+    tool_backed_mcp = "tool_backed_mcp"
+    manual_local = "manual_local"
+    build = "build"
+    blocked = "blocked"
+    needs_decision = "needs_decision"
+    out_of_scope = "out_of_scope"
+
+
 class WorkItemResolution(enum.StrEnum):
     completed = "completed"
     disproved = "disproved"
@@ -240,6 +262,7 @@ class WorkItem(Base, TimestampMixin):
         Index("ix_work_items_engagement_updated", "engagement_id", "updated_at"),
         Index("ix_work_items_objective_id", "objective_id"),
         Index("ix_work_items_assigned_user_id", "assigned_user_id"),
+        Index("ix_work_items_engagement_disposition", "engagement_id", "disposition"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid7)
@@ -280,6 +303,11 @@ class WorkItem(Base, TimestampMixin):
     )
     executor_type: Mapped[WorkItemExecutor] = mapped_column(
         Enum(WorkItemExecutor, name="work_item_executor"), nullable=False, index=True
+    )
+    # v3 shared contract (PR 0): how/where this item gets done. Nullable; the
+    # migration backfills from executor_type. Retires executor_type at C5.
+    disposition: Mapped[WorkItemDisposition | None] = mapped_column(
+        Enum(WorkItemDisposition, name="work_item_disposition"), nullable=True
     )
     assigned_user_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
