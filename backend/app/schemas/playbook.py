@@ -77,6 +77,8 @@ class PlaybookRunRead(BaseModel):
     findings_high_severity: int = 0
     findings_total: int = 0
     last_error: str | None = None
+    # Request identity is durable even though execution happens in a worker.
+    requested_by: uuid.UUID | None = None
     # A5 approval attribution — populated when the run passed through the
     # awaiting_approval gate.
     approved_by: uuid.UUID | None = None

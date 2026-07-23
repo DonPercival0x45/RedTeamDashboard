@@ -87,6 +87,7 @@ def enqueue_run(
     playbook: Playbook,
     scope_subset: Sequence[str],
     executor_kind: PlaybookExecutorKind = PlaybookExecutorKind.internal,
+    requested_by: uuid.UUID | None = None,
     now: datetime | None = None,
 ) -> PlaybookRun:
     """Create a playbook run. Worker picks it up (or waits for approval).
@@ -115,6 +116,7 @@ def enqueue_run(
         scope_subset=list(scope_subset),
         steps_total=len(playbook.steps) * len(scope_subset),
         executor_kind=executor_kind,
+        requested_by=requested_by,
         created_at=ts,
     )
     session.add(run)
@@ -307,6 +309,25 @@ def claim_next_pending(session: Session) -> PlaybookRun | None:
     return run
 
 
+def _effective_actor(
+    run: PlaybookRun,
+    *,
+    fallback_type: ActorType,
+    fallback_id: str | None,
+) -> tuple[ActorType, str | None]:
+    """Resolve the analyst identity that authorized this collection run.
+
+    Active playbooks use the approving analyst; inactive playbooks use the
+    requesting analyst. Legacy/system-created rows safely retain the caller's
+    fallback and their milestones omit ``acting_user_id`` rather than borrowing
+    another user's model key.
+    """
+    acting_user_id = run.approved_by or run.requested_by
+    if acting_user_id is not None:
+        return ActorType.user, str(acting_user_id)
+    return fallback_type, fallback_id
+
+
 def execute_pending_run(
     session: Session,
     *,
@@ -346,6 +367,11 @@ def execute_pending_run(
         return run
 
     started = run.started_at or _now(now)
+    effective_actor_type, effective_actor_id = _effective_actor(
+        run,
+        fallback_type=actor_type,
+        fallback_id=actor_id,
+    )
 
     if not run.scope_subset:
         run.status = PlaybookRunStatus.failed
@@ -383,8 +409,8 @@ def execute_pending_run(
                 scope_item=str(scope_item),
                 executor=executor,
                 now=started,
-                actor_type=actor_type,
-                actor_id=actor_id,
+                actor_type=effective_actor_type,
+                actor_id=effective_actor_id,
             )
         if cancelled_mid:
             break
@@ -420,6 +446,7 @@ def start_run(
     actor_type: ActorType = ActorType.system,
     actor_id: str | None = None,
     executor_kind: PlaybookExecutorKind = PlaybookExecutorKind.internal,
+    requested_by: uuid.UUID | None = None,
 ) -> PlaybookRun:
     """Enqueue + execute a run synchronously. Tests + code paths that don't
     want the async queue call this.
@@ -435,6 +462,7 @@ def start_run(
         playbook=playbook,
         scope_subset=scope_subset,
         executor_kind=executor_kind,
+        requested_by=requested_by,
         now=now,
     )
     run.status = PlaybookRunStatus.running
@@ -562,6 +590,11 @@ def _emit_completion(
             "high_severity": run.findings_high_severity,
             "total": run.findings_total,
         },
+        acting_user_id=(
+            str(run.approved_by or run.requested_by)
+            if (run.approved_by or run.requested_by) is not None
+            else None
+        ),
     )
     enqueue_event(
         session,

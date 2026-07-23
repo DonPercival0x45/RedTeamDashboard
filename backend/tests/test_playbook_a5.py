@@ -17,6 +17,7 @@ Covers:
 """
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import UTC, datetime
 
@@ -28,6 +29,7 @@ from sqlalchemy.orm import Session
 from app.db.session import SessionLocal
 from app.main import app
 from app.models import (
+    CommandOutbox,
     Engagement,
     EngagementStatus,
     EngagementWorkState,
@@ -44,9 +46,16 @@ from app.services.playbook import (
     catalog,
     claim_next_pending,
     enqueue_run,
+    execute_pending_run,
     load_seed_playbooks,
     reject_run,
 )
+from app.services.playbook.executor import StepResult
+
+
+class _SuccessExecutor:
+    def run_step(self, **_kwargs) -> StepResult:
+        return StepResult(ok=True)
 
 
 @pytest.fixture(autouse=True)
@@ -199,6 +208,40 @@ def test_approve_flips_to_pending_and_stamps_attribution(
     assert result.approved_by == approver.id
     assert result.approved_at == datetime(2026, 7, 23, tzinfo=UTC)
     assert result.approval_reason == "analyst signed off"
+
+
+def test_approved_run_milestone_uses_approver_identity(
+    db: Session,
+    engagement: Engagement,
+    active_playbook: Playbook,
+    approver: User,
+) -> None:
+    requester = User(
+        id=uuid.uuid4(),
+        email=f"requester-{uuid.uuid4().hex[:6]}@example.com",
+        role=UserRole.user,
+        is_active=True,
+    )
+    db.add(requester)
+    db.flush()
+    run = enqueue_run(
+        db,
+        engagement=engagement,
+        playbook=active_playbook,
+        scope_subset=["foo.com"],
+        requested_by=requester.id,
+    )
+    approve_run(db, run_id=run.id, approver_id=approver.id)
+    execute_pending_run(db, run_id=run.id, executor=_SuccessExecutor())
+    db.flush()
+
+    entry = db.query(CommandOutbox).filter_by(
+        idempotency_key=f"collection.job.completed:{run.id}"
+    ).one()
+    envelope = json.loads(entry.encoded_payload["data"])
+    assert run.requested_by == requester.id
+    assert run.approved_by == approver.id
+    assert envelope["acting_user_id"] == str(approver.id)
 
 
 def test_approve_is_idempotent_after_first_call(

@@ -16,6 +16,7 @@ Covers:
 """
 from __future__ import annotations
 
+import json
 import time
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -28,6 +29,8 @@ from sqlalchemy.orm import Session
 from app.db.session import SessionLocal
 from app.main import app
 from app.models import (
+    ActorType,
+    AuditLog,
     CommandOutbox,
     Engagement,
     EngagementStatus,
@@ -74,6 +77,20 @@ class SlowExecutor:
         time.sleep(self.delay)
         self.step_count += 1
         return StepResult(ok=True, findings_total=1)
+
+
+@pytest.fixture()
+def user(db: Session) -> User:
+    u = User(
+        id=uuid.uuid4(),
+        email=f"a3c-{uuid.uuid4().hex[:6]}@example.com",
+        display_name="A3c Tester",
+        role=UserRole.user,
+        is_active=True,
+    )
+    db.add(u)
+    db.commit()
+    return u
 
 
 @pytest.fixture(autouse=True)
@@ -242,10 +259,14 @@ def test_skip_locked_isolates_concurrent_claimers(
 
 
 def test_execute_drives_claimed_run_to_completed(
-    db: Session, engagement: Engagement, playbook
+    db: Session, engagement: Engagement, playbook, user: User
 ) -> None:
     run = enqueue_run(
-        db, engagement=engagement, playbook=playbook, scope_subset=["foo.com"],
+        db,
+        engagement=engagement,
+        playbook=playbook,
+        scope_subset=["foo.com"],
+        requested_by=user.id,
     )
     db.commit()
     claim_next_pending(db)
@@ -263,6 +284,17 @@ def test_execute_drives_claimed_run_to_completed(
         )
     ).scalar_one_or_none()
     assert entry is not None
+    envelope = json.loads(entry.encoded_payload["data"])
+    assert envelope["acting_user_id"] == str(user.id)
+    coverage_audits = db.execute(
+        select(AuditLog).where(
+            AuditLog.engagement_id == engagement.id,
+            AuditLog.event_type == "coverage.recorded",
+        )
+    ).scalars().all()
+    assert coverage_audits
+    assert all(row.actor_type is ActorType.user for row in coverage_audits)
+    assert {row.actor_id for row in coverage_audits} == {str(user.id)}
 
 
 def test_execute_bails_on_cancelled_pending(
@@ -376,30 +408,6 @@ def test_worker_run_once_idle_when_queue_empty() -> None:
     assert worker.run_once() is False
 
 
-# ---------------------------------------------------------------------------
-# HTTP surface — 202 + cancel endpoint
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture()
-def client() -> TestClient:
-    return TestClient(app)
-
-
-@pytest.fixture()
-def user(db: Session) -> User:
-    u = User(
-        id=uuid.uuid4(),
-        email=f"a3c-{uuid.uuid4().hex[:6]}@example.com",
-        display_name="A3c Tester",
-        role=UserRole.user,
-        is_active=True,
-    )
-    db.add(u)
-    db.commit()
-    return u
-
-
 @pytest.fixture()
 def guest(db: Session) -> User:
     u = User(
@@ -414,8 +422,45 @@ def guest(db: Session) -> User:
     return u
 
 
+# ---------------------------------------------------------------------------
+# HTTP surface — 202 + cancel endpoint
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def client() -> TestClient:
+    return TestClient(app)
+
+
 def _headers(u: User) -> dict[str, str]:
     return {"X-User-Id": u.email}
+
+
+def test_execute_without_requester_omits_acting_user(
+    db: Session, engagement: Engagement, playbook
+) -> None:
+    """Pre-A8 (legacy) runs with no requester/approver keep the system fallback.
+
+    The worker must never synthesize an analyst identity it cannot prove.
+    """
+    run = enqueue_run(
+        db,
+        engagement=engagement,
+        playbook=playbook,
+        scope_subset=["foo.com"],
+    )
+    db.commit()
+    claim_next_pending(db)
+    db.commit()
+    execute_pending_run(db, run_id=run.id, executor=MockExecutor())
+    db.commit()
+    entry = db.execute(
+        select(CommandOutbox).where(
+            CommandOutbox.idempotency_key == f"collection.job.completed:{run.id}"
+        )
+    ).scalar_one()
+    envelope = json.loads(entry.encoded_payload["data"])
+    assert "acting_user_id" not in envelope
 
 
 def test_post_returns_202_with_pending_row(
@@ -434,6 +479,7 @@ def test_post_returns_202_with_pending_row(
     body = resp.json()
     assert body["status"] == PlaybookRunStatus.pending.value
     assert body["started_at"] is None
+    assert body["requested_by"] == str(user.id)
 
 
 def test_cancel_endpoint_transitions_pending_to_cancelled(
