@@ -1,27 +1,20 @@
-"""Playbook runner — Track A step A3a.
+"""Playbook runner — Track A step A3a + A3c.
 
-``start_run`` orchestrates one execution of a playbook against a scope
-subset. For each step × each scope item, it:
+Three public entry points now that A3c has cut the async seam:
 
-1. Calls the injected executor's ``run_step``.
-2. Writes a ``CoverageRecord`` per (satisfies_node, scope_item) with
-   ``status=satisfied`` on success or ``status=failed`` on error — per-step
-   granularity (A3a decision Q3). ``methodology_id`` on those records comes
-   from the engagement's ``methodology_id`` when present so B1/B2 can pin
-   coverage to the selected tree.
-3. Accumulates ``FindingsSummary`` counters onto the ``PlaybookRun``.
+* ``enqueue_run(engagement, playbook, scope_subset)`` — create a
+  ``PlaybookRun`` in ``pending`` status. The HTTP endpoint returns 202 with
+  this row; a background worker picks it up.
+* ``execute_pending_run(session, run_id, executor)`` — grab a pending row
+  under a ``SELECT ... FOR UPDATE SKIP LOCKED`` transition to ``running``,
+  drive every step, transition to a terminal status. This is what the
+  worker calls. Also honors mid-run ``cancel_run`` requests.
+* ``start_run(...)`` — sync convenience (enqueue → execute in one call).
+  Kept for tests + local dev + code paths that don't want the queue.
 
-At run end:
-
-* Final ``status`` = ``completed`` when all steps succeeded, ``partial`` if
-  at least one succeeded and one failed, ``failed`` if none succeeded.
-* Emits ``collection.job.completed`` through the shared durable outbox with
-  the ``FindingsSummary`` (counts-only per B3's contract).
-
-Sync execution, single-transaction — no queue, no fan-out. A3b adds the
-queue + async fan-out; A5 adds the pre-authorization gate. The runner shape
-here (a single call that returns a completed ``PlaybookRun``) is what A3b
-wraps, so A3b is additive.
+The worker-facing shape (``execute_pending_run``) uses row-level locking so
+multiple worker replicas cooperate: whichever holds the pending row's lock
+executes it, the others try the next one.
 """
 from __future__ import annotations
 
@@ -51,6 +44,16 @@ from app.services.playbook.executor import PlaybookExecutor, StepResult
 logger = structlog.get_logger(__name__)
 
 
+TERMINAL_STATUSES = frozenset(
+    {
+        PlaybookRunStatus.completed,
+        PlaybookRunStatus.partial,
+        PlaybookRunStatus.failed,
+        PlaybookRunStatus.cancelled,
+    }
+)
+
+
 def _now(now: datetime | None) -> datetime:
     return now if now is not None else datetime.now(tz=UTC)
 
@@ -71,54 +74,200 @@ def _final_status(succeeded: int, failed: int) -> PlaybookRunStatus:
     return PlaybookRunStatus.completed
 
 
-def start_run(
+# ---------------------------------------------------------------------------
+# Enqueue — the request-side entry point (A3c)
+# ---------------------------------------------------------------------------
+
+
+def enqueue_run(
     session: Session,
     *,
     engagement: Engagement,
     playbook: Playbook,
     scope_subset: Sequence[str],
+    now: datetime | None = None,
+) -> PlaybookRun:
+    """Create a ``pending`` playbook run. Worker picks it up.
+
+    ``steps_total`` is pre-populated so a client polling the row can see
+    "N of M steps done" progress the moment the worker starts. Caller
+    commits.
+    """
+    ts = _now(now)
+    run = PlaybookRun(
+        engagement_id=engagement.id,
+        playbook_id=playbook.id,
+        status=PlaybookRunStatus.pending,
+        scope_subset=list(scope_subset),
+        steps_total=len(playbook.steps) * len(scope_subset),
+        created_at=ts,
+    )
+    session.add(run)
+    session.flush()
+    return run
+
+
+# ---------------------------------------------------------------------------
+# Cancel
+# ---------------------------------------------------------------------------
+
+
+class RunNotCancellableError(Exception):
+    """Raised when the requested run is already in a terminal state."""
+
+    def __init__(self, run_id: uuid.UUID, status: PlaybookRunStatus) -> None:
+        self.run_id = run_id
+        self.status = status
+        super().__init__(
+            f"run {run_id} is {status.value}; cannot cancel a terminal run"
+        )
+
+
+def cancel_run(
+    session: Session,
+    *,
+    run_id: uuid.UUID,
+    now: datetime | None = None,
+    reason: str | None = None,
+) -> PlaybookRun:
+    """Flip a pending or running run to ``cancelled``.
+
+    * Pending → cancelled immediately (worker will skip the grab).
+    * Running → cancelled; the worker checks status between steps and
+      bails cleanly.
+    * Terminal → raises ``RunNotCancellableError`` (409).
+
+    Idempotent for the (pending/running) → cancelled transition: a second
+    call on an already-cancelled run is a no-op.
+    """
+    run = session.get(PlaybookRun, run_id)
+    if run is None:
+        raise KeyError(str(run_id))
+    if run.status is PlaybookRunStatus.cancelled:
+        return run
+    if run.status in TERMINAL_STATUSES:
+        raise RunNotCancellableError(run_id, run.status)
+    ts = _now(now)
+    run.status = PlaybookRunStatus.cancelled
+    if run.completed_at is None:
+        run.completed_at = ts
+    if reason and not run.last_error:
+        run.last_error = reason
+    session.flush()
+    return run
+
+
+# ---------------------------------------------------------------------------
+# Worker-facing execute path (A3c)
+# ---------------------------------------------------------------------------
+
+
+def claim_next_pending(session: Session) -> PlaybookRun | None:
+    """Try to claim the oldest pending run for this worker.
+
+    Uses ``SELECT ... FOR UPDATE SKIP LOCKED`` so N worker replicas polling
+    concurrently pick disjoint rows. The claim atomically transitions
+    ``pending`` → ``running`` inside the same transaction the caller commits.
+    Returns ``None`` when there's nothing to do (the worker sleeps + retries).
+
+    Caller must commit before invoking ``execute_pending_run`` — the intent
+    is "hold the lock only long enough to flip status," not for the full
+    execution duration (playbooks can take minutes).
+
+    Uses raw SQL because SQLAlchemy 2's ``with_for_update(skip_locked=True)``
+    doesn't reliably chain with ``limit(1)`` in the Postgres dialect — the
+    generated statement lands as plain ``FOR UPDATE`` under some ORM path
+    combos and two claimers deadlock instead of one seeing None.
+    """
+    from sqlalchemy import text
+
+    row_id_row = session.execute(
+        text(
+            """
+            SELECT id FROM playbook_runs
+            WHERE status = 'pending'
+            ORDER BY created_at, id
+            LIMIT 1
+            FOR UPDATE SKIP LOCKED
+            """
+        )
+    ).scalar_one_or_none()
+    if row_id_row is None:
+        return None
+    run = session.get(PlaybookRun, row_id_row)
+    if run is None:
+        return None
+    run.status = PlaybookRunStatus.running
+    run.started_at = datetime.now(tz=UTC)
+    session.flush()
+    return run
+
+
+def execute_pending_run(
+    session: Session,
+    *,
+    run_id: uuid.UUID,
     executor: PlaybookExecutor,
     now: datetime | None = None,
     actor_type: ActorType = ActorType.system,
     actor_id: str | None = None,
 ) -> PlaybookRun:
-    """Create + execute a playbook run in one call.
+    """Drive a claimed run to terminal status.
 
-    Sync: returns once every step has been attempted. The caller commits.
-    Idempotency: this creates a NEW ``PlaybookRun`` every call — reruns are a
-    new row (the coverage log picks up the fresh attempts). Callers who want
-    per-run idempotency dedupe upstream on their own key.
-
-    ``executor`` is any object matching ``PlaybookExecutor``. Tests inject a
-    ``MockExecutor``; A3b wires the real ``InternalExecutor`` to the tool
-    registry.
-
-    Runs against a scope with zero items get status ``failed`` +
-    ``last_error='empty scope'`` — the analyst asked for a run against
-    nothing, and we surface it as a fault instead of silently succeeding.
+    Reloads the run + its playbook + engagement into the caller session.
+    Iterates steps × scope items, honoring cancellation between iterations
+    (a mid-run ``cancel_run`` flips ``status=cancelled`` and this loop
+    checks + bails). Coverage records + FindingsSummary accumulate exactly
+    like the sync path — A3a's ``start_run`` is now a thin wrapper.
     """
-    started = _now(now)
-    run = PlaybookRun(
-        engagement_id=engagement.id,
-        playbook_id=playbook.id,
-        status=PlaybookRunStatus.running,
-        scope_subset=list(scope_subset),
-        started_at=started,
-        steps_total=len(playbook.steps) * len(scope_subset),
-    )
-    session.add(run)
-    session.flush()
+    run = session.get(PlaybookRun, run_id)
+    if run is None:
+        raise KeyError(str(run_id))
+    if run.status is PlaybookRunStatus.cancelled:
+        # Pending → cancelled while we were between claim + execute. Nothing
+        # to do; caller commits.
+        return run
+    if run.status not in {PlaybookRunStatus.running, PlaybookRunStatus.pending}:
+        # Already terminal or in an unexpected state — bail without doing
+        # more damage.
+        return run
 
-    if not scope_subset:
+    playbook = session.get(Playbook, run.playbook_id)
+    engagement = session.get(Engagement, run.engagement_id)
+    if playbook is None or engagement is None:
         run.status = PlaybookRunStatus.failed
-        run.completed_at = started
+        run.completed_at = _now(now)
+        run.last_error = "playbook or engagement missing"
+        session.flush()
+        return run
+
+    started = run.started_at or _now(now)
+
+    if not run.scope_subset:
+        run.status = PlaybookRunStatus.failed
+        run.completed_at = _now(now)
         run.last_error = "empty scope"
         session.flush()
         _emit_completion(session, engagement=engagement, playbook=playbook, run=run)
         return run
 
+    from sqlalchemy import text as _text
+
+    cancelled_mid = False
     for step in playbook.steps:
-        for scope_item in scope_subset:
+        for scope_item in run.scope_subset:
+            # Fresh read of status — a cancel_run committed from another
+            # session flips the row and this loop must see it promptly.
+            # Uses raw text so we bypass ORM caching + enum-coercion paths
+            # and get the current row status as a plain string.
+            row_status = session.execute(
+                _text("SELECT status FROM playbook_runs WHERE id = :id"),
+                {"id": str(run.id)},
+            ).scalar_one()
+            if row_status == PlaybookRunStatus.cancelled.value:
+                run.status = PlaybookRunStatus.cancelled
+                cancelled_mid = True
+                break
             _run_one(
                 session,
                 engagement=engagement,
@@ -133,12 +282,66 @@ def start_run(
                 actor_type=actor_type,
                 actor_id=actor_id,
             )
+        if cancelled_mid:
+            break
+
+    if cancelled_mid:
+        # cancel_run set status + completed_at; still emit the completion
+        # milestone so B3 doesn't miss the event (its receiver decides
+        # whether cancelled runs get analyzed — likely no, but the signal
+        # travels).
+        _emit_completion(session, engagement=engagement, playbook=playbook, run=run)
+        return run
 
     run.status = _final_status(run.steps_succeeded, run.steps_failed)
     run.completed_at = _now(now)
     session.flush()
     _emit_completion(session, engagement=engagement, playbook=playbook, run=run)
     return run
+
+
+# ---------------------------------------------------------------------------
+# Sync convenience (A3a) — enqueue + execute in one call
+# ---------------------------------------------------------------------------
+
+
+def start_run(
+    session: Session,
+    *,
+    engagement: Engagement,
+    playbook: Playbook,
+    scope_subset: Sequence[str],
+    executor: PlaybookExecutor,
+    now: datetime | None = None,
+    actor_type: ActorType = ActorType.system,
+    actor_id: str | None = None,
+) -> PlaybookRun:
+    """Enqueue + execute a run synchronously. Tests + code paths that don't
+    want the async queue call this.
+
+    ``scope_subset=[]`` is still handled here — enqueue creates the row with
+    the empty subset, then execute writes ``last_error='empty scope'`` +
+    ``status=failed`` and emits the completion milestone. Preserves the A3a
+    contract callers already depend on.
+    """
+    run = enqueue_run(
+        session,
+        engagement=engagement,
+        playbook=playbook,
+        scope_subset=scope_subset,
+        now=now,
+    )
+    run.status = PlaybookRunStatus.running
+    run.started_at = _now(now)
+    session.flush()
+    return execute_pending_run(
+        session,
+        run_id=run.id,
+        executor=executor,
+        now=now,
+        actor_type=actor_type,
+        actor_id=actor_id,
+    )
 
 
 def _run_one(
@@ -196,10 +399,6 @@ def _run_one(
             session,
             engagement_id=engagement.id,
             node_id=node_id,
-            # Runner has no direct methodology-node context; we tag baseline
-            # (playbook steps satisfy baseline nodes by convention). Callers
-            # who need to write exploration-tier coverage do so outside the
-            # runner.
             node_tier=CoverageNodeTier.baseline,
             asset_class=playbook.applies_to_asset_class,
             scope_subset=[scope_item],
@@ -223,12 +422,12 @@ def _emit_completion(
 ) -> None:
     """Enqueue ``collection.job.completed`` for this run.
 
-    Emitted for every terminal run (``completed`` / ``partial`` / ``failed``)
-    — B3's milestone runner decides whether a failed run is worth analyzing
-    (typically no); the emission is the *event*, not the recommendation.
-    ``methodology_id`` is the engagement's current selection (per A1); when
-    the engagement has no methodology, we skip the emission — B3 has nothing
-    to hang analysis off.
+    Emitted for every terminal run (``completed`` / ``partial`` / ``failed``
+    / ``cancelled``) — B3's milestone runner decides whether a failed or
+    cancelled run is worth analyzing (typically no); the emission is the
+    *event*, not the recommendation. ``methodology_id`` is the engagement's
+    current selection (per A1); when the engagement has no methodology, we
+    skip the emission — B3 has nothing to hang analysis off.
     """
     if engagement.methodology_id is None:
         logger.info(

@@ -28,6 +28,7 @@ from app.worker.consumer import StreamConsumer
 from app.worker.discord_bot import DiscordBotThread
 from app.worker.lease_sweeper import LeaseSweeperThread
 from app.worker.outbox_relay import CommandOutboxRelay
+from app.worker.playbook_worker import PlaybookWorkerThread
 from app.worker.runner import RunRunner
 from app.worker.strategic_consumer import StrategicConsumer
 
@@ -212,11 +213,26 @@ def main() -> None:
     )
     discord_thread.start()
 
+    # v3 A3c: async playbook runs. Polls playbook_runs for pending rows via
+    # SELECT ... FOR UPDATE SKIP LOCKED so multiple worker replicas cooperate
+    # without stepping on each other. Same daemon-thread shape as the other
+    # background loops; the analyst-facing HTTP endpoint returns 202 and this
+    # thread does the actual work.
+    playbook_worker = PlaybookWorkerThread(session_factory=SessionLocal)
+    playbook_thread = threading.Thread(
+        target=playbook_worker.run_forever,
+        args=(stop_event,),
+        name="playbook-worker",
+        daemon=True,
+    )
+    playbook_thread.start()
+
     consumer.run_forever(stop_event)
     outbox_thread.join(timeout=5.0)
     strategic_thread.join(timeout=5.0)
     sweeper_thread.join(timeout=5.0)
     discord_thread.join(timeout=5.0)
+    playbook_thread.join(timeout=5.0)
     sys.exit(0)
 
 

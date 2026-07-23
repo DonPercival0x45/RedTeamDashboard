@@ -25,13 +25,10 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import CurrentNonGuestUser, CurrentUser, DbSession
 from app.models import (
-    ActorType,
     Engagement,
     Playbook,
     PlaybookRun,
     PlaybookStep,
-    User,
-    UserRole,
 )
 from app.schemas.playbook import (
     PlaybookDetail,
@@ -41,10 +38,11 @@ from app.schemas.playbook import (
     PlaybookStepRead,
 )
 from app.services.playbook import (
-    InternalExecutor,
+    RunNotCancellableError,
+    cancel_run,
     catalog,
+    enqueue_run,
     load_seed_playbooks,
-    start_run,
 )
 
 router = APIRouter()
@@ -144,14 +142,10 @@ def get_playbook(
     )
 
 
-def _actor_type(user: User) -> ActorType:
-    return ActorType.user if user.role != UserRole.guest else ActorType.system
-
-
 @router.post(
     "/engagements/{slug}/playbook-runs",
     response_model=PlaybookRunRead,
-    status_code=201,
+    status_code=202,
 )
 def create_playbook_run(
     slug: str,
@@ -159,7 +153,14 @@ def create_playbook_run(
     session: DbSession,
     user: CurrentNonGuestUser,
 ) -> PlaybookRunRead:
-    """Kick a playbook run and return the completed row."""
+    """v3 A3c: enqueue a playbook run. Returns 202 with the pending row.
+
+    The worker thread (``PlaybookWorkerThread`` in the worker process)
+    picks up the row via ``SELECT ... FOR UPDATE SKIP LOCKED`` and drives
+    it to completion. Clients poll ``GET /playbook-runs/{id}`` for
+    ``status`` transitions or subscribe to the engagement's SSE stream for
+    the ``collection.job.completed`` milestone at end-of-run.
+    """
     engagement = _engagement_by_slug(session, slug)
     playbook = catalog.get_by_slug(session, payload.playbook_slug, payload.playbook_version)
     if playbook is None:
@@ -175,15 +176,40 @@ def create_playbook_run(
                 + " not found"
             ),
         )
-    run = start_run(
+    # Actor attribution lands with A5's approve-before-run gate; the worker
+    # attributes coverage records to the system actor for now.
+    del user
+    run = enqueue_run(
         session,
         engagement=engagement,
         playbook=playbook,
         scope_subset=payload.scope_subset,
-        executor=InternalExecutor(),
-        actor_type=_actor_type(user),
-        actor_id=str(user.id),
     )
+    session.commit()
+    session.refresh(run)
+    return _run_read(session, run)
+
+
+@router.post("/playbook-runs/{run_id}/cancel", response_model=PlaybookRunRead)
+def cancel_playbook_run(
+    run_id: uuid.UUID,
+    session: DbSession,
+    user: CurrentNonGuestUser,
+) -> PlaybookRunRead:
+    """v3 A3c: cancel a pending or running run.
+
+    * Pending → cancelled immediately; the worker's next claim skips it.
+    * Running → cancelled; the worker's runner checks status between steps
+      and bails cleanly.
+    * Terminal → 409 conflict.
+    """
+    del user
+    try:
+        run = cancel_run(session, run_id=run_id, reason="cancelled by analyst")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"playbook run {run_id} not found") from exc
+    except RunNotCancellableError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     session.commit()
     session.refresh(run)
     return _run_read(session, run)

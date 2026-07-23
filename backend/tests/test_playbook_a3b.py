@@ -317,12 +317,14 @@ def test_get_playbook_unknown_slug_404(
     assert resp.status_code == 404
 
 
-def test_create_playbook_run_happy_path(
+def test_create_playbook_run_enqueues_and_returns_202(
     db: Session,
     client: TestClient,
     user: User,
     engagement: Engagement,
 ) -> None:
+    """A3c: POST enqueues; the worker drives to terminal. Endpoint returns
+    202 + a pending row."""
     load_seed_playbooks(db)
     db.commit()
     resp = client.post(
@@ -333,23 +335,16 @@ def test_create_playbook_run_happy_path(
             "scope_subset": ["foo.example"],
         },
     )
-    assert resp.status_code == 201, resp.text
+    assert resp.status_code == 202, resp.text
     body = resp.json()
-    # All 5 steps ran (3 stubs return ok=True; whois + dns will fail on
-    # nonexistent domain but each individual step still writes a coverage
-    # record). We only assert shape here, not exact counts.
     assert body["playbook_slug"] == "osint-passive-domain"
     assert body["steps_total"] == 5
-    assert body["status"] in {
-        PlaybookRunStatus.completed.value,
-        PlaybookRunStatus.partial.value,
-        PlaybookRunStatus.failed.value,
-    }
-    # The row exists.
+    assert body["status"] == PlaybookRunStatus.pending.value
     run = db.execute(
         select(PlaybookRun).where(PlaybookRun.id == uuid.UUID(body["id"]))
     ).scalar_one()
     assert run.engagement_id == engagement.id
+    assert run.status is PlaybookRunStatus.pending
 
 
 def test_create_playbook_run_guest_blocked(
@@ -386,7 +381,7 @@ def test_list_and_get_playbook_run_round_trip(
         headers=_headers(user),
         json={"playbook_slug": "osint-passive-domain", "scope_subset": ["foo.example"]},
     )
-    assert post.status_code == 201
+    assert post.status_code == 202
     run_id = post.json()["id"]
 
     listing = client.get(
