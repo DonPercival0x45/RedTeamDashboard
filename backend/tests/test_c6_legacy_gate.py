@@ -46,6 +46,20 @@ def client() -> TestClient:
     return TestClient(app)
 
 
+@pytest.fixture(autouse=True)
+def _cleanup_command_outbox(db: Session):
+    """Toggle-off + legacy tests hit ``POST /runs`` fully, which commits
+    ``CommandOutbox`` rows outside the ``db`` fixture's transaction. Sweep
+    them after the test so ``test_execution_durability`` (or any other
+    outbox-relay test running later in the session) doesn't relay them
+    unexpectedly."""
+    from app.models import CommandOutbox
+
+    yield
+    db.query(CommandOutbox).delete()
+    db.commit()
+
+
 @pytest.fixture()
 def user(db: Session) -> User:
     u = User(
