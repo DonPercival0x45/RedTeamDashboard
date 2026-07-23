@@ -1,18 +1,23 @@
-"""Milestone runner tests (v3 B3).
+"""Milestone runner tests (v3 B3 + B5).
 
-Proves the gather-then-analyze trigger that replaces per-finding Strategic:
-milestone → prompt-mode mapping, analysis modes only fire when significant
-findings exist (no tokens burned on nothing-changed), and strategy/ideation
-always fire.
+Proves milestone → prompt-mode batching plus the engagement-locked B5 cycle:
+primary intelligence, deterministic compaction, and lazy coverage review when
+the hot set remains over budget.
 """
 from __future__ import annotations
 
 import uuid
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.models import (
+    AgentExecutionStatus,
+    AgentTrigger,
     Engagement,
     EngagementStatus,
     EngagementWorkState,
@@ -25,10 +30,12 @@ from app.models import (
 )
 from app.models.agent_mode_model_preference import AgentPromptMode
 from app.schemas.intelligence import AnalysisOutput, IdeationOutput, StrategyOutput
+from app.services import milestone_runner as runner
 from app.services.milestone_runner import (
     MILESTONE_MODES,
     handle_milestone,
     milestone_mode,
+    run_milestone_cycle,
 )
 
 
@@ -224,3 +231,186 @@ def test_unknown_milestone_is_ignored(
     )
     assert result is None
     assert llm.invoked is False
+
+
+class _CycleSession:
+    def __init__(self, calls: list[Any]) -> None:
+        self.calls = calls
+
+    def execute(self, statement: Any, params: dict[str, Any]) -> None:
+        self.calls.append(("lock", str(statement), params))
+
+
+def test_cycle_orders_lock_primary_compaction_and_keeps_review_lazy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[Any] = []
+    session = _CycleSession(calls)
+    engagement_id = uuid.uuid4()
+    actor_id = uuid.uuid4()
+    primary_result = ("primary", object())
+
+    def primary(*_args: Any, **_kwargs: Any) -> tuple[str, object]:
+        calls.append("primary")
+        return primary_result
+
+    def compact(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        calls.append("compact")
+        return {"still_over_budget": False, "moved_count": 0}
+
+    monkeypatch.setattr(runner, "handle_milestone", primary)
+    monkeypatch.setattr(runner, "compact_memory", compact)
+
+    result = run_milestone_cycle(
+        session,  # type: ignore[arg-type]
+        engagement_id=engagement_id,
+        milestone_type="run.completed",
+        acting_user_id=actor_id,
+        llm_factory=lambda: (object(), "primary-provider", "primary-model"),
+        coverage_review_llm_factory=lambda: (_ for _ in ()).throw(
+            AssertionError("under-budget cycle must not resolve coverage-review LLM")
+        ),
+    )
+
+    assert calls[0][0] == "lock"
+    assert calls[0][2] == {"key": f"engagement-memory:{engagement_id}"}
+    assert calls[1:] == ["primary", "compact"]
+    assert result.primary is primary_result
+    assert result.coverage_review is None
+
+
+def test_cycle_over_budget_runs_coverage_review_with_exact_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[Any] = []
+    session = _CycleSession(calls)
+    execution = SimpleNamespace(
+        id=uuid.uuid4(), status=AgentExecutionStatus.completed
+    )
+    llm = object()
+
+    monkeypatch.setattr(runner, "handle_milestone", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        runner,
+        "compact_memory",
+        lambda *_a, **_k: {"still_over_budget": True, "moved_count": 0},
+    )
+
+    def analyze(*_args: Any, **kwargs: Any) -> tuple[str, Any]:
+        calls.append(("coverage", kwargs))
+        return "reviewed", execution
+
+    monkeypatch.setattr(runner, "run_intelligence_analysis", analyze)
+    monkeypatch.setattr(runner, "hot_token_total", lambda *_a, **_k: 17)
+
+    result = run_milestone_cycle(
+        session,  # type: ignore[arg-type]
+        engagement_id=uuid.uuid4(),
+        milestone_type="baseline.completed",
+        acting_user_id=uuid.uuid4(),
+        llm_factory=lambda: (object(), "primary-provider", "primary-model"),
+        coverage_review_llm_factory=lambda: (llm, "review-provider", "review-model"),
+    )
+
+    coverage_kwargs = calls[-1][1]
+    assert coverage_kwargs["mode"] is AgentPromptMode.coverage_review
+    assert coverage_kwargs["llm"] is llm
+    assert coverage_kwargs["model_provider"] == "review-provider"
+    assert coverage_kwargs["model_name"] == "review-model"
+    assert coverage_kwargs["trigger"] is AgentTrigger.tick
+    assert result.coverage_review == ("reviewed", execution)
+    assert result.compaction["token_after_review"] == 17
+    assert result.compaction["coverage_review_status"] == "completed"
+
+
+def test_cycle_records_coverage_setup_failure_without_replaying_primary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _CycleSession([])
+    failed = SimpleNamespace(id=uuid.uuid4(), status=AgentExecutionStatus.failed)
+    primary_calls = 0
+
+    def primary(*_args: Any, **_kwargs: Any) -> tuple[str, object]:
+        nonlocal primary_calls
+        primary_calls += 1
+        return "primary", object()
+
+    monkeypatch.setattr(runner, "handle_milestone", primary)
+    monkeypatch.setattr(
+        runner,
+        "compact_memory",
+        lambda *_a, **_k: {"still_over_budget": True, "moved_count": 0},
+    )
+    monkeypatch.setattr(
+        runner,
+        "record_intelligence_failure",
+        lambda *_a, **_k: failed,
+    )
+    monkeypatch.setattr(runner, "hot_token_total", lambda *_a, **_k: 99)
+
+    result = run_milestone_cycle(
+        session,  # type: ignore[arg-type]
+        engagement_id=uuid.uuid4(),
+        milestone_type="baseline.completed",
+        acting_user_id=uuid.uuid4(),
+        llm_factory=lambda: (object(), "primary-provider", "primary-model"),
+        coverage_review_llm_factory=lambda: (_ for _ in ()).throw(
+            RuntimeError("key expired")
+        ),
+    )
+
+    assert primary_calls == 1
+    assert result.coverage_review == (None, failed)
+    assert result.compaction["coverage_review_status"] == "failed"
+
+
+def test_cycle_propagates_deterministic_database_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _CycleSession([])
+    monkeypatch.setattr(runner, "handle_milestone", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        runner,
+        "compact_memory",
+        lambda *_a, **_k: (_ for _ in ()).throw(SQLAlchemyError("db failed")),
+    )
+
+    with pytest.raises(SQLAlchemyError, match="db failed"):
+        run_milestone_cycle(
+            session,  # type: ignore[arg-type]
+            engagement_id=uuid.uuid4(),
+            milestone_type="run.completed",
+            acting_user_id=uuid.uuid4(),
+            llm_factory=lambda: (object(), "primary-provider", "primary-model"),
+            coverage_review_llm_factory=lambda: (
+                object(),
+                "review-provider",
+                "review-model",
+            ),
+        )
+
+
+def test_cycle_executes_real_postgres_lock_and_compaction(
+    db: Session,
+    engagement: Engagement,
+    user: User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "hot_memory_token_budget", 1_000_000)
+
+    result = run_milestone_cycle(
+        db,
+        engagement_id=engagement.id,
+        milestone_type="run.completed",
+        acting_user_id=user.id,
+        llm_factory=lambda: (_ for _ in ()).throw(
+            AssertionError("empty analysis batch must not resolve primary LLM")
+        ),
+        coverage_review_llm_factory=lambda: (_ for _ in ()).throw(
+            AssertionError("under-budget cycle must not resolve coverage-review LLM")
+        ),
+    )
+
+    assert result.primary is None
+    assert result.compaction["still_over_budget"] is False
+    assert result.coverage_review is None

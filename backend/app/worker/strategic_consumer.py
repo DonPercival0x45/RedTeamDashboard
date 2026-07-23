@@ -38,6 +38,7 @@ from app.models import (
     ActorType,
     AgentExecution,
     AgentExecutionStatus,
+    AgentPromptMode,
     AgentTrigger,
     AuditLog,
     Engagement,
@@ -56,7 +57,7 @@ from app.services.engagement_strategist import (
     release_auto_reassess_cooldown,
     run_engagement_strategist,
 )
-from app.services.milestone_runner import handle_milestone, milestone_mode
+from app.services.milestone_runner import milestone_mode, run_milestone_cycle
 from app.services.processing_receipt import (
     claim,
     complete,
@@ -433,12 +434,22 @@ class StrategicConsumer:
                 mode=mode,
             )
 
-        handle_milestone(
+        def coverage_review_llm_factory() -> tuple[Any, str, str]:
+            return resolve_llm_for_mode(
+                session,
+                redis_client=self._redis,
+                user_id=acting_user_id,
+                engagement_id=engagement_id,
+                mode=AgentPromptMode.coverage_review,
+            )
+
+        run_milestone_cycle(
             session,
             engagement_id=engagement_id,
             milestone_type=milestone_type,
             acting_user_id=acting_user_id,
             llm_factory=llm_factory,
+            coverage_review_llm_factory=coverage_review_llm_factory,
             thread_id=thread_id,
         )
 

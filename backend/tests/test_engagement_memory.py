@@ -101,6 +101,26 @@ def test_compact_demotes_stale_thread_and_low_conf_fact(
     assert db.get(type(low_fact), low_fact.id) is not None
 
 
+def test_compact_keeps_fresh_unreferenced_low_confidence_fact(
+    db: Session, engagement: Engagement
+) -> None:
+    fact = mem.create_element(
+        db,
+        engagement_id=engagement.id,
+        kind=MemoryKind.fact,
+        summary="newly observed but uncertain",
+        author_type=AGENT,
+        author_id=ACTOR,
+        confidence=0.1,
+    )
+
+    result = mem.compact(db, engagement_id=engagement.id)
+
+    db.refresh(fact)
+    assert fact.tier is MemoryTier.hot
+    assert result["moved_count"] == 0
+
+
 def test_recently_referenced_fact_is_a_hard_floor(
     db: Session, engagement: Engagement
 ) -> None:
@@ -195,6 +215,49 @@ def test_fold_into_decision_sets_lineage_on_every_hypothesis(
         assert len(links) == 1
         assert links[0].target_id == decision.id
         assert links[0].engagement_id == engagement.id  # scoped, not straddling
+
+
+def test_fold_rejects_non_hypothesis_and_duplicate_rows(
+    db: Session, engagement: Engagement
+) -> None:
+    fact = mem.create_element(
+        db,
+        engagement_id=engagement.id,
+        kind=MemoryKind.fact,
+        summary="not foldable",
+        author_type=AGENT,
+        author_id=ACTOR,
+    )
+    hypothesis = mem.create_element(
+        db,
+        engagement_id=engagement.id,
+        kind=MemoryKind.hypothesis,
+        summary="foldable once",
+        author_type=AGENT,
+        author_id=ACTOR,
+    )
+    hypothesis.status = MemoryStatus.resolved
+
+    with pytest.raises(ValueError, match="not a hypothesis"):
+        mem.fold_into_decision(
+            db,
+            engagement_id=engagement.id,
+            hypotheses=[fact],
+            decision_summary="invalid",
+            rationale="invalid",
+            actor_type=AGENT,
+            actor_id=ACTOR,
+        )
+    with pytest.raises(ValueError, match="duplicate hypothesis"):
+        mem.fold_into_decision(
+            db,
+            engagement_id=engagement.id,
+            hypotheses=[hypothesis, hypothesis],
+            decision_summary="invalid",
+            rationale="invalid",
+            actor_type=AGENT,
+            actor_id=ACTOR,
+        )
 
 
 # ---------------------------------------------------------------------------

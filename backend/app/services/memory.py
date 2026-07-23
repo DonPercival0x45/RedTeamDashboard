@@ -13,10 +13,10 @@ Split of responsibility:
     resolved, which threads to fold — by calling these primitives under the
     ``coverage-review`` prompt-mode.
 
-Concurrency: row-level writes need no global lock. The full compaction pass
-(``compact``) is expected to run under the per-engagement lock so it can't
-race a concurrent analyst edit — the caller (milestone runner / manual
-endpoint) acquires it.
+Concurrency: the milestone cycle takes an engagement-scoped transaction lock;
+``compact`` additionally locks the current HOT rows so a concurrent optimistic
+edit blocks/rechecks rather than racing the batch. Future manual compaction or
+Memory-mutation endpoints must preserve this lock/row-lock contract.
 """
 from __future__ import annotations
 
@@ -227,26 +227,32 @@ def add_link(
 # ---------------------------------------------------------------------------
 
 
-def get_hot_set(session: Session, engagement_id: uuid.UUID) -> list[MemoryElement]:
+def get_hot_set(
+    session: Session,
+    engagement_id: uuid.UUID,
+    *,
+    for_update: bool = False,
+) -> list[MemoryElement]:
     """The elements serialized into an agent invocation: everything HOT.
 
     Decisions first (the accumulating foundation the agent should always see),
-    then everything else newest-first — so an accreting shared brain doesn't
-    bury early foundational decisions under recent chatter. Marks nothing —
-    reference-tracking is the caller's job."""
-    return list(
-        session.execute(
-            select(MemoryElement)
-            .where(
-                MemoryElement.engagement_id == engagement_id,
-                MemoryElement.tier == MemoryTier.hot,
-            )
-            .order_by(
-                (MemoryElement.kind == MemoryKind.decision).desc(),
-                MemoryElement.created_at.desc(),
-            )
-        ).scalars()
+    then everything else newest-first. ``for_update`` is reserved for batch
+    mutation paths such as compaction; ordinary prompt reads remain lock-free.
+    """
+    stmt = (
+        select(MemoryElement)
+        .where(
+            MemoryElement.engagement_id == engagement_id,
+            MemoryElement.tier == MemoryTier.hot,
+        )
+        .order_by(
+            (MemoryElement.kind == MemoryKind.decision).desc(),
+            MemoryElement.created_at.desc(),
+        )
     )
+    if for_update:
+        stmt = stmt.with_for_update()
+    return list(session.execute(stmt).scalars())
 
 
 def hot_token_total(session: Session, engagement_id: uuid.UUID) -> int:
@@ -349,10 +355,31 @@ def fold_into_decision(
     actor_type: ActorType,
     actor_id: str,
 ) -> MemoryElement:
-    """Compaction primitive: close a set of resolved hypotheses/questions into
-    one decision. The decision is created HOT; each folded element is linked
+    """Compaction primitive: settle a set of hypotheses into one decision.
+
+    The decision is created HOT; each folded element is linked
     ``folds_into`` the decision, marked ``superseded`` + ``archived``, and
-    given ``superseded_by`` lineage so it stays reversible."""
+    given ``superseded_by`` lineage so it stays reversible.
+
+    Defense in depth: callers may pass model-selected rows, so only unique HOT
+    hypotheses belonging to this engagement and not already closed may fold.
+    """
+    if not hypotheses:
+        raise ValueError("fold requires at least one hypothesis")
+    seen: set[uuid.UUID] = set()
+    for hypothesis in hypotheses:
+        if hypothesis.id in seen:
+            raise ValueError(f"duplicate hypothesis in fold: {hypothesis.id}")
+        seen.add(hypothesis.id)
+        if hypothesis.engagement_id != engagement_id:
+            raise ValueError(f"hypothesis {hypothesis.id} belongs to another engagement")
+        if hypothesis.kind is not MemoryKind.hypothesis:
+            raise ValueError(f"memory element {hypothesis.id} is not a hypothesis")
+        if hypothesis.tier is not MemoryTier.hot:
+            raise ValueError(f"hypothesis {hypothesis.id} is not in the hot set")
+        if hypothesis.status not in {MemoryStatus.open, MemoryStatus.resolved}:
+            raise ValueError(f"hypothesis {hypothesis.id} is already closed")
+
     decision = create_element(
         session,
         engagement_id=engagement_id,
@@ -433,12 +460,11 @@ def compact(
     ``is_over_budget`` as its trigger signal.
 
     CONCURRENCY CONTRACT: the caller MUST hold the per-engagement lock. This is
-    a batch over many elements that has to serialize against concurrent edits
-    of those same elements, so the lock is the right tool here — whereas
-    ``edit_element`` guards a *single* element with optimistic versioning. The
-    asymmetry is deliberate: do NOT "reconcile" it by adding version checks
-    here or dropping the lock requirement. The step-4 milestone runner is the
-    lock-acquiring caller; it doesn't exist yet, so the guard lands with it.
+    a batch over many elements that has to serialize against concurrent edits;
+    the hot rows are also selected ``FOR UPDATE`` so optimistic single-row
+    edits block and re-check their version. ``run_milestone_cycle`` is the
+    production lock-acquiring caller; future manual entry points must use the
+    same contract.
 
     Returns a summary dict and writes one ``memory.compacted`` audit row.
     Idempotent-ish: a second immediate call is a no-op (nothing newly stale).
@@ -450,8 +476,8 @@ def compact(
     # it is a hard floor.
     window_start = fact_cutoff
 
+    hot = get_hot_set(session, engagement_id, for_update=True)
     before_total = hot_token_total(session, engagement_id)
-    hot = get_hot_set(session, engagement_id)
     moved: list[dict[str, str]] = []
 
     for el in hot:
@@ -472,7 +498,8 @@ def compact(
                 and el.confidence < settings.memory_low_confidence_threshold
             )
             stale_ref = el.last_referenced_at is None or el.last_referenced_at < fact_cutoff
-            if low_conf and stale_ref:
+            stale_age = el.updated_at < fact_cutoff
+            if low_conf and stale_ref and stale_age:
                 demote = True
 
         if demote:

@@ -16,22 +16,34 @@ Gather-then-analyze: the analysis modes only fire when there ARE significant
 findings to analyze — a nothing-changed milestone burns no tokens. The
 strategy/ideation modes always fire (they propose, regardless of new findings).
 
-This module is the trigger logic; wiring it to the live event stream (the
-strategic consumer / a new milestone consumer reading ``run.completed`` and,
-later, Track A's ``collection.job.completed``) is a thin follow-up.
+This module owns both B3 trigger logic and B5 milestone maintenance. The live
+strategic consumer calls ``run_milestone_cycle`` so primary intelligence,
+deterministic compaction, and optional coverage review share one engagement
+lock and receipt transaction.
 """
 from __future__ import annotations
 
 import uuid
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
+import structlog
+from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.agents.intelligence import run_intelligence_analysis
-from app.models import AgentExecutionStatus
+from app.agents.intelligence import (
+    record_intelligence_failure,
+    run_intelligence_analysis,
+)
+from app.models import AgentExecutionStatus, AgentTrigger
 from app.models.agent_mode_model_preference import AgentPromptMode
 from app.services.engagement_rollup import significant_finding_ids
+from app.services.memory import compact as compact_memory
+from app.services.memory import hot_token_total
+
+logger = structlog.get_logger(__name__)
 
 MILESTONE_MODES: dict[str, AgentPromptMode] = {
     "collection.job.completed": AgentPromptMode.analysis,
@@ -106,3 +118,104 @@ def handle_milestone(
             f"milestone intelligence failed: {result[1].error or 'unknown error'}"
         )
     return result
+
+
+@dataclass(frozen=True)
+class MilestoneCycleResult:
+    """One atomic B5 milestone cycle and its maintenance outcomes."""
+
+    primary: tuple[Any, Any] | None
+    compaction: dict[str, Any]
+    coverage_review: tuple[Any, Any] | None
+
+
+def _acquire_engagement_memory_lock(
+    session: Session, engagement_id: uuid.UUID
+) -> None:
+    """Serialize all Memory writes for this engagement until outer commit.
+
+    The strategic consumer's processing receipt owns the transaction. A
+    transaction-scoped advisory lock therefore releases exactly when receipt
+    completion commits, or when failure handling rolls the transaction back.
+    """
+    session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+        {"key": f"engagement-memory:{engagement_id}"},
+    )
+
+
+def run_milestone_cycle(
+    session: Session,
+    *,
+    engagement_id: uuid.UUID,
+    milestone_type: str,
+    acting_user_id: uuid.UUID,
+    llm_factory: Callable[[], tuple[Any, str, str]],
+    coverage_review_llm_factory: Callable[[], tuple[Any, str, str]],
+    since: Any = None,
+    thread_id: uuid.UUID | None = None,
+) -> MilestoneCycleResult:
+    """Run primary intelligence, deterministic compaction, then B5 review.
+
+    All Memory mutations are serialized under one transaction-scoped
+    engagement lock. Coverage review is lazy and fires only when deterministic
+    compaction leaves the hot set above budget. Model/setup failures in this
+    secondary maintenance pass are recorded but do not replay an already-run
+    primary milestone; database failures still propagate to receipt retry.
+    """
+    _acquire_engagement_memory_lock(session, engagement_id)
+    primary = handle_milestone(
+        session,
+        engagement_id=engagement_id,
+        milestone_type=milestone_type,
+        acting_user_id=acting_user_id,
+        llm_factory=llm_factory,
+        since=since,
+        thread_id=thread_id,
+    )
+    compaction = compact_memory(session, engagement_id=engagement_id)
+    coverage_review: tuple[Any, Any] | None = None
+
+    if compaction["still_over_budget"]:
+        try:
+            llm, provider, model_name = coverage_review_llm_factory()
+        except SQLAlchemyError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - persist setup failure, do not replay primary
+            execution = record_intelligence_failure(
+                session,
+                engagement_id=engagement_id,
+                mode=AgentPromptMode.coverage_review,
+                acting_user_id=acting_user_id,
+                error=exc,
+            )
+            coverage_review = (None, execution)
+            logger.warning(
+                "intelligence.coverage_review_setup_failed",
+                engagement_id=str(engagement_id),
+                error=str(exc),
+            )
+        else:
+            coverage_review = run_intelligence_analysis(
+                session,
+                engagement_id=engagement_id,
+                mode=AgentPromptMode.coverage_review,
+                acting_user_id=acting_user_id,
+                llm=llm,
+                model_provider=provider,
+                model_name=model_name,
+                trigger=AgentTrigger.tick,
+            )
+
+        compaction = dict(compaction)
+        compaction["token_after_review"] = hot_token_total(session, engagement_id)
+        if coverage_review is not None:
+            execution = coverage_review[1]
+            compaction["coverage_review_execution_id"] = str(execution.id)
+            compaction["coverage_review_status"] = execution.status.value
+
+    return MilestoneCycleResult(
+        primary=primary,
+        compaction=compaction,
+        coverage_review=coverage_review,
+    )
