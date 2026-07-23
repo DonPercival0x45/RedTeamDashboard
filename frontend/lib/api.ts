@@ -22,8 +22,13 @@ import type {
   Authorization,
   CostRollup,
   Engagement,
+  EngagementArchitecture,
   EngagementStatus,
   EngagementTimeFrame,
+  IntelligenceConversionResponse,
+  IntelligenceMode,
+  IntelligenceRunResponse,
+  MethodologyRead,
   Entity,
   Finding,
   AdminUser,
@@ -199,6 +204,9 @@ export function createEngagement(body: {
   time_frame?: EngagementTimeFrame;
   start_date?: string | null;
   end_date?: string | null;
+  intelligence_architecture?: EngagementArchitecture;
+  methodology_slug?: string;
+  methodology_version?: number;
   initial_scope?: Array<{
     kind: ScopeKind;
     value: string;
@@ -210,6 +218,34 @@ export function createEngagement(body: {
     method: "POST",
     body: JSON.stringify(body),
   });
+}
+
+export function listMethodologies(): Promise<MethodologyRead[]> {
+  return request<MethodologyRead[]>("/methodologies");
+}
+
+export function convertEngagementToV3(
+  slug: string,
+  body: {
+    methodology_slug: string;
+    methodology_version?: number;
+    reason: string;
+  },
+): Promise<IntelligenceConversionResponse> {
+  return request<IntelligenceConversionResponse>(
+    `/engagements/${slug}/intelligence/convert`,
+    { method: "POST", body: JSON.stringify(body) },
+  );
+}
+
+export function runEngagementIntelligence(
+  slug: string,
+  mode: IntelligenceMode,
+): Promise<IntelligenceRunResponse> {
+  return request<IntelligenceRunResponse>(
+    `/engagements/${slug}/intelligence/runs`,
+    { method: "POST", body: JSON.stringify({ mode }) },
+  );
 }
 
 export function archiveEngagement(slug: string): Promise<Engagement> {

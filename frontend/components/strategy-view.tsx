@@ -3,14 +3,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useQueryClient } from "@tanstack/react-query";
 import { DateTime } from "@/components/date-time";
 import {
   acceptSuggestion,
   ApiError,
+  convertEngagementToV3,
   dismissSuggestion,
   listOrchestratorTools,
   listScope,
   listSuggestions,
+  runEngagementIntelligence,
 } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -80,8 +83,11 @@ import type {
   WorkItemResolution,
   WorkItemStatus,
 } from "@/lib/strategy-types";
+import { qk, useMethodologies } from "@/lib/hooks";
 import type {
+  Engagement,
   EngagementStatus,
+  IntelligenceMode,
   OrchestratorTool,
   ScopeItem,
   Suggestion,
@@ -231,13 +237,249 @@ function SliceErrorBanner({ failed, onRetry }: { failed: string[]; onRetry: () =
   );
 }
 
+const INTELLIGENCE_MODES: Array<{
+  mode: IntelligenceMode;
+  label: string;
+  description: string;
+}> = [
+  {
+    mode: "strategy",
+    label: "Refresh strategy",
+    description: "Prioritize the next safe, reviewable actions.",
+  },
+  {
+    mode: "analysis",
+    label: "Analyze evidence",
+    description: "Correlate significant findings and propose facts.",
+  },
+  {
+    mode: "ideation",
+    label: "Generate ideas",
+    description: "Propose bounded hypotheses and follow-up work.",
+  },
+  {
+    mode: "coverage_review",
+    label: "Review coverage",
+    description: "Compact Memory and assess methodology gaps.",
+  },
+];
+
+function IntelligencePanel({
+  engagement,
+  readOnly,
+  onRefresh,
+}: {
+  engagement: Engagement;
+  readOnly: boolean;
+  onRefresh: () => Promise<void>;
+}) {
+  const qc = useQueryClient();
+  const methodologiesQuery = useMethodologies(
+    engagement.intelligence_architecture === "legacy",
+  );
+  const methodologies = useMemo(
+    () => methodologiesQuery.data ?? [],
+    [methodologiesQuery.data],
+  );
+  const [methodologyKey, setMethodologyKey] = useState("");
+  const [reason, setReason] = useState("");
+  const [busyMode, setBusyMode] = useState<IntelligenceMode | "convert" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (methodologyKey || methodologies.length === 0) return;
+    const current = methodologies.find(
+      (item) =>
+        item.slug === engagement.methodology_slug &&
+        item.version === engagement.methodology_version,
+    );
+    const selected =
+      current ??
+      methodologies.find((item) => item.slug === "osint-minimal") ??
+      methodologies[0];
+    setMethodologyKey(`${selected.slug}:${selected.version}`);
+  }, [engagement.methodology_slug, engagement.methodology_version, methodologies, methodologyKey]);
+
+  const updateEngagementCaches = useCallback(async () => {
+    await Promise.all([
+      qc.invalidateQueries({ queryKey: qk.engagement(engagement.slug) }),
+      qc.invalidateQueries({ queryKey: qk.engagements() }),
+    ]);
+  }, [engagement.slug, qc]);
+
+  const convert = async () => {
+    const selected = methodologies.find(
+      (item) => `${item.slug}:${item.version}` === methodologyKey,
+    );
+    if (!selected || !reason.trim()) {
+      setError("Choose a methodology and record why this engagement is being converted.");
+      return;
+    }
+    setBusyMode("convert");
+    setError(null);
+    setNotice(null);
+    try {
+      const result = await convertEngagementToV3(engagement.slug, {
+        methodology_slug: selected.slug,
+        methodology_version: selected.version,
+        reason: reason.trim(),
+      });
+      await updateEngagementCaches();
+      await onRefresh();
+      setNotice(
+        result.already_converted
+          ? "This engagement was already using v3 intelligence."
+          : "Converted to v3. One attributed decision seeded Engagement Memory.",
+      );
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setBusyMode(null);
+    }
+  };
+
+  const runMode = async (mode: IntelligenceMode) => {
+    if (
+      mode === "coverage_review" &&
+      !window.confirm(
+        "Coverage review will compact Engagement Memory before assessing methodology gaps. Compaction is reversible. Continue?",
+      )
+    ) {
+      return;
+    }
+    setBusyMode(mode);
+    setError(null);
+    setNotice(null);
+    try {
+      const result = await runEngagementIntelligence(engagement.slug, mode);
+      await updateEngagementCaches();
+      await onRefresh();
+      if (result.status === "failed") {
+        setError(result.error ?? `${mode} intelligence failed.`);
+      } else if (result.status === "completed") {
+        setNotice(`${INTELLIGENCE_MODES.find((item) => item.mode === mode)?.label ?? mode} completed. Review the updated strategy, Memory-derived work, and coverage before acting.`);
+      } else {
+        setNotice(`${INTELLIGENCE_MODES.find((item) => item.mode === mode)?.label ?? mode} ${result.status}. Refresh shortly for the persisted result.`);
+      }
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setBusyMode(null);
+    }
+  };
+
+  return (
+    <section className="rounded-lg border border-violet-500/30 bg-violet-500/5 p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="flex flex-wrap items-center gap-2">
+            <h3 className="text-sm font-semibold">Intelligence</h3>
+            <Badge variant={engagement.intelligence_architecture === "v3" ? "secondary" : "outline"}>
+              {engagement.intelligence_architecture === "v3" ? "v3 shared Memory" : "legacy"}
+            </Badge>
+            <Badge variant="outline">
+              {engagement.phase === "baseline" ? "Baseline" : "Exploration"}
+            </Badge>
+          </div>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {engagement.methodology_slug
+              ? `${engagement.methodology_slug} v${engagement.methodology_version ?? "?"}`
+              : "No methodology selected"}
+            {engagement.baseline_completed_at ? " · baseline complete" : " · baseline pending"}
+          </p>
+        </div>
+        {engagement.converted_to_v3_at && (
+          <span className="text-xs text-muted-foreground">
+            Converted <DateTime value={engagement.converted_to_v3_at} />
+          </span>
+        )}
+      </div>
+
+      {engagement.intelligence_architecture === "legacy" ? (
+        <div className="mt-4 space-y-3">
+          <p className="text-sm text-muted-foreground">
+            Conversion is one-way. It freezes a methodology, preserves legacy records, and seeds one analyst-attributed Memory decision.
+          </p>
+          <div className="grid gap-2 md:grid-cols-[minmax(12rem,1fr)_minmax(16rem,2fr)_auto]">
+            <select
+              value={methodologyKey}
+              onChange={(event) => setMethodologyKey(event.target.value)}
+              disabled={readOnly || methodologiesQuery.isLoading || busyMode !== null}
+              aria-label="Conversion methodology"
+              className="h-10 rounded-md border border-input bg-background px-3 text-sm"
+            >
+              {methodologiesQuery.isLoading && (
+                <option value="">Loading methodologies…</option>
+              )}
+              {!methodologiesQuery.isLoading && methodologies.length === 0 && (
+                <option value="">No methodologies available</option>
+              )}
+              {methodologies.map((item) => (
+                <option key={item.id} value={`${item.slug}:${item.version}`}>
+                  {item.name} · v{item.version}
+                </option>
+              ))}
+            </select>
+            <Input
+              value={reason}
+              onChange={(event) => setReason(event.target.value)}
+              disabled={readOnly || busyMode !== null}
+              placeholder="Why convert this engagement?"
+              aria-label="Conversion reason"
+            />
+            <Button
+              type="button"
+              disabled={readOnly || busyMode !== null || !methodologyKey || !reason.trim()}
+              onClick={() => void convert()}
+            >
+              {busyMode === "convert" ? "Converting…" : "Convert to v3"}
+            </Button>
+          </div>
+          {readOnly && <p className="text-xs text-muted-foreground">Reopen the engagement before conversion.</p>}
+        </div>
+      ) : (
+        <div className="mt-4">
+          <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+            {INTELLIGENCE_MODES.map((item) => (
+              <button
+                key={item.mode}
+                type="button"
+                disabled={readOnly || busyMode !== null}
+                onClick={() => void runMode(item.mode)}
+                className="rounded-md border border-border bg-background p-3 text-left transition-colors hover:bg-muted/40 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <span className="text-sm font-medium">
+                  {busyMode === item.mode ? "Running…" : item.label}
+                </span>
+                <p className="mt-1 text-xs text-muted-foreground">{item.description}</p>
+              </button>
+            ))}
+          </div>
+          <p className="mt-2 text-xs text-muted-foreground">
+            These are explicit analyst runs. Background milestone automation remains separately deployment-gated.
+          </p>
+        </div>
+      )}
+      {methodologiesQuery.error && engagement.intelligence_architecture === "legacy" && (
+        <p role="alert" className="mt-3 text-xs text-critical">
+          Could not load methodologies: {methodologiesQuery.error instanceof Error ? methodologiesQuery.error.message : String(methodologiesQuery.error)}
+        </p>
+      )}
+      {error && <p role="alert" className="mt-3 text-sm text-critical">{error}</p>}
+      {notice && <p role="status" className="mt-3 text-sm text-emerald-700 dark:text-emerald-200">{notice}</p>}
+    </section>
+  );
+}
+
 export function StrategyView({
   slug,
-  engagementStatus,
+  engagement,
 }: {
   slug: string;
-  engagementStatus: EngagementStatus;
+  engagement: Engagement;
 }) {
+  const engagementStatus = engagement.status;
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -289,6 +531,11 @@ export function StrategyView({
     [pathname, router, searchParams],
   );
   const [tab, setTab] = useState(requestedWorkItemId ? "work" : "strategy");
+  useEffect(() => {
+    if (engagement.intelligence_architecture === "v3" && tab === "strategist") {
+      setTab("strategy");
+    }
+  }, [engagement.intelligence_architecture, tab]);
   const [checkpointNarrative, setCheckpointNarrative] = useState("");
   const [coverageTarget, setCoverageTarget] = useState("");
   const [coverageKind, setCoverageKind] = useState("domain");
@@ -341,7 +588,9 @@ export function StrategyView({
     void loadSlice("signals", seq, () => listStrategySignals(slug));
     void loadSlice("completion", seq, () => getCompletionReadiness(slug));
     void loadSlice("resume", seq, () => getResumeBriefing(slug));
-    void loadSlice("chat", seq, () => getStrategistChat(slug));
+    if (engagement.intelligence_architecture === "legacy") {
+      void loadSlice("chat", seq, () => getStrategistChat(slug));
+    }
     void loadSlice("suggestions", seq, () => listSuggestions(slug, "open"));
     void loadSlice("scope", seq, () => listScope(slug));
     void loadSlice("tools", seq, () => listOrchestratorTools());
@@ -376,7 +625,7 @@ export function StrategyView({
       if (seqRef.current !== seq) return;
       setSliceError("current", messageFor(reason));
     }
-  }, [loadSlice, setSliceError, slug]);
+  }, [engagement.intelligence_architecture, loadSlice, setSliceError, slug]);
 
   useEffect(() => {
     if (requestedWorkItemId) {
@@ -529,6 +778,7 @@ export function StrategyView({
           failed={failedSlices.filter((slice) => slice !== "current")}
           onRetry={() => void refresh()}
         />
+        <IntelligencePanel engagement={engagement} readOnly={readOnly} onRefresh={refresh} />
         {readOnly && <ReadOnlyNotice engagementStatus={engagementStatus} />}
         <section role="alert" className="rounded-md border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-800 dark:text-amber-200">
           <h3 className="font-semibold">Could not confirm the current strategy</h3>
@@ -555,15 +805,23 @@ export function StrategyView({
       <div className="space-y-6">
         <StrategyHeader busy={busy} refresh={refresh} />
         <SliceErrorBanner failed={failedSlices} onRetry={() => void refresh()} />
+        <IntelligencePanel engagement={engagement} readOnly={readOnly} onRefresh={refresh} />
         {readOnly && <ReadOnlyNotice engagementStatus={engagementStatus} />}
         {error && <p role="alert" className="rounded-md border border-critical/40 bg-critical/10 p-3 text-sm text-critical">{error}</p>}
         {notice && <p role="status" className="rounded-md border border-emerald-500/40 bg-emerald-500/10 p-3 text-sm text-emerald-700 dark:text-emerald-200">{notice}</p>}
-        {showInitialGuidancePath && (
+        {showInitialGuidancePath && engagement.intelligence_architecture === "legacy" && (
           <p role="status" className="rounded-md border border-violet-500/40 bg-violet-500/10 p-3 text-sm text-violet-800 dark:text-violet-100">
             Scope saved. Choose <strong>Generate initial guidance</strong> below to create reviewable proposals from the engagement&apos;s actual scope. Nothing is accepted or run automatically.
           </p>
         )}
-        <StrategistSection slug={slug} readOnly={readOnly} chat={data.chat} message={strategistMessage} setMessage={setStrategistMessage} lastRun={lastStrategistRun} setLastRun={setLastStrategistRun} busy={busy} mutate={mutate} hasCurrentStrategy={false} />
+        {showInitialGuidancePath && engagement.intelligence_architecture === "v3" && (
+          <p role="status" className="rounded-md border border-violet-500/40 bg-violet-500/10 p-3 text-sm text-violet-800 dark:text-violet-100">
+            Scope saved. Use <strong>Refresh strategy</strong> above for Memory-backed guidance, then review every proposed action before it can run.
+          </p>
+        )}
+        {engagement.intelligence_architecture === "legacy" && (
+          <StrategistSection slug={slug} readOnly={readOnly} chat={data.chat} message={strategistMessage} setMessage={setStrategistMessage} lastRun={lastStrategistRun} setLastRun={setLastStrategistRun} busy={busy} mutate={mutate} hasCurrentStrategy={false} />
+        )}
         {decisionCount > 0 && <NeedsDecisionSection slug={slug} readOnly={readOnly} openSignals={[]} openSuggestions={openSuggestions} proposedRevisions={proposedRevisions} currentRevisionId={null} busy={busy} mutate={mutate} />}
         <InitialStrategyBuilder slug={slug} readOnly={readOnly} summary={strategySummary} setSummary={setStrategySummary} sections={strategySectionDrafts} setSections={setStrategySectionDrafts} busy={busy} mutate={mutate} />
         <StrategyRequiredGate findingCount={Number(data.resume.current_focus.finding_count ?? 0)} />
@@ -576,6 +834,7 @@ export function StrategyView({
     <div className="space-y-6">
       <StrategyHeader busy={busy} refresh={refresh} />
       <SliceErrorBanner failed={failedSlices} onRetry={() => void refresh()} />
+      <IntelligencePanel engagement={engagement} readOnly={readOnly} onRefresh={refresh} />
 
       {readOnly && <ReadOnlyNotice engagementStatus={engagementStatus} />}
       {error && <p role="alert" className="rounded-md border border-critical/40 bg-critical/10 p-3 text-sm text-critical">{error}</p>}
@@ -600,7 +859,9 @@ export function StrategyView({
             <TabsTrigger value="objectives">Objectives</TabsTrigger>
             <TabsTrigger value="work">Work queue</TabsTrigger>
             <TabsTrigger value="coverage">Coverage &amp; Readiness</TabsTrigger>
-            <TabsTrigger value="strategist">Strategist</TabsTrigger>
+            {engagement.intelligence_architecture === "legacy" && (
+              <TabsTrigger value="strategist">Strategist</TabsTrigger>
+            )}
           </TabsList>
         </div>
         <TabsContent value="strategy" className="space-y-6">
@@ -816,9 +1077,11 @@ export function StrategyView({
         </div>
       </details>
         </TabsContent>
-        <TabsContent value="strategist" className="space-y-6">
-          <StrategistSection slug={slug} readOnly={readOnly} chat={data.chat} message={strategistMessage} setMessage={setStrategistMessage} lastRun={lastStrategistRun} setLastRun={setLastStrategistRun} busy={busy} mutate={mutate} hasCurrentStrategy />
-        </TabsContent>
+        {engagement.intelligence_architecture === "legacy" && (
+          <TabsContent value="strategist" className="space-y-6">
+            <StrategistSection slug={slug} readOnly={readOnly} chat={data.chat} message={strategistMessage} setMessage={setStrategistMessage} lastRun={lastStrategistRun} setLastRun={setLastStrategistRun} busy={busy} mutate={mutate} hasCurrentStrategy />
+          </TabsContent>
+        )}
       </Tabs>
 
       <Dialog open={strategyFlyoutOpen} onOpenChange={setStrategyFlyoutOpen}>

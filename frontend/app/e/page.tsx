@@ -429,7 +429,7 @@ function EngagementDetail({ slug }: { slug: string }) {
           )}
 
           {view === "strategy" && (
-            <StrategyView slug={slug} engagementStatus={engagement.status} />
+            <StrategyView slug={slug} engagement={engagement} />
           )}
 
           {view === "entities" && (

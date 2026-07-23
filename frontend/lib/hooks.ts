@@ -69,6 +69,7 @@ import {
   listFindingContextCandidates,
   listInfraSubscriptions,
   listIntegrations,
+  listMethodologies,
   listObservations,
   listProviderKeys,
   listVms,
@@ -139,6 +140,7 @@ export const qk = {
   pendingApprovals: () => ["approvals", "pending"] as const,
   engagements: () => ["engagements"] as const,
   engagement: (slug: string) => ["engagement", slug] as const,
+  methodologies: () => ["methodologies"] as const,
   reportReadiness: (slug: string) => ["report-readiness", slug] as const,
   findings: (slug: string) => ["findings", slug] as const,
   diagnostics: (slug: string) => ["diagnostics", slug] as const,
@@ -211,6 +213,15 @@ export const qk = {
   vm: (armId: string) => ["infra", "vm", armId] as const,
   autoShutdown: (armId: string) => ["infra", "auto-shutdown", armId] as const,
 };
+
+export function useMethodologies(enabled = true) {
+  return useQuery({
+    queryKey: qk.methodologies(),
+    queryFn: listMethodologies,
+    staleTime: 5 * 60 * 1000,
+    enabled,
+  });
+}
 
 export function useEngagements() {
   return useQuery({

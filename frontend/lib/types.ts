@@ -1,6 +1,13 @@
 // Wire-format types that match the Pydantic schemas in app/schemas/*.
 
 export type EngagementStatus = "active" | "archived" | "flushed";
+export type EngagementArchitecture = "legacy" | "v3";
+export type EngagementPhase = "baseline" | "exploration";
+export type IntelligenceMode =
+  | "strategy"
+  | "analysis"
+  | "ideation"
+  | "coverage_review";
 
 export type APIKeyScope = "viewer" | "cli" | "admin";
 
@@ -53,6 +60,14 @@ export interface Engagement {
   work_state: "active" | "completion_review" | "completed";
   work_state_version: number;
   auto_assess_enabled: boolean;
+  intelligence_architecture: EngagementArchitecture;
+  converted_to_v3_at: string | null;
+  phase: EngagementPhase;
+  baseline_completed_at: string | null;
+  methodology_id: string | null;
+  methodology_slug: string | null;
+  methodology_version: number | null;
+  methodology_selected_at: string | null;
   time_frame: EngagementTimeFrame;
   start_date: string | null;
   end_date: string | null;
@@ -68,6 +83,34 @@ export interface Engagement {
   // v2.4.0: whether the engagement has a `state = current` strategy
   // revision. Used to derive isPendingEngagement() on the frontend.
   has_strategy?: boolean;
+}
+
+export interface MethodologyRead {
+  id: string;
+  slug: string;
+  version: number;
+  name: string;
+  description: string | null;
+  source_url: string | null;
+  node_count: number;
+}
+
+export interface IntelligenceConversionResponse {
+  engagement_id: string;
+  intelligence_architecture: EngagementArchitecture;
+  converted_to_v3_at: string | null;
+  methodology_id: string | null;
+  phase: EngagementPhase;
+  seeded_memory_element_ids: string[];
+  already_converted: boolean;
+}
+
+export interface IntelligenceRunResponse {
+  execution_id: string;
+  mode: IntelligenceMode;
+  status: "pending" | "running" | "completed" | "failed" | "cancelled";
+  parsed: Record<string, unknown> | null;
+  error: string | null;
 }
 
 export interface ScopeItem {

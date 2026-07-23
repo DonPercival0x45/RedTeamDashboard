@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -19,7 +19,12 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { ScopeImporter } from "@/components/scope-importer";
 import { createEngagement } from "@/lib/api";
-import type { EngagementTimeFrame, ScopeKind } from "@/lib/types";
+import { useMethodologies } from "@/lib/hooks";
+import type {
+  EngagementArchitecture,
+  EngagementTimeFrame,
+  ScopeKind,
+} from "@/lib/types";
 
 const KINDS: ScopeKind[] = ["domain", "cidr", "ip", "url"];
 
@@ -34,6 +39,14 @@ export default function NewEngagementPage() {
 
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
+  const [architecture, setArchitecture] =
+    useState<EngagementArchitecture>("v3");
+  const [methodologyKey, setMethodologyKey] = useState("");
+  const methodologiesQuery = useMethodologies();
+  const methodologies = useMemo(
+    () => methodologiesQuery.data ?? [],
+    [methodologiesQuery.data],
+  );
   const [scope, setScope] = useState<ScopeDraft[]>([]);
   const [kind, setKind] = useState<ScopeKind>("domain");
   const [value, setValue] = useState("");
@@ -43,6 +56,23 @@ export default function NewEngagementPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const hasUsableScope = scope.some((item) => !item.isExclusion);
+
+  useEffect(() => {
+    if (!methodologyKey && methodologies.length > 0) {
+      const selected =
+        methodologies.find((item) => item.slug === "osint-minimal") ??
+        methodologies[0];
+      setMethodologyKey(`${selected.slug}:${selected.version}`);
+    }
+  }, [methodologies, methodologyKey]);
+
+  const selectedMethodology = useMemo(
+    () =>
+      methodologies.find(
+        (item) => `${item.slug}:${item.version}` === methodologyKey,
+      ),
+    [methodologies, methodologyKey],
+  );
 
   const maxScheduleDate = useMemo(() => {
     const d = new Date();
@@ -99,6 +129,10 @@ export default function NewEngagementPage() {
       setError("Planning dates can't be more than 3 years in the future.");
       return;
     }
+    if (architecture === "v3" && !selectedMethodology) {
+      setError("Choose a methodology before creating a v3 engagement.");
+      return;
+    }
 
     const timeFrame: EngagementTimeFrame = endDate ? "custom" : "point_in_time";
     setBusy(true);
@@ -110,6 +144,11 @@ export default function NewEngagementPage() {
         time_frame: timeFrame,
         start_date: startDate || null,
         end_date: endDate || null,
+        intelligence_architecture: architecture,
+        methodology_slug:
+          architecture === "v3" ? selectedMethodology?.slug : undefined,
+        methodology_version:
+          architecture === "v3" ? selectedMethodology?.version : undefined,
         initial_scope: scope.map((item) => ({
           kind: item.kind,
           value: item.value,
@@ -156,6 +195,81 @@ export default function NewEngagementPage() {
             <Label htmlFor="description">Description / rules of engagement (optional)</Label>
             <Textarea id="description" value={description} onChange={(e) => setDescription(e.target.value)} rows={3} placeholder="Objectives, constraints, point of contact…" />
           </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Intelligence architecture</CardTitle>
+          <CardDescription>
+            New engagements use shared v3 Memory by default. Choose legacy only when this work must remain on the per-finding strategist pipeline; later conversion to v3 is one-way.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div
+            role="radiogroup"
+            aria-label="Intelligence architecture"
+            className="grid gap-3 sm:grid-cols-2"
+          >
+            <button
+              type="button"
+              role="radio"
+              aria-checked={architecture === "v3"}
+              onClick={() => setArchitecture("v3")}
+              className={`rounded-lg border p-4 text-left ${architecture === "v3" ? "border-violet-500 bg-violet-500/10" : "border-border"}`}
+            >
+              <span className="font-medium">v3 shared intelligence</span>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Deterministic collection, Engagement Memory, milestone analysis, and analyst-triggered guidance.
+              </p>
+            </button>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={architecture === "legacy"}
+              onClick={() => setArchitecture("legacy")}
+              className={`rounded-lg border p-4 text-left ${architecture === "legacy" ? "border-amber-500 bg-amber-500/10" : "border-border"}`}
+            >
+              <span className="font-medium">Legacy intelligence</span>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Existing per-finding strategist workflow. It can be converted to v3 later, but conversion is one-way.
+              </p>
+            </button>
+          </div>
+          {architecture === "v3" && (
+            <div className="space-y-2">
+              <Label htmlFor="methodology">Methodology</Label>
+              <select
+                id="methodology"
+                value={methodologyKey}
+                onChange={(event) => setMethodologyKey(event.target.value)}
+                disabled={methodologiesQuery.isLoading || methodologies.length === 0}
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              >
+                {methodologiesQuery.isLoading && (
+                  <option value="">Loading methodologies…</option>
+                )}
+                {!methodologiesQuery.isLoading && methodologies.length === 0 && (
+                  <option value="">No methodologies available</option>
+                )}
+                {methodologies.map((item) => (
+                  <option key={item.id} value={`${item.slug}:${item.version}`}>
+                    {item.name} · v{item.version} · {item.node_count} coverage nodes
+                  </option>
+                ))}
+              </select>
+              {methodologiesQuery.error && (
+                <p className="text-xs text-critical">
+                  Could not load methodologies: {methodologiesQuery.error instanceof Error ? methodologiesQuery.error.message : String(methodologiesQuery.error)} Switch to legacy to continue without selecting one.
+                </p>
+              )}
+              {selectedMethodology?.description && (
+                <p className="text-xs text-muted-foreground">
+                  {selectedMethodology.description}
+                </p>
+              )}
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -251,7 +365,14 @@ export default function NewEngagementPage() {
 
       {error && <p className="text-sm text-critical">{error}</p>}
       <div className="flex justify-end">
-        <Button disabled={busy} onClick={submit}>{busy ? "Saving…" : hasUsableScope ? "Save and continue to Strategy" : "Save engagement"}</Button>
+        <Button
+          disabled={
+            busy ||
+            (architecture === "v3" &&
+              (methodologiesQuery.isLoading || !methodologyKey))
+          }
+          onClick={submit}
+        >{busy ? "Saving…" : hasUsableScope ? "Save and continue to Strategy" : "Save engagement"}</Button>
       </div>
     </div>
   );
