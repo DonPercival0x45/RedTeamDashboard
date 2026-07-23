@@ -39,8 +39,11 @@ export default function NewEngagementPage() {
 
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  const [architecture, setArchitecture] =
-    useState<EngagementArchitecture>("v3");
+  // v3 Convergence C6g — wizard no longer offers legacy. Every new
+  // engagement is v3; existing legacy engagements continue to work,
+  // and callers with a legitimate need can still pass
+  // ``intelligence_architecture: "legacy"`` programmatically via the API.
+  const architecture: EngagementArchitecture = "v3";
   const [methodologyKey, setMethodologyKey] = useState("");
   const methodologiesQuery = useMethodologies();
   const methodologies = useMemo(
@@ -200,89 +203,50 @@ export default function NewEngagementPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Intelligence architecture</CardTitle>
+          <CardTitle className="text-base">Methodology</CardTitle>
           <CardDescription>
-            v3 is the default for new engagements — deterministic collection over
-            an Engagement Memory backbone, playbook-driven OSINT, and
-            analyst-triggered analysis. Legacy stays available for teams still
-            on the per-finding strategist path; conversion to v3 is one-way.
+            New engagements run on v3 — deterministic collection over an
+            Engagement Memory backbone, playbook-driven OSINT, and
+            analyst-triggered analysis. Pick the methodology whose coverage
+            tree matches this engagement&apos;s scope.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div
-            role="radiogroup"
-            aria-label="Intelligence architecture"
-            className="grid gap-3 sm:grid-cols-2"
-          >
-            <button
-              type="button"
-              role="radio"
-              aria-checked={architecture === "v3"}
-              onClick={() => setArchitecture("v3")}
-              className={`rounded-lg border p-4 text-left ${architecture === "v3" ? "border-violet-500 bg-violet-500/10" : "border-border"}`}
+          <div className="space-y-2">
+            <Label htmlFor="methodology">Methodology</Label>
+            <select
+              id="methodology"
+              value={methodologyKey}
+              onChange={(event) => setMethodologyKey(event.target.value)}
+              disabled={methodologiesQuery.isLoading || methodologies.length === 0}
+              className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
-              <div className="flex items-center gap-2">
-                <span className="font-medium">v3 shared intelligence</span>
-                <Badge variant="secondary" className="text-[10px] uppercase tracking-wide">
-                  Default
-                </Badge>
-              </div>
-              <p className="mt-1 text-xs text-muted-foreground">
-                Deterministic collection, Engagement Memory, milestone analysis, and analyst-triggered guidance.
+              {methodologiesQuery.isLoading && (
+                <option value="">Loading methodologies…</option>
+              )}
+              {!methodologiesQuery.isLoading && methodologies.length === 0 && (
+                <option value="">No methodologies available</option>
+              )}
+              {methodologies.map((item) => (
+                <option key={item.id} value={`${item.slug}:${item.version}`}>
+                  {item.name} · v{item.version} · {item.node_count} coverage nodes
+                </option>
+              ))}
+            </select>
+            {methodologiesQuery.error && (
+              <p className="text-xs text-critical">
+                Could not load methodologies:{" "}
+                {methodologiesQuery.error instanceof Error
+                  ? methodologiesQuery.error.message
+                  : String(methodologiesQuery.error)}
               </p>
-            </button>
-            <button
-              type="button"
-              role="radio"
-              aria-checked={architecture === "legacy"}
-              onClick={() => setArchitecture("legacy")}
-              className={`rounded-lg border p-4 text-left ${architecture === "legacy" ? "border-amber-500 bg-amber-500/10" : "border-border"}`}
-            >
-              <div className="flex items-center gap-2">
-                <span className="font-medium">Legacy intelligence</span>
-                <Badge variant="outline" className="text-[10px] uppercase tracking-wide">
-                  Opt-in
-                </Badge>
-              </div>
-              <p className="mt-1 text-xs text-muted-foreground">
-                Existing per-finding strategist workflow. It can be converted to v3 later, but conversion is one-way.
+            )}
+            {selectedMethodology?.description && (
+              <p className="text-xs text-muted-foreground">
+                {selectedMethodology.description}
               </p>
-            </button>
+            )}
           </div>
-          {architecture === "v3" && (
-            <div className="space-y-2">
-              <Label htmlFor="methodology">Methodology</Label>
-              <select
-                id="methodology"
-                value={methodologyKey}
-                onChange={(event) => setMethodologyKey(event.target.value)}
-                disabled={methodologiesQuery.isLoading || methodologies.length === 0}
-                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-              >
-                {methodologiesQuery.isLoading && (
-                  <option value="">Loading methodologies…</option>
-                )}
-                {!methodologiesQuery.isLoading && methodologies.length === 0 && (
-                  <option value="">No methodologies available</option>
-                )}
-                {methodologies.map((item) => (
-                  <option key={item.id} value={`${item.slug}:${item.version}`}>
-                    {item.name} · v{item.version} · {item.node_count} coverage nodes
-                  </option>
-                ))}
-              </select>
-              {methodologiesQuery.error && (
-                <p className="text-xs text-critical">
-                  Could not load methodologies: {methodologiesQuery.error instanceof Error ? methodologiesQuery.error.message : String(methodologiesQuery.error)} Switch to legacy to continue without selecting one.
-                </p>
-              )}
-              {selectedMethodology?.description && (
-                <p className="text-xs text-muted-foreground">
-                  {selectedMethodology.description}
-                </p>
-              )}
-            </div>
-          )}
         </CardContent>
       </Card>
 
