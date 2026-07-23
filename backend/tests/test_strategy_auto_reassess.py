@@ -577,6 +577,7 @@ def test_v3_cutover_routes_engagement_milestones(
 def test_v3_run_hook_resolves_actor_llm_and_milestone(
     db: Session, engagement: Engagement, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    _enable_v3(db, engagement)
     redis_client = FakeRedis()
     actor_id = uuid.uuid4()
     thread_id = uuid.uuid4()
@@ -648,8 +649,9 @@ def test_v3_run_hook_resolves_actor_llm_and_milestone(
 def test_v3_run_hook_respects_auto_assess_disabled(
     db: Session, engagement: Engagement, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    _enable_v3(db, engagement)
     engagement.auto_assess_enabled = False
-    db.flush()
+    db.commit()
 
     def unexpected(*_args: Any, **_kwargs: Any) -> None:
         raise AssertionError("disabled engagement must not invoke milestone intelligence")
