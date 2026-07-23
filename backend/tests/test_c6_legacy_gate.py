@@ -60,6 +60,18 @@ def _cleanup_command_outbox(db: Session):
     db.commit()
 
 
+@pytest.fixture(autouse=True)
+def _seed_methodology_catalog(db: Session):
+    """C6c tests reference the ``osint-minimal`` methodology (v3 needs a
+    snapshot). CI runs against a fresh DB where the seed catalog isn't
+    populated yet, so seed it idempotently before each test in this module.
+    ``load_seed_catalog`` is upsert-safe — a no-op if the row already exists."""
+    from app.services.methodology import load_seed_catalog
+
+    load_seed_catalog(db)
+    db.commit()
+
+
 @pytest.fixture()
 def user(db: Session) -> User:
     u = User(
