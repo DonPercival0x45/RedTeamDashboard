@@ -44,6 +44,8 @@ class StepResult:
       Executors compute these deterministically (counts, not summaries).
     * ``error`` — populated iff ``ok is False``; short human-readable
       message. Stored on the coverage record's ``notes``.
+    * ``stub`` — executable placeholder, not real collection. The runner
+      records it visibly but does not let it satisfy baseline coverage.
     * ``data`` — freeform bag the executor may return for diagnostics /
       audit. Runner treats it as opaque; not persisted in A3a.
     """
@@ -55,6 +57,7 @@ class StepResult:
     findings_total: int = 0
     error: str | None = None
     data: dict[str, Any] = field(default_factory=dict)
+    stub: bool = False
 
 
 class PlaybookExecutor(Protocol):

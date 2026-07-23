@@ -372,6 +372,8 @@ def test_provider_inference_covers_common_prefixes() -> None:
     assert provider_for_model("o3-mini") == "openai"
     assert provider_for_model("grok-3") == "xai"
     assert provider_for_model("deepseek-chat") == "deepseek"
+    assert provider_for_model("kimi-k2-turbo-preview") == "moonshot"
+    assert provider_for_model("moonshot-v1-128k") == "moonshot"
     assert provider_for_model("gemini-1.5-pro") == "google"
     # Unknown prefix -> None; caller decides fallback.
     assert provider_for_model("some-weird-model") is None

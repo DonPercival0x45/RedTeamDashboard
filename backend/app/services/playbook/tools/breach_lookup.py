@@ -17,6 +17,7 @@ def run(scope_context: str, args: dict[str, Any]) -> StepResult:
     return StepResult(
         ok=True,
         findings_total=0,
+        stub=True,
         data={
             "note": (
                 "breach-lookup stub — real corpus lookup lands with the "

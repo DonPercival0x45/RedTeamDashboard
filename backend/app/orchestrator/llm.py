@@ -7,9 +7,9 @@ model from ``settings`` — used when a run doesn't pick one explicitly.
 Tests inject a fake by passing ``llm=...`` to ``build_graph`` and never reach
 this module.
 
-v0.8.1: providers expanded to match the /settings/keys Quick Add list (12
-total). The 8 OpenAI-compatible vendors (xAI, Together, Groq, DeepSeek,
-Mistral, Google, Cohere, Custom) route through ChatOpenAI with a
+Providers match the /settings/keys Quick Add list. The OpenAI-compatible
+vendors (xAI, Together, Groq, DeepSeek, Mistral, Google, Cohere,
+Moonshot/Kimi, Custom) route through ChatOpenAI with a
 per-provider base_url — no new langchain packages required.
 """
 from __future__ import annotations
@@ -30,6 +30,7 @@ _OPENAI_COMPATIBLE_BASES: dict[str, str] = {
     "mistral": "https://api.mistral.ai/v1",
     "google": "https://generativelanguage.googleapis.com/v1beta/openai",
     "cohere": "https://api.cohere.com/compatibility/v1",
+    "moonshot": "https://api.moonshot.cn/v1",
     "custom": "",
 }
 
@@ -172,7 +173,7 @@ def make_llm(
         raise ValueError(
             f"unknown LLM provider {provider!r}; expected one of: "
             "anthropic, openai, ollama, azure, google, xai, mistral, "
-            "cohere, together, groq, deepseek, custom"
+            "cohere, together, groq, deepseek, moonshot, custom"
         )
 
     return llm.bind_tools(tool_schemas(registry))

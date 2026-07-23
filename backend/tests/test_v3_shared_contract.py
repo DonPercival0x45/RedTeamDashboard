@@ -241,6 +241,7 @@ def test_coverage_status_stale_is_stored_lapse() -> None:
     assert set(CoverageRecordStatus) >= {
         CoverageRecordStatus.satisfied,
         CoverageRecordStatus.stale,
+        CoverageRecordStatus.stub,
         CoverageRecordStatus.pending,
     }
 

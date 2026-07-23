@@ -65,6 +65,17 @@ def test_anthropic_uses_versioned_models_route() -> None:
     assert "anthropic-version" in headers
 
 
+def test_moonshot_uses_kimi_model_list_route() -> None:
+    payload = {"data": [{"id": "kimi-k2-turbo-preview"}]}
+    with patch(
+        "app.services.provider_probe.httpx.get", return_value=_Resp(200, payload)
+    ) as request:
+        result = provider_probe.probe("moonshot", api_key="sk-kimi", endpoint=None)
+    assert result.ok and result.models == ["kimi-k2-turbo-preview"]
+    assert request.call_args.args[0] == "https://api.moonshot.cn/v1/models"
+    assert request.call_args.kwargs["headers"]["Authorization"] == "Bearer sk-kimi"
+
+
 def test_ollama_is_keyless_and_parses_tags() -> None:
     payload = {"models": [{"name": "llama3.1:8b"}, {"name": "qwen2:7b"}]}
     with _mock_get(_Resp(200, payload)):

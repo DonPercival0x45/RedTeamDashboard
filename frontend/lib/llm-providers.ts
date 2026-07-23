@@ -101,6 +101,13 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     modelsDefault: ["deepseek-chat"],
   },
   {
+    slug: "moonshot",
+    label: "Moonshot AI (Kimi)",
+    isLocal: false,
+    endpoint: "https://api.moonshot.cn/v1",
+    modelsDefault: ["kimi-k2-turbo-preview", "moonshot-v1-128k"],
+  },
+  {
     slug: "ollama",
     label: "Ollama (local)",
     isLocal: true,

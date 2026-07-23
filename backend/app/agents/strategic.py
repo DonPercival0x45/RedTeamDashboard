@@ -354,6 +354,7 @@ _OPENAI_COMPATIBLE_BASES: dict[str, str] = {
     "mistral": "https://api.mistral.ai/v1",
     "google": "https://generativelanguage.googleapis.com/v1beta/openai",
     "cohere": "https://api.cohere.com/compatibility/v1",
+    "moonshot": "https://api.moonshot.cn/v1",
     "custom": "",
 }
 
@@ -377,8 +378,8 @@ def _make_chat_model(
     has no key for the provider, the resolver raises and this factory is
     not called.
 
-    v0.8.1: the 8 OpenAI-compatible providers (xAI, Together, Groq,
-    DeepSeek, Mistral, Google, Cohere, Custom) route through ChatOpenAI
+    v0.8.1+: the OpenAI-compatible providers (xAI, Together, Groq,
+    DeepSeek, Mistral, Google, Cohere, Moonshot/Kimi, Custom) route through ChatOpenAI
     with a per-provider ``base_url``. No new langchain packages required;
     those vendors all expose an OpenAI-shaped surface. ``Custom`` requires
     the analyst to upload the key with an ``endpoint`` so we know where

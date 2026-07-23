@@ -12,7 +12,7 @@ Model-list endpoints, per provider family:
 * ``anthropic``  — ``GET {base}/v1/models`` with ``x-api-key`` +
   ``anthropic-version`` headers; ``{"data": [{"id": ...}]}``.
 * ``openai`` and every OpenAI-compatible vendor (xai, together, groq,
-  deepseek, mistral, google, cohere, custom) — ``GET {base}/models`` with
+  deepseek, mistral, google, cohere, moonshot, custom) — ``GET {base}/models`` with
   ``Authorization: Bearer``; ``{"data": [{"id": ...}]}``.
 * ``ollama``    — ``GET {base}/api/tags`` (keyless); ``{"models":
   [{"name": ...}]}``.

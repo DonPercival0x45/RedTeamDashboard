@@ -45,6 +45,7 @@ const DEFAULT_MODELS: Record<LLMProvider, string> = {
   together: "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
   groq: "llama-3.3-70b-versatile",
   deepseek: "deepseek-chat",
+  moonshot: "kimi-k2-turbo-preview",
   custom: "",
 };
 
@@ -59,6 +60,7 @@ const PROVIDER_OPTIONS: { value: LLMProvider; label: string }[] = [
   { value: "together", label: "Together AI" },
   { value: "groq", label: "Groq" },
   { value: "deepseek", label: "DeepSeek" },
+  { value: "moonshot", label: "Moonshot AI (Kimi)" },
   { value: "ollama", label: "Ollama (local)" },
   { value: "custom", label: "Custom (OpenAI-compatible)" },
 ];

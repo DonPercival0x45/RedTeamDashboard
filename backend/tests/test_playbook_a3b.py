@@ -103,7 +103,7 @@ def test_default_executor_covers_all_seed_playbook_slugs() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Stub tools — canned success
+# Stub tools — executable placeholders explicitly marked as non-coverage
 # ---------------------------------------------------------------------------
 
 
@@ -115,9 +115,10 @@ def test_default_executor_covers_all_seed_playbook_slugs() -> None:
 def test_stub_tools_return_success_with_note(tool_module) -> None:
     result = tool_module.run("foo.com", {"domain": "foo.com"})
     assert result.ok is True
+    assert result.stub is True
     assert result.findings_total == 0
     # A note explaining the stub is present so the coverage record's audit
-    # trail carries provenance.
+    # trail carries provenance without falsely satisfying baseline.
     assert "stub" in (result.data.get("note") or "").lower()
 
 

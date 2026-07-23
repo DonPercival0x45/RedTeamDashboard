@@ -29,6 +29,7 @@ LLMProvider = Literal[
     "together",
     "groq",
     "deepseek",
+    "moonshot",
     "custom",
 ]
 
