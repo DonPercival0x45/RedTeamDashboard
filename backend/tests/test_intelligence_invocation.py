@@ -12,13 +12,19 @@ import uuid
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.agents.intelligence import run_intelligence_analysis
+from app.agents import intelligence as intel
+from app.agents.intelligence import (
+    record_intelligence_failure,
+    run_intelligence_analysis,
+)
 from app.models import (
     ActorType,
     AgentExecutionStatus,
     AgentPromptMode,
+    AgentTrigger,
     Engagement,
     EngagementStatus,
     EngagementWorkState,
@@ -224,9 +230,98 @@ def test_coverage_review_folds_hypotheses_into_decision(
     assert decisions[0].summary == "auth surface confirmed"
 
 
+def test_coverage_review_rejects_non_hypothesis_fold(
+    db: Session, engagement: Engagement, user: User
+) -> None:
+    fact = _memory(db, engagement, MemoryKind.fact, "fact is not foldable")
+    result = CoverageReviewOutput(
+        folds=[
+            ProposedFold(
+                hypothesis_ids=[fact.id],
+                decision_summary="invalid fold",
+                rationale="model selected the wrong kind",
+            )
+        ]
+    )
+
+    out, execution = run_intelligence_analysis(
+        db,
+        engagement_id=engagement.id,
+        mode=AgentPromptMode.coverage_review,
+        acting_user_id=user.id,
+        llm=FakeLLM(result),
+    )
+
+    assert out is None
+    assert execution.status is AgentExecutionStatus.failed
+    assert "ineligible hypotheses" in (execution.error or "")
+    db.refresh(fact)
+    assert fact.tier is MemoryTier.hot
+
+
+def test_coverage_review_rejects_hypothesis_reused_across_folds(
+    db: Session, engagement: Engagement, user: User
+) -> None:
+    hypothesis = _memory(db, engagement, MemoryKind.hypothesis, "one hypothesis")
+    hypothesis.status = MemoryStatus.resolved
+    result = CoverageReviewOutput(
+        folds=[
+            ProposedFold(
+                hypothesis_ids=[hypothesis.id],
+                decision_summary="first",
+                rationale="first use",
+            ),
+            ProposedFold(
+                hypothesis_ids=[hypothesis.id],
+                decision_summary="second",
+                rationale="duplicate use",
+            ),
+        ]
+    )
+
+    out, execution = run_intelligence_analysis(
+        db,
+        engagement_id=engagement.id,
+        mode=AgentPromptMode.coverage_review,
+        acting_user_id=user.id,
+        llm=FakeLLM(result),
+    )
+
+    assert out is None
+    assert execution.status is AgentExecutionStatus.failed
+    assert "reuses hypotheses" in (execution.error or "")
+    decisions = db.execute(
+        select(MemoryElement).where(
+            MemoryElement.engagement_id == engagement.id,
+            MemoryElement.kind == MemoryKind.decision,
+        )
+    ).scalars().all()
+    assert decisions == []
+    db.refresh(hypothesis)
+    assert hypothesis.tier is MemoryTier.hot
+
+
 # ---------------------------------------------------------------------------
 # Failure path
 # ---------------------------------------------------------------------------
+
+
+def test_setup_failure_records_failed_tick_execution(
+    db: Session, engagement: Engagement, user: User
+) -> None:
+    execution = record_intelligence_failure(
+        db,
+        engagement_id=engagement.id,
+        mode=AgentPromptMode.coverage_review,
+        acting_user_id=user.id,
+        error=RuntimeError("key expired"),
+    )
+
+    assert execution.status is AgentExecutionStatus.failed
+    assert execution.trigger is AgentTrigger.tick
+    assert execution.input["mode"] == "coverage_review"
+    assert execution.input["acting_user_id"] == str(user.id)
+    assert "key expired" in (execution.error or "")
 
 
 def test_llm_failure_marks_execution_failed_no_partial_writes(
@@ -252,3 +347,24 @@ def test_llm_failure_marks_execution_failed_no_partial_writes(
         )
     ).scalars().all()
     assert facts == []
+
+
+def test_database_persistence_failure_propagates(
+    db: Session,
+    engagement: Engagement,
+    user: User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_persistence(*_args, **_kwargs):
+        raise SQLAlchemyError("database write failed")
+
+    monkeypatch.setattr(intel, "_persist_analysis", fail_persistence)
+
+    with pytest.raises(SQLAlchemyError, match="database write failed"):
+        run_intelligence_analysis(
+            db,
+            engagement_id=engagement.id,
+            mode=AgentPromptMode.analysis,
+            acting_user_id=user.id,
+            llm=FakeLLM(AnalysisOutput()),
+        )

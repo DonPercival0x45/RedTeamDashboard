@@ -25,6 +25,7 @@ import uuid
 from typing import Any
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.models import Engagement, EngagementPhase, ScopeItem
@@ -192,6 +193,8 @@ from app.models import (  # noqa: E402
     AgentTrigger,
     MemoryElement,
     MemoryKind,
+    MemoryStatus,
+    MemoryTier,
     WorkItem,
     WorkItemDisposition,
     WorkItemExecutor,
@@ -272,17 +275,38 @@ def _persist_coverage_review(
     session: Session, *, engagement_id: uuid.UUID, out: CoverageReviewOutput
 ) -> int:
     folded = 0
+    used_ids: set[uuid.UUID] = set()
     for fold in out.folds:
-        hyps = list(
+        requested = [uuid.UUID(str(item)) for item in fold.hypothesis_ids]
+        if len(set(requested)) != len(requested):
+            raise ValueError("coverage-review fold contains duplicate hypothesis ids")
+        reused = used_ids.intersection(requested)
+        if reused:
+            raise ValueError(
+                f"coverage-review reuses hypotheses across folds: {sorted(reused)}"
+            )
+        used_ids.update(requested)
+        rows = list(
             session.execute(
                 select(MemoryElement).where(
                     MemoryElement.engagement_id == engagement_id,
-                    MemoryElement.id.in_([uuid.UUID(str(h)) for h in fold.hypothesis_ids]),
+                    MemoryElement.id.in_(requested),
+                    MemoryElement.kind == MemoryKind.hypothesis,
+                    MemoryElement.tier == MemoryTier.hot,
+                    MemoryElement.status.in_(
+                        {MemoryStatus.open, MemoryStatus.resolved}
+                    ),
                 )
             ).scalars()
         )
-        if not hyps:
-            continue
+        by_id = {row.id: row for row in rows}
+        missing = set(requested).difference(by_id)
+        if missing:
+            raise ValueError(
+                "coverage-review fold references ineligible hypotheses: "
+                + ", ".join(str(item) for item in sorted(missing))
+            )
+        hyps = [by_id[item] for item in requested]
         fold_into_decision(
             session, engagement_id=engagement_id, hypotheses=hyps,
             decision_summary=fold.decision_summary, rationale=fold.rationale,
@@ -303,6 +327,42 @@ def _persist_strategy(session: Session, *, engagement_id: uuid.UUID, out: Strate
         _add_work_item(session, engagement_id=engagement_id, proposed=w)
 
 
+def record_intelligence_failure(
+    session: Session,
+    *,
+    engagement_id: uuid.UUID,
+    mode: AgentPromptMode,
+    acting_user_id: uuid.UUID,
+    error: Exception,
+) -> AgentExecution:
+    """Persist a failed execution when setup fails before an LLM exists.
+
+    B5 uses this for coverage-review key/model construction failures so the
+    primary milestone can commit once instead of being replayed solely because
+    optional maintenance could not start.
+    """
+    now = datetime.now(tz=UTC)
+    execution = AgentExecution(
+        engagement_id=engagement_id,
+        agent=AgentName.engagement_strategist,
+        trigger=AgentTrigger.tick,
+        input={
+            "mode": mode.value,
+            "engagement_id": str(engagement_id),
+            "acting_user_id": str(acting_user_id),
+            "v3_intelligence": True,
+            "setup_failure": True,
+        },
+        status=AgentExecutionStatus.failed,
+        started_at=now,
+        completed_at=now,
+        error=str(error)[:2000],
+    )
+    session.add(execution)
+    session.flush()
+    return execution
+
+
 def run_intelligence_analysis(
     session: Session,
     *,
@@ -314,6 +374,7 @@ def run_intelligence_analysis(
     thread_id: uuid.UUID | None = None,
     model_provider: str | None = None,
     model_name: str | None = None,
+    trigger: AgentTrigger = AgentTrigger.manual,
 ) -> tuple[Any, AgentExecution]:
     """Invoke the intelligence agent in ``mode`` and persist its output.
 
@@ -347,7 +408,7 @@ def run_intelligence_analysis(
     execution = AgentExecution(
         engagement_id=engagement_id,
         agent=AgentName.engagement_strategist,
-        trigger=AgentTrigger.manual,
+        trigger=trigger,
         input={
             "mode": mode.value,
             "engagement_id": str(engagement_id),
@@ -380,6 +441,10 @@ def run_intelligence_analysis(
         execution.status = AgentExecutionStatus.completed
         execution.completed_at = datetime.now(tz=UTC)
         execution.output = {"mode": mode.value, "parsed": True}
+    except SQLAlchemyError:
+        # Persistence faults must abort the outer receipt transaction. Treating
+        # them as model failures would commit a partial/invalid milestone cycle.
+        raise
     except Exception as exc:  # noqa: BLE001 — savepoint rolled back; execution survives
         execution.status = AgentExecutionStatus.failed
         execution.error = str(exc)[:2000]
