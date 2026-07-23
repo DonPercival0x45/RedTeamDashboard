@@ -19,7 +19,7 @@ A4 adds ``MCPExecutor`` implementing the same protocol, dispatched by
 """
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -69,16 +69,48 @@ class PlaybookExecutor(Protocol):
         ...
 
 
-class InternalExecutor:
-    """In-process executor stub — A3a seam only.
+ToolCallable = Callable[[str, dict[str, Any]], StepResult]
 
-    ``run_step`` raises ``NotImplementedError`` for real tool slugs; A3b binds
-    it to ``services.tool_invocation``. The class exists so the runner's
-    dependency-injection shape is final in A3a and A3b is a pure wire-up.
 
-    Tests drive the runner with a ``MockExecutor`` returning canned
-    ``StepResult`` values — that's the intended usage until A3b.
+def _default_registry() -> dict[str, ToolCallable]:
+    """The A3b tool dispatch table.
+
+    Imported lazily so the executor module doesn't drag in dnspython on
+    every ``from executor import ...`` — the tools package resolves
+    dnspython + python-whois at first use, not at import time.
     """
+    from app.services.playbook import tools as _tools
+
+    return {
+        "dns-inventory": _tools.run_dns_inventory,
+        "whois": _tools.run_whois,
+        "subfinder": _tools.run_subfinder,
+        "crtsh": _tools.run_crtsh,
+        "breach-lookup": _tools.run_breach_lookup,
+    }
+
+
+class InternalExecutor:
+    """In-process executor — Track A step A3b.
+
+    Dispatches by ``tool_slug`` through a plain dict registry. Unknown slugs
+    become ``StepResult(ok=False)`` so a playbook referencing a not-yet-
+    implemented tool degrades to a step failure instead of crashing the run.
+
+    Callers can override the registry (tests, custom deployments) by passing
+    ``registry=...``; the default table wires the OSINT playbook's five
+    tools (two real, three stubs — see ``services/playbook/tools/``).
+    """
+
+    def __init__(self, registry: dict[str, ToolCallable] | None = None) -> None:
+        self._registry: dict[str, ToolCallable] = (
+            registry if registry is not None else _default_registry()
+        )
+
+    def register(self, tool_slug: str, fn: ToolCallable) -> None:
+        """Add / replace a tool at runtime. Used by extension points that
+        want to ship a new playbook tool without editing the executor."""
+        self._registry[tool_slug] = fn
 
     def run_step(
         self,
@@ -87,10 +119,14 @@ class InternalExecutor:
         args_template: Mapping[str, Any],
         scope_context: str,
     ) -> StepResult:
-        raise NotImplementedError(
-            "InternalExecutor.run_step is stubbed in A3a; wire to the tool "
-            "registry in A3b before invoking against real playbooks."
-        )
+        fn = self._registry.get(tool_slug)
+        if fn is None:
+            return StepResult(
+                ok=False,
+                error=f"unknown tool: {tool_slug!r}",
+            )
+        args = substitute_scope(args_template, scope_context)
+        return fn(scope_context, args)
 
 
 def substitute_scope(
