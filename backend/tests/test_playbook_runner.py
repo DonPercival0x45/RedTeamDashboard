@@ -225,8 +225,8 @@ def test_stub_step_is_visible_but_does_not_complete_baseline(
     assert engagement_with_methodology.baseline_completed_at is None
 
     expected = meth.derive_expected_triples(
-        engagement_with_methodology.methodology_snapshot,
-        scope_items_by_asset_class={"domain": ["foo.com"]},
+        engagement_with_methodology,
+        scope_item_ids_by_asset_class={"domain": ["foo.com"]},
     )
     complete, unsatisfied = cov.check_baseline_complete(
         db,
