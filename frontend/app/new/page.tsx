@@ -202,7 +202,10 @@ export default function NewEngagementPage() {
         <CardHeader>
           <CardTitle className="text-base">Intelligence architecture</CardTitle>
           <CardDescription>
-            New engagements use shared v3 Memory by default. Choose legacy only when this work must remain on the per-finding strategist pipeline; later conversion to v3 is one-way.
+            v3 is the default for new engagements — deterministic collection over
+            an Engagement Memory backbone, playbook-driven OSINT, and
+            analyst-triggered analysis. Legacy stays available for teams still
+            on the per-finding strategist path; conversion to v3 is one-way.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -218,7 +221,12 @@ export default function NewEngagementPage() {
               onClick={() => setArchitecture("v3")}
               className={`rounded-lg border p-4 text-left ${architecture === "v3" ? "border-violet-500 bg-violet-500/10" : "border-border"}`}
             >
-              <span className="font-medium">v3 shared intelligence</span>
+              <div className="flex items-center gap-2">
+                <span className="font-medium">v3 shared intelligence</span>
+                <Badge variant="secondary" className="text-[10px] uppercase tracking-wide">
+                  Default
+                </Badge>
+              </div>
               <p className="mt-1 text-xs text-muted-foreground">
                 Deterministic collection, Engagement Memory, milestone analysis, and analyst-triggered guidance.
               </p>
@@ -230,7 +238,12 @@ export default function NewEngagementPage() {
               onClick={() => setArchitecture("legacy")}
               className={`rounded-lg border p-4 text-left ${architecture === "legacy" ? "border-amber-500 bg-amber-500/10" : "border-border"}`}
             >
-              <span className="font-medium">Legacy intelligence</span>
+              <div className="flex items-center gap-2">
+                <span className="font-medium">Legacy intelligence</span>
+                <Badge variant="outline" className="text-[10px] uppercase tracking-wide">
+                  Opt-in
+                </Badge>
+              </div>
               <p className="mt-1 text-xs text-muted-foreground">
                 Existing per-finding strategist workflow. It can be converted to v3 later, but conversion is one-way.
               </p>
