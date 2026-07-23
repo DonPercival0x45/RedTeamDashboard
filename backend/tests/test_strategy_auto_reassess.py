@@ -490,16 +490,15 @@ def test_v3_run_hook_resolves_actor_llm_and_milestone(
         "app.worker.strategic_consumer.resolve_llm_for_mode", resolve_mode_llm
     )
 
-    def record_milestone(_session: Session, **kwargs: Any) -> None:
-        factory = kwargs.pop("llm_factory")
-        llm_value, provider, model_name = factory()
-        kwargs["llm"] = llm_value
-        kwargs["model_provider"] = provider
-        kwargs["model_name"] = model_name
+    def record_cycle(_session: Session, **kwargs: Any) -> None:
+        primary_factory = kwargs.pop("llm_factory")
+        review_factory = kwargs.pop("coverage_review_llm_factory")
+        kwargs["primary_llm"] = primary_factory()
+        kwargs["coverage_review_llm"] = review_factory()
         invoked.append(kwargs)
 
     monkeypatch.setattr(
-        "app.worker.strategic_consumer.handle_milestone", record_milestone
+        "app.worker.strategic_consumer.run_milestone_cycle", record_cycle
     )
     consumer = StrategicConsumer(
         agent=object(),  # type: ignore[arg-type]
@@ -519,16 +518,21 @@ def test_v3_run_hook_resolves_actor_llm_and_milestone(
             "user_id": actor_id,
             "engagement_id": engagement.id,
             "mode": AgentPromptMode.analysis,
-        }
+        },
+        {
+            "redis_client": redis_client,
+            "user_id": actor_id,
+            "engagement_id": engagement.id,
+            "mode": AgentPromptMode.coverage_review,
+        },
     ]
     assert invoked == [
         {
             "engagement_id": engagement.id,
             "milestone_type": "run.completed",
             "acting_user_id": actor_id,
-            "llm": llm,
-            "model_provider": "test",
-            "model_name": "test-model",
+            "primary_llm": (llm, "test", "test-model"),
+            "coverage_review_llm": (llm, "test", "test-model"),
             "thread_id": thread_id,
         }
     ]
@@ -543,7 +547,9 @@ def test_v3_run_hook_respects_auto_assess_disabled(
     def unexpected(*_args: Any, **_kwargs: Any) -> None:
         raise AssertionError("disabled engagement must not invoke milestone intelligence")
 
-    monkeypatch.setattr("app.worker.strategic_consumer.handle_milestone", unexpected)
+    monkeypatch.setattr(
+        "app.worker.strategic_consumer.run_milestone_cycle", unexpected
+    )
     consumer = StrategicConsumer(
         agent=object(),  # type: ignore[arg-type]
         redis_client=FakeRedis(),
