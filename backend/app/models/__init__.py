@@ -7,6 +7,10 @@ from app.models.agent_execution import (
     AgentExecutionStatus,
     AgentTrigger,
 )
+from app.models.agent_mode_model_preference import (
+    AgentModeModelPreference,
+    AgentPromptMode,
+)
 from app.models.agent_model_preference import AgentModelPreference
 from app.models.api_key import APIKey, APIKeyScope, scope_satisfies
 from app.models.approval import Approval, ApprovalStatus, RiskLevel
@@ -109,8 +113,10 @@ __all__ = [
     "AgentExecution",
     "Attachment",
     "AgentExecutionStatus",
+    "AgentModeModelPreference",
     "AgentModelPreference",
     "AgentName",
+    "AgentPromptMode",
     "AgentTrigger",
     "Approval",
     "ApprovalStatus",
