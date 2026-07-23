@@ -77,6 +77,11 @@ import type {
   ToolStatus,
   ToolInvocationRead,
   OrchestratorTool,
+  PlaybookDetail,
+  PlaybookRead,
+  PlaybookRunCreate,
+  PlaybookRunRead,
+  PlaybookRunStatus,
 } from "@/lib/types";
 
 // Auth-only headers (no Content-Type — request() adds that for JSON bodies).
@@ -1958,5 +1963,70 @@ export function runCommand(
   return request(`/infrastructure/vms${armId}/run-command`, {
     method: "POST",
     body: JSON.stringify({ script }),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Playbooks (Track A — v3)
+// ---------------------------------------------------------------------------
+
+export function listPlaybooks(): Promise<PlaybookRead[]> {
+  return request<PlaybookRead[]>("/playbooks");
+}
+
+export function getPlaybook(slug: string): Promise<PlaybookDetail> {
+  return request<PlaybookDetail>(`/playbooks/${slug}`);
+}
+
+export function listPlaybookRuns(
+  engagementSlug: string,
+  opts?: { status?: PlaybookRunStatus; limit?: number },
+): Promise<PlaybookRunRead[]> {
+  const q = new URLSearchParams();
+  if (opts?.status) q.set("status", opts.status);
+  if (opts?.limit) q.set("limit", String(opts.limit));
+  const suffix = q.toString() ? `?${q.toString()}` : "";
+  return request<PlaybookRunRead[]>(
+    `/engagements/${engagementSlug}/playbook-runs${suffix}`,
+  );
+}
+
+export function getPlaybookRun(runId: string): Promise<PlaybookRunRead> {
+  return request<PlaybookRunRead>(`/playbook-runs/${runId}`);
+}
+
+export function createPlaybookRun(
+  engagementSlug: string,
+  body: PlaybookRunCreate,
+): Promise<PlaybookRunRead> {
+  return request<PlaybookRunRead>(
+    `/engagements/${engagementSlug}/playbook-runs`,
+    { method: "POST", body: JSON.stringify(body) },
+  );
+}
+
+export function cancelPlaybookRun(runId: string): Promise<PlaybookRunRead> {
+  return request<PlaybookRunRead>(`/playbook-runs/${runId}/cancel`, {
+    method: "POST",
+  });
+}
+
+export function approvePlaybookRun(
+  runId: string,
+  reason?: string,
+): Promise<PlaybookRunRead> {
+  return request<PlaybookRunRead>(`/playbook-runs/${runId}/approve`, {
+    method: "POST",
+    body: JSON.stringify({ reason: reason ?? null }),
+  });
+}
+
+export function rejectPlaybookRun(
+  runId: string,
+  reason: string,
+): Promise<PlaybookRunRead> {
+  return request<PlaybookRunRead>(`/playbook-runs/${runId}/reject`, {
+    method: "POST",
+    body: JSON.stringify({ reason }),
   });
 }

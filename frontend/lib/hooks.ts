@@ -83,6 +83,14 @@ import {
   listEngagementAttribution,
   listRoadmapSuggestions,
   listRunningTasks,
+  listPlaybooks,
+  getPlaybook,
+  listPlaybookRuns,
+  getPlaybookRun,
+  createPlaybookRun,
+  cancelPlaybookRun,
+  approvePlaybookRun,
+  rejectPlaybookRun,
   listScope,
   listStoredEntities,
   listTasks,
@@ -207,6 +215,13 @@ export const qk = {
     ["analytics", "top-findings", engagement ?? "all", limit] as const,
   analyticsEngagementLog: (engagement: string | null, limit: number) =>
     ["analytics", "engagement-log", engagement ?? "all", limit] as const,
+  playbooks: () => ["playbooks"] as const,
+  playbook: (slug: string) => ["playbook", slug] as const,
+  playbookRuns: (
+    engagementSlug: string,
+    status?: import("@/lib/types").PlaybookRunStatus,
+  ) => ["playbook-runs", engagementSlug, status ?? "all"] as const,
+  playbookRun: (runId: string) => ["playbook-run", runId] as const,
   infraStatus: () => ["infra", "status"] as const,
   infraSubscriptions: () => ["infra", "subscriptions"] as const,
   vms: () => ["infra", "vms"] as const,
@@ -1322,5 +1337,113 @@ export function useDeleteAutoShutdownMutation(armId: string) {
 export function useRunCommandMutation(armId: string) {
   return useMutation({
     mutationFn: (script: string) => runCommand(armId, script),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Playbooks (Track A — v3)
+// ---------------------------------------------------------------------------
+
+export function usePlaybooks() {
+  return useQuery({
+    queryKey: qk.playbooks(),
+    queryFn: () => listPlaybooks(),
+  });
+}
+
+export function usePlaybook(slug: string | null) {
+  return useQuery({
+    queryKey: slug ? qk.playbook(slug) : ["playbook", "none"],
+    queryFn: () => getPlaybook(slug!),
+    enabled: !!slug,
+  });
+}
+
+// Runs poll while anything is in a live state so the status pill updates
+// promptly. Fully terminal listings idle-refresh at a slower cadence.
+export function usePlaybookRuns(
+  engagementSlug: string | null,
+  status?: import("@/lib/types").PlaybookRunStatus,
+) {
+  return useQuery({
+    queryKey: engagementSlug
+      ? qk.playbookRuns(engagementSlug, status)
+      : ["playbook-runs", "none"],
+    queryFn: () => listPlaybookRuns(engagementSlug!, { status }),
+    enabled: !!engagementSlug,
+    refetchInterval: (query) => {
+      const runs = query.state.data;
+      if (!runs) return false;
+      const live = runs.some(
+        (r) =>
+          r.status === "pending" ||
+          r.status === "running" ||
+          r.status === "awaiting_approval",
+      );
+      return live ? 3000 : 15000;
+    },
+  });
+}
+
+export function usePlaybookRun(runId: string | null) {
+  return useQuery({
+    queryKey: runId ? qk.playbookRun(runId) : ["playbook-run", "none"],
+    queryFn: () => getPlaybookRun(runId!),
+    enabled: !!runId,
+    refetchInterval: (query) => {
+      const run = query.state.data;
+      if (!run) return false;
+      const live =
+        run.status === "pending" ||
+        run.status === "running" ||
+        run.status === "awaiting_approval";
+      return live ? 2000 : false;
+    },
+  });
+}
+
+export function useCreatePlaybookRunMutation(engagementSlug: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: import("@/lib/types").PlaybookRunCreate) =>
+      createPlaybookRun(engagementSlug, body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["playbook-runs", engagementSlug] });
+    },
+  });
+}
+
+export function useCancelPlaybookRunMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (runId: string) => cancelPlaybookRun(runId),
+    onSuccess: (run) => {
+      qc.invalidateQueries({ queryKey: qk.playbookRun(run.id) });
+      qc.invalidateQueries({ queryKey: ["playbook-runs", run.engagement_id] });
+    },
+  });
+}
+
+export function useApprovePlaybookRunMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { runId: string; reason?: string }) =>
+      approvePlaybookRun(vars.runId, vars.reason),
+    onSuccess: (run) => {
+      qc.invalidateQueries({ queryKey: qk.playbookRun(run.id) });
+      qc.invalidateQueries({ queryKey: ["playbook-runs"] });
+    },
+  });
+}
+
+export function useRejectPlaybookRunMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { runId: string; reason: string }) =>
+      rejectPlaybookRun(vars.runId, vars.reason),
+    onSuccess: (run) => {
+      qc.invalidateQueries({ queryKey: qk.playbookRun(run.id) });
+      qc.invalidateQueries({ queryKey: ["playbook-runs"] });
+    },
   });
 }

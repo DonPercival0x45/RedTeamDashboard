@@ -5,13 +5,20 @@ import { Suspense, useMemo } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { cn } from "@/lib/utils";
 import { ASCII_CAT_PLAYING, PlaceholderPage } from "@/components/placeholder-page";
+import { PlaybooksTab } from "@/components/playbooks/playbooks-tab";
 import { ReportBuilder } from "@/components/report-builder";
 import { useEngagements, useRunningTasks } from "@/lib/hooks";
 import type { RunningTask } from "@/lib/api";
 
-type AutomationTab = "recon" | "scanning" | "exploitation" | "reporting";
+type AutomationTab =
+  | "playbooks"
+  | "recon"
+  | "scanning"
+  | "exploitation"
+  | "reporting";
 
 const TABS: { id: AutomationTab; label: string }[] = [
+  { id: "playbooks", label: "Playbooks" },
   { id: "recon", label: "Recon" },
   { id: "scanning", label: "Scanning" },
   { id: "exploitation", label: "Exploitation" },
@@ -78,8 +85,65 @@ function AutomationContent() {
 
       {tab === "reporting" ? (
         <ReportingTab requestedSlug={requestedSlug} onSlugChange={(slug) => updateContext({ slug })} />
+      ) : tab === "playbooks" ? (
+        <PlaybooksEngagementPicker
+          requestedSlug={requestedSlug}
+          onSlugChange={(slug) => updateContext({ slug })}
+        />
       ) : (
         <ComingSoonTab />
+      )}
+    </div>
+  );
+}
+
+function PlaybooksEngagementPicker({
+  requestedSlug,
+  onSlugChange,
+}: {
+  requestedSlug: string;
+  onSlugChange: (slug: string) => void;
+}) {
+  const engagementsQuery = useEngagements();
+  const engagements = useMemo(
+    () =>
+      (engagementsQuery.data ?? []).filter((e) => e.status !== "flushed"),
+    [engagementsQuery.data],
+  );
+  const selected =
+    engagements.find((e) => e.slug === requestedSlug) ?? null;
+
+  return (
+    <div className="space-y-4">
+      <label className="flex max-w-xl flex-col gap-1 text-xs">
+        <span className="text-muted-foreground">Engagement</span>
+        <select
+          value={selected?.slug ?? ""}
+          onChange={(event) => onSlugChange(event.target.value)}
+          disabled={engagementsQuery.isLoading || engagements.length === 0}
+          className="h-9 rounded-md border border-input bg-background px-2 text-sm"
+        >
+          <option value="">Select an engagement…</option>
+          {engagements.map((engagement) => (
+            <option key={engagement.slug} value={engagement.slug}>
+              {engagement.name} · {engagement.slug}
+              {engagement.status !== "active"
+                ? ` (${engagement.status})`
+                : ""}
+            </option>
+          ))}
+        </select>
+      </label>
+      {selected ? (
+        <PlaybooksTab engagementSlug={selected.slug} />
+      ) : (
+        <p className="rounded-lg border border-dashed border-border bg-card/20 p-6 text-sm text-muted-foreground">
+          {engagementsQuery.isLoading
+            ? "Loading engagements…"
+            : engagements.length === 0
+              ? "No engagements are available yet."
+              : "Select an engagement to view + kick playbook runs."}
+        </p>
       )}
     </div>
   );

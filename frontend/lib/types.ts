@@ -1429,3 +1429,78 @@ export interface RunCommandResult {
   duration_ms: number;
   timed_out: boolean;
 }
+
+// v3 Track A — Playbook catalog + runs (A3/A4/A5/A5b).
+//
+// Runs move through:
+//   awaiting_approval (only if playbook.active) → pending → running →
+//   completed | partial | failed | cancelled
+//
+// See ``services/playbook/runner.py`` for the state machine.
+export type PlaybookRunStatus =
+  | "awaiting_approval"
+  | "pending"
+  | "running"
+  | "completed"
+  | "partial"
+  | "failed"
+  | "cancelled";
+
+export type PlaybookExecutorKind = "internal" | "mcp";
+
+export interface PlaybookStepRead {
+  sort_order: number;
+  tool_slug: string;
+  args_template: Record<string, unknown>;
+  satisfies_node_ids: string[];
+  description: string | null;
+}
+
+export interface PlaybookRead {
+  id: string;
+  slug: string;
+  version: number;
+  name: string;
+  description: string | null;
+  applies_to_asset_class: string;
+  active: boolean;
+  step_count: number;
+}
+
+export interface PlaybookDetail extends PlaybookRead {
+  steps: PlaybookStepRead[];
+}
+
+export interface PlaybookRunRead {
+  id: string;
+  engagement_id: string;
+  playbook_id: string;
+  playbook_slug: string;
+  playbook_version: number;
+  status: PlaybookRunStatus;
+  executor: PlaybookExecutorKind;
+  scope_subset: unknown[];
+  started_at: string | null;
+  completed_at: string | null;
+  steps_total: number;
+  steps_succeeded: number;
+  steps_failed: number;
+  findings_new: number;
+  findings_unvalidated: number;
+  findings_high_severity: number;
+  findings_total: number;
+  last_error: string | null;
+  approved_by: string | null;
+  approved_at: string | null;
+  approval_reason: string | null;
+  rejected_by: string | null;
+  rejected_at: string | null;
+  rejection_reason: string | null;
+}
+
+export interface PlaybookRunCreate {
+  playbook_slug: string;
+  playbook_version?: number;
+  scope_subset: string[];
+  executor?: PlaybookExecutorKind;
+}
