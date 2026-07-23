@@ -27,11 +27,13 @@ from app.models import (
     AgentTrigger,
     Engagement,
     EngagementStatus,
+    EngagementStrategyRevision,
     EngagementWorkState,
     MemoryElement,
     MemoryKind,
     MemoryStatus,
     MemoryTier,
+    StrategyRevisionState,
     User,
     UserRole,
     WorkItem,
@@ -198,6 +200,20 @@ def test_strategy_creates_decisions_and_work_items(
     ).scalars().all()
     assert len(work_items) == 1
     assert work_items[0].disposition == WorkItemDisposition.tool_backed
+
+    # The strategy mode also bridges to the canonical strategy document so the
+    # existing accept workflow unlocks the workspace (has_strategy, tabs).
+    revisions = db.execute(
+        select(EngagementStrategyRevision).where(
+            EngagementStrategyRevision.engagement_id == engagement.id
+        )
+    ).scalars().all()
+    assert len(revisions) == 1
+    assert revisions[0].state is StrategyRevisionState.proposed
+    assert revisions[0].version == 1
+    assert "focus on identity" in revisions[0].body
+    assert revisions[0].created_by_user_id == user.id
+    assert revisions[0].proposed_by_execution_id is not None
 
 
 def test_coverage_review_folds_hypotheses_into_decision(

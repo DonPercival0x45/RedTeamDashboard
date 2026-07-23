@@ -823,8 +823,12 @@ export function StrategyView({
           <StrategistSection slug={slug} readOnly={readOnly} chat={data.chat} message={strategistMessage} setMessage={setStrategistMessage} lastRun={lastStrategistRun} setLastRun={setLastStrategistRun} busy={busy} mutate={mutate} hasCurrentStrategy={false} />
         )}
         {decisionCount > 0 && <NeedsDecisionSection slug={slug} readOnly={readOnly} openSignals={[]} openSuggestions={openSuggestions} proposedRevisions={proposedRevisions} currentRevisionId={null} busy={busy} mutate={mutate} />}
-        <InitialStrategyBuilder slug={slug} readOnly={readOnly} summary={strategySummary} setSummary={setStrategySummary} sections={strategySectionDrafts} setSections={setStrategySectionDrafts} busy={busy} mutate={mutate} />
-        <StrategyRequiredGate findingCount={Number(data.resume.current_focus.finding_count ?? 0)} />
+        {engagement.intelligence_architecture === "legacy" && (
+          <InitialStrategyBuilder slug={slug} readOnly={readOnly} summary={strategySummary} setSummary={setStrategySummary} sections={strategySectionDrafts} setSections={setStrategySectionDrafts} busy={busy} mutate={mutate} />
+        )}
+        {engagement.intelligence_architecture === "legacy" && (
+          <StrategyRequiredGate findingCount={Number(data.resume.current_focus.finding_count ?? 0)} />
+        )}
         <ResumeSection resume={data.resume} slug={slug} />
       </div>
     );
