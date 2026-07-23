@@ -21,6 +21,7 @@ from app.models import (
     AgentTrigger,
     CommandOutbox,
     Engagement,
+    EngagementArchitecture,
     EngagementStatus,
     EngagementWorkState,
     Finding,
@@ -135,6 +136,8 @@ def test_v3_resolution_commits_without_staging_auto_reassess(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(settings, "v3_intelligence_enabled", True)
+    engagement.intelligence_architecture = EngagementArchitecture.v3
+    db.commit()
     user = _user(db)
     work = WorkItem(
         engagement_id=engagement.id,

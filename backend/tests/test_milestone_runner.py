@@ -139,6 +139,8 @@ def test_analysis_milestone_fires_when_significant_findings_exist(
     assert factory_calls == 1
     assert result[1].model_provider == "test-provider"
     assert result[1].model_name == "test-model"
+    assert result[1].trigger is AgentTrigger.tick
+    assert result[1].input["acting_user_id"] == str(user.id)
     assert llm.invoked is True  # the agent was actually called
 
 

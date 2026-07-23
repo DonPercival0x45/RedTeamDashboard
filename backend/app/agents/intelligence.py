@@ -412,6 +412,7 @@ def run_intelligence_analysis(
         input={
             "mode": mode.value,
             "engagement_id": str(engagement_id),
+            "acting_user_id": str(acting_user_id),
             "v3_intelligence": True,
         },
         status=AgentExecutionStatus.running,

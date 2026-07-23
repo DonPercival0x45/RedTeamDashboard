@@ -18,7 +18,6 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, object_session
 
 from app.api.deps import CurrentNonGuestUser, CurrentUser, DbSession, RedisClient
-from app.core.config import settings
 from app.models import (
     ActorType,
     AgentExecution,
@@ -26,6 +25,7 @@ from app.models import (
     CoverageItem,
     CoverageStatus,
     Engagement,
+    EngagementArchitecture,
     EngagementCheckpoint,
     EngagementObjective,
     EngagementStatus,
@@ -1261,7 +1261,7 @@ def resolve_work_item(
             "row_version": row.row_version,
         },
     )
-    if settings.v3_intelligence_enabled:
+    if eng.intelligence_architecture is EngagementArchitecture.v3:
         # v3: auto-reassess retired — B3 fires strategy/ideation on coverage.gap
         # / baseline milestones, so no reassess event is staged on resolve.
         session.commit()

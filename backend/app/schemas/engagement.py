@@ -9,6 +9,8 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.models import (
+    EngagementArchitecture,
+    EngagementPhase,
     EngagementStatus,
     EngagementTimeFrame,
     EngagementWorkState,
@@ -74,6 +76,12 @@ class EngagementCreate(BaseModel):
             "Optional client-defined scope persisted atomically with the engagement."
         ),
     )
+    intelligence_architecture: EngagementArchitecture = Field(
+        default=EngagementArchitecture.legacy,
+        description="Legacy orchestration or the v3 intelligence plane.",
+    )
+    methodology_slug: str | None = Field(default=None, max_length=120)
+    methodology_version: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
     def _check_custom_dates(self) -> EngagementCreate:
@@ -82,6 +90,16 @@ class EngagementCreate(BaseModel):
                 raise ValueError("time_frame='custom' requires both start_date and end_date")
             if self.end_date < self.start_date:
                 raise ValueError("end_date cannot be before start_date")
+
+        if self.methodology_version is not None and not self.methodology_slug:
+            raise ValueError("methodology_version requires methodology_slug")
+        if (
+            self.intelligence_architecture is EngagementArchitecture.v3
+            and not self.methodology_slug
+        ):
+            raise ValueError(
+                "v3 engagement creation requires methodology_slug"
+            )
 
         seen: set[tuple[ScopeKind, str, bool]] = set()
         for item in self.initial_scope:
@@ -127,6 +145,12 @@ class EngagementRead(BaseModel):
     work_state: EngagementWorkState = EngagementWorkState.active
     work_state_version: int = 1
     auto_assess_enabled: bool = True
+    intelligence_architecture: EngagementArchitecture = EngagementArchitecture.legacy
+    converted_to_v3_at: datetime | None = None
+    phase: EngagementPhase = EngagementPhase.baseline
+    baseline_completed_at: datetime | None = None
+    methodology_id: UUID | None = None
+    methodology_selected_at: datetime | None = None
     time_frame: EngagementTimeFrame
     start_date: date | None
     end_date: date | None
