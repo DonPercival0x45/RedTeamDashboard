@@ -49,28 +49,25 @@ def findings_summary(
     Omit it for a first-pass / full-engagement summary (everything is "new").
     Excludes soft-deleted findings.
     """
-    base = select(Finding).where(
+    # All filters applied directly on the Finding table in one WHERE each —
+    # NOT via select_from(subquery).where(...), whose outer .where() would
+    # reference the bare Finding table and bypass the engagement filter
+    # (the cross-engagement count leak CI caught on the first push).
+    base_filters = [
         Finding.engagement_id == engagement_id,
         Finding.deleted_at.is_(None),
-    )
-    total = session.scalar(
-        select(func.count()).select_from(base.subquery())
-    ) or 0
-
-    new_q = base
+    ]
+    new_filters = list(base_filters)
     if since is not None:
-        new_q = base.where(Finding.created_at >= since)
-    new = session.scalar(select(func.count()).select_from(new_q.subquery())) or 0
+        new_filters.append(Finding.created_at >= since)
 
+    total = session.scalar(select(func.count(Finding.id)).where(*base_filters)) or 0
+    new = session.scalar(select(func.count(Finding.id)).where(*new_filters)) or 0
     unvalidated = session.scalar(
-        select(func.count())
-        .select_from(base.subquery())
-        .where(Finding.status.in_(_UNVALIDATED))
+        select(func.count(Finding.id)).where(*base_filters, Finding.status.in_(_UNVALIDATED))
     ) or 0
     high_severity = session.scalar(
-        select(func.count())
-        .select_from(base.subquery())
-        .where(Finding.severity.in_(_HIGH_SEVERITY))
+        select(func.count(Finding.id)).where(*base_filters, Finding.severity.in_(_HIGH_SEVERITY))
     ) or 0
 
     return {
