@@ -473,7 +473,11 @@ def test_v3_analyze_endpoint_rejects_legacy_per_finding_agent(
     response = client.post(f"/findings/{finding.id}/analyze", headers=HDR)
 
     assert response.status_code == 409
-    assert "uses batched analysis" in response.text
+    # v3 Convergence C6b broadened the message to match the other legacy
+    # gates: it now points at the Strategy view and mentions the operator
+    # escape hatch.
+    assert "v3 intelligence" in response.text
+    assert "Strategy view" in response.text
 
 
 def test_accept_dispatches_agent_eligible(

@@ -19,7 +19,12 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
-from app.agents import TacticalAgent, TacticalAlreadyScanned, TacticalRefusedExploit
+from app.agents import (
+    TacticalAgent,
+    TacticalAlreadyScanned,
+    TacticalRefusedExploit,
+    TacticalSkippedV3,
+)
 from app.agents.strategic import _extract_usage, _make_chat_model
 from app.core import pricing
 from app.models import (
@@ -1039,6 +1044,7 @@ def _accept_run_tool(
     dispatched = False
     run_id: str | None = None
     already_scanned = False
+    skipped_v3 = False
     try:
         thread_id = TacticalAgent(redis_client).dispatch(
             session,
@@ -1057,6 +1063,13 @@ def _accept_run_tool(
         task.run_id = dedup.prior_thread_id
     except TacticalRefusedExploit:
         dispatched = False
+    except TacticalSkippedV3:
+        # v3 Convergence C6b: engagement is on v3 — legacy Tactical is off.
+        # The task row survives at pending so the analyst can convert it to a
+        # playbook step, and the chat UI renders a "kick a playbook instead"
+        # hint from ``skipped_v3``.
+        dispatched = False
+        skipped_v3 = True
     return {
         "task_id": str(task.id),
         "tool": tool_name,
@@ -1064,14 +1077,20 @@ def _accept_run_tool(
         "risk": spec.risk.value,
         "dispatched": dispatched,
         "run_id": run_id,
+        "skipped_v3": skipped_v3,
         "note": (
             "Already scanned by a recent run — skipped the re-dispatch."
             if already_scanned
             else (
-                "Dispatched to the existing agent run path. Active tools still "
-                "pause at the approval gate before execution."
-                if dispatched
-                else "Task created but not dispatched."
+                "Engagement is on v3 intelligence — kick a playbook run "
+                "instead of a legacy agent task."
+                if skipped_v3
+                else (
+                    "Dispatched to the existing agent run path. Active tools still "
+                    "pause at the approval gate before execution."
+                    if dispatched
+                    else "Task created but not dispatched."
+                )
             )
         ),
     }

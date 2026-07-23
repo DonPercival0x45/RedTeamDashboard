@@ -14,6 +14,17 @@ Both agents log every LLM call in ``agent_executions`` for the Costs tab.
 from __future__ import annotations
 
 from app.agents.strategic import StrategicAgent
-from app.agents.tactical import TacticalAgent, TacticalAlreadyScanned, TacticalRefusedExploit
+from app.agents.tactical import (
+    TacticalAgent,
+    TacticalAlreadyScanned,
+    TacticalRefusedExploit,
+    TacticalSkippedV3,
+)
 
-__all__ = ["StrategicAgent", "TacticalAgent", "TacticalAlreadyScanned", "TacticalRefusedExploit"]
+__all__ = [
+    "StrategicAgent",
+    "TacticalAgent",
+    "TacticalAlreadyScanned",
+    "TacticalRefusedExploit",
+    "TacticalSkippedV3",
+]

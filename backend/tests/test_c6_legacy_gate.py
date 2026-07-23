@@ -46,6 +46,20 @@ def client() -> TestClient:
     return TestClient(app)
 
 
+@pytest.fixture(autouse=True)
+def _cleanup_command_outbox(db: Session):
+    """Toggle-off + legacy tests hit ``POST /runs`` fully, which commits
+    ``CommandOutbox`` rows outside the ``db`` fixture's transaction. Sweep
+    them after the test so ``test_execution_durability`` (or any other
+    outbox-relay test running later in the session) doesn't relay them
+    unexpectedly."""
+    from app.models import CommandOutbox
+
+    yield
+    db.query(CommandOutbox).delete()
+    db.commit()
+
+
 @pytest.fixture()
 def user(db: Session) -> User:
     u = User(
@@ -212,3 +226,135 @@ def test_tactical_dispatch_legacy_untouched(db: Session, user: User) -> None:
         pytest.fail("C6a gate must never fire on legacy engagements")
     except Exception:
         pass
+
+
+# ---------------------------------------------------------------------------
+# C6b: POST /tasks/{id}/retry
+# ---------------------------------------------------------------------------
+
+
+def _mk_failed_task(db: Session, engagement: Engagement) -> Task:
+    """Retry endpoint only accepts failed/deferred agent-eligible tasks."""
+    from datetime import UTC as _UTC
+    from datetime import datetime as _dt
+
+    task = Task(
+        engagement_id=engagement.id,
+        title="c6b retry test",
+        kind=TaskKind.scan,
+        owner_eligibility=OwnerEligibility.agent,
+        status=TaskStatus.failed,
+        payload={"tool": "subfinder", "target": "example.com"},
+        run_id=uuid.uuid4(),
+        completed_at=_dt.now(tz=_UTC),
+    )
+    db.add(task)
+    db.commit()
+    return task
+
+
+def test_retry_returns_409_for_v3_engagement(
+    db: Session, client: TestClient, user: User
+) -> None:
+    """v3 engagement → retry endpoint refuses with 409 + playbook-runs pointer.
+
+    Task state is restored (status stays failed, run_id preserved) so the
+    aborted retry hasn't stripped the row's history.
+    """
+    eng = _mk_engagement(db, architecture=EngagementArchitecture.v3)
+    task = _mk_failed_task(db, eng)
+    prior_status = task.status
+    prior_run_id = task.run_id
+
+    resp = client.post(
+        f"/tasks/{task.id}/retry",
+        headers={"X-User-Id": user.email},
+    )
+    assert resp.status_code == 409, resp.text
+    assert "playbook-runs" in resp.json()["detail"]
+
+    db.refresh(task)
+    assert task.status is prior_status
+    assert task.run_id == prior_run_id
+
+
+def test_retry_toggle_off_falls_through_on_v3(
+    db: Session, client: TestClient, user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Toggle off → v3 engagement no longer 409s at the C6b layer. Downstream
+    may still fail for other reasons; we just prove the C6b message is gone."""
+    monkeypatch.setattr(settings, "enforce_v3_playbook_only", False)
+    eng = _mk_engagement(db, architecture=EngagementArchitecture.v3)
+    task = _mk_failed_task(db, eng)
+    resp = client.post(
+        f"/tasks/{task.id}/retry",
+        headers={"X-User-Id": user.email},
+    )
+    if resp.status_code == 409:
+        assert "playbook-runs" not in resp.json().get("detail", "")
+
+
+# ---------------------------------------------------------------------------
+# C6b: POST /engagements/{slug}/findings/{fid}/analyze
+# ---------------------------------------------------------------------------
+
+
+def test_analyze_endpoint_returns_409_for_v3(
+    db: Session, client: TestClient, user: User
+) -> None:
+    """v3 engagement → per-finding analyze refuses with 409 pointing at the
+    Strategy view's on-demand analysis intelligence mode."""
+    from app.models import Finding, Severity
+
+    eng = _mk_engagement(db, architecture=EngagementArchitecture.v3)
+    finding = Finding(
+        engagement_id=eng.id,
+        title="c6b analyze test",
+        severity=Severity.info,
+    )
+    db.add(finding)
+    db.commit()
+
+    resp = client.post(
+        f"/findings/{finding.id}/analyze",
+        headers={"X-User-Id": user.email},
+    )
+    assert resp.status_code == 409, resp.text
+    assert "Strategy" in resp.json()["detail"]
+
+
+def test_analyze_endpoint_toggle_off_passes_gate_on_v3(
+    db: Session, client: TestClient, user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Toggle off → the C6b gate is a no-op. Downstream may still 400 for BYO
+    key reasons, but the C6b-specific 'Strategy' pointer must not appear."""
+    from app.models import Finding, Severity
+
+    monkeypatch.setattr(settings, "enforce_v3_playbook_only", False)
+    eng = _mk_engagement(db, architecture=EngagementArchitecture.v3)
+    finding = Finding(
+        engagement_id=eng.id,
+        title="c6b analyze toggle test",
+        severity=Severity.info,
+    )
+    db.add(finding)
+    db.commit()
+
+    resp = client.post(
+        f"/findings/{finding.id}/analyze",
+        headers={"X-User-Id": user.email},
+    )
+    if resp.status_code == 409:
+        # If it 409s at all, it's not the C6b-shaped message.
+        assert "Strategy view" not in resp.json().get("detail", "")
+
+
+# ---------------------------------------------------------------------------
+# C6b: services/suggestion_router + services/finding_chat catch branches
+#
+# The exception fires from Tactical.dispatch (covered by the C6a tests above);
+# each service module only has a small ``except TacticalSkippedV3:`` no-op or
+# result-shape branch. Full-flow tests would need Suggestion + Finding + chat
+# conversation fixtures, which is disproportionate for a 4-line catch. Rely on
+# code review + the C6a exception coverage for those two.
+# ---------------------------------------------------------------------------
