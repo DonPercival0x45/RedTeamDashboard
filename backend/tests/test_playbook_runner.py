@@ -42,10 +42,13 @@ from app.models import (
     CoverageRecord,
     CoverageRecordStatus,
     Engagement,
+    EngagementPhase,
     EngagementStatus,
     EngagementWorkState,
     Playbook,
     PlaybookRunStatus,
+    ScopeItem,
+    ScopeKind,
 )
 from app.services import coverage as cov
 from app.services import methodology as meth
@@ -463,3 +466,103 @@ def test_step_result_is_immutable_frozen_dataclass() -> None:
     # replace() still works (immutable update).
     r2 = replace(r, findings_total=5)
     assert r2.findings_total == 5
+
+
+# ---------------------------------------------------------------------------
+# End-to-end: playbook run → baseline-complete detection → phase transition
+# ---------------------------------------------------------------------------
+
+
+def test_run_auto_detects_baseline_complete_and_transitions_phase(
+    db: Session, engagement_with_methodology: Engagement, osint_playbook: Playbook
+) -> None:
+    """A successful playbook run against every baseline node + in-scope domain
+    auto-detects baseline completion via the newly-wired check, flips the
+    engagement to exploration, and emits the ``baseline.completed`` milestone.
+
+    This is the integration that was previously orphaned: the check function
+    existed but was never called from the production collection path.
+    """
+    eng = engagement_with_methodology
+    # Plant a real scope item so the coverage check has something to match.
+    db.add(
+        ScopeItem(
+            engagement_id=eng.id,
+            kind=ScopeKind.domain,
+            value="acme.test",
+            is_exclusion=False,
+        )
+    )
+    db.flush()
+
+    ex = MockExecutor(default=StepResult(ok=True, findings_total=1))
+    start_run(
+        db,
+        engagement=eng,
+        playbook=osint_playbook,
+        scope_subset=["acme.test"],
+        executor=ex,
+        now=datetime(2026, 7, 23, tzinfo=UTC),
+    )
+    db.refresh(eng)
+
+    # Phase flipped to exploration.
+    assert eng.phase is EngagementPhase.exploration
+    assert eng.baseline_completed_at is not None
+    # baseline.completed milestone landed in the durable outbox.
+    baseline_entry = db.execute(
+        select(CommandOutbox).where(
+            CommandOutbox.idempotency_key == f"baseline.completed:{eng.id}"
+        )
+    ).scalar_one_or_none()
+    assert baseline_entry is not None
+    envelope = json.loads(baseline_entry.encoded_payload["data"])
+    assert envelope["type"] == ms.BASELINE_COMPLETED
+
+
+def test_run_emits_coverage_gap_for_unsatisfied_nodes(
+    db: Session, engagement_with_methodology: Engagement, osint_playbook: Playbook
+) -> None:
+    """When the run does NOT satisfy every baseline node, a coverage-gap signal
+    is emitted for each unsatisfied node so the strategy intelligence can
+    propose work to close them."""
+    eng = engagement_with_methodology
+    db.add(
+        ScopeItem(
+            engagement_id=eng.id,
+            kind=ScopeKind.domain,
+            value="acme.test",
+            is_exclusion=False,
+        )
+    )
+    db.flush()
+
+    # Partial success: 3 of 5 steps succeed, 2 fail. The 2 unsatisfied nodes
+    # get coverage gaps.
+    failing_tools = {"dns-inventory", "breach-lookup"}
+    ex = MockExecutor(
+        raise_for=failing_tools,
+        default=StepResult(ok=True, findings_total=1),
+    )
+    start_run(
+        db,
+        engagement=eng,
+        playbook=osint_playbook,
+        scope_subset=["acme.test"],
+        executor=ex,
+        now=datetime(2026, 7, 23, tzinfo=UTC),
+    )
+    db.refresh(eng)
+
+    # Phase NOT flipped (baseline incomplete).
+    assert eng.phase is EngagementPhase.baseline
+    # At least one coverage-gap signal emitted (one per failed node).
+    gap_entries = db.execute(
+        select(CommandOutbox).where(
+            CommandOutbox.idempotency_key.like(f"coverage.gap.opened:{eng.id}:%")
+        )
+    ).scalars().all()
+    assert len(gap_entries) >= 1
+    for entry in gap_entries:
+        envelope = json.loads(entry.encoded_payload["data"])
+        assert envelope["type"] == ms.COVERAGE_GAP_OPENED

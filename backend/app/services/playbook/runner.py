@@ -24,6 +24,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import structlog
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.engagement import milestones as ms
@@ -39,6 +40,7 @@ from app.models import (
 )
 from app.runs.streams import outbound_stream
 from app.services import coverage as cov
+from app.services import methodology as meth
 from app.services.command_outbox import enqueue_event
 from app.services.playbook.executor import PlaybookExecutor, StepResult
 
@@ -547,6 +549,131 @@ def _run_one(
     session.flush()
 
 
+def _scope_items_by_asset_class(
+    session: Session, engagement: Engagement
+) -> dict[str, list[str]]:
+    """Group the engagement's active scope items by their kind.
+
+    The methodology snapshot keys baseline nodes by ``asset_class`` (e.g.
+    ``domain``). Scope items carry a ``kind`` that maps 1:1 to that axis
+    (``domain`` / ``ip`` / ``url`` / ``cidr``). This groups them so
+    ``derive_expected_triples`` can cross baseline nodes with the matching
+    scope items.
+    """
+    from app.models import ScopeItem
+
+    rows = session.execute(
+        select(ScopeItem).where(
+            ScopeItem.engagement_id == engagement.id,
+            ScopeItem.is_exclusion.is_(False),
+        )
+    ).scalars().all()
+    grouped: dict[str, list[str]] = {}
+    for item in rows:
+        grouped.setdefault(item.kind, []).append(item.value)
+    return grouped
+
+
+def _check_and_emit_coverage_state(
+    session: Session,
+    *,
+    engagement: Engagement,
+    run: PlaybookRun,
+) -> None:
+    """After a collection run, detect baseline completion and coverage gaps.
+
+    This is the wiring that was missing: ``check_baseline_complete`` and
+    ``open_coverage_gap`` existed and were tested but never called in
+    production. Now, after every terminal run with a methodology selected,
+    we derive the expected baseline triples from the frozen snapshot + the
+    engagement's scope, check satisfaction, and:
+
+    * if all expected triples are satisfied → ``mark_baseline_completed``
+      (idempotent — flips phase to exploration + emits ``baseline.completed``).
+    * for each still-unsatisfied node → ``open_coverage_gap`` (idempotent per
+      node so repeated runs don't duplicate the signal).
+
+    ``acting_user_id`` comes from the run's effective actor (approver or
+    requester) so downstream milestone intelligence resolves the correct BYO
+    key. Legacy/system runs omit it; the consumer refuses to borrow.
+    """
+    if engagement.methodology_id is None or engagement.baseline_completed_at is not None:
+        return  # no methodology, or already past baseline
+
+    scope_map = _scope_items_by_asset_class(session, engagement)
+    if not scope_map:
+        return  # no scope → nothing to check
+
+    expected = meth.derive_expected_triples(engagement, scope_item_ids_by_asset_class=scope_map)
+    if not expected:
+        return  # methodology has no baseline nodes for the in-scope asset classes
+
+    is_complete, unsatisfied = cov.check_baseline_complete(
+        session, engagement_id=engagement.id, expected=expected
+    )
+
+    acting_user_id = run.approved_by or run.requested_by
+
+    # Sweep stale coverage (TTL-based demotion) so re-collection candidates
+    # surface even between runs. This wires the previously-orphaned
+    # sweep_stale + derive_node_ttls functions into the production path.
+    ttls = meth.derive_node_ttls(engagement)
+    if ttls:
+        stale_rows = cov.sweep_stale(
+            session,
+            engagement_id=engagement.id,
+            node_ttls=ttls,
+            now=run.completed_at or datetime.now(tz=UTC),
+        )
+        for stale_row in stale_rows:
+            cov.open_coverage_gap(
+                session,
+                engagement_id=engagement.id,
+                node_id=stale_row.node_id,
+                node_tier=stale_row.node_tier,
+                asset_class=stale_row.asset_class,
+                reason="coverage TTL lapsed",
+                acting_user_id=acting_user_id,
+                dedupe_key=f"coverage.gap.opened:{engagement.id}:{stale_row.node_id}",
+            )
+
+    if is_complete:
+        cov.mark_baseline_completed(
+            session,
+            engagement_id=engagement.id,
+            methodology_id=engagement.methodology_id,
+            actor_type=ActorType.user if acting_user_id else ActorType.system,
+            actor_id=str(acting_user_id) if acting_user_id else None,
+        )
+        return
+
+    # Emit one idempotent gap per unsatisfied node so the strategy
+    # intelligence can propose work to close them.
+    unsatisfied_nodes = sorted({node_id for node_id, _, _ in unsatisfied})
+    for node_id in unsatisfied_nodes:
+        cov.open_coverage_gap(
+            session,
+            engagement_id=engagement.id,
+            node_id=node_id,
+            node_tier=CoverageNodeTier.baseline,
+            asset_class=playbook_asset_class_for_node(engagement, node_id, scope_map),
+            reason="baseline node not yet satisfied",
+            acting_user_id=acting_user_id,
+            dedupe_key=f"coverage.gap.opened:{engagement.id}:{node_id}",
+        )
+
+
+def playbook_asset_class_for_node(
+    engagement: Engagement, node_id: str, scope_map: dict[str, list[str]]
+) -> str:
+    """Resolve the asset_class for a methodology node from the frozen snapshot."""
+    snapshot = engagement.methodology_snapshot or {}
+    for node in snapshot.get("nodes", []):
+        if node.get("node_id") == node_id:
+            return node.get("asset_class", "domain")
+    return "domain"
+
+
 def _emit_completion(
     session: Session,
     *,
@@ -603,6 +730,11 @@ def _emit_completion(
         stream_name=outbound_stream(engagement.id),
         payload=payload,
     )
+    # Detect baseline completion and coverage gaps now that this run wrote
+    # new coverage records. This wires the previously-orphaned A2 functions
+    # (check_baseline_complete / mark_baseline_completed / open_coverage_gap)
+    # into the production collection path.
+    _check_and_emit_coverage_state(session, engagement=engagement, run=run)
 
 
 def new_run_id() -> uuid.UUID:
