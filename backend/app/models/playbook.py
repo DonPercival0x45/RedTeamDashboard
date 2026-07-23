@@ -66,7 +66,10 @@ class PlaybookExecutorKind(enum.StrEnum):
 class PlaybookRunStatus(enum.StrEnum):
     """Lifecycle of one playbook execution.
 
-    * ``pending`` — created, not started (approve-before-run parking; A5).
+    * ``awaiting_approval`` — created against an ``active=True`` playbook;
+      waits for POST ``/playbook-runs/{id}/approve`` before the worker
+      will claim it (A5).
+    * ``pending`` — created, not started. Ready for the worker to claim.
     * ``running`` — runner is stepping through.
     * ``completed`` — every step reported ok.
     * ``partial`` — at least one step ok, at least one failed. Baseline
@@ -74,9 +77,11 @@ class PlaybookRunStatus(enum.StrEnum):
       ``CoverageRecord.status=failed``.
     * ``failed`` — zero steps ok; a hard fault (executor unavailable,
       scope-selection empty, playbook malformed).
-    * ``cancelled`` — analyst aborted before completion.
+    * ``cancelled`` — analyst aborted before completion (or rejected an
+      awaiting_approval run).
     """
 
+    awaiting_approval = "awaiting_approval"
     pending = "pending"
     running = "running"
     completed = "completed"
@@ -226,6 +231,21 @@ class PlaybookRun(Base, TimestampMixin):
         Integer, nullable=False, default=0, server_default="0"
     )
     last_error: Mapped[str | None] = mapped_column(Text)
+    # v3 A5 — approve-before-run attribution. Populated when an analyst
+    # releases an ``awaiting_approval`` run into ``pending``. Nullable
+    # because pre-A5 and inactive-playbook runs never go through the gate.
+    approved_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+    )
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    approval_reason: Mapped[str | None] = mapped_column(Text)
+    rejected_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+    )
+    rejected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    rejection_reason: Mapped[str | None] = mapped_column(Text)
     # v3 A4: which executor drives this run. Existing rows backfill to
     # ``internal`` (the only option pre-A4).
     executor_kind: Mapped[PlaybookExecutorKind] = mapped_column(
