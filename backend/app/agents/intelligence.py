@@ -274,7 +274,7 @@ def _persist_coverage_review(
         fold_into_decision(
             session, engagement_id=engagement_id, hypotheses=hyps,
             decision_summary=fold.decision_summary, rationale=fold.rationale,
-            author_type=ActorType.agent, author_id=_INTELLIGENCE_AUTHOR,
+            actor_type=ActorType.agent, actor_id=_INTELLIGENCE_AUTHOR,
         )
         folded += len(hyps)
     return folded
@@ -337,40 +337,28 @@ def run_intelligence_analysis(
     session.flush()
 
     try:
-        structured = llm.with_structured_output(schema)
-        result = structured.invoke(messages)
-        # Per-mode persistence.
-        if mode is AgentPromptMode.analysis:
-            _persist_analysis(session, engagement_id=engagement_id, out=result)
-        elif mode is AgentPromptMode.ideation:
-            _persist_ideation(session, engagement_id=engagement_id, out=result)
-        elif mode is AgentPromptMode.coverage_review:
-            _persist_coverage_review(session, engagement_id=engagement_id, out=result)
-        elif mode is AgentPromptMode.strategy:
-            _persist_strategy(session, engagement_id=engagement_id, out=result)
+        # Savepoint around the LLM invoke + persistence: on failure we roll back
+        # ONLY this intelligence work (undoing any partial writes), leaving the
+        # caller's session (e.g. the engagement row) and the execution row intact.
+        with session.begin_nested():
+            structured = llm.with_structured_output(schema)
+            result = structured.invoke(messages)
+            # Per-mode persistence.
+            if mode is AgentPromptMode.analysis:
+                _persist_analysis(session, engagement_id=engagement_id, out=result)
+            elif mode is AgentPromptMode.ideation:
+                _persist_ideation(session, engagement_id=engagement_id, out=result)
+            elif mode is AgentPromptMode.coverage_review:
+                _persist_coverage_review(session, engagement_id=engagement_id, out=result)
+            elif mode is AgentPromptMode.strategy:
+                _persist_strategy(session, engagement_id=engagement_id, out=result)
         execution.status = AgentExecutionStatus.completed
         execution.completed_at = datetime.now(tz=UTC)
         execution.output = {"mode": mode.value, "parsed": True}
-    except Exception as exc:  # noqa: BLE001 — any LLM/persistence failure → failed, no partial
-        session.rollback()
-        # Re-add the execution row (rollback removed it) and mark failed.
-        execution = AgentExecution(
-            engagement_id=engagement_id,
-            agent=AgentName.engagement_strategist,
-            trigger=AgentTrigger.manual,
-            input={
-                "mode": mode.value,
-                "engagement_id": str(engagement_id),
-                "v3_intelligence": True,
-            },
-            status=AgentExecutionStatus.failed,
-            error=str(exc)[:2000],
-            started_at=datetime.now(tz=UTC),
-            completed_at=datetime.now(tz=UTC),
-            model_provider=provider,
-            model_name=model_name,
-        )
-        session.add(execution)
+    except Exception as exc:  # noqa: BLE001 — savepoint rolled back; execution survives
+        execution.status = AgentExecutionStatus.failed
+        execution.error = str(exc)[:2000]
+        execution.completed_at = datetime.now(tz=UTC)
         session.flush()
         return None, execution
     return result, execution
