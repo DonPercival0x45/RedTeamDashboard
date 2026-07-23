@@ -171,6 +171,10 @@ export default function AnalyticsPage() {
             data={coverageQuery.data ?? null}
             loading={coverageQuery.isLoading}
           />
+          <V3RolloutPanel
+            engagements={engagements}
+            loading={engagementsQuery.isLoading}
+          />
           <TopFindingsPanel
             data={topFindingsQuery.data ?? []}
             loading={topFindingsQuery.isLoading}
@@ -440,6 +444,77 @@ function ScanCoveragePanel({
               className="h-full rounded-full bg-emerald-500 transition-[width] duration-500"
               style={{ width: `${data.percent}%` }}
             />
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
+// v3 Convergence C6f — v3 vs legacy engagement count. Small stat panel so
+// rollout progress is visible on Analytics without leaving the engagement
+// list to count by hand. Reads the shared engagements list; the /new wizard
+// (C6c/d) defaults to v3 and the /e banner (C6e) nudges legacy → v3.
+function V3RolloutPanel({
+  engagements,
+  loading,
+}: {
+  engagements: Array<{ intelligence_architecture: "legacy" | "v3" }>;
+  loading: boolean;
+}) {
+  const v3 = engagements.filter(
+    (e) => e.intelligence_architecture === "v3",
+  ).length;
+  const legacy = engagements.filter(
+    (e) => e.intelligence_architecture === "legacy",
+  ).length;
+  const total = v3 + legacy;
+  const pct = total === 0 ? 0 : Math.round((v3 / total) * 100);
+
+  return (
+    <section className="rounded-lg border border-border bg-card/40 p-5">
+      <h2 className="text-sm font-semibold">v3 rollout</h2>
+      <p className="mt-1 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+        intelligence architecture · all engagements
+      </p>
+      {loading ? (
+        <div className="mt-4 h-16 animate-pulse rounded bg-muted/40" />
+      ) : total === 0 ? (
+        <p className="mt-3 text-xs text-muted-foreground">
+          No engagements yet.
+        </p>
+      ) : (
+        <>
+          <div className="mt-4 flex items-baseline gap-2">
+            <span className="text-3xl font-semibold tabular-nums">{pct}%</span>
+            <span className="text-xs text-muted-foreground">on v3</span>
+          </div>
+          <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-muted">
+            <div
+              className="h-full rounded-full bg-violet-500 transition-all"
+              style={{ width: `${pct}%` }}
+              aria-hidden
+            />
+          </div>
+          <div className="mt-3 flex items-center justify-between text-xs text-muted-foreground">
+            <span>
+              <span className="font-medium tabular-nums text-foreground">
+                {v3}
+              </span>{" "}
+              v3
+            </span>
+            <span>
+              <span className="font-medium tabular-nums text-foreground">
+                {legacy}
+              </span>{" "}
+              legacy
+            </span>
+            <span>
+              <span className="font-medium tabular-nums text-foreground">
+                {total}
+              </span>{" "}
+              total
+            </span>
           </div>
         </>
       )}
