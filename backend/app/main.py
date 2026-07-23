@@ -44,6 +44,7 @@ from app.api.me import router as me_router
 from app.api.methodology import router as methodology_router
 from app.api.orchestrator import router as orchestrator_router
 from app.api.orchestrator_tools import router as orchestrator_tools_router
+from app.api.playbook import router as playbook_router
 from app.api.provider_keys import router as provider_keys_router
 from app.api.releases import router as releases_router
 from app.api.reports import router as reports_router
@@ -95,6 +96,7 @@ app.include_router(reports_router)
 app.include_router(entities_router)
 app.include_router(me_router)
 app.include_router(methodology_router)
+app.include_router(playbook_router)
 app.include_router(roadmap_suggestions_router)
 app.include_router(integrations_router)
 app.include_router(infrastructure_router)
