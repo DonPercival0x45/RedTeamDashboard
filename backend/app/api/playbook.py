@@ -32,6 +32,7 @@ from app.models import (
     PlaybookStep,
 )
 from app.schemas.playbook import (
+    PlaybookApprovalPayload,
     PlaybookDetail,
     PlaybookRead,
     PlaybookRunPayload,
@@ -39,11 +40,14 @@ from app.schemas.playbook import (
     PlaybookStepRead,
 )
 from app.services.playbook import (
+    RunNotAwaitingApprovalError,
     RunNotCancellableError,
+    approve_run,
     cancel_run,
     catalog,
     enqueue_run,
     load_seed_playbooks,
+    reject_run,
 )
 
 router = APIRouter()
@@ -80,6 +84,12 @@ def _run_read(session: Session, run: PlaybookRun) -> PlaybookRunRead:
         findings_high_severity=run.findings_high_severity,
         findings_total=run.findings_total,
         last_error=run.last_error,
+        approved_by=run.approved_by,
+        approved_at=run.approved_at,
+        approval_reason=run.approval_reason,
+        rejected_by=run.rejected_by,
+        rejected_at=run.rejected_at,
+        rejection_reason=run.rejection_reason,
     )
 
 
@@ -203,6 +213,68 @@ def create_playbook_run(
     return _run_read(session, run)
 
 
+@router.post("/playbook-runs/{run_id}/approve", response_model=PlaybookRunRead)
+def approve_playbook_run(
+    run_id: uuid.UUID,
+    payload: PlaybookApprovalPayload,
+    session: DbSession,
+    user: CurrentNonGuestUser,
+) -> PlaybookRunRead:
+    """v3 A5: release an ``awaiting_approval`` run into ``pending``.
+
+    Any non-guest can approve any awaiting run — the friction is the
+    second-touch pause, not the identity check. Four-eyes and admin-only
+    gating are open follow-ups if governance ever needs them.
+    """
+    try:
+        run = approve_run(
+            session,
+            run_id=run_id,
+            approver_id=user.id,
+            reason=payload.reason,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"playbook run {run_id} not found") from exc
+    except RunNotAwaitingApprovalError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    session.commit()
+    session.refresh(run)
+    return _run_read(session, run)
+
+
+@router.post("/playbook-runs/{run_id}/reject", response_model=PlaybookRunRead)
+def reject_playbook_run(
+    run_id: uuid.UUID,
+    payload: PlaybookApprovalPayload,
+    session: DbSession,
+    user: CurrentNonGuestUser,
+) -> PlaybookRunRead:
+    """v3 A5: reject an ``awaiting_approval`` run; flips to ``cancelled``.
+
+    Requires ``reason`` — an analyst-facing rejection needs a why so the
+    requestor can act on it.
+    """
+    if not payload.reason or not payload.reason.strip():
+        raise HTTPException(
+            status_code=422,
+            detail="reason is required when rejecting a playbook run",
+        )
+    try:
+        run = reject_run(
+            session,
+            run_id=run_id,
+            approver_id=user.id,
+            reason=payload.reason.strip(),
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"playbook run {run_id} not found") from exc
+    except RunNotAwaitingApprovalError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    session.commit()
+    session.refresh(run)
+    return _run_read(session, run)
+
+
 @router.post("/playbook-runs/{run_id}/cancel", response_model=PlaybookRunRead)
 def cancel_playbook_run(
     run_id: uuid.UUID,
@@ -237,14 +309,28 @@ def list_playbook_runs(
     session: DbSession,
     _user: CurrentUser,
     limit: int = 50,
+    status: str | None = None,
 ) -> list[PlaybookRunRead]:
+    """List runs, newest first. Optional ``?status=`` filter (e.g.
+    ``awaiting_approval`` for the approval queue view)."""
+    from app.models import PlaybookRunStatus
+
     engagement = _engagement_by_slug(session, slug)
-    rows = session.execute(
+    stmt = (
         select(PlaybookRun)
         .where(PlaybookRun.engagement_id == engagement.id)
         .order_by(PlaybookRun.created_at.desc())
         .limit(limit)
-    ).scalars().all()
+    )
+    if status is not None:
+        try:
+            stmt = stmt.where(PlaybookRun.status == PlaybookRunStatus(status))
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=f"unknown status filter: {status!r}",
+            ) from exc
+    rows = session.execute(stmt).scalars().all()
     return [_run_read(session, r) for r in rows]
 
 

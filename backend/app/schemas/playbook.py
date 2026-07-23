@@ -77,3 +77,21 @@ class PlaybookRunRead(BaseModel):
     findings_high_severity: int = 0
     findings_total: int = 0
     last_error: str | None = None
+    # A5 approval attribution — populated when the run passed through the
+    # awaiting_approval gate.
+    approved_by: uuid.UUID | None = None
+    approved_at: datetime | None = None
+    approval_reason: str | None = None
+    rejected_by: uuid.UUID | None = None
+    rejected_at: datetime | None = None
+    rejection_reason: str | None = None
+
+
+class PlaybookApprovalPayload(BaseModel):
+    """Request body for approve/reject endpoints.
+
+    ``reason`` is optional on approve (audit context), required on reject
+    (analyst needs to tell the requestor why).
+    """
+
+    reason: str | None = None

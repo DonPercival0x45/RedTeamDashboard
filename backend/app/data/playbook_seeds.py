@@ -35,6 +35,10 @@ OSINT_PASSIVE_DOMAIN_V1: dict[str, Any] = {
         "every baseline node in the OSINT-minimal methodology."
     ),
     "applies_to_asset_class": "domain",
+    # ``active`` = False here — passive OSINT bypasses the A5 approval gate.
+    # Turn to True on any playbook whose runs should require analyst sign-off
+    # before execution (any active-touching probe, hosted-tool call with
+    # billed quotas, or high-blast-radius sweep).
     "active": False,
     "steps": [
         {

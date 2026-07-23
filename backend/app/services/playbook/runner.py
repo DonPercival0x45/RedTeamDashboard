@@ -89,18 +89,29 @@ def enqueue_run(
     executor_kind: PlaybookExecutorKind = PlaybookExecutorKind.internal,
     now: datetime | None = None,
 ) -> PlaybookRun:
-    """Create a ``pending`` playbook run. Worker picks it up.
+    """Create a playbook run. Worker picks it up (or waits for approval).
 
     ``steps_total`` is pre-populated so a client polling the row can see
     "N of M steps done" progress the moment the worker starts. Caller
     commits. ``executor_kind`` decides which executor the worker will
     build when it claims this run (A4).
+
+    **A5 gate**: if ``playbook.active`` is ``True`` the run starts in
+    ``awaiting_approval`` status instead of ``pending`` — the worker
+    claims only ``pending`` rows, so gated runs sit until an analyst
+    releases them via ``approve_run``. Inactive playbooks bypass the
+    gate and go straight to ``pending``.
     """
     ts = _now(now)
+    initial_status = (
+        PlaybookRunStatus.awaiting_approval
+        if playbook.active
+        else PlaybookRunStatus.pending
+    )
     run = PlaybookRun(
         engagement_id=engagement.id,
         playbook_id=playbook.id,
-        status=PlaybookRunStatus.pending,
+        status=initial_status,
         scope_subset=list(scope_subset),
         steps_total=len(playbook.steps) * len(scope_subset),
         executor_kind=executor_kind,
@@ -125,6 +136,95 @@ class RunNotCancellableError(Exception):
         super().__init__(
             f"run {run_id} is {status.value}; cannot cancel a terminal run"
         )
+
+
+class RunNotAwaitingApprovalError(Exception):
+    """Raised when approve/reject is called on a run that's not in the
+    ``awaiting_approval`` state (already approved, or a non-gated run)."""
+
+    def __init__(self, run_id: uuid.UUID, status: PlaybookRunStatus) -> None:
+        self.run_id = run_id
+        self.status = status
+        super().__init__(
+            f"run {run_id} is {status.value}; only awaiting_approval runs "
+            "can be approved or rejected"
+        )
+
+
+def approve_run(
+    session: Session,
+    *,
+    run_id: uuid.UUID,
+    approver_id: uuid.UUID,
+    reason: str | None = None,
+    now: datetime | None = None,
+) -> PlaybookRun:
+    """Release an ``awaiting_approval`` run into ``pending``.
+
+    Stamps ``approved_by`` + ``approved_at`` + optional ``approval_reason``
+    so the audit trail carries who signed off and why. The worker's
+    ``claim_next_pending`` picks the row up on its next poll.
+
+    Idempotent for the ``awaiting_approval → pending`` transition:
+    a second call finds the row already pending and no-ops. Terminal /
+    running / already-cancelled → ``RunNotAwaitingApprovalError`` (409).
+    """
+    run = session.get(PlaybookRun, run_id)
+    if run is None:
+        raise KeyError(str(run_id))
+    if run.status is PlaybookRunStatus.pending and run.approved_by is not None:
+        # Already approved — second call is a no-op.
+        return run
+    if run.status is not PlaybookRunStatus.awaiting_approval:
+        raise RunNotAwaitingApprovalError(run_id, run.status)
+    ts = _now(now)
+    run.status = PlaybookRunStatus.pending
+    run.approved_by = approver_id
+    run.approved_at = ts
+    if reason:
+        run.approval_reason = reason
+    session.flush()
+    return run
+
+
+def reject_run(
+    session: Session,
+    *,
+    run_id: uuid.UUID,
+    approver_id: uuid.UUID,
+    reason: str,
+    now: datetime | None = None,
+) -> PlaybookRun:
+    """Reject an ``awaiting_approval`` run; flip to ``cancelled``.
+
+    ``reason`` is required — an analyst rejection without a why is a
+    dead-end for the requestor. Stamps ``rejected_by`` + ``rejected_at``
+    + ``rejection_reason``; ``last_error`` mirrors the rejection reason
+    so consumers reading via the existing status/last_error surface see
+    a coherent story.
+
+    Idempotent (cancelled → cancelled is a no-op) via ``cancel_run``'s
+    existing idempotency contract; terminal-but-not-cancelled →
+    ``RunNotAwaitingApprovalError``.
+    """
+    run = session.get(PlaybookRun, run_id)
+    if run is None:
+        raise KeyError(str(run_id))
+    if run.status is PlaybookRunStatus.cancelled and run.rejected_by is not None:
+        return run
+    if run.status is not PlaybookRunStatus.awaiting_approval:
+        raise RunNotAwaitingApprovalError(run_id, run.status)
+    ts = _now(now)
+    run.status = PlaybookRunStatus.cancelled
+    run.rejected_by = approver_id
+    run.rejected_at = ts
+    run.rejection_reason = reason
+    if not run.last_error:
+        run.last_error = f"rejected: {reason}"
+    if run.completed_at is None:
+        run.completed_at = ts
+    session.flush()
+    return run
 
 
 def cancel_run(
