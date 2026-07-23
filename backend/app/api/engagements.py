@@ -136,6 +136,7 @@ from app.schemas.finding import (
     _normalize_tags,
 )
 from app.schemas.observation import ObservationCreate, ObservationRead
+from app.services import methodology as methodology_service
 from app.services.command_outbox import enqueue_command, publish_entry
 from app.services.entities import annotate_scope_status, extract_entities
 from app.services.findings import (
@@ -741,6 +742,7 @@ def create_engagement(
         start_date=body.start_date,
         end_date=body.end_date,
         created_by=user.id,
+        intelligence_architecture=body.intelligence_architecture,
     )
     session.add(eng)
     try:
@@ -754,6 +756,20 @@ def create_engagement(
                 detail="engagement slug was claimed concurrently; retry creation",
             ) from exc
         raise
+
+    if body.methodology_slug is not None:
+        try:
+            methodology_service.select_for_engagement(
+                session,
+                engagement_id=eng.id,
+                slug=body.methodology_slug,
+                version=body.methodology_version,
+                actor_type=ActorType.user,
+                actor_id=str(user.id),
+            )
+        except ValueError as exc:
+            session.rollback()
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     # Persist staged scope in the same transaction as the engagement. The
     # request schema rejects exact duplicates before this endpoint runs.
@@ -784,6 +800,10 @@ def create_engagement(
                 "initial_scope_count": len(scope_items),
                 "include_count": include_count,
                 "exclusion_count": exclusion_count,
+                "intelligence_architecture": eng.intelligence_architecture.value,
+                "methodology_id": (
+                    str(eng.methodology_id) if eng.methodology_id else None
+                ),
                 "initial_scope": [
                     {
                         "kind": item.kind.value,

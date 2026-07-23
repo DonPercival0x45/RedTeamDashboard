@@ -31,6 +31,11 @@ class EngagementWorkState(enum.StrEnum):
     completed = "completed"
 
 
+class EngagementArchitecture(enum.StrEnum):
+    legacy = "legacy"
+    v3 = "v3"
+
+
 class EngagementPhase(enum.StrEnum):
     """v3 lifecycle mode (architecture-v3-tracker PR 0). Orthogonal to
     ``EngagementStatus`` (alive?) and ``EngagementWorkState`` (how-close-to-done?):
@@ -87,6 +92,22 @@ class Engagement(Base, TimestampMixin):
     # auto-generated suggestions. The manual Analyze button is unaffected.
     auto_assess_enabled: Mapped[bool] = mapped_column(
         Boolean, default=True, nullable=False, server_default="true"
+    )
+    # Track B rollout axis. Existing engagements stay legacy; explicit creation
+    # or one-way conversion opts an engagement into the v3 intelligence plane.
+    # The process setting remains an emergency kill switch for automatic runs.
+    intelligence_architecture: Mapped[EngagementArchitecture] = mapped_column(
+        Enum(
+            EngagementArchitecture,
+            name="engagement_intelligence_architecture",
+        ),
+        default=EngagementArchitecture.legacy,
+        nullable=False,
+        server_default="legacy",
+        index=True,
+    )
+    converted_to_v3_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
     )
     # v3 shared contract (PR 0): which mode of work the engagement is in.
     # Orthogonal to status/work_state; baseline-complete flips this to

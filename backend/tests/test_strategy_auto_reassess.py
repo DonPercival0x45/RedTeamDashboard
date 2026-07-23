@@ -23,6 +23,7 @@ from app.models import (
     CommandOutbox,
     CommandOutboxStatus,
     Engagement,
+    EngagementArchitecture,
     EngagementStatus,
     ProcessingReceipt,
     ProcessingReceiptStatus,
@@ -123,6 +124,11 @@ def _consumer(redis_client: FakeRedis) -> StrategicConsumer:
         redis_client=redis_client,
         session_factory=SessionLocal,
     )
+
+
+def _enable_v3(db: Session, engagement: Engagement) -> None:
+    engagement.intelligence_architecture = EngagementArchitecture.v3
+    db.commit()
 
 
 def test_resolution_commits_event_when_immediate_redis_publish_fails(
@@ -327,10 +333,108 @@ def test_cooldown_same_event_can_resume_but_distinct_event_is_suppressed() -> No
     )
 
 
+def test_global_cutover_preserves_legacy_engagement_finding_path(
+    engagement: Engagement, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "v3_intelligence_enabled", True)
+    redis_client = FakeRedis()
+    consumer = _consumer(redis_client)
+    calls: list[uuid.UUID] = []
+    finding_id = uuid.uuid4()
+
+    def record(
+        _session: Session,
+        seen_finding_id: uuid.UUID,
+        **_kwargs: Any,
+    ) -> None:
+        calls.append(seen_finding_id)
+
+    monkeypatch.setattr(consumer, "_analyze", record)
+    consumer._process_one(
+        outbound_stream(engagement.id),
+        "legacy-1",
+        {
+            "data": json.dumps(
+                {
+                    "type": "finding.created",
+                    "event_id": str(uuid.uuid4()),
+                    "finding_id": str(finding_id),
+                    "acting_user_id": str(uuid.uuid4()),
+                }
+            )
+        },
+    )
+
+    assert calls == [finding_id]
+    assert len(redis_client.acked) == 1
+
+
+def test_v3_engagement_does_not_fall_back_when_global_automation_is_off(
+    db: Session, engagement: Engagement, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "v3_intelligence_enabled", False)
+    _enable_v3(db, engagement)
+    redis_client = FakeRedis()
+    consumer = _consumer(redis_client)
+
+    def unexpected_legacy_run(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("v3 engagement must never fall back to v1 intelligence")
+
+    monkeypatch.setattr(consumer, "_analyze", unexpected_legacy_run)
+    consumer._process_one(
+        outbound_stream(engagement.id),
+        "v3-disabled-1",
+        {
+            "data": json.dumps(
+                {
+                    "type": "finding.created",
+                    "event_id": str(uuid.uuid4()),
+                    "finding_id": str(uuid.uuid4()),
+                    "acting_user_id": str(uuid.uuid4()),
+                }
+            )
+        },
+    )
+
+    assert len(redis_client.acked) == 1
+
+
+def test_read_only_v3_engagement_skips_queued_milestone(
+    db: Session, engagement: Engagement, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "v3_intelligence_enabled", True)
+    _enable_v3(db, engagement)
+    engagement.status = EngagementStatus.archived
+    db.commit()
+    redis_client = FakeRedis()
+    consumer = _consumer(redis_client)
+
+    def unexpected_milestone(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("read-only engagement must not run intelligence")
+
+    monkeypatch.setattr(consumer, "_v3_handle_milestone", unexpected_milestone)
+    consumer._process_one(
+        outbound_stream(engagement.id),
+        "archived-1",
+        {
+            "data": json.dumps(
+                {
+                    "type": "baseline.completed",
+                    "event_id": str(uuid.uuid4()),
+                    "acting_user_id": str(uuid.uuid4()),
+                }
+            )
+        },
+    )
+
+    assert len(redis_client.acked) == 1
+
+
 def test_v3_cutover_skips_legacy_finding_and_reassess_events(
     db: Session, engagement: Engagement, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(settings, "v3_intelligence_enabled", True)
+    _enable_v3(db, engagement)
     redis_client = FakeRedis()
     consumer = _consumer(redis_client)
 
@@ -374,9 +478,10 @@ def test_v3_cutover_skips_legacy_finding_and_reassess_events(
 
 
 def test_v3_cutover_routes_run_completed_to_milestone_hook(
-    engagement: Engagement, monkeypatch: pytest.MonkeyPatch
+    db: Session, engagement: Engagement, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(settings, "v3_intelligence_enabled", True)
+    _enable_v3(db, engagement)
     redis_client = FakeRedis()
     consumer = _consumer(redis_client)
     thread_id = uuid.uuid4()
@@ -417,11 +522,13 @@ def test_v3_cutover_routes_run_completed_to_milestone_hook(
     ["collection.job.completed", "coverage.gap.opened", "baseline.completed"],
 )
 def test_v3_cutover_routes_engagement_milestones(
+    db: Session,
     engagement: Engagement,
     monkeypatch: pytest.MonkeyPatch,
     event_type: str,
 ) -> None:
     monkeypatch.setattr(settings, "v3_intelligence_enabled", True)
+    _enable_v3(db, engagement)
     redis_client = FakeRedis()
     consumer = _consumer(redis_client)
     actor_id = uuid.uuid4()
@@ -470,6 +577,7 @@ def test_v3_cutover_routes_engagement_milestones(
 def test_v3_run_hook_resolves_actor_llm_and_milestone(
     db: Session, engagement: Engagement, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    _enable_v3(db, engagement)
     redis_client = FakeRedis()
     actor_id = uuid.uuid4()
     thread_id = uuid.uuid4()
@@ -541,8 +649,9 @@ def test_v3_run_hook_resolves_actor_llm_and_milestone(
 def test_v3_run_hook_respects_auto_assess_disabled(
     db: Session, engagement: Engagement, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    _enable_v3(db, engagement)
     engagement.auto_assess_enabled = False
-    db.flush()
+    db.commit()
 
     def unexpected(*_args: Any, **_kwargs: Any) -> None:
         raise AssertionError("disabled engagement must not invoke milestone intelligence")
@@ -568,6 +677,7 @@ def test_v3_run_hook_failure_remains_retryable(
     db: Session, engagement: Engagement, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(settings, "v3_intelligence_enabled", True)
+    _enable_v3(db, engagement)
     redis_client = FakeRedis()
     consumer = _consumer(redis_client)
     event_id = str(uuid.uuid4())

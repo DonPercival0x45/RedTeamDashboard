@@ -112,6 +112,7 @@ def handle_milestone(
         thread_id=thread_id,
         model_provider=model_provider,
         model_name=model_name,
+        trigger=AgentTrigger.tick,
     )
     if result[1].status is AgentExecutionStatus.failed:
         raise RuntimeError(
@@ -129,7 +130,7 @@ class MilestoneCycleResult:
     coverage_review: tuple[Any, Any] | None
 
 
-def _acquire_engagement_memory_lock(
+def acquire_engagement_memory_lock(
     session: Session, engagement_id: uuid.UUID
 ) -> None:
     """Serialize all Memory writes for this engagement until outer commit.
@@ -163,7 +164,7 @@ def run_milestone_cycle(
     secondary maintenance pass are recorded but do not replay an already-run
     primary milestone; database failures still propagate to receipt retry.
     """
-    _acquire_engagement_memory_lock(session, engagement_id)
+    acquire_engagement_memory_lock(session, engagement_id)
     primary = handle_milestone(
         session,
         engagement_id=engagement_id,

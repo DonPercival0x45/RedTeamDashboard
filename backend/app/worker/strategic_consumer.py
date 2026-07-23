@@ -42,7 +42,9 @@ from app.models import (
     AgentTrigger,
     AuditLog,
     Engagement,
+    EngagementArchitecture,
     EngagementStatus,
+    EngagementWorkState,
     Finding,
     Task,
 )
@@ -232,7 +234,7 @@ class StrategicConsumer:
                         # live-run notification, not a Strategic instruction.
                         complete(receipt_session, receipt)
                     elif event_type in ("finding.created", "finding.updated"):
-                        if settings.v3_intelligence_enabled:
+                        if self._is_v3_engagement(receipt_session, engagement_id):
                             # v3: per-finding analysis retired. B3's milestone
                             # runner handles analysis on run.completed (gather-
                             # then-analyze), so this envelope is acknowledged only.
@@ -258,7 +260,7 @@ class StrategicConsumer:
                             )
                             complete(receipt_session, receipt)
                     elif event_type == "strategy.reassess.requested":
-                        if settings.v3_intelligence_enabled:
+                        if self._is_v3_engagement(receipt_session, engagement_id):
                             # v3: work-item-resolve reassess retired; strategy/
                             # ideation fire on coverage.gap/baseline milestones.
                             logger.info(
@@ -287,7 +289,7 @@ class StrategicConsumer:
                         "coverage.gap.opened",
                         "baseline.completed",
                     ):
-                        if settings.v3_intelligence_enabled:
+                        if self._v3_enabled(receipt_session, engagement_id):
                             acting_user_id_raw = envelope.get("acting_user_id")
                             if not acting_user_id_raw:
                                 raise ValueError(
@@ -316,7 +318,7 @@ class StrategicConsumer:
                             receipt_session, uuid.UUID(thread_id), reason=event_type
                         )
                         if (
-                            settings.v3_intelligence_enabled
+                            self._v3_enabled(receipt_session, engagement_id)
                             and event_type == "run.completed"
                         ):
                             # v3: fire gather-then-analyze on run completion.
@@ -401,6 +403,28 @@ class StrategicConsumer:
         finally:
             session.close()
 
+    def _is_v3_engagement(
+        self, session: Session, engagement_id: uuid.UUID
+    ) -> bool:
+        engagement = session.get(Engagement, engagement_id)
+        return bool(
+            engagement is not None
+            and engagement.intelligence_architecture is EngagementArchitecture.v3
+        )
+
+    def _v3_enabled(
+        self, session: Session, engagement_id: uuid.UUID
+    ) -> bool:
+        if not settings.v3_intelligence_enabled:
+            return False
+        engagement = session.get(Engagement, engagement_id)
+        return bool(
+            engagement is not None
+            and engagement.intelligence_architecture is EngagementArchitecture.v3
+            and engagement.status is EngagementStatus.active
+            and engagement.work_state is EngagementWorkState.active
+        )
+
     def _v3_handle_milestone(
         self,
         session: Session,
@@ -414,6 +438,20 @@ class StrategicConsumer:
         engagement = session.get(Engagement, engagement_id)
         if engagement is None:
             raise ValueError(f"engagement {engagement_id} not found")
+        if engagement.intelligence_architecture is not EngagementArchitecture.v3:
+            raise ValueError(f"engagement {engagement_id} is not v3-enabled")
+        if (
+            engagement.status is not EngagementStatus.active
+            or engagement.work_state is not EngagementWorkState.active
+        ):
+            logger.info(
+                "strategic.v3_read_only_skipped",
+                engagement_id=str(engagement_id),
+                milestone_type=milestone_type,
+                status=engagement.status.value,
+                work_state=engagement.work_state.value,
+            )
+            return
         if not engagement.auto_assess_enabled:
             logger.info(
                 "strategic.v3_auto_assess_disabled",

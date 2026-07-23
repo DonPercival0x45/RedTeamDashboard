@@ -26,6 +26,7 @@ from app.models.conversation import (
 from app.models.coverage import CoverageNodeTier, CoverageRecord, CoverageRecordStatus
 from app.models.engagement import (
     Engagement,
+    EngagementArchitecture,
     EngagementPhase,
     EngagementStatus,
     EngagementTimeFrame,
@@ -143,6 +144,7 @@ __all__ = [
     "CoverageRecordStatus",
     "CoverageStatus",
     "Engagement",
+    "EngagementArchitecture",
     "EngagementCheckpoint",
     "EngagementCompletionDecision",
     "EngagementObjective",
