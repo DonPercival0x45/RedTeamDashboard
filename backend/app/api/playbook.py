@@ -33,21 +33,34 @@ from app.models import (
 )
 from app.schemas.playbook import (
     PlaybookApprovalPayload,
+    PlaybookCreatePayload,
     PlaybookDetail,
+    PlaybookPatchPayload,
     PlaybookRead,
     PlaybookRunPayload,
     PlaybookRunRead,
+    PlaybookStepCreatePayload,
+    PlaybookStepPatchPayload,
     PlaybookStepRead,
 )
 from app.services.playbook import (
+    PlaybookHasRunsError,
+    PlaybookSlugConflictError,
     RunNotAwaitingApprovalError,
     RunNotCancellableError,
+    StepNotFoundError,
+    add_step,
     approve_run,
     cancel_run,
     catalog,
+    create_playbook,
+    delete_playbook,
+    delete_step,
     enqueue_run,
     load_seed_playbooks,
     reject_run,
+    update_playbook,
+    update_step,
 )
 
 router = APIRouter()
@@ -126,6 +139,183 @@ def list_playbooks(
         )
         for p in playbooks
     ]
+
+
+@router.post("/playbooks", response_model=PlaybookDetail, status_code=201)
+def create_playbook_endpoint(
+    payload: PlaybookCreatePayload,
+    session: DbSession,
+    _user: CurrentNonGuestUser,
+) -> PlaybookDetail:
+    """A5b: create a new analyst-authored playbook at version 1.
+
+    The seed loader still owns shipped catalog entries; this endpoint lets
+    analysts author their own alongside. Slug uniqueness is enforced at the
+    DB and pre-checked in the service so the response is a friendly 409 on
+    conflict rather than an IntegrityError leak.
+    """
+    try:
+        pb = create_playbook(
+            session,
+            slug=payload.slug,
+            name=payload.name,
+            applies_to_asset_class=payload.applies_to_asset_class,
+            description=payload.description,
+            active=payload.active,
+        )
+    except PlaybookSlugConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    session.commit()
+    session.refresh(pb)
+    return PlaybookDetail(
+        id=pb.id,
+        slug=pb.slug,
+        version=pb.version,
+        name=pb.name,
+        description=pb.description,
+        applies_to_asset_class=pb.applies_to_asset_class,
+        active=pb.active,
+        step_count=0,
+        steps=[],
+    )
+
+
+@router.patch("/playbooks/{slug}", response_model=PlaybookDetail)
+def update_playbook_endpoint(
+    slug: str,
+    payload: PlaybookPatchPayload,
+    session: DbSession,
+    _user: CurrentNonGuestUser,
+) -> PlaybookDetail:
+    """A5b: patch metadata in place. Targets the latest version of the slug."""
+    playbook = catalog.get_by_slug(session, slug)
+    if playbook is None:
+        raise HTTPException(status_code=404, detail=f"playbook '{slug}' not found")
+    update_playbook(
+        session,
+        playbook=playbook,
+        name=payload.name,
+        description=payload.description,
+        active=payload.active,
+        applies_to_asset_class=payload.applies_to_asset_class,
+    )
+    session.commit()
+    session.refresh(playbook)
+    return PlaybookDetail(
+        id=playbook.id,
+        slug=playbook.slug,
+        version=playbook.version,
+        name=playbook.name,
+        description=playbook.description,
+        applies_to_asset_class=playbook.applies_to_asset_class,
+        active=playbook.active,
+        step_count=len(playbook.steps),
+        steps=[PlaybookStepRead.model_validate(s) for s in playbook.steps],
+    )
+
+
+@router.delete("/playbooks/{slug}", status_code=204)
+def delete_playbook_endpoint(
+    slug: str,
+    session: DbSession,
+    _user: CurrentNonGuestUser,
+) -> None:
+    """A5b: delete the latest version. Refuses (409) when runs reference it —
+    the FK is RESTRICT so Postgres would reject anyway; we surface it first."""
+    playbook = catalog.get_by_slug(session, slug)
+    if playbook is None:
+        raise HTTPException(status_code=404, detail=f"playbook '{slug}' not found")
+    try:
+        delete_playbook(session, playbook=playbook)
+    except PlaybookHasRunsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    session.commit()
+
+
+@router.post(
+    "/playbooks/{slug}/steps",
+    response_model=PlaybookStepRead,
+    status_code=201,
+)
+def add_step_endpoint(
+    slug: str,
+    payload: PlaybookStepCreatePayload,
+    session: DbSession,
+    _user: CurrentNonGuestUser,
+) -> PlaybookStepRead:
+    """A5b: append a step. Omit ``sort_order`` to auto-place after the
+    current highest — the service adds +10 gap so future inserts have room."""
+    playbook = catalog.get_by_slug(session, slug)
+    if playbook is None:
+        raise HTTPException(status_code=404, detail=f"playbook '{slug}' not found")
+    step = add_step(
+        session,
+        playbook=playbook,
+        tool_slug=payload.tool_slug,
+        args_template=payload.args_template,
+        satisfies_node_ids=payload.satisfies_node_ids,
+        sort_order=payload.sort_order,
+        description=payload.description,
+    )
+    session.commit()
+    session.refresh(step)
+    return PlaybookStepRead.model_validate(step)
+
+
+@router.patch(
+    "/playbooks/{slug}/steps/{step_id}",
+    response_model=PlaybookStepRead,
+)
+def update_step_endpoint(
+    slug: str,
+    step_id: uuid.UUID,
+    payload: PlaybookStepPatchPayload,
+    session: DbSession,
+    _user: CurrentNonGuestUser,
+) -> PlaybookStepRead:
+    """A5b: patch a step in place. Change ``sort_order`` to reorder within
+    the playbook."""
+    playbook = catalog.get_by_slug(session, slug)
+    if playbook is None:
+        raise HTTPException(status_code=404, detail=f"playbook '{slug}' not found")
+    try:
+        step = update_step(
+            session,
+            playbook=playbook,
+            step_id=step_id,
+            tool_slug=payload.tool_slug,
+            args_template=payload.args_template,
+            satisfies_node_ids=payload.satisfies_node_ids,
+            sort_order=payload.sort_order,
+            description=payload.description,
+        )
+    except StepNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    session.commit()
+    session.refresh(step)
+    return PlaybookStepRead.model_validate(step)
+
+
+@router.delete(
+    "/playbooks/{slug}/steps/{step_id}",
+    status_code=204,
+)
+def delete_step_endpoint(
+    slug: str,
+    step_id: uuid.UUID,
+    session: DbSession,
+    _user: CurrentNonGuestUser,
+) -> None:
+    """A5b: remove a step. Adjacent steps keep their sort_order; the runner
+    iterates by ORDER BY sort_order so gaps don't matter."""
+    playbook = catalog.get_by_slug(session, slug)
+    if playbook is None:
+        raise HTTPException(status_code=404, detail=f"playbook '{slug}' not found")
+    try:
+        delete_step(session, playbook=playbook, step_id=step_id)
+    except StepNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    session.commit()
 
 
 @router.get("/playbooks/{slug}", response_model=PlaybookDetail)
