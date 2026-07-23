@@ -220,10 +220,12 @@ from app.models import (  # noqa: E402
     AgentExecutionStatus,
     AgentName,
     AgentTrigger,
+    EngagementStrategyRevision,
     MemoryElement,
     MemoryKind,
     MemoryStatus,
     MemoryTier,
+    StrategyRevisionState,
     WorkItem,
     WorkItemDisposition,
     WorkItemExecutor,
@@ -349,7 +351,41 @@ def _persist_coverage_review(
     return folded
 
 
-def _persist_strategy(session: Session, *, engagement_id: uuid.UUID, out: StrategyOutput) -> None:
+def _render_strategy_body(out: StrategyOutput) -> str:
+    """Render the structured strategy output as readable markdown for the
+    analyst-facing revision body."""
+    lines: list[str] = []
+    if out.situation_summary.strip():
+        lines.append(out.situation_summary.strip())
+    if out.proposed_decisions:
+        if lines:
+            lines.append("")
+        lines.append("## Decisions")
+        for d in out.proposed_decisions:
+            entry = f"- **{d.summary.strip()}**"
+            if d.rationale.strip():
+                entry += f" — {d.rationale.strip()}"
+            lines.append(entry)
+    if out.proposed_work_items:
+        if lines:
+            lines.append("")
+        lines.append("## Proposed work")
+        for w in out.proposed_work_items:
+            entry = f"- {w.title.strip()} ({w.disposition})"
+            if w.rationale.strip():
+                entry += f" — {w.rationale.strip()}"
+            lines.append(entry)
+    return "\n".join(lines).strip() or "No structured output; review Memory and coverage."
+
+
+def _persist_strategy(
+    session: Session,
+    *,
+    engagement_id: uuid.UUID,
+    out: StrategyOutput,
+    acting_user_id: uuid.UUID,
+    execution: AgentExecution,
+) -> None:
     for d in out.proposed_decisions:
         create_element(
             session, engagement_id=engagement_id, kind=MemoryKind.decision,
@@ -358,6 +394,38 @@ def _persist_strategy(session: Session, *, engagement_id: uuid.UUID, out: Strate
         )
     for w in out.proposed_work_items:
         _add_work_item(session, engagement_id=engagement_id, proposed=w)
+    # Bridge to the canonical strategy document so the existing accept/reject
+    # workflow unlocks the workspace (has_strategy, current revision, tabs).
+    # The revision is proposed — the analyst accepts it before it becomes
+    # current, preserving human approval over what the agent drafts.
+    revisions = list(
+        session.execute(
+            select(EngagementStrategyRevision)
+            .where(EngagementStrategyRevision.engagement_id == engagement_id)
+            .order_by(EngagementStrategyRevision.version)
+            .with_for_update()
+        ).scalars()
+    )
+    next_version = max((row.version for row in revisions), default=0) + 1
+    body = _render_strategy_body(out)
+    if out.situation_summary.strip():
+        summary: str | None = out.situation_summary.strip()[:300]
+    elif out.proposed_decisions:
+        summary = out.proposed_decisions[0].summary[:300]
+    else:
+        summary = None
+    revision = EngagementStrategyRevision(
+        engagement_id=engagement_id,
+        version=next_version,
+        state=StrategyRevisionState.proposed,
+        summary=summary,
+        body=body,
+        structured=out.model_dump(mode="json"),
+        created_by_user_id=acting_user_id,
+        proposed_by_execution_id=execution.id,
+        proposal_reason=f"v3 intelligence strategy run ({_INTELLIGENCE_AUTHOR})",
+    )
+    session.add(revision)
 
 
 def record_intelligence_failure(
@@ -485,7 +553,13 @@ def run_intelligence_analysis(
             elif mode is AgentPromptMode.coverage_review:
                 _persist_coverage_review(session, engagement_id=engagement_id, out=result)
             elif mode is AgentPromptMode.strategy:
-                _persist_strategy(session, engagement_id=engagement_id, out=result)
+                _persist_strategy(
+                    session,
+                    engagement_id=engagement_id,
+                    out=result,
+                    acting_user_id=acting_user_id,
+                    execution=execution,
+                )
         execution.status = AgentExecutionStatus.completed
         execution.completed_at = datetime.now(tz=UTC)
         execution.output = {
