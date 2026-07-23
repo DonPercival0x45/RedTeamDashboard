@@ -23,6 +23,7 @@ import { ContributionsView } from "@/components/contributions-view";
 import { StatusView } from "@/components/status-view";
 import { DiagnosticsView } from "@/components/diagnostics-view";
 import { StrategyView } from "@/components/strategy-view";
+import { LegacyEngagementBanner } from "@/components/legacy-engagement-banner";
 import { GrantsCard } from "@/components/grants-card";
 import { RunPrompt } from "@/components/run-prompt";
 import { RunPromptBridgeProvider } from "@/components/run-prompt-context";
@@ -409,6 +410,14 @@ function EngagementDetail({ slug }: { slug: string }) {
       </div>
 
       {error && <p className="text-sm text-critical">{error}</p>}
+
+      {/* v3 Convergence C6e — nudge legacy engagements toward the convert
+          action on the Strategy tab. Renders across every view; the banner
+          itself hides for v3 engagements or when dismissed for the session. */}
+      <LegacyEngagementBanner
+        engagement={engagement}
+        onOpenStrategy={() => setView("strategy")}
+      />
 
       {/* Left nav + content pane. */}
       <div className="flex gap-8">
