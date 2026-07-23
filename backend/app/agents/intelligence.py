@@ -166,3 +166,211 @@ def build_intelligence_messages(
         ("system", system_prompt),
         ("user", json.dumps(context, default=str)),
     ]
+
+
+# ---------------------------------------------------------------------------
+# LLM invocation (B4-2) — injected llm for testability; per-mode persistence
+# ---------------------------------------------------------------------------
+
+from datetime import UTC, datetime  # noqa: E402
+
+from app.models import (  # noqa: E402
+    ActorType,
+    AgentExecution,
+    AgentExecutionStatus,
+    AgentName,
+    AgentTrigger,
+    MemoryElement,
+    MemoryKind,
+    WorkItem,
+    WorkItemDisposition,
+    WorkItemExecutor,
+    WorkItemPriority,
+    WorkItemStatus,
+)
+from app.schemas.intelligence import (  # noqa: E402
+    AnalysisOutput,
+    CoverageReviewOutput,
+    IdeationOutput,
+    StrategyOutput,
+)
+from app.services.agent_model_resolver import resolve_model_for_mode  # noqa: E402
+from app.services.memory import create_element, fold_into_decision  # noqa: E402
+
+MODE_OUTPUT_SCHEMAS: dict[AgentPromptMode, type] = {
+    AgentPromptMode.strategy: StrategyOutput,
+    AgentPromptMode.analysis: AnalysisOutput,
+    AgentPromptMode.ideation: IdeationOutput,
+    AgentPromptMode.coverage_review: CoverageReviewOutput,
+}
+
+_INTELLIGENCE_AUTHOR = "intelligence-agent"
+
+
+def _disposition(value: str) -> WorkItemDisposition:
+    try:
+        return WorkItemDisposition(value)
+    except ValueError:
+        return WorkItemDisposition.manual_local
+
+
+def _add_work_item(
+    session: Session, *, engagement_id: uuid.UUID, proposed: Any
+) -> None:
+    session.add(
+        WorkItem(
+            engagement_id=engagement_id,
+            title=proposed.title,
+            status=WorkItemStatus.ready,
+            priority=WorkItemPriority.medium,
+            executor_type=WorkItemExecutor.unassigned,
+            disposition=_disposition(proposed.disposition),
+            rationale=proposed.rationale,
+        )
+    )
+
+
+def _persist_analysis(session: Session, *, engagement_id: uuid.UUID, out: AnalysisOutput) -> None:
+    for f in out.proposed_facts:
+        create_element(
+            session, engagement_id=engagement_id, kind=MemoryKind.fact,
+            summary=f.summary, confidence=f.confidence,
+            author_type=ActorType.agent, author_id=_INTELLIGENCE_AUTHOR,
+        )
+    for h in out.proposed_hypotheses:
+        create_element(
+            session, engagement_id=engagement_id, kind=MemoryKind.hypothesis,
+            summary=h.summary, confidence=h.confidence,
+            author_type=ActorType.agent, author_id=_INTELLIGENCE_AUTHOR,
+        )
+
+
+def _persist_ideation(session: Session, *, engagement_id: uuid.UUID, out: IdeationOutput) -> None:
+    for h in out.proposed_hypotheses:
+        create_element(
+            session, engagement_id=engagement_id, kind=MemoryKind.hypothesis,
+            summary=h.summary, confidence=h.confidence,
+            author_type=ActorType.agent, author_id=_INTELLIGENCE_AUTHOR,
+        )
+    for w in out.proposed_work_items:
+        _add_work_item(session, engagement_id=engagement_id, proposed=w)
+
+
+def _persist_coverage_review(
+    session: Session, *, engagement_id: uuid.UUID, out: CoverageReviewOutput
+) -> int:
+    folded = 0
+    for fold in out.folds:
+        hyps = list(
+            session.execute(
+                select(MemoryElement).where(
+                    MemoryElement.engagement_id == engagement_id,
+                    MemoryElement.id.in_([uuid.UUID(str(h)) for h in fold.hypothesis_ids]),
+                )
+            ).scalars()
+        )
+        if not hyps:
+            continue
+        fold_into_decision(
+            session, engagement_id=engagement_id, hypotheses=hyps,
+            decision_summary=fold.decision_summary, rationale=fold.rationale,
+            author_type=ActorType.agent, author_id=_INTELLIGENCE_AUTHOR,
+        )
+        folded += len(hyps)
+    return folded
+
+
+def _persist_strategy(session: Session, *, engagement_id: uuid.UUID, out: StrategyOutput) -> None:
+    for d in out.proposed_decisions:
+        create_element(
+            session, engagement_id=engagement_id, kind=MemoryKind.decision,
+            summary=d.summary, body={"rationale": d.rationale},
+            author_type=ActorType.agent, author_id=_INTELLIGENCE_AUTHOR,
+        )
+    for w in out.proposed_work_items:
+        _add_work_item(session, engagement_id=engagement_id, proposed=w)
+
+
+def run_intelligence_analysis(
+    session: Session,
+    *,
+    engagement_id: uuid.UUID,
+    mode: AgentPromptMode,
+    acting_user_id: uuid.UUID,
+    llm: Any,
+    since: Any = None,
+) -> tuple[Any, AgentExecution]:
+    """Invoke the intelligence agent in ``mode`` and persist its output.
+
+    ``llm`` is injected (the caller — B3 milestone runner, an API endpoint, or
+    a test — constructs it, typically from ``resolve_model_for_mode`` + the
+    acting analyst's BYO key). This function still calls ``resolve_model_for_mode``
+    to record model attribution on the AgentExecution.
+
+    Returns ``(parsed_output, execution)``. On LLM failure the execution is
+    marked failed and ``(None, execution)`` is returned — no partial writes.
+    """
+    context = build_intelligence_context(
+        session, engagement_id=engagement_id, since=since
+    )
+    messages = build_intelligence_messages(context, mode)
+    schema = MODE_OUTPUT_SCHEMAS[mode]
+
+    provider, model_name = resolve_model_for_mode(
+        session, user_id=acting_user_id, engagement_id=engagement_id, mode=mode
+    )
+    execution = AgentExecution(
+        engagement_id=engagement_id,
+        agent=AgentName.engagement_strategist,
+        trigger=AgentTrigger.manual,
+        input={
+            "mode": mode.value,
+            "engagement_id": str(engagement_id),
+            "v3_intelligence": True,
+        },
+        status=AgentExecutionStatus.running,
+        started_at=datetime.now(tz=UTC),
+        model_provider=provider,
+        model_name=model_name,
+    )
+    session.add(execution)
+    session.flush()
+
+    try:
+        structured = llm.with_structured_output(schema)
+        result = structured.invoke(messages)
+        # Per-mode persistence.
+        if mode is AgentPromptMode.analysis:
+            _persist_analysis(session, engagement_id=engagement_id, out=result)
+        elif mode is AgentPromptMode.ideation:
+            _persist_ideation(session, engagement_id=engagement_id, out=result)
+        elif mode is AgentPromptMode.coverage_review:
+            _persist_coverage_review(session, engagement_id=engagement_id, out=result)
+        elif mode is AgentPromptMode.strategy:
+            _persist_strategy(session, engagement_id=engagement_id, out=result)
+        execution.status = AgentExecutionStatus.completed
+        execution.completed_at = datetime.now(tz=UTC)
+        execution.output = {"mode": mode.value, "parsed": True}
+    except Exception as exc:  # noqa: BLE001 — any LLM/persistence failure → failed, no partial
+        session.rollback()
+        # Re-add the execution row (rollback removed it) and mark failed.
+        execution = AgentExecution(
+            engagement_id=engagement_id,
+            agent=AgentName.engagement_strategist,
+            trigger=AgentTrigger.manual,
+            input={
+                "mode": mode.value,
+                "engagement_id": str(engagement_id),
+                "v3_intelligence": True,
+            },
+            status=AgentExecutionStatus.failed,
+            error=str(exc)[:2000],
+            started_at=datetime.now(tz=UTC),
+            completed_at=datetime.now(tz=UTC),
+            model_provider=provider,
+            model_name=model_name,
+        )
+        session.add(execution)
+        session.flush()
+        return None, execution
+    return result, execution
