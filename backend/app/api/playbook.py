@@ -97,6 +97,7 @@ def _run_read(session: Session, run: PlaybookRun) -> PlaybookRunRead:
         findings_high_severity=run.findings_high_severity,
         findings_total=run.findings_total,
         last_error=run.last_error,
+        requested_by=run.requested_by,
         approved_by=run.approved_by,
         approved_at=run.approved_at,
         approval_reason=run.approval_reason,
@@ -378,9 +379,8 @@ def create_playbook_run(
                 + " not found"
             ),
         )
-    # Actor attribution lands with A5's approve-before-run gate; the worker
-    # attributes coverage records to the system actor for now.
-    del user
+    # Persist requester identity because execution and milestone delivery happen
+    # later in a worker process; never attempt to recover it from another user.
     try:
         executor_kind = PlaybookExecutorKind(payload.executor)
     except ValueError as exc:
@@ -397,6 +397,7 @@ def create_playbook_run(
         playbook=playbook,
         scope_subset=payload.scope_subset,
         executor_kind=executor_kind,
+        requested_by=user.id,
     )
     session.commit()
     session.refresh(run)

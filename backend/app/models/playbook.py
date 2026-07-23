@@ -198,6 +198,16 @@ class PlaybookRun(Base, TimestampMixin):
         ForeignKey("playbooks.id", ondelete="RESTRICT"),
         nullable=False,
     )
+    # Authenticated analyst who requested the run. Automatic intelligence uses
+    # ``approved_by`` for gated playbooks, otherwise this requester, so the
+    # worker can resolve exactly that actor's BYO model key without borrowing.
+    # Nullable only for pre-0063 rows and non-HTTP/system-created runs.
+    requested_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     status: Mapped[PlaybookRunStatus] = mapped_column(
         Enum(PlaybookRunStatus, name="playbook_run_status"),
         nullable=False,
