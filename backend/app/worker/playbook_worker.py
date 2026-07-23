@@ -26,11 +26,14 @@ from collections.abc import Callable
 import structlog
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
+from app.models import PlaybookExecutorKind
 from app.services.playbook import (
     InternalExecutor,
     claim_next_pending,
     execute_pending_run,
 )
+from app.services.playbook.executor import MCPExecutor, PlaybookExecutor
 
 logger = structlog.get_logger(__name__)
 
@@ -48,14 +51,29 @@ class PlaybookWorkerThread:
     ) -> None:
         self._session_factory = session_factory
         self._poll = poll_interval_seconds
-        self._executor = InternalExecutor()
 
-    def _claim(self) -> tuple[str, str] | None:
-        """Grab the next pending run + flip to running. Returns (run_id_str,
-        playbook_slug_for_logging) or ``None`` when nothing's pending.
+    def _build_executor(self, kind: PlaybookExecutorKind) -> PlaybookExecutor:
+        """Instantiate the right executor for this run.
 
-        Returned as strings so the caller's execute transaction doesn't
-        depend on ORM identity from the claim session.
+        MCPExecutor lazily opens its client on first ``run_step`` — building
+        one here is cheap. We build fresh per run so a newly-registered MCP
+        tool becomes visible on the next dispatch instead of stuck behind a
+        cached catalog.
+        """
+        if kind is PlaybookExecutorKind.mcp:
+            base_url = f"{settings.playbook_mcp_url.rstrip('/')}/sse"
+            return MCPExecutor(
+                base_url=base_url,
+                api_key=settings.worker_mcp_api_key,
+            )
+        return InternalExecutor()
+
+    def _claim(self) -> tuple[str, PlaybookExecutorKind] | None:
+        """Grab the next pending run + flip to running. Returns
+        ``(run_id_str, executor_kind)`` or ``None`` when nothing's pending.
+
+        Executor kind travels back as an enum so the execute step builds the
+        right executor without a second row read.
         """
         try:
             session = self._session_factory()
@@ -68,9 +86,9 @@ class PlaybookWorkerThread:
                 session.commit()
                 return None
             claimed_id = str(run.id)
-            slug = str(run.playbook_id)
+            kind = run.executor_kind
             session.commit()
-            return claimed_id, slug
+            return claimed_id, kind
         except Exception:
             session.rollback()
             logger.exception("playbook_worker.claim_failed")
@@ -78,7 +96,7 @@ class PlaybookWorkerThread:
         finally:
             session.close()
 
-    def _execute(self, run_id_str: str) -> None:
+    def _execute(self, run_id_str: str, kind: PlaybookExecutorKind) -> None:
         """Drive the claimed run in a separate transaction.
 
         Any exception here transitions the run to ``failed`` with the
@@ -95,10 +113,11 @@ class PlaybookWorkerThread:
             logger.exception("playbook_worker.execute_session_unavailable")
             return
         try:
+            executor = self._build_executor(kind)
             execute_pending_run(
                 session,
                 run_id=_uuid.UUID(run_id_str),
-                executor=self._executor,
+                executor=executor,
             )
             session.commit()
         except Exception:
@@ -138,9 +157,9 @@ class PlaybookWorkerThread:
         claim = self._claim()
         if claim is None:
             return False
-        run_id, _ = claim
-        logger.info("playbook_worker.execute_start", run_id=run_id)
-        self._execute(run_id)
+        run_id, kind = claim
+        logger.info("playbook_worker.execute_start", run_id=run_id, executor=kind.value)
+        self._execute(run_id, kind)
         logger.info("playbook_worker.execute_done", run_id=run_id)
         return True
 

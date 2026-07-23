@@ -116,7 +116,40 @@ PTES_PASSIVE_RECON_V1: dict[str, Any] = {
 }
 
 
+OSINT_ENRICHMENT_V1: dict[str, Any] = {
+    "slug": "osint-enrichment",
+    "version": 1,
+    "name": "OSINT IP enrichment (MCP)",
+    "description": (
+        "Enrichment sweep for a single IP: geo/ISP via freeipapi, ASN + "
+        "hosting-provider metadata via ipinfo. Targeted at MCP dispatch — "
+        "``executor='mcp'`` on run creation routes to the corresponding MCP "
+        "tools. No baseline node satisfaction — enrichment is exploration-tier "
+        "context, not a coverage gate."
+    ),
+    "applies_to_asset_class": "ip",
+    "active": False,
+    "steps": [
+        {
+            "sort_order": 10,
+            "tool_slug": "freeipapi",
+            "args_template": {"ip": "{{scope_item}}"},
+            "satisfies_node_ids": [],
+            "description": "Geo / ISP / continent lookup via freeipapi.com.",
+        },
+        {
+            "sort_order": 20,
+            "tool_slug": "ipinfo",
+            "args_template": {"ip": "{{scope_item}}"},
+            "satisfies_node_ids": [],
+            "description": "ASN + org + hosting metadata via ipinfo.io.",
+        },
+    ],
+}
+
+
 SEED_PLAYBOOKS: list[dict[str, Any]] = [
     OSINT_PASSIVE_DOMAIN_V1,
     PTES_PASSIVE_RECON_V1,
+    OSINT_ENRICHMENT_V1,
 ]

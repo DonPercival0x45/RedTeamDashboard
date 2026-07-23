@@ -33,6 +33,7 @@ from app.models import (
     CoverageRecordStatus,
     Engagement,
     Playbook,
+    PlaybookExecutorKind,
     PlaybookRun,
     PlaybookRunStatus,
 )
@@ -85,13 +86,15 @@ def enqueue_run(
     engagement: Engagement,
     playbook: Playbook,
     scope_subset: Sequence[str],
+    executor_kind: PlaybookExecutorKind = PlaybookExecutorKind.internal,
     now: datetime | None = None,
 ) -> PlaybookRun:
     """Create a ``pending`` playbook run. Worker picks it up.
 
     ``steps_total`` is pre-populated so a client polling the row can see
     "N of M steps done" progress the moment the worker starts. Caller
-    commits.
+    commits. ``executor_kind`` decides which executor the worker will
+    build when it claims this run (A4).
     """
     ts = _now(now)
     run = PlaybookRun(
@@ -100,6 +103,7 @@ def enqueue_run(
         status=PlaybookRunStatus.pending,
         scope_subset=list(scope_subset),
         steps_total=len(playbook.steps) * len(scope_subset),
+        executor_kind=executor_kind,
         created_at=ts,
     )
     session.add(run)
@@ -315,6 +319,7 @@ def start_run(
     now: datetime | None = None,
     actor_type: ActorType = ActorType.system,
     actor_id: str | None = None,
+    executor_kind: PlaybookExecutorKind = PlaybookExecutorKind.internal,
 ) -> PlaybookRun:
     """Enqueue + execute a run synchronously. Tests + code paths that don't
     want the async queue call this.
@@ -329,6 +334,7 @@ def start_run(
         engagement=engagement,
         playbook=playbook,
         scope_subset=scope_subset,
+        executor_kind=executor_kind,
         now=now,
     )
     run.status = PlaybookRunStatus.running

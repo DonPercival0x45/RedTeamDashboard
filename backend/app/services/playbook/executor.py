@@ -14,14 +14,21 @@ A3a ships:
   ship the runner + coverage-writing surface reviewable on its own and use a
   ``MockExecutor`` in tests to prove the seam.
 
-A4 adds ``MCPExecutor`` implementing the same protocol, dispatched by
-``PlaybookRun.disposition`` (once we thread work-item dispositions here).
+A4 adds ``MCPExecutor`` implementing the same protocol. The playbook run
+row now carries an ``executor_kind`` column so the worker picks between
+internal (in-process) and MCP (out-of-process) per-run.
 """
 from __future__ import annotations
 
+import asyncio
+import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol
+
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -146,3 +153,197 @@ def substitute_scope(
         else:
             out[k] = v
     return out
+
+
+# ---------------------------------------------------------------------------
+# MCPExecutor — A4
+# ---------------------------------------------------------------------------
+
+
+class MCPExecutor:
+    """Playbook executor that dispatches to the MCP server — Track A step A4.
+
+    Same ``PlaybookExecutor`` protocol as ``InternalExecutor``; different
+    transport. Constructs a lazy ``MultiServerMCPClient`` (from
+    ``langchain-mcp-adapters``, the same client the worker uses at
+    ``app/worker/mcp_executor.py``) so an executor instance can serve many
+    ``run_step`` calls without re-handshaking per call. The tool catalog is
+    fetched once on first invocation and cached for the executor's lifetime;
+    a fresh MCPExecutor per run picks up newly-registered tools.
+
+    Auth: analyst-facing analysts run playbooks; auth reuses the worker's
+    CLI-scoped API key (``settings.worker_mcp_api_key``). ``lease_token`` is
+    optional in A4 v0 — the worker MCP endpoint accepts CLI keys without a
+    lease for the current catalogue.
+
+    Coercion (``_coerce_response``): the MCP wire returns content-parts,
+    which we walk down to the tool's structured payload. Findings counts
+    come from an ``_lease_findings`` list when the tool wrote findings, or
+    fall through to 0 when the response is bulk-data-only (like ipinfo). A
+    top-level ``"error"`` key flips ``ok=False``.
+    """
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        api_key: str,
+        lease_token: str | None = None,
+    ) -> None:
+        self._base_url = base_url
+        self._api_key = api_key
+        self._lease_token = lease_token
+        self._client: Any | None = None
+        self._tool_cache: dict[str, Any] = {}
+
+    def _get_client(self) -> Any:
+        if self._client is not None:
+            return self._client
+        from langchain_mcp_adapters.client import MultiServerMCPClient
+
+        headers = {"X-API-Key": self._api_key}
+        if self._lease_token:
+            headers["X-Lease-Token"] = self._lease_token
+        self._client = MultiServerMCPClient(
+            {
+                "rtd": {
+                    "url": self._base_url,
+                    "transport": "sse",
+                    "headers": headers,
+                }
+            }
+        )
+        return self._client
+
+    async def _load_tools(self) -> None:
+        if self._tool_cache:
+            return
+        tools = await self._get_client().get_tools()
+        for tool in tools:
+            self._tool_cache[tool.name] = tool
+
+    async def _ainvoke(self, name: str, args: Mapping[str, Any]) -> Any:
+        await self._load_tools()
+        tool = self._tool_cache.get(name)
+        if tool is None:
+            raise KeyError(name)
+        return await tool.ainvoke(dict(args))
+
+    def run_step(
+        self,
+        *,
+        tool_slug: str,
+        args_template: Mapping[str, Any],
+        scope_context: str,
+    ) -> StepResult:
+        args = substitute_scope(args_template, scope_context)
+        try:
+            raw = asyncio.run(self._ainvoke(tool_slug, args))
+        except KeyError:
+            return StepResult(
+                ok=False,
+                error=f"MCP server does not expose tool {tool_slug!r}",
+            )
+        except BaseException as exc:  # noqa: BLE001 - MCP transport errors are step failures
+            detail = _unwrap_exception_detail(exc)
+            logger.exception(
+                "playbook.mcp_executor_failed",
+                tool=tool_slug,
+                error=detail,
+            )
+            return StepResult(
+                ok=False,
+                error=f"mcp transport error ({type(exc).__name__}): {detail}",
+            )
+        return _coerce_response(raw)
+
+
+def _coerce_response(raw: Any) -> StepResult:
+    """Normalize an MCP tool response into ``StepResult``.
+
+    Mirrors the worker's ``_coerce_tool_response`` (v1.4.8) but returns a
+    ``StepResult``: findings_new/findings_total come from ``_lease_findings``
+    when present, otherwise 0. A top-level ``"error"`` key flips ``ok=False``.
+    Empty-but-successful responses (bulk-data-only tools like ipinfo)
+    surface as ``ok=True`` with 0 findings — the technique ran, that's
+    what coverage cares about.
+    """
+    raw = _unwrap_content_parts(raw)
+
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (ValueError, TypeError):
+            return StepResult(ok=True, data={"raw": raw})
+
+    if not isinstance(raw, Mapping):
+        return StepResult(ok=True, data={"value": raw})
+
+    if "error" in raw:
+        return StepResult(ok=False, error=str(raw.get("error")))
+
+    findings = raw.get("_lease_findings")
+    findings_total = len(findings) if isinstance(findings, list) else 0
+    data = {k: v for k, v in raw.items() if k != "_lease_findings"}
+    return StepResult(
+        ok=True,
+        findings_new=findings_total,
+        findings_total=findings_total,
+        data=data,
+    )
+
+
+def _unwrap_content_parts(raw: Any) -> Any:
+    """Peel the MCP wire wrapper off ``raw`` so downstream code sees the
+    tool's raw JSON dict. Copied from ``worker/mcp_executor.py`` because
+    the wire format is a langchain-mcp-adapters concern that both executor
+    call sites need to handle identically."""
+    structured = getattr(raw, "structuredContent", None)
+    if isinstance(structured, Mapping):
+        return dict(structured)
+
+    content = getattr(raw, "content", None)
+    if isinstance(content, list):
+        raw = content
+
+    if isinstance(raw, list):
+        text_chunks: list[str] = []
+        for part in raw:
+            txt = (
+                part.get("text")
+                if isinstance(part, Mapping)
+                else getattr(part, "text", None)
+            )
+            if isinstance(txt, str):
+                text_chunks.append(txt)
+        if text_chunks:
+            joined = "".join(text_chunks)
+            try:
+                return json.loads(joined)
+            except (ValueError, TypeError):
+                return joined
+
+    return raw
+
+
+def _unwrap_exception_detail(exc: BaseException, depth: int = 0) -> str:
+    """Walk a possibly-nested exception (BaseExceptionGroup + __cause__ /
+    __context__) so the analyst sees WHAT actually broke instead of the
+    wrapper. Same behavior as the worker's helper."""
+    if depth > 5:
+        return str(exc) or type(exc).__name__
+
+    inner = getattr(exc, "exceptions", None)
+    if inner:
+        parts = [
+            f"{type(sub).__name__}: {_unwrap_exception_detail(sub, depth + 1)}"
+            for sub in inner
+        ]
+        return " | ".join(parts)
+
+    msg = str(exc) or type(exc).__name__
+    cause = exc.__cause__ or exc.__context__
+    if cause is not None and cause is not exc:
+        inner_msg = _unwrap_exception_detail(cause, depth + 1)
+        return f"{msg} <- caused by {type(cause).__name__}: {inner_msg}"
+    return msg

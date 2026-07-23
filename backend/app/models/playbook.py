@@ -48,6 +48,21 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.base import Base, TimestampMixin, uuid7
 
 
+class PlaybookExecutorKind(enum.StrEnum):
+    """Which executor implementation drives the run.
+
+    * ``internal`` — in-process ``InternalExecutor`` (A3b tools + stubs).
+    * ``mcp`` — out-of-process ``MCPExecutor`` (A4 — hits the MCP server
+      for tool execution).
+
+    Chosen at run creation. Per-step dispatch via ``work_items.disposition``
+    is a later convergence step.
+    """
+
+    internal = "internal"
+    mcp = "mcp"
+
+
 class PlaybookRunStatus(enum.StrEnum):
     """Lifecycle of one playbook execution.
 
@@ -211,5 +226,13 @@ class PlaybookRun(Base, TimestampMixin):
         Integer, nullable=False, default=0, server_default="0"
     )
     last_error: Mapped[str | None] = mapped_column(Text)
+    # v3 A4: which executor drives this run. Existing rows backfill to
+    # ``internal`` (the only option pre-A4).
+    executor_kind: Mapped[PlaybookExecutorKind] = mapped_column(
+        Enum(PlaybookExecutorKind, name="playbook_executor_kind"),
+        nullable=False,
+        default=PlaybookExecutorKind.internal,
+        server_default="internal",
+    )
 
     playbook: Mapped[Playbook] = relationship("Playbook")
