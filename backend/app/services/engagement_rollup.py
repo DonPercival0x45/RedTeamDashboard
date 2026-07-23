@@ -26,6 +26,7 @@ from app.models import (
     CoverageNodeTier,
     CoverageRecord,
     Finding,
+    FindingOrigin,
     FindingPhase,
     FindingStatus,
     Severity,
@@ -41,13 +42,17 @@ _UNVALIDATED = {FindingStatus.pending_validation, FindingStatus.needs_review}
 
 
 def findings_summary(
-    session: Session, *, engagement_id: uuid.UUID, since: Any = None
+    session: Session,
+    *,
+    engagement_id: uuid.UUID,
+    since: Any = None,
+    thread_id: uuid.UUID | None = None,
 ) -> dict[str, int]:
     """Counts-only significance trigger (the milestone ``FindingsSummary``).
 
-    ``since``: optional timestamp; findings created at/after it count as "new".
-    Omit it for a first-pass / full-engagement summary (everything is "new").
-    Excludes soft-deleted findings.
+    ``thread_id`` uses canonical run lineage for the "new" count. Otherwise,
+    ``since`` optionally bounds new findings by creation time; with neither,
+    every active finding counts as new. Excludes soft-deleted findings.
     """
     # All filters applied directly on the Finding table in one WHERE each —
     # NOT via select_from(subquery).where(...), whose outer .where() would
@@ -57,12 +62,16 @@ def findings_summary(
         Finding.engagement_id == engagement_id,
         Finding.deleted_at.is_(None),
     ]
-    new_filters = list(base_filters)
-    if since is not None:
-        new_filters.append(Finding.created_at >= since)
+    new_q = select(func.count(func.distinct(Finding.id))).where(*base_filters)
+    if thread_id is not None:
+        new_q = new_q.join(
+            FindingOrigin, FindingOrigin.finding_id == Finding.id
+        ).where(FindingOrigin.thread_id == thread_id)
+    elif since is not None:
+        new_q = new_q.where(Finding.created_at >= since)
 
     total = session.scalar(select(func.count(Finding.id)).where(*base_filters)) or 0
-    new = session.scalar(select(func.count(Finding.id)).where(*new_filters)) or 0
+    new = session.scalar(new_q) or 0
     unvalidated = session.scalar(
         select(func.count(Finding.id)).where(*base_filters, Finding.status.in_(_UNVALIDATED))
     ) or 0
@@ -79,18 +88,28 @@ def findings_summary(
 
 
 def significant_finding_ids(
-    session: Session, *, engagement_id: uuid.UUID, since: Any = None
+    session: Session,
+    *,
+    engagement_id: uuid.UUID,
+    since: Any = None,
+    thread_id: uuid.UUID | None = None,
 ) -> list[uuid.UUID]:
     """The gather set for B3's gather-then-analyze: IDs of findings matching
     the significance predicate (``is_new OR not_validated OR high_severity``).
 
-    Dedupes — a finding matching multiple predicates appears once. This is the
-    re-query step: the milestone payload carries counts only (``findings_summary``),
-    B3 calls this for the actual IDs to batch."""
+    For run milestones, ``thread_id`` defines ``is_new`` through canonical
+    ``FindingOrigin`` lineage. Other milestone types may use ``since``. With
+    neither supplied, all active findings are treated as new (legacy B3
+    behavior). Dedupes findings that match more than one predicate.
+    """
     new_q = select(Finding.id).where(
         Finding.engagement_id == engagement_id, Finding.deleted_at.is_(None)
     )
-    if since is not None:
+    if thread_id is not None:
+        new_q = new_q.join(
+            FindingOrigin, FindingOrigin.finding_id == Finding.id
+        ).where(FindingOrigin.thread_id == thread_id)
+    elif since is not None:
         new_q = new_q.where(Finding.created_at >= since)
     new_ids = set(session.scalars(new_q).all())
 

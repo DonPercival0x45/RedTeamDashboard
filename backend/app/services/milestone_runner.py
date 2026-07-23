@@ -23,11 +23,13 @@ later, Track A's ``collection.job.completed``) is a thin follow-up.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
 from typing import Any
 
 from sqlalchemy.orm import Session
 
 from app.agents.intelligence import run_intelligence_analysis
+from app.models import AgentExecutionStatus
 from app.models.agent_mode_model_preference import AgentPromptMode
 from app.services.engagement_rollup import significant_finding_ids
 
@@ -53,15 +55,19 @@ def handle_milestone(
     engagement_id: uuid.UUID,
     milestone_type: str,
     acting_user_id: uuid.UUID,
-    llm: Any,
+    llm: Any = None,
+    llm_factory: Callable[[], tuple[Any, str, str]] | None = None,
     since: Any = None,
+    thread_id: uuid.UUID | None = None,
 ) -> tuple[Any, Any] | None:
     """React to a milestone: gather significant findings, invoke the agent once.
 
     Returns ``(output, execution)`` from ``run_intelligence_analysis``, or
     ``None`` when the milestone isn't reacted to, or when an analysis-mode
     milestone has no significant findings to analyze (gather-then-analyze —
-    don't burn tokens on a nothing-changed milestone).
+    don't burn tokens on a nothing-changed milestone). ``llm_factory`` is
+    intentionally lazy so a skipped milestone does not require a live BYO key.
+    Callers may continue to inject an already-built ``llm`` directly.
     """
     mode = MILESTONE_MODES.get(milestone_type)
     if mode is None:
@@ -69,16 +75,34 @@ def handle_milestone(
 
     if mode in _ANALYSIS_MODES:
         significant = significant_finding_ids(
-            session, engagement_id=engagement_id, since=since
+            session,
+            engagement_id=engagement_id,
+            since=since,
+            thread_id=thread_id,
         )
         if not significant:
             return None  # nothing significant -> no invocation
 
-    return run_intelligence_analysis(
+    model_provider: str | None = None
+    model_name: str | None = None
+    if llm is None:
+        if llm_factory is None:
+            raise ValueError("handle_milestone requires llm or llm_factory")
+        llm, model_provider, model_name = llm_factory()
+
+    result = run_intelligence_analysis(
         session,
         engagement_id=engagement_id,
         mode=mode,
         acting_user_id=acting_user_id,
         llm=llm,
         since=since,
+        thread_id=thread_id,
+        model_provider=model_provider,
+        model_name=model_name,
     )
+    if result[1].status is AgentExecutionStatus.failed:
+        raise RuntimeError(
+            f"milestone intelligence failed: {result[1].error or 'unknown error'}"
+        )
+    return result

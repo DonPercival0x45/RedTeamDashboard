@@ -8,6 +8,8 @@ untouched).
 from __future__ import annotations
 
 import uuid
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from sqlalchemy.orm import Session
@@ -21,7 +23,11 @@ from app.models import (
     User,
     UserRole,
 )
-from app.services.agent_model_resolver import resolve_model_for_mode
+from app.services.agent_model_resolver import (
+    resolve_llm_for_mode,
+    resolve_model_for_mode,
+    resolve_model_for_mode_with_default,
+)
 
 
 @pytest.fixture()
@@ -130,3 +136,71 @@ def test_bare_model_string_infers_provider(db: Session, user: User, engagement: 
     )
 
     assert result == ("anthropic", "claude-sonnet-4")
+
+
+def test_unknown_bare_model_keeps_name_and_uses_default_provider(
+    db: Session,
+    user: User,
+    engagement: Engagement,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _pref(db, user, engagement, AgentPromptMode.analysis, "bespoke-model")
+    monkeypatch.setattr(
+        "app.orchestrator.llm.default_provider_model",
+        lambda: ("custom", "process-default-model"),
+    )
+
+    result = resolve_model_for_mode_with_default(
+        db,
+        user_id=user.id,
+        engagement_id=engagement.id,
+        mode=AgentPromptMode.analysis,
+    )
+
+    assert result == ("custom", "bespoke-model")
+
+
+def test_llm_builder_uses_mode_preference_and_acting_user_key(
+    db: Session,
+    user: User,
+    engagement: Engagement,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _pref(db, user, engagement, AgentPromptMode.analysis, "openai:gpt-4o-mini")
+    llm = object()
+    captured: dict[str, Any] = {}
+    redis_client = object()
+
+    def resolve_key(redis: object, **kwargs: Any) -> SimpleNamespace:
+        captured["redis"] = redis
+        captured["key_kwargs"] = kwargs
+        return SimpleNamespace(api_key="secret", endpoint="https://models.example/v1")
+
+    def make_model(provider: str, model: str, **kwargs: Any) -> object:
+        captured["model_args"] = (provider, model)
+        captured["model_kwargs"] = kwargs
+        return llm
+
+    monkeypatch.setattr(
+        "app.services.ephemeral_provider_key.resolve_for_user", resolve_key
+    )
+    monkeypatch.setattr("app.agents.strategic._make_chat_model", make_model)
+
+    result = resolve_llm_for_mode(
+        db,
+        redis_client=redis_client,
+        user_id=user.id,
+        engagement_id=engagement.id,
+        mode=AgentPromptMode.analysis,
+    )
+
+    assert result == (llm, "openai", "gpt-4o-mini")
+    assert captured == {
+        "redis": redis_client,
+        "key_kwargs": {"user_id": user.id, "provider": "openai"},
+        "model_args": ("openai", "gpt-4o-mini"),
+        "model_kwargs": {
+            "api_key": "secret",
+            "endpoint": "https://models.example/v1",
+        },
+    }

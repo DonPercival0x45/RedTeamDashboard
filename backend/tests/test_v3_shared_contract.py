@@ -208,11 +208,13 @@ def test_collection_job_completed_builder_shape() -> None:
         asset_class="domain",
         scope_subset=["scope-1", "scope-2"],
         findings_summary={"new": 3, "unvalidated": 1, "high_severity": 1, "total": 5},
+        acting_user_id="user-1",
     )
     assert env["type"] == ms.COLLECTION_JOB_COMPLETED
     assert env["engagement_id"] == "eng-1"
     assert env["node_ids"] == ["recon.passive.subdomains", "recon.passive.cert"]
     assert env["findings_summary"]["new"] == 3
+    assert env["acting_user_id"] == "user-1"
     # No free text in the rollup — counts only, so B3 decides significance cheaply.
     assert set(env["findings_summary"]) == {"new", "unvalidated", "high_severity", "total"}
 
@@ -224,9 +226,11 @@ def test_coverage_gap_opened_builder_shape() -> None:
         node_tier="baseline",
         asset_class="ip",
         reason="unsatisfied for 10.0.0.0/24",
+        acting_user_id="user-1",
     )
     assert env["type"] == ms.COVERAGE_GAP_OPENED
     assert env["node_tier"] == "baseline"
+    assert env["acting_user_id"] == "user-1"
 
 
 def test_coverage_status_stale_is_stored_lapse() -> None:
@@ -246,6 +250,8 @@ def test_baseline_completed_builder_shape() -> None:
         engagement_id="eng-1",
         methodology_id="meth-1",
         baseline_completed_at="2026-07-22T00:00:00Z",
+        acting_user_id="user-1",
     )
     assert env["type"] == ms.BASELINE_COMPLETED
     assert env["baseline_completed_at"] == "2026-07-22T00:00:00Z"
+    assert env["acting_user_id"] == "user-1"
