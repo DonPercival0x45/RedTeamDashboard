@@ -74,8 +74,15 @@ class CoverageRecord(Base, TimestampMixin):
         nullable=False,
         index=True,
     )
-    # Plain UUID until A1 (methodology catalog) lands; refined to a real FK then.
-    methodology_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    # v3 A1 — refined from the pre-A1 plain-UUID column to a real FK. Still
+    # nullable so pre-A1 engagements (and any coverage records recorded before
+    # a methodology was selected) don't fail insert; ``mark_baseline_completed``
+    # in the coverage service requires it non-null at emit time.
+    methodology_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("methodologies.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     # Methodology coverage-node id (Track A vocabulary) + the asset class it
     # was run against (domain / ip / cidr / url / …). Strings, not FKs, so this
     # table is decoupled from A1's methodology schema.

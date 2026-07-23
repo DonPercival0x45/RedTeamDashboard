@@ -80,6 +80,7 @@ from app.models.memory import (
     MemoryStatus,
     MemoryTier,
 )
+from app.models.methodology import Methodology, MethodologyNode, snapshot_payload
 from app.models.observation import Observation
 from app.models.observation_finding_link import ObservationFindingLink
 from app.models.processing_receipt import ProcessingReceipt, ProcessingReceiptStatus
@@ -165,6 +166,8 @@ __all__ = [
     "MemoryLinkTargetType",
     "MemoryStatus",
     "MemoryTier",
+    "Methodology",
+    "MethodologyNode",
     "ObjectivePriority",
     "ObjectiveStatus",
     "Observation",
@@ -208,4 +211,5 @@ __all__ = [
     "WorkItemResultState",
     "WorkItemStatus",
     "scope_satisfies",
+    "snapshot_payload",
 ]

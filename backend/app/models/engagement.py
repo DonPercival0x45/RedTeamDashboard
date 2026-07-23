@@ -3,9 +3,10 @@ from __future__ import annotations
 import enum
 import uuid
 from datetime import date, datetime
+from typing import Any
 
 from sqlalchemy import Boolean, Date, DateTime, Enum, ForeignKey, Integer, String, Text
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, TimestampMixin, uuid7
@@ -100,5 +101,19 @@ class Engagement(Base, TimestampMixin):
         index=True,
     )
     baseline_completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    # v3 A1 — the methodology this engagement selected. FK is nullable for
+    # legacy engagements that pre-date A1 + for engagements still on the
+    # v1/pre-methodology setup wizard. Once selected, the tree is frozen into
+    # ``methodology_snapshot`` — later catalog edits can't shift coverage
+    # under an in-flight engagement (architecture-v2-plan §2a).
+    methodology_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("methodologies.id", ondelete="SET NULL"),
+        index=True,
+    )
+    methodology_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    methodology_selected_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True)
     )
