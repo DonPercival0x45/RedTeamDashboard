@@ -45,6 +45,16 @@ EVENT_TYPES = frozenset(
         "strategy.reassess.requested",
         "run.completed",
         "run.errored",
+        # v3 shared contract (PR 0) — engagement-level milestones emitted by
+        # Track A (collection plane) and consumed by Track B (intelligence
+        # plane's milestone runner). Payload shapes live in
+        # ``app.engagement.milestones``; these get published to
+        # ``runs:{engagement_id}:events`` via the same durable outbox as the
+        # per-run events above (thread_id is optional on these — they're
+        # engagement-scoped, not run-scoped).
+        "collection.job.completed",
+        "coverage.gap.opened",
+        "baseline.completed",
     }
 )
 
