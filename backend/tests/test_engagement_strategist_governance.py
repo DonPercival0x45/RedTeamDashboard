@@ -20,6 +20,7 @@ from app.models import (
     ConversationContextType,
     ConversationMessage,
     Engagement,
+    EngagementArchitecture,
     EngagementStatus,
     EngagementWorkState,
     Finding,
@@ -80,6 +81,33 @@ def _injected_finding(db: Session, engagement: Engagement) -> Finding:
     db.commit()
     db.refresh(row)
     return row
+
+
+def test_v3_engagement_rejects_new_legacy_strategist_calls(
+    client: TestClient, db: Session, engagement: Engagement
+) -> None:
+    engagement.intelligence_architecture = EngagementArchitecture.v3
+    db.commit()
+    headers = {"X-User-Id": "v3-legacy-guard@example.com"}
+
+    generated = client.post(
+        f"/engagements/{engagement.slug}/strategy/generate-initial",
+        headers=headers,
+    )
+    chatted = client.post(
+        f"/engagements/{engagement.slug}/strategy/chat",
+        json={"message": "run the legacy strategist"},
+        headers=headers,
+    )
+    history = client.get(
+        f"/engagements/{engagement.slug}/strategy/chat",
+        headers=headers,
+    )
+
+    assert generated.status_code == 409
+    assert chatted.status_code == 409
+    assert "legacy Engagement Strategist calls are retired" in generated.text
+    assert history.status_code == 200
 
 
 def test_dossier_hash_is_stable_and_injected_record_remains_bounded_data(
