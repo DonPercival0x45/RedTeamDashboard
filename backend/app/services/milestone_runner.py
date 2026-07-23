@@ -29,17 +29,24 @@ from dataclasses import dataclass
 from typing import Any
 
 import structlog
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.agents.intelligence import (
+    build_intelligence_context,
+    fingerprint_intelligence_context,
     record_intelligence_failure,
     run_intelligence_analysis,
 )
-from app.models import AgentExecutionStatus, AgentTrigger
+from app.models import (
+    AgentExecution,
+    AgentExecutionStatus,
+    AgentName,
+    AgentTrigger,
+)
 from app.models.agent_mode_model_preference import AgentPromptMode
-from app.services.engagement_rollup import significant_finding_ids
+from app.services.engagement_rollup import significant_finding_batch
 from app.services.memory import compact as compact_memory
 from app.services.memory import hot_token_total
 
@@ -61,6 +68,49 @@ def milestone_mode(milestone_type: str) -> AgentPromptMode | None:
     return MILESTONE_MODES.get(milestone_type)
 
 
+def _completed_analysis_batch_exists(
+    session: Session,
+    *,
+    engagement_id: uuid.UUID,
+    fingerprint: str,
+) -> bool:
+    """Whether automatic analysis already completed for this finding state."""
+    return session.scalar(
+        select(AgentExecution.id)
+        .where(
+            AgentExecution.engagement_id == engagement_id,
+            AgentExecution.agent == AgentName.engagement_strategist,
+            AgentExecution.trigger == AgentTrigger.tick,
+            AgentExecution.status == AgentExecutionStatus.completed,
+            AgentExecution.input["mode"].astext == AgentPromptMode.analysis.value,
+            AgentExecution.input["significant_batch_fingerprint"].astext
+            == fingerprint,
+        )
+        .limit(1)
+    ) is not None
+
+
+def _completed_context_exists(
+    session: Session,
+    *,
+    engagement_id: uuid.UUID,
+    mode: AgentPromptMode,
+    fingerprint: str,
+) -> bool:
+    return session.scalar(
+        select(AgentExecution.id)
+        .where(
+            AgentExecution.engagement_id == engagement_id,
+            AgentExecution.agent == AgentName.engagement_strategist,
+            AgentExecution.trigger == AgentTrigger.tick,
+            AgentExecution.status == AgentExecutionStatus.completed,
+            AgentExecution.input["mode"].astext == mode.value,
+            AgentExecution.input["context_fingerprint"].astext == fingerprint,
+        )
+        .limit(1)
+    ) is not None
+
+
 def handle_milestone(
     session: Session,
     *,
@@ -71,6 +121,7 @@ def handle_milestone(
     llm_factory: Callable[[], tuple[Any, str, str]] | None = None,
     since: Any = None,
     thread_id: uuid.UUID | None = None,
+    milestone_payload: dict[str, Any] | None = None,
 ) -> tuple[Any, Any] | None:
     """React to a milestone: gather significant findings, invoke the agent once.
 
@@ -85,15 +136,47 @@ def handle_milestone(
     if mode is None:
         return None
 
+    # Enforce serialization here as well as in run_milestone_cycle so any
+    # future direct caller cannot race the read-then-invoke fingerprint check.
+    # The transaction-scoped lock is re-entrant for the cycle's existing lock
+    # and remains held through the caller's commit/rollback.
+    acquire_engagement_memory_lock(session, engagement_id)
+
+    batch: dict[str, Any] | None = None
     if mode in _ANALYSIS_MODES:
-        significant = significant_finding_ids(
+        batch = significant_finding_batch(
             session,
             engagement_id=engagement_id,
             since=since,
             thread_id=thread_id,
         )
-        if not significant:
+        if batch["total"] == 0:
             return None  # nothing significant -> no invocation
+        if _completed_analysis_batch_exists(
+            session,
+            engagement_id=engagement_id,
+            fingerprint=batch["fingerprint"],
+        ):
+            logger.info(
+                "intelligence.unchanged_batch_skipped",
+                engagement_id=str(engagement_id),
+                milestone_type=milestone_type,
+                significant_count=batch["total"],
+                fingerprint=batch["fingerprint"],
+            )
+            return None
+
+    context = build_intelligence_context(
+        session,
+        engagement_id=engagement_id,
+        since=since,
+        thread_id=thread_id,
+        significant_batch=batch,
+        milestone={
+            "type": milestone_type,
+            "payload": milestone_payload or {},
+        },
+    )
 
     model_provider: str | None = None
     model_name: str | None = None
@@ -113,6 +196,8 @@ def handle_milestone(
         model_provider=model_provider,
         model_name=model_name,
         trigger=AgentTrigger.tick,
+        significant_batch=batch,
+        context=context,
     )
     if result[1].status is AgentExecutionStatus.failed:
         raise RuntimeError(
@@ -155,6 +240,7 @@ def run_milestone_cycle(
     coverage_review_llm_factory: Callable[[], tuple[Any, str, str]],
     since: Any = None,
     thread_id: uuid.UUID | None = None,
+    milestone_payload: dict[str, Any] | None = None,
 ) -> MilestoneCycleResult:
     """Run primary intelligence, deterministic compaction, then B5 review.
 
@@ -173,43 +259,70 @@ def run_milestone_cycle(
         llm_factory=llm_factory,
         since=since,
         thread_id=thread_id,
+        milestone_payload=milestone_payload,
     )
     compaction = compact_memory(session, engagement_id=engagement_id)
     coverage_review: tuple[Any, Any] | None = None
 
     if compaction["still_over_budget"]:
-        try:
-            llm, provider, model_name = coverage_review_llm_factory()
-        except SQLAlchemyError:
-            raise
-        except Exception as exc:  # noqa: BLE001 - persist setup failure, do not replay primary
-            execution = record_intelligence_failure(
-                session,
-                engagement_id=engagement_id,
-                mode=AgentPromptMode.coverage_review,
-                acting_user_id=acting_user_id,
-                error=exc,
-            )
-            coverage_review = (None, execution)
-            logger.warning(
-                "intelligence.coverage_review_setup_failed",
+        review_context = build_intelligence_context(
+            session,
+            engagement_id=engagement_id,
+            since=since,
+            thread_id=thread_id,
+            milestone={
+                "type": "maintenance.coverage_review",
+                "payload": {},
+            },
+        )
+        review_fingerprint = fingerprint_intelligence_context(review_context)
+        review_already_completed = _completed_context_exists(
+            session,
+            engagement_id=engagement_id,
+            mode=AgentPromptMode.coverage_review,
+            fingerprint=review_fingerprint,
+        )
+        if review_already_completed:
+            logger.info(
+                "intelligence.unchanged_coverage_review_skipped",
                 engagement_id=str(engagement_id),
-                error=str(exc),
+                fingerprint=review_fingerprint,
             )
         else:
-            coverage_review = run_intelligence_analysis(
-                session,
-                engagement_id=engagement_id,
-                mode=AgentPromptMode.coverage_review,
-                acting_user_id=acting_user_id,
-                llm=llm,
-                model_provider=provider,
-                model_name=model_name,
-                trigger=AgentTrigger.tick,
-            )
+            try:
+                llm, provider, model_name = coverage_review_llm_factory()
+            except SQLAlchemyError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - persist setup failure, do not replay primary
+                execution = record_intelligence_failure(
+                    session,
+                    engagement_id=engagement_id,
+                    mode=AgentPromptMode.coverage_review,
+                    acting_user_id=acting_user_id,
+                    error=exc,
+                )
+                coverage_review = (None, execution)
+                logger.warning(
+                    "intelligence.coverage_review_setup_failed",
+                    engagement_id=str(engagement_id),
+                    error=str(exc),
+                )
+            else:
+                coverage_review = run_intelligence_analysis(
+                    session,
+                    engagement_id=engagement_id,
+                    mode=AgentPromptMode.coverage_review,
+                    acting_user_id=acting_user_id,
+                    llm=llm,
+                    model_provider=provider,
+                    model_name=model_name,
+                    trigger=AgentTrigger.tick,
+                    context=review_context,
+                )
 
         compaction = dict(compaction)
         compaction["token_after_review"] = hot_token_total(session, engagement_id)
+        compaction["coverage_review_skipped_unchanged"] = review_already_completed
         if coverage_review is not None:
             execution = coverage_review[1]
             compaction["coverage_review_execution_id"] = str(execution.id)

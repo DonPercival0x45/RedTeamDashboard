@@ -38,7 +38,10 @@ from app.models import (
 from app.runs.streams import outbound_stream
 from app.services.command_outbox import publish_entry
 from app.services.engagement_strategist import acquire_auto_reassess_cooldown, stage_auto_reassess
-from app.worker.strategic_consumer import StrategicConsumer
+from app.worker.strategic_consumer import (
+    StrategicConsumer,
+    _milestone_context_payload,
+)
 
 
 @pytest.fixture()
@@ -129,6 +132,42 @@ def _consumer(redis_client: FakeRedis) -> StrategicConsumer:
 def _enable_v3(db: Session, engagement: Engagement) -> None:
     engagement.intelligence_architecture = EngagementArchitecture.v3
     db.commit()
+
+
+def test_milestone_context_payload_is_allowlisted_and_bounded() -> None:
+    coverage = _milestone_context_payload(
+        "coverage.gap.opened",
+        {
+            "node_id": "n" * 300,
+            "asset_class": "domain",
+            "reason": "r" * 1200,
+            "provider_key": "must-not-pass",
+        },
+    )
+    assert len(coverage["node_id"]) == 200
+    assert len(coverage["reason"]) == 1000
+    assert "provider_key" not in coverage
+
+    collection = _milestone_context_payload(
+        "collection.job.completed",
+        {
+            "playbook_run_id": str(uuid.uuid4()),
+            "findings_summary": {
+                **{f"count-{index}": index for index in range(25)},
+                "not-a-count": "ignored",
+            },
+            "scope_subset": ["must-not-pass"],
+        },
+    )
+    assert len(collection["findings_summary"]) == 20
+    assert "not-a-count" not in collection["findings_summary"]
+    assert "scope_subset" not in collection
+
+    baseline = _milestone_context_payload(
+        "baseline.completed", {"methodology_id": "m" * 200}
+    )
+    assert len(baseline["methodology_id"]) == 100
+    assert _milestone_context_payload("unknown", {"secret": "no"}) == {}
 
 
 def test_resolution_commits_event_when_immediate_redis_publish_fails(
@@ -486,7 +525,9 @@ def test_v3_cutover_routes_run_completed_to_milestone_hook(
     consumer = _consumer(redis_client)
     thread_id = uuid.uuid4()
     actor_id = uuid.uuid4()
-    calls: list[tuple[uuid.UUID, uuid.UUID, uuid.UUID | None]] = []
+    calls: list[
+        tuple[uuid.UUID, uuid.UUID, uuid.UUID | None, dict[str, Any] | None]
+    ] = []
 
     def record(
         _session: Session,
@@ -494,8 +535,11 @@ def test_v3_cutover_routes_run_completed_to_milestone_hook(
         engagement_id: uuid.UUID,
         thread_id: uuid.UUID,
         acting_user_id: uuid.UUID | None,
+        milestone_payload: dict[str, Any] | None,
     ) -> None:
-        calls.append((engagement_id, thread_id, acting_user_id))
+        calls.append(
+            (engagement_id, thread_id, acting_user_id, milestone_payload)
+        )
 
     monkeypatch.setattr(consumer, "_v3_analyze_on_run", record)
     consumer._process_one(
@@ -513,7 +557,14 @@ def test_v3_cutover_routes_run_completed_to_milestone_hook(
         },
     )
 
-    assert calls == [(engagement.id, thread_id, actor_id)]
+    assert calls == [
+        (
+            engagement.id,
+            thread_id,
+            actor_id,
+            {"thread_id": str(thread_id)},
+        )
+    ]
     assert len(redis_client.acked) == 1
 
 
@@ -533,6 +584,7 @@ def test_v3_cutover_routes_engagement_milestones(
     consumer = _consumer(redis_client)
     actor_id = uuid.uuid4()
     playbook_run_id = uuid.uuid4()
+    methodology_id = uuid.uuid4()
     calls: list[dict[str, Any]] = []
 
     def record(_session: Session, **kwargs: Any) -> None:
@@ -550,9 +602,18 @@ def test_v3_cutover_routes_engagement_milestones(
                     "engagement_id": str(engagement.id),
                     "acting_user_id": str(actor_id),
                     **(
-                        {"playbook_run_id": str(playbook_run_id)}
+                        {
+                            "playbook_run_id": str(playbook_run_id),
+                            "findings_summary": {"new": 2},
+                        }
                         if event_type == "collection.job.completed"
-                        else {}
+                        else {
+                            "node_id": "dns-enumeration",
+                            "asset_class": "domain",
+                            "reason": "coverage stale",
+                        }
+                        if event_type == "coverage.gap.opened"
+                        else {"methodology_id": str(methodology_id)}
                     ),
                 }
             )
@@ -568,6 +629,20 @@ def test_v3_cutover_routes_engagement_milestones(
                 playbook_run_id
                 if event_type == "collection.job.completed"
                 else None
+            ),
+            "milestone_payload": (
+                {
+                    "playbook_run_id": str(playbook_run_id),
+                    "findings_summary": {"new": 2},
+                }
+                if event_type == "collection.job.completed"
+                else {
+                    "node_id": "dns-enumeration",
+                    "asset_class": "domain",
+                    "reason": "coverage stale",
+                }
+                if event_type == "coverage.gap.opened"
+                else {"methodology_id": str(methodology_id)}
             ),
         }
     ]
@@ -642,6 +717,7 @@ def test_v3_run_hook_resolves_actor_llm_and_milestone(
             "primary_llm": (llm, "test", "test-model"),
             "coverage_review_llm": (llm, "test", "test-model"),
             "thread_id": thread_id,
+            "milestone_payload": None,
         }
     ]
 

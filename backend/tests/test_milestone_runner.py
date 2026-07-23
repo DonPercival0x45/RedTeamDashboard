@@ -144,6 +144,49 @@ def test_analysis_milestone_fires_when_significant_findings_exist(
     assert llm.invoked is True  # the agent was actually called
 
 
+def test_analysis_milestone_skips_unchanged_completed_batch(
+    db: Session, engagement: Engagement, user: User
+) -> None:
+    finding = _finding(db, engagement, severity=Severity.high)
+    calls = 0
+
+    def llm_factory() -> tuple[FakeLLM, str, str]:
+        nonlocal calls
+        calls += 1
+        return FakeLLM(AnalysisOutput()), "test-provider", "test-model"
+
+    first = handle_milestone(
+        db,
+        engagement_id=engagement.id,
+        milestone_type="run.completed",
+        acting_user_id=user.id,
+        llm_factory=llm_factory,
+    )
+    duplicate = handle_milestone(
+        db,
+        engagement_id=engagement.id,
+        milestone_type="collection.job.completed",
+        acting_user_id=user.id,
+        llm_factory=llm_factory,
+    )
+
+    assert first is not None
+    assert duplicate is None
+    assert calls == 1
+
+    finding.severity = Severity.critical
+    db.flush()
+    changed = handle_milestone(
+        db,
+        engagement_id=engagement.id,
+        milestone_type="run.completed",
+        acting_user_id=user.id,
+        llm_factory=llm_factory,
+    )
+    assert changed is not None
+    assert calls == 2
+
+
 def test_analysis_milestone_skips_when_nothing_significant(
     db: Session, engagement: Engagement, user: User
 ) -> None:
@@ -297,6 +340,12 @@ def test_cycle_over_budget_runs_coverage_review_with_exact_model(
         "compact_memory",
         lambda *_a, **_k: {"still_over_budget": True, "moved_count": 0},
     )
+    monkeypatch.setattr(
+        runner, "build_intelligence_context", lambda *_a, **_k: {"stable": True}
+    )
+    monkeypatch.setattr(
+        runner, "_completed_context_exists", lambda *_a, **_k: False
+    )
 
     def analyze(*_args: Any, **kwargs: Any) -> tuple[str, Any]:
         calls.append(("coverage", kwargs))
@@ -325,6 +374,42 @@ def test_cycle_over_budget_runs_coverage_review_with_exact_model(
     assert result.compaction["coverage_review_status"] == "completed"
 
 
+def test_cycle_over_budget_skips_unchanged_completed_coverage_review(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _CycleSession([])
+    monkeypatch.setattr(runner, "handle_milestone", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        runner,
+        "compact_memory",
+        lambda *_a, **_k: {"still_over_budget": True, "moved_count": 0},
+    )
+    monkeypatch.setattr(
+        runner, "build_intelligence_context", lambda *_a, **_k: {"stable": True}
+    )
+    monkeypatch.setattr(
+        runner, "_completed_context_exists", lambda *_a, **_k: True
+    )
+    monkeypatch.setattr(runner, "hot_token_total", lambda *_a, **_k: 99)
+
+    result = run_milestone_cycle(
+        session,  # type: ignore[arg-type]
+        engagement_id=uuid.uuid4(),
+        milestone_type="run.completed",
+        acting_user_id=uuid.uuid4(),
+        llm_factory=lambda: (_ for _ in ()).throw(
+            AssertionError("duplicate primary must remain lazy")
+        ),
+        coverage_review_llm_factory=lambda: (_ for _ in ()).throw(
+            AssertionError("unchanged review must not resolve an LLM")
+        ),
+    )
+
+    assert result.coverage_review is None
+    assert result.compaction["coverage_review_skipped_unchanged"] is True
+    assert result.compaction["token_after_review"] == 99
+
+
 def test_cycle_records_coverage_setup_failure_without_replaying_primary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -342,6 +427,12 @@ def test_cycle_records_coverage_setup_failure_without_replaying_primary(
         runner,
         "compact_memory",
         lambda *_a, **_k: {"still_over_budget": True, "moved_count": 0},
+    )
+    monkeypatch.setattr(
+        runner, "build_intelligence_context", lambda *_a, **_k: {"stable": True}
+    )
+    monkeypatch.setattr(
+        runner, "_completed_context_exists", lambda *_a, **_k: False
     )
     monkeypatch.setattr(
         runner,

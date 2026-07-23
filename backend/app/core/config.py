@@ -235,6 +235,11 @@ class Settings(BaseSettings):
     # token_estimate across an engagement's HOT memory elements. Exceeding it
     # makes a compaction pass eligible on the next milestone (never mid-run).
     hot_memory_token_budget: int = 10000
+    # v3 prompt guard for significant-finding evidence. Memory and findings
+    # have separate ceilings so a large scanner import cannot crowd the entire
+    # prompt or create an unbounded automatic-analysis bill.
+    intelligence_finding_token_budget: int = 4000
+    intelligence_max_significant_findings: int = 50
     # Deterministic-compaction staleness windows (agent-driven folds are
     # separate). Threads with no activity for this many days demote hot->cold;
     # low-confidence facts not referenced within the window demote too.

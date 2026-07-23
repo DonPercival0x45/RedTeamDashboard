@@ -51,10 +51,12 @@ def _finding(
     phase: FindingPhase = FindingPhase.osint,
     created_at: datetime | None = None,
     deleted: bool = False,
+    summary: str | None = None,
 ) -> Finding:
     f = Finding(
         engagement_id=engagement.id,
         title=f"finding-{uuid.uuid4().hex[:6]}",
+        summary=summary,
         target="example.com",
         severity=severity,
         status=status,
@@ -215,6 +217,79 @@ def test_significant_finding_ids_excludes_soft_deleted(db: Session, engagement: 
     ids = rollup.significant_finding_ids(db, engagement_id=engagement.id)
 
     assert ids == [live.id]
+
+
+def test_significant_finding_batch_is_bounded_prioritized_and_fingerprinted(
+    db: Session, engagement: Engagement
+) -> None:
+    low = _finding(
+        db,
+        engagement,
+        severity=Severity.low,
+        status=FindingStatus.pending_validation,
+        summary="low evidence " * 100,
+    )
+    critical = _finding(
+        db,
+        engagement,
+        severity=Severity.critical,
+        status=FindingStatus.pending_validation,
+        summary="critical evidence " * 100,
+    )
+    _finding(
+        db,
+        engagement,
+        severity=Severity.high,
+        status=FindingStatus.pending_validation,
+        summary="high evidence " * 100,
+    )
+
+    first = rollup.significant_finding_batch(
+        db,
+        engagement_id=engagement.id,
+        token_budget=250,
+        max_items=2,
+    )
+
+    assert first["total"] == 3
+    assert first["included"] < first["total"]
+    assert first["capped"] is True
+    assert first["items"][0]["id"] == str(critical.id)
+    assert first["token_estimate"] <= 250 or first["included"] == 1
+    assert "details" not in first["items"][0]
+    assert len(first["items"][0]["summary"]) <= 600
+
+    low.severity = Severity.critical
+    db.flush()
+    changed = rollup.significant_finding_batch(
+        db,
+        engagement_id=engagement.id,
+        token_budget=250,
+        max_items=2,
+    )
+    assert changed["fingerprint"] != first["fingerprint"]
+
+
+def test_significant_finding_batch_is_engagement_scoped(
+    db: Session, engagement: Engagement
+) -> None:
+    other = Engagement(
+        name="Other Rollup",
+        slug=f"other-roll-{uuid.uuid4().hex[:8]}",
+        status=EngagementStatus.active,
+        work_state=EngagementWorkState.active,
+    )
+    db.add(other)
+    db.flush()
+    own = _finding(db, engagement, severity=Severity.high)
+    _finding(db, other, severity=Severity.critical)
+
+    batch = rollup.significant_finding_batch(
+        db, engagement_id=engagement.id
+    )
+
+    assert batch["total"] == 1
+    assert [item["id"] for item in batch["items"]] == [str(own.id)]
 
 
 # ---------------------------------------------------------------------------
