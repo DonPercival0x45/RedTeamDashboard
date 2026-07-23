@@ -734,6 +734,28 @@ def create_engagement(
 ) -> EngagementRead:
     base_slug = _slugify(body.slug) if body.slug else _slugify(body.name)
     slug = _unique_slug(session, base_slug)
+    # v3 Convergence C6c: resolve the new-engagement default. Explicit body
+    # value always wins. When the caller omitted the field (None), fall back
+    # to ``settings.default_intelligence_architecture`` (v3 post-C6c). If the
+    # resolved target is v3 but the caller didn't hand us a methodology, the
+    # engagement can't be v3 (needs a snapshot) — silently downshift to
+    # legacy so we preserve API compat with callers that omit both fields.
+    from app.core.config import settings as _config_settings
+
+    if body.intelligence_architecture is not None:
+        resolved_architecture = body.intelligence_architecture
+    else:
+        try:
+            resolved_architecture = EngagementArchitecture(
+                _config_settings.default_intelligence_architecture
+            )
+        except ValueError:
+            resolved_architecture = EngagementArchitecture.legacy
+        if (
+            resolved_architecture is EngagementArchitecture.v3
+            and body.methodology_slug is None
+        ):
+            resolved_architecture = EngagementArchitecture.legacy
     eng = Engagement(
         name=body.name,
         slug=slug,
@@ -743,7 +765,7 @@ def create_engagement(
         start_date=body.start_date,
         end_date=body.end_date,
         created_by=user.id,
-        intelligence_architecture=body.intelligence_architecture,
+        intelligence_architecture=resolved_architecture,
     )
     session.add(eng)
     try:

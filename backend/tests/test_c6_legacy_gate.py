@@ -350,6 +350,79 @@ def test_analyze_endpoint_toggle_off_passes_gate_on_v3(
 
 
 # ---------------------------------------------------------------------------
+# C6c: new-engagement default architecture
+# ---------------------------------------------------------------------------
+
+
+def test_new_engagement_defaults_to_v3_when_methodology_provided(
+    client: TestClient, user: User
+) -> None:
+    """C6c: caller supplies methodology_slug but omits intelligence_architecture
+    → resolves to v3 (the new default)."""
+    resp = client.post(
+        "/engagements",
+        headers={"X-User-Id": user.email},
+        json={
+            "name": "c6c v3 default",
+            "methodology_slug": "osint-minimal",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["intelligence_architecture"] == "v3"
+
+
+def test_new_engagement_defaults_to_legacy_without_methodology(
+    client: TestClient, user: User
+) -> None:
+    """C6c compat fallback: v3 needs a methodology snapshot. If the caller
+    omits both fields, we silently downshift to legacy so old callers keep
+    working."""
+    resp = client.post(
+        "/engagements",
+        headers={"X-User-Id": user.email},
+        json={"name": "c6c fallback legacy"},
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["intelligence_architecture"] == "legacy"
+
+
+def test_new_engagement_explicit_legacy_still_honored(
+    client: TestClient, user: User
+) -> None:
+    """Callers who explicitly request legacy still get it, even with a
+    methodology (an opt-out from the C6c default)."""
+    resp = client.post(
+        "/engagements",
+        headers={"X-User-Id": user.email},
+        json={
+            "name": "c6c explicit legacy",
+            "intelligence_architecture": "legacy",
+            "methodology_slug": "osint-minimal",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["intelligence_architecture"] == "legacy"
+
+
+def test_new_engagement_toggle_off_defaults_to_legacy(
+    client: TestClient, user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Operator flips ``default_intelligence_architecture=legacy`` → new
+    engagements land on legacy even when methodology_slug is present."""
+    monkeypatch.setattr(settings, "default_intelligence_architecture", "legacy")
+    resp = client.post(
+        "/engagements",
+        headers={"X-User-Id": user.email},
+        json={
+            "name": "c6c toggle off",
+            "methodology_slug": "osint-minimal",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["intelligence_architecture"] == "legacy"
+
+
+# ---------------------------------------------------------------------------
 # C6b: services/suggestion_router + services/finding_chat catch branches
 #
 # The exception fires from Tactical.dispatch (covered by the C6a tests above);
