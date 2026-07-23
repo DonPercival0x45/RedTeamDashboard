@@ -236,6 +236,12 @@ class Settings(BaseSettings):
     # A fact below this confidence is eligible for staleness demotion (only
     # when also unreferenced past memory_fact_stale_days).
     memory_low_confidence_threshold: float = 0.5
+    # v3 B4-3 cutover: when True, the strategic consumer routes analysis
+    # through the v3 milestone runner (B3) instead of the v1 per-finding
+    # Strategic consumer — finding.created/strategy.reassess.requested are
+    # skipped, run.completed fires gather-then-analyze, and work-item resolve
+    # does not stage auto-reassess. Default OFF: v1 paths stay live until flipped.
+    v3_intelligence_enabled: bool = False
 
 
 settings = Settings()

@@ -631,7 +631,11 @@ class RunRunner:
             self._finalize_task_for_run(thread_id, succeeded=True)
             self._emit(
                 engagement_id,
-                {"type": "run.completed", "thread_id": thread_id},
+                {
+                    "type": "run.completed",
+                    "thread_id": thread_id,
+                    "acting_user_id": acting_user_id,
+                },
             )
             self._finalize_tactical_execution(engagement_id, thread_id, totals)
         else:

@@ -15,7 +15,7 @@ Outbound (published to ``runs:{eid}:events``):
                           tool_call_count, tool_calls, content_preview }
 - ``finding.created``   { thread_id, tool, args, data, target, severity, title, finding_id }
 - ``strategy.reassess.requested`` { engagement_id, work_item_id, acting_user_id }
-- ``run.completed``     { thread_id }
+- ``run.completed``     { thread_id, acting_user_id? }
 - ``run.errored``       { thread_id, error }
 
 Wire format on Redis is a single ``data`` field containing the JSON-encoded
