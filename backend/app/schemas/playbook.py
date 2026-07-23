@@ -95,3 +95,43 @@ class PlaybookApprovalPayload(BaseModel):
     """
 
     reason: str | None = None
+
+
+class PlaybookCreatePayload(BaseModel):
+    """Request body for POST /playbooks — analyst-authored catalog entry."""
+
+    slug: str = Field(min_length=1, max_length=120)
+    name: str = Field(min_length=1, max_length=200)
+    applies_to_asset_class: str = Field(min_length=1, max_length=80)
+    description: str | None = None
+    active: bool = False
+
+
+class PlaybookPatchPayload(BaseModel):
+    """Request body for PATCH /playbooks/{slug}. All fields optional so
+    partial updates carry only what changed."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = None
+    applies_to_asset_class: str | None = Field(default=None, min_length=1, max_length=80)
+    active: bool | None = None
+
+
+class PlaybookStepCreatePayload(BaseModel):
+    """Request body for POST /playbooks/{slug}/steps."""
+
+    tool_slug: str = Field(min_length=1, max_length=120)
+    args_template: dict = Field(default_factory=dict)
+    satisfies_node_ids: list[str] = Field(default_factory=list)
+    sort_order: int | None = None
+    description: str | None = None
+
+
+class PlaybookStepPatchPayload(BaseModel):
+    """Request body for PATCH /playbooks/{slug}/steps/{step_id}."""
+
+    tool_slug: str | None = Field(default=None, min_length=1, max_length=120)
+    args_template: dict | None = None
+    satisfies_node_ids: list[str] | None = None
+    sort_order: int | None = None
+    description: str | None = None

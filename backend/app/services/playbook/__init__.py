@@ -1,5 +1,17 @@
-"""Playbook execution plane — Track A steps A3a / A3b / A3c."""
-from app.services.playbook.catalog import get_by_slug, load_seed_playbooks
+"""Playbook execution plane — Track A steps A3a / A3b / A3c / A4 / A5 / A5b."""
+from app.services.playbook.catalog import (
+    PlaybookHasRunsError,
+    PlaybookSlugConflictError,
+    StepNotFoundError,
+    add_step,
+    create_playbook,
+    delete_playbook,
+    delete_step,
+    get_by_slug,
+    load_seed_playbooks,
+    update_playbook,
+    update_step,
+)
 from app.services.playbook.executor import (
     InternalExecutor,
     PlaybookExecutor,
@@ -20,16 +32,25 @@ from app.services.playbook.runner import (
 __all__ = [
     "InternalExecutor",
     "PlaybookExecutor",
+    "PlaybookHasRunsError",
+    "PlaybookSlugConflictError",
     "RunNotAwaitingApprovalError",
     "RunNotCancellableError",
+    "StepNotFoundError",
     "StepResult",
+    "add_step",
     "approve_run",
     "cancel_run",
     "claim_next_pending",
+    "create_playbook",
+    "delete_playbook",
+    "delete_step",
     "enqueue_run",
     "execute_pending_run",
     "get_by_slug",
     "load_seed_playbooks",
     "reject_run",
     "start_run",
+    "update_playbook",
+    "update_step",
 ]
