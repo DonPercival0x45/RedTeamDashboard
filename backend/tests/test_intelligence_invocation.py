@@ -120,6 +120,11 @@ def test_analysis_creates_memory_facts_and_hypotheses(
     db.flush()
 
     assert execution.status is AgentExecutionStatus.completed
+    assert execution.input["estimated_prompt_tokens"] > 0
+    assert len(execution.input["significant_batch_fingerprint"]) == 64
+    assert execution.input["significant_finding_count"] == 0
+    assert execution.output is not None
+    assert execution.output["estimated_response_tokens"] > 0
     facts = db.execute(
         select(MemoryElement).where(
             MemoryElement.engagement_id == engagement.id, MemoryElement.kind == MemoryKind.fact

@@ -16,12 +16,15 @@ matching the data-integrity enforcement already in main.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import uuid
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import case, exists, func, or_, select, true
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.models import (
     CoverageNodeTier,
     CoverageRecord,
@@ -31,6 +34,7 @@ from app.models import (
     FindingStatus,
     Severity,
 )
+from app.services.memory import estimate_tokens
 
 # Significance predicate (architecture-answers §B3): a finding is significant
 # if it's new (created since the last analysis), not yet validated, or high
@@ -133,6 +137,142 @@ def significant_finding_ids(
     )
     significant = new_ids | unvalidated_ids | high_ids
     return sorted(significant)
+
+
+def significant_finding_batch(
+    session: Session,
+    *,
+    engagement_id: uuid.UUID,
+    since: Any = None,
+    thread_id: uuid.UUID | None = None,
+    token_budget: int | None = None,
+    max_items: int | None = None,
+) -> dict[str, Any]:
+    """Return bounded finding evidence plus a stable automatic-run fingerprint.
+
+    IDs alone do not give the intelligence model evidence to analyze. This
+    projection includes only compact analyst-facing fields (never raw ``details``)
+    and stops at both an item ceiling and token estimate. Critical/high and
+    unvalidated findings sort first, then the most recently changed rows.
+
+    The fingerprint covers the included state, total significant count, and
+    latest update timestamp. A changed finding therefore produces a new batch,
+    while an unchanged pending/high finding cannot burn tokens on every later
+    milestone.
+    """
+    budget = max(
+        1,
+        settings.intelligence_finding_token_budget
+        if token_budget is None
+        else token_budget,
+    )
+    limit = max(
+        1,
+        settings.intelligence_max_significant_findings
+        if max_items is None
+        else max_items,
+    )
+    base = [
+        Finding.engagement_id == engagement_id,
+        Finding.deleted_at.is_(None),
+    ]
+    if thread_id is not None:
+        is_new = exists(
+            select(FindingOrigin.id).where(
+                FindingOrigin.finding_id == Finding.id,
+                FindingOrigin.thread_id == thread_id,
+            )
+        )
+    elif since is not None:
+        is_new = Finding.created_at >= since
+    else:
+        is_new = true()
+    significant = or_(
+        is_new,
+        Finding.status.in_(_UNVALIDATED),
+        Finding.severity.in_(_HIGH_SEVERITY),
+    )
+    total, latest_updated_at = session.execute(
+        select(func.count(Finding.id), func.max(Finding.updated_at)).where(
+            *base, significant
+        )
+    ).one()
+    severity_order = case(
+        (Finding.severity == Severity.critical, 0),
+        (Finding.severity == Severity.high, 1),
+        (Finding.severity == Severity.medium, 2),
+        (Finding.severity == Severity.low, 3),
+        else_=4,
+    )
+    validation_order = case(
+        (Finding.status.in_(_UNVALIDATED), 0),
+        else_=1,
+    )
+    rows = session.execute(
+        select(Finding, is_new.label("is_new"))
+        .where(*base, significant)
+        .order_by(
+            severity_order,
+            validation_order,
+            Finding.updated_at.desc(),
+            Finding.id,
+        )
+        .limit(limit)
+    ).all()
+
+    items: list[dict[str, Any]] = []
+    running_tokens = 0
+    for finding, row_is_new in rows:
+        item = {
+            "id": str(finding.id),
+            "title": finding.title[:300],
+            "summary": (finding.summary or "")[:600] or None,
+            "severity": finding.severity.value,
+            "status": finding.status.value,
+            "phase": finding.phase.value,
+            "target": (finding.target or "")[:300] or None,
+            "source_tool": finding.source_tool,
+            "tags": list((finding.tags or [])[:10]),
+            "is_new": bool(row_is_new),
+            "updated_at": finding.updated_at.isoformat(),
+        }
+        item_tokens = estimate_tokens(*item.values())
+        # Preserve a one-item evidence guarantee, matching the Memory projection.
+        # Production summaries are truncated above, so the default 4k budget
+        # still hard-bounds that first item; tiny test/operator budgets may
+        # intentionally report token_estimate > token_budget for this one row.
+        if items and running_tokens + item_tokens > budget:
+            break
+        items.append(item)
+        running_tokens += item_tokens
+
+    fingerprint_payload = {
+        "total": int(total or 0),
+        "latest_updated_at": (
+            latest_updated_at.isoformat() if latest_updated_at is not None else None
+        ),
+        "included": [
+            {
+                "id": item["id"],
+                "severity": item["severity"],
+                "status": item["status"],
+                "updated_at": item["updated_at"],
+            }
+            for item in items
+        ],
+    }
+    fingerprint = hashlib.sha256(
+        json.dumps(fingerprint_payload, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    return {
+        "items": items,
+        "total": int(total or 0),
+        "included": len(items),
+        "capped": len(items) < int(total or 0),
+        "token_estimate": running_tokens,
+        "token_budget": budget,
+        "fingerprint": fingerprint,
+    }
 
 
 def finding_counts(

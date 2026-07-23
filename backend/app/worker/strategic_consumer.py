@@ -75,6 +75,38 @@ SessionFactory = Callable[[], Session]
 STRATEGIC_GROUP = "strategic-watcher"
 
 
+def _milestone_context_payload(
+    event_type: str, envelope: dict[str, Any]
+) -> dict[str, Any]:
+    """Keep only bounded contract fields that are useful to intelligence."""
+    if event_type == "coverage.gap.opened":
+        return {
+            "node_id": str(envelope.get("node_id") or "")[:200],
+            "asset_class": str(envelope.get("asset_class") or "")[:120],
+            "reason": str(envelope.get("reason") or "")[:1000],
+        }
+    if event_type == "baseline.completed":
+        return {
+            "methodology_id": str(envelope.get("methodology_id") or "")[:100],
+        }
+    if event_type == "collection.job.completed":
+        raw_summary = envelope.get("findings_summary")
+        summary = raw_summary if isinstance(raw_summary, dict) else {}
+        return {
+            "playbook_run_id": str(envelope.get("playbook_run_id") or "")[:100],
+            "findings_summary": {
+                str(key)[:80]: int(value)
+                for key, value in sorted(summary.items(), key=lambda item: str(item[0]))[
+                    :20
+                ]
+                if isinstance(value, int)
+            },
+        }
+    if event_type == "run.completed":
+        return {"thread_id": str(envelope.get("thread_id") or "")[:100]}
+    return {}
+
+
 class StrategicConsumer:
     def __init__(
         self,
@@ -309,6 +341,9 @@ class StrategicConsumer:
                                 milestone_type=event_type,
                                 acting_user_id=uuid.UUID(str(acting_user_id_raw)),
                                 thread_id=milestone_thread_id,
+                                milestone_payload=_milestone_context_payload(
+                                    event_type, envelope
+                                ),
                             )
                         complete(receipt_session, receipt)
                     elif event_type in ("run.completed", "run.errored"):
@@ -330,6 +365,9 @@ class StrategicConsumer:
                                     uuid.UUID(str(envelope["acting_user_id"]))
                                     if envelope.get("acting_user_id")
                                     else None
+                                ),
+                                milestone_payload=_milestone_context_payload(
+                                    event_type, envelope
                                 ),
                             )
                         complete(receipt_session, receipt)
@@ -433,6 +471,7 @@ class StrategicConsumer:
         milestone_type: str,
         acting_user_id: uuid.UUID,
         thread_id: uuid.UUID | None = None,
+        milestone_payload: dict[str, Any] | None = None,
     ) -> None:
         """Resolve the mode-specific LLM lazily and run one v3 milestone."""
         engagement = session.get(Engagement, engagement_id)
@@ -489,6 +528,7 @@ class StrategicConsumer:
             llm_factory=llm_factory,
             coverage_review_llm_factory=coverage_review_llm_factory,
             thread_id=thread_id,
+            milestone_payload=milestone_payload,
         )
 
     def _v3_analyze_on_run(
@@ -498,6 +538,7 @@ class StrategicConsumer:
         engagement_id: uuid.UUID,
         thread_id: uuid.UUID,
         acting_user_id: uuid.UUID | None = None,
+        milestone_payload: dict[str, Any] | None = None,
     ) -> None:
         """Fire v3 gather-then-analyze for a completed run.
 
@@ -533,6 +574,7 @@ class StrategicConsumer:
             milestone_type="run.completed",
             acting_user_id=acting_user_id,
             thread_id=thread_id,
+            milestone_payload=milestone_payload,
         )
 
     def _release_lease_for_run(

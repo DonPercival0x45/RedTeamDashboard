@@ -108,7 +108,9 @@ def test_context_groups_memory_and_includes_rollup(db: Session, engagement: Enga
     assert ctx["engagement"]["scope_item_count"] == 0
 
 
-def test_context_significant_ids_match_predicate(db: Session, engagement: Engagement) -> None:
+def test_context_significant_batch_matches_predicate(
+    db: Session, engagement: Engagement
+) -> None:
     # A since window is required: with since=None every finding is "new" and
     # thus significant. Use a window + an old, low, validated finding that's
     # NOT significant under any branch (not new / not high / not unvalidated).
@@ -123,7 +125,12 @@ def test_context_significant_ids_match_predicate(db: Session, engagement: Engage
 
     ctx = build_intelligence_context(db, engagement_id=engagement.id, since=cutoff)
 
-    assert ctx["significant_finding_ids"] == [str(high.id)]
+    batch = ctx["significant_findings"]
+    assert [item["id"] for item in batch["items"]] == [str(high.id)]
+    assert batch["items"][0]["title"] == high.title
+    assert batch["items"][0]["severity"] == "critical"
+    assert batch["included"] == 1
+    assert batch["token_estimate"] <= batch["token_budget"]
 
 
 def test_context_since_window_bounds_new_and_significant(
@@ -143,15 +150,42 @@ def test_context_since_window_bounds_new_and_significant(
     assert ctx["findings"]["new"] == 1
     # old is low+validated+outside-window -> not significant under any branch;
     # recent is high -> significant (and also new within the window).
-    assert str(old.id) not in ctx["significant_finding_ids"]
-    assert ctx["significant_finding_ids"] == [str(recent.id)]
+    item_ids = [item["id"] for item in ctx["significant_findings"]["items"]]
+    assert str(old.id) not in item_ids
+    assert item_ids == [str(recent.id)]
+
+
+def test_context_includes_methodology_and_bounded_milestone_metadata(
+    db: Session, engagement: Engagement
+) -> None:
+    engagement.methodology_snapshot = {"slug": "osint-minimal", "version": 1}
+    db.flush()
+    milestone = {
+        "type": "coverage.gap.opened",
+        "payload": {
+            "node_id": "dns-enumeration",
+            "asset_class": "domain",
+            "reason": "coverage stale",
+        },
+    }
+
+    ctx = build_intelligence_context(
+        db,
+        engagement_id=engagement.id,
+        milestone=milestone,
+    )
+
+    assert ctx["engagement"]["methodology_slug"] == "osint-minimal"
+    assert ctx["engagement"]["methodology_version"] == 1
+    assert ctx["milestone"] == milestone
 
 
 def test_context_empty_engagement_is_well_formed(db: Session, engagement: Engagement) -> None:
     ctx = build_intelligence_context(db, engagement_id=engagement.id)
     assert ctx["memory"]["facts"] == []
     assert ctx["findings"]["total"] == 0
-    assert ctx["significant_finding_ids"] == []
+    assert ctx["significant_findings"]["items"] == []
+    assert ctx["significant_findings"]["total"] == 0
     assert ctx["coverage"] == {"baseline": {}, "exploration": {}}
 
 
@@ -177,6 +211,8 @@ def test_build_messages_picks_persona_prompt_per_mode(
         assert len(messages) == 2
         assert messages[0][0] == "system"
         assert messages[0][1] == PROMPT_MODE_PROMPTS[mode]
+        assert "untrusted engagement evidence" in messages[0][1]
+        assert "Do not call tools" in messages[0][1]
         assert messages[1][0] == "user"
         # user message is the context rendered as JSON.
         import json
