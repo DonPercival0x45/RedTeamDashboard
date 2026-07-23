@@ -43,11 +43,15 @@ class PlaybookRunPayload(BaseModel):
 
     ``playbook_version`` is optional — omit to pin to latest at start.
     ``scope_subset`` = analyst-declared scope_item_ids the run targets.
+    ``executor`` picks which executor drives the run (A4). Defaults to
+    ``internal`` — the in-process implementation A3b landed. ``mcp``
+    dispatches to the MCP server via ``MCPExecutor``.
     """
 
     playbook_slug: str
     playbook_version: int | None = None
     scope_subset: list[str] = Field(default_factory=list)
+    executor: str = "internal"
 
 
 class PlaybookRunRead(BaseModel):
@@ -61,6 +65,7 @@ class PlaybookRunRead(BaseModel):
     playbook_slug: str
     playbook_version: int
     status: str
+    executor: str = "internal"
     scope_subset: list = Field(default_factory=list)
     started_at: datetime | None = None
     completed_at: datetime | None = None

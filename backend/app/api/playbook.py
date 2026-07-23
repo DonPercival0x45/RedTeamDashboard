@@ -27,6 +27,7 @@ from app.api.deps import CurrentNonGuestUser, CurrentUser, DbSession
 from app.models import (
     Engagement,
     Playbook,
+    PlaybookExecutorKind,
     PlaybookRun,
     PlaybookStep,
 )
@@ -67,6 +68,7 @@ def _run_read(session: Session, run: PlaybookRun) -> PlaybookRunRead:
         playbook_slug=playbook.slug if playbook else "",
         playbook_version=playbook.version if playbook else 0,
         status=run.status.value,
+        executor=run.executor_kind.value,
         scope_subset=list(run.scope_subset or []),
         started_at=run.started_at,
         completed_at=run.completed_at,
@@ -179,11 +181,22 @@ def create_playbook_run(
     # Actor attribution lands with A5's approve-before-run gate; the worker
     # attributes coverage records to the system actor for now.
     del user
+    try:
+        executor_kind = PlaybookExecutorKind(payload.executor)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"executor must be one of "
+                f"{sorted(k.value for k in PlaybookExecutorKind)}"
+            ),
+        ) from exc
     run = enqueue_run(
         session,
         engagement=engagement,
         playbook=playbook,
         scope_subset=payload.scope_subset,
+        executor_kind=executor_kind,
     )
     session.commit()
     session.refresh(run)
