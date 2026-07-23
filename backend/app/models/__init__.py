@@ -83,6 +83,7 @@ from app.models.memory import (
 from app.models.methodology import Methodology, MethodologyNode, snapshot_payload
 from app.models.observation import Observation
 from app.models.observation_finding_link import ObservationFindingLink
+from app.models.playbook import Playbook, PlaybookRun, PlaybookRunStatus, PlaybookStep
 from app.models.processing_receipt import ProcessingReceipt, ProcessingReceiptStatus
 from app.models.roadmap_suggestion import (
     RoadmapSuggestion,
@@ -173,6 +174,10 @@ __all__ = [
     "Observation",
     "ObservationFindingLink",
     "OwnerEligibility",
+    "Playbook",
+    "PlaybookRun",
+    "PlaybookRunStatus",
+    "PlaybookStep",
     "ProcessingReceipt",
     "ProcessingReceiptStatus",
     "RiskLevel",

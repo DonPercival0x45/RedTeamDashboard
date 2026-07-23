@@ -106,8 +106,14 @@ class CoverageRecord(Base, TimestampMixin):
         nullable=False,
         default=CoverageRecordStatus.pending,
     )
-    # Plain UUID until A3 (playbook runner) lands; refined to a real FK then.
-    playbook_run_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    # v3 A3a — refined from the pre-A3 plain-UUID column to a real FK now that
+    # the target table exists. Still nullable so a manual/imported coverage
+    # attempt without a playbook_run doesn't fail insert.
+    playbook_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("playbook_runs.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     # When it became ``satisfied``; A2 compares this against the methodology
     # node's TTL to lapse time-sensitive techniques back to ``stale``-eligible.
     satisfied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
