@@ -318,7 +318,7 @@ def run_intelligence_analysis(
 
     provider, model_name = resolve_model_for_mode(
         session, user_id=acting_user_id, engagement_id=engagement_id, mode=mode
-    )
+    ) or (None, None)
     execution = AgentExecution(
         engagement_id=engagement_id,
         agent=AgentName.engagement_strategist,

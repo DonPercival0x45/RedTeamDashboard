@@ -109,10 +109,19 @@ def test_context_groups_memory_and_includes_rollup(db: Session, engagement: Enga
 
 
 def test_context_significant_ids_match_predicate(db: Session, engagement: Engagement) -> None:
-    high = _finding(db, engagement, severity=Severity.critical)  # significant (high)
-    _finding(db, engagement, severity=Severity.low, status=FindingStatus.validated)  # not
+    # A since window is required: with since=None every finding is "new" and
+    # thus significant. Use a window + an old, low, validated finding that's
+    # NOT significant under any branch (not new / not high / not unvalidated).
+    cutoff = datetime.now(tz=UTC) - timedelta(hours=1)
+    high = _finding(
+        db, engagement, severity=Severity.critical, created_at=datetime.now(tz=UTC)
+    )
+    _finding(
+        db, engagement, severity=Severity.low, status=FindingStatus.validated,
+        created_at=datetime.now(tz=UTC) - timedelta(days=2),
+    )
 
-    ctx = build_intelligence_context(db, engagement_id=engagement.id)
+    ctx = build_intelligence_context(db, engagement_id=engagement.id, since=cutoff)
 
     assert ctx["significant_finding_ids"] == [str(high.id)]
 
@@ -122,18 +131,18 @@ def test_context_since_window_bounds_new_and_significant(
 ) -> None:
     cutoff = datetime.now(tz=UTC) - timedelta(hours=1)
     old = _finding(
-        db, engagement, severity=Severity.high,
+        db, engagement, severity=Severity.low, status=FindingStatus.validated,
         created_at=datetime.now(tz=UTC) - timedelta(days=2),
     )
     recent = _finding(db, engagement, severity=Severity.high, created_at=datetime.now(tz=UTC))
 
     ctx = build_intelligence_context(db, engagement_id=engagement.id, since=cutoff)
 
-    # total counts both, but "new" + significant-gather respect the window.
+    # total counts both, but "new" respects the window.
     assert ctx["findings"]["total"] == 2
     assert ctx["findings"]["new"] == 1
-    # old is significant by severity but outside the window -> excluded;
-    # recent is inside -> included.
+    # old is low+validated+outside-window -> not significant under any branch;
+    # recent is high -> significant (and also new within the window).
     assert str(old.id) not in ctx["significant_finding_ids"]
     assert ctx["significant_finding_ids"] == [str(recent.id)]
 
