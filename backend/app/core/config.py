@@ -266,5 +266,17 @@ class Settings(BaseSettings):
     # together.
     enforce_v3_playbook_only: bool = True
 
+    # v3 Convergence C6c — default intelligence architecture for new
+    # engagements when the caller doesn't specify one. ``v3`` is the
+    # Convergence goal: every new engagement lands on the playbook plane so
+    # LangGraph agent traffic drops toward zero without breaking existing
+    # legacy engagements. Explicit ``intelligence_architecture=legacy`` on
+    # the create body still opts back in. Flip to ``legacy`` as an operator
+    # rollback if analysts need the old default temporarily. Falls back to
+    # ``legacy`` silently when v3 is resolved but the caller didn't supply
+    # ``methodology_slug`` — v3 requires a methodology snapshot, and quiet
+    # fallback preserves API compat for existing test/callers that omit it.
+    default_intelligence_architecture: str = "v3"
+
 
 settings = Settings()

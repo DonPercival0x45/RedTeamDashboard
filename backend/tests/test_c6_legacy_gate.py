@@ -60,6 +60,18 @@ def _cleanup_command_outbox(db: Session):
     db.commit()
 
 
+@pytest.fixture(autouse=True)
+def _seed_methodology_catalog(db: Session):
+    """C6c tests reference the ``osint-minimal`` methodology (v3 needs a
+    snapshot). CI runs against a fresh DB where the seed catalog isn't
+    populated yet, so seed it idempotently before each test in this module.
+    ``load_seed_catalog`` is upsert-safe — a no-op if the row already exists."""
+    from app.services.methodology import load_seed_catalog
+
+    load_seed_catalog(db)
+    db.commit()
+
+
 @pytest.fixture()
 def user(db: Session) -> User:
     u = User(
@@ -347,6 +359,79 @@ def test_analyze_endpoint_toggle_off_passes_gate_on_v3(
     if resp.status_code == 409:
         # If it 409s at all, it's not the C6b-shaped message.
         assert "Strategy view" not in resp.json().get("detail", "")
+
+
+# ---------------------------------------------------------------------------
+# C6c: new-engagement default architecture
+# ---------------------------------------------------------------------------
+
+
+def test_new_engagement_defaults_to_v3_when_methodology_provided(
+    client: TestClient, user: User
+) -> None:
+    """C6c: caller supplies methodology_slug but omits intelligence_architecture
+    → resolves to v3 (the new default)."""
+    resp = client.post(
+        "/engagements",
+        headers={"X-User-Id": user.email},
+        json={
+            "name": "c6c v3 default",
+            "methodology_slug": "osint-minimal",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["intelligence_architecture"] == "v3"
+
+
+def test_new_engagement_defaults_to_legacy_without_methodology(
+    client: TestClient, user: User
+) -> None:
+    """C6c compat fallback: v3 needs a methodology snapshot. If the caller
+    omits both fields, we silently downshift to legacy so old callers keep
+    working."""
+    resp = client.post(
+        "/engagements",
+        headers={"X-User-Id": user.email},
+        json={"name": "c6c fallback legacy"},
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["intelligence_architecture"] == "legacy"
+
+
+def test_new_engagement_explicit_legacy_still_honored(
+    client: TestClient, user: User
+) -> None:
+    """Callers who explicitly request legacy still get it, even with a
+    methodology (an opt-out from the C6c default)."""
+    resp = client.post(
+        "/engagements",
+        headers={"X-User-Id": user.email},
+        json={
+            "name": "c6c explicit legacy",
+            "intelligence_architecture": "legacy",
+            "methodology_slug": "osint-minimal",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["intelligence_architecture"] == "legacy"
+
+
+def test_new_engagement_toggle_off_defaults_to_legacy(
+    client: TestClient, user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Operator flips ``default_intelligence_architecture=legacy`` → new
+    engagements land on legacy even when methodology_slug is present."""
+    monkeypatch.setattr(settings, "default_intelligence_architecture", "legacy")
+    resp = client.post(
+        "/engagements",
+        headers={"X-User-Id": user.email},
+        json={
+            "name": "c6c toggle off",
+            "methodology_slug": "osint-minimal",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["intelligence_architecture"] == "legacy"
 
 
 # ---------------------------------------------------------------------------

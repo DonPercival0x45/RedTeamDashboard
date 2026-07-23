@@ -76,9 +76,13 @@ class EngagementCreate(BaseModel):
             "Optional client-defined scope persisted atomically with the engagement."
         ),
     )
-    intelligence_architecture: EngagementArchitecture = Field(
-        default=EngagementArchitecture.legacy,
-        description="Legacy orchestration or the v3 intelligence plane.",
+    intelligence_architecture: EngagementArchitecture | None = Field(
+        default=None,
+        description=(
+            "Legacy orchestration or the v3 intelligence plane. Omit to let "
+            "the backend pick from ``default_intelligence_architecture`` "
+            "(v3 by default post-C6c). Explicit values still win."
+        ),
     )
     methodology_slug: str | None = Field(default=None, max_length=120)
     methodology_version: int | None = Field(default=None, ge=1)
@@ -93,6 +97,12 @@ class EngagementCreate(BaseModel):
 
         if self.methodology_version is not None and not self.methodology_slug:
             raise ValueError("methodology_version requires methodology_slug")
+        # The v3-needs-methodology check runs only when the caller EXPLICITLY
+        # asked for v3. When ``intelligence_architecture`` is None (falls
+        # through to the settings default), the endpoint resolves it and
+        # silently downshifts to legacy if the methodology isn't there —
+        # C6c's compat-preserving default. That resolution can't happen
+        # here because it needs ``settings``.
         if (
             self.intelligence_architecture is EngagementArchitecture.v3
             and not self.methodology_slug
