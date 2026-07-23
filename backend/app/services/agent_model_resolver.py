@@ -21,7 +21,13 @@ import structlog
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import AgentModelPreference, AgentName, User
+from app.models import (
+    AgentModelPreference,
+    AgentModeModelPreference,
+    AgentName,
+    AgentPromptMode,
+    User,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -158,5 +164,88 @@ def resolve_agent_model(
         user_id=str(user_id),
         engagement_id=str(engagement_id) if engagement_id else None,
         role=role.value if hasattr(role, "value") else str(role),
+    )
+    return None
+
+
+def resolve_model_for_mode(
+    session: Session,
+    *,
+    user_id: uuid.UUID,
+    engagement_id: uuid.UUID | None,
+    mode: AgentPromptMode,
+) -> tuple[str | None, str] | None:
+    """v3 mode-aware resolution (architecture-answers §C.2).
+
+    Mirrors ``resolve_agent_model``'s chain but keyed on the v3 prompt-mode
+    axis instead of the v1 ``agent_role`` axis:
+      1. ``AgentModeModelPreference`` row for (user, engagement, mode) -> use it
+      2. the analyst's ``default_llm_provider`` + ``default_llm_model`` -> use it
+      3. ``None`` -> caller falls back to ``default_provider_model()``
+
+    v1's role-based resolver is untouched; the two coexist until Convergence
+    retires the v1 agents. ``mode`` here is the orthogonal axis locked in §C.2
+    — realized as a separate table (not a nullable column on the v1 table)
+    because ``agent_role`` is NOT NULL there and part of its unique key.
+    """
+    # 1. Mode-specific preference row wins.
+    if engagement_id is not None:
+        pref = session.execute(
+            select(AgentModeModelPreference).where(
+                AgentModeModelPreference.user_id == user_id,
+                AgentModeModelPreference.engagement_id == engagement_id,
+                AgentModeModelPreference.mode == mode,
+            )
+        ).scalar_one_or_none()
+        if pref is not None:
+            provider, model = parse_model_string(pref.model)
+            if provider is None:
+                provider = provider_for_model(model)
+            logger.info(
+                "agent_model.resolved",
+                source="mode_pref",
+                user_id=str(user_id),
+                engagement_id=str(engagement_id),
+                mode=mode.value if hasattr(mode, "value") else str(mode),
+                pref_id=str(pref.id),
+                stored_model=pref.model,
+                provider=provider,
+                model=model,
+            )
+            return (provider, model)
+
+    # 2. User default (default_llm_provider + default_llm_model — same columns
+    #    resolve_agent_model reads; documented in user.py).
+    user = session.get(User, user_id)
+    if user is not None:
+        default_model = getattr(user, "default_llm_model", None)
+        if default_model:
+            stored_provider = getattr(user, "default_llm_provider", None)
+            provider, model = parse_model_string(default_model)
+            if provider is None:
+                provider = (stored_provider or "").strip().lower() or None
+            if provider is None:
+                provider = provider_for_model(model)
+            logger.info(
+                "agent_model.resolved",
+                source="user_default",
+                user_id=str(user_id),
+                engagement_id=str(engagement_id) if engagement_id else None,
+                mode=mode.value if hasattr(mode, "value") else str(mode),
+                stored_model=default_model,
+                stored_provider=stored_provider,
+                provider=provider,
+                model=model,
+            )
+            return (provider, model)
+
+    # 3. No preference and no user default — caller falls back to the
+    #    process-wide default_provider_model().
+    logger.info(
+        "agent_model.resolved",
+        source="process_default_fallback",
+        user_id=str(user_id),
+        engagement_id=str(engagement_id) if engagement_id else None,
+        mode=mode.value if hasattr(mode, "value") else str(mode),
     )
     return None
