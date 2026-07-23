@@ -220,24 +220,21 @@ def derive_expected_triples(
 
     Cartesian product of (baseline nodes) × (scope selection for the matching
     asset class). Each asset class in the snapshot pulls its own scope_item_ids
-    from the caller-supplied map — A1 doesn't own scope selection (that's the
-    engagement's scope tab), so the caller resolves which analyst-declared
-    scope items apply to which asset class and hands it in.
+    from the caller-supplied map. One triple PER scope item — the playbook
+    runner records coverage per ``(step, scope_item)``, so the expected triples
+    must match that per-item grain for ``check_baseline_complete`` to find them.
 
     Empty scope selection for a given asset class → no triples for that class
     (which means the engagement never expected coverage there, and
-    baseline-complete doesn't wait on it). One shared scope_key per class:
-    the whole class's scope items grouped together, matching how the playbook
-    runner will invoke against them (A3 lands playbook granularity later).
+    baseline-complete doesn't wait on it).
     """
     triples: list[ExpectedNode] = []
     baseline_nodes = _snapshot_nodes(engagement, tier=CoverageNodeTier.baseline)
     for node in baseline_nodes:
         asset_class = node["asset_class"]
         scope_items = list(scope_item_ids_by_asset_class.get(asset_class, ()))
-        if not scope_items:
-            continue
-        triples.append((node["node_id"], asset_class, scope_key(scope_items)))
+        for item in scope_items:
+            triples.append((node["node_id"], asset_class, scope_key([item])))
     return triples
 
 

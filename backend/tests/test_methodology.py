@@ -293,20 +293,18 @@ def test_derive_expected_triples_products_over_scope(
             "ip": ["scope-3"],
         },
     )
-    # Every baseline node with a matching scope class gets one triple; the
-    # scope_key groups all items in the class together.
-    expected_domain_scope = cov.scope_key(["scope-1", "scope-2"])
-    expected_ip_scope = cov.scope_key(["scope-3"])
-    # PTES has 4 baseline domain nodes + 3 baseline ip nodes (exploration
-    # node excluded).
+    # One triple per (baseline node, individual scope item) — the per-item
+    # grain matches how the playbook runner records coverage per scope item.
     domain_triples = [t for t in triples if t[1] == "domain"]
     ip_triples = [t for t in triples if t[1] == "ip"]
-    assert len(domain_triples) == 4
+    # PTES has 4 baseline domain nodes × 2 domain scope items = 8 triples.
+    assert len(domain_triples) == 8
+    # 3 baseline ip nodes × 1 ip scope item = 3 triples.
     assert len(ip_triples) == 3
-    for _node_id, _asset, sk in domain_triples:
-        assert sk == expected_domain_scope
-    for _node_id, _asset, sk in ip_triples:
-        assert sk == expected_ip_scope
+    domain_keys = sorted({sk for _n, _a, sk in domain_triples})
+    assert domain_keys == [cov.scope_key(["scope-1"]), cov.scope_key(["scope-2"])]
+    for _n, _a, sk in ip_triples:
+        assert sk == cov.scope_key(["scope-3"])
 
 
 def test_derive_expected_triples_skips_empty_scope(
