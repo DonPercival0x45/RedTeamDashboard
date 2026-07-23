@@ -87,6 +87,24 @@ A failing durable event is bounded by the receipt retry/DLQ limit. A later disti
 
 Strategy and ideation use event-level receipt deduplication rather than context fingerprints. Their production emitters must keep stable event IDs and emit genuine state transitions (especially coverage-gap reopen and baseline completion), not polling noise.
 
-## Remaining external blocker
+## Resolved blocker: production actor identity
 
-Automatic v3 stays default-off until production milestone events carry `acting_user_id`. The consumer must continue refusing to borrow another analyst's BYO key. Authenticated manual v3 intelligence is unaffected.
+**Closed by #227.** `collection.job.completed` milestones now carry the
+authenticated analyst (`approved_by` for gated playbooks, `requested_by` for
+direct runs; legacy rows omit the key and the consumer refuses rather than
+borrowing). Combined with `run.completed` (already actor-bearing) and
+`baseline.completed`/`coverage.gap.opened` (actor-bearing when their emitters
+pass a user actor), the consumer can now resolve the exact BYO model key that
+authorized collection on every production milestone that actually fires today.
+
+Automatic v3 remains default-off by choice. Enabling it is a controlled
+canary — flip `V3_INTELLIGENCE_ENABLED=true` on one v3 engagement, verify
+receipts, attribution, retries, dedup, and costs against a real provider, then
+broaden. Manual v3 intelligence is unaffected and fully operational.
+
+**Wiring prerequisite (Track A, not yet blocking):** `mark_baseline_completed`
+and `open_coverage_gap` have no production caller yet. When they are wired into
+a real flow, their call sites must pass a provable user actor (the same pattern
+#227 established); otherwise the consumer DLQs the event because the milestone
+lacks `acting_user_id`. Until those emitters ship, they cannot block the
+collection-run and run-completion milestones that actually fire in production.
