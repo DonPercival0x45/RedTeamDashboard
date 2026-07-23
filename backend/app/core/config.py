@@ -250,5 +250,16 @@ class Settings(BaseSettings):
     # background-automation switch. Default OFF until production emitters are ready.
     v3_intelligence_enabled: bool = False
 
+    # v3 Convergence C6a — when True, v3-converted engagements MUST use the
+    # playbook runner for OSINT. ``POST /engagements/{slug}/runs`` refuses
+    # with 409 for v3 engagements (pointing analysts at ``/playbook-runs``),
+    # and Tactical's per-finding dispatch skips v3 engagements outright.
+    # Legacy engagements are untouched. Flip to False as an operator-side
+    # escape hatch if analysts hit a blocker mid-rollout — no code change,
+    # env-var flip. When Convergence is done (all engagements v3, playbooks
+    # cover every workflow), the toggle + the legacy path can be deleted
+    # together.
+    enforce_v3_playbook_only: bool = True
+
 
 settings = Settings()

@@ -83,6 +83,7 @@ from app.models import (
     Attachment,
     AuditLog,
     Engagement,
+    EngagementArchitecture,
     EngagementStatus,
     Finding,
     FindingPhase,
@@ -4083,6 +4084,26 @@ def start_run(
         raise HTTPException(
             status_code=409,
             detail=(f"engagement is {eng.status.value}; only active engagements accept new runs"),
+        )
+    # v3 Convergence C6a: v3-converted engagements route OSINT through the
+    # playbook runner (deterministic, cheaper, gated). Refuse LangGraph-agent
+    # runs against them so the analyst can't accidentally re-open the legacy
+    # cost path. Operators can flip ``enforce_v3_playbook_only`` to False as
+    # an escape hatch during rollout hiccups.
+    from app.core.config import settings as _config_settings
+
+    if (
+        _config_settings.enforce_v3_playbook_only
+        and eng.intelligence_architecture is EngagementArchitecture.v3
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "engagement is on v3 intelligence — kick a playbook run at "
+                "POST /engagements/{slug}/playbook-runs instead of a LangGraph "
+                "agent run. Operators can disable this gate temporarily by "
+                "setting enforce_v3_playbook_only=false in backend config."
+            ),
         )
 
     # Resolve effective model: body wins, else fall back to env defaults.

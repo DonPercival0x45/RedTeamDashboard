@@ -53,6 +53,18 @@ logger = structlog.get_logger(__name__)
 _RESCAN_DEDUP_WINDOW = timedelta(hours=24)
 
 
+class TacticalSkippedV3(Exception):
+    """Raised by ``TacticalAgent.dispatch`` when the target engagement runs on
+    v3 intelligence and ``enforce_v3_playbook_only`` is on.
+
+    v3-converted engagements route OSINT through the playbook runner instead
+    of Tactical's per-finding lease-policy LLM (v3 Convergence C6a). Callers
+    should mark the task ``skipped`` (or leave it pending for analyst review)
+    rather than treat this as an error. ``last_error`` on any surrounding
+    ``AgentExecution`` receives the reason so the Costs tab surfaces the skip.
+    """
+
+
 class TacticalRefusedExploit(Exception):
     """Tactical was asked to dispatch a kind=exploit task. Agents scan,
     analysts exploit (CHARTER invariant). The HTTP layer maps this to 400
@@ -107,6 +119,31 @@ class TacticalAgent:
         if task.status != TaskStatus.pending:
             raise ValueError(
                 f"task {task.id} is already {task.status.value}; refusing to redispatch"
+            )
+
+        # v3 Convergence C6a — v3 engagements route OSINT through the playbook
+        # runner. Skip Tactical dispatch outright so we don't burn tokens on a
+        # lease-policy LLM call that would be for a legacy execution path. The
+        # engagement's Playbooks tab handles the same work deterministically.
+        from app.core.config import settings as _config_settings
+        from app.models import Engagement as _Engagement
+        from app.models import EngagementArchitecture as _EngagementArchitecture
+
+        engagement = session.get(_Engagement, task.engagement_id)
+        if (
+            _config_settings.enforce_v3_playbook_only
+            and engagement is not None
+            and engagement.intelligence_architecture is _EngagementArchitecture.v3
+        ):
+            logger.info(
+                "tactical.skipped_v3",
+                task_id=str(task.id),
+                engagement_id=str(engagement.id),
+                engagement_slug=engagement.slug,
+            )
+            raise TacticalSkippedV3(
+                f"engagement {engagement.slug} is on v3 intelligence; "
+                "playbook runner handles OSINT dispatch"
             )
 
         tool_name = task.payload.get("tool")
