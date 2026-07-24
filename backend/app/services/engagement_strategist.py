@@ -58,7 +58,7 @@ from app.schemas.engagement_strategist import (
     StrategyRevisionProposal,
 )
 from app.services.agent_model_resolver import resolve_agent_model
-from app.services.ephemeral_provider_key import resolve_for_user
+from app.services.ephemeral_provider_key import resolve_for_user_with_fallback
 from app.services.report_readiness import build_report_readiness
 
 _SYSTEM_PROMPT = """You are the Engagement Strategist for an authorized security
@@ -1402,7 +1402,17 @@ def run_engagement_strategist(
             session.commit()
             raise RuntimeError(execution.error)
     try:
-        credential = resolve_for_user(redis_client, user_id=acting_user_id, provider=provider)
+        provider, model, credential = resolve_for_user_with_fallback(
+            redis_client,
+            user_id=acting_user_id,
+            preferred_provider=provider,
+            preferred_model=model,
+        )
+        # The persisted execution must identify the provider/model that actually
+        # runs, not the unavailable preference which triggered MRU fallback.
+        execution.model_provider = provider
+        execution.model_name = model
+        session.commit()
         if mode == "generate_initial" and not dossier.get("current_strategy"):
             llm = _make_chat_model(
                 provider,

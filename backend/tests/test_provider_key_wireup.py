@@ -199,6 +199,59 @@ def test_fallback_resolver_without_any_key_raises(
         )
 
 
+def test_fallback_resolver_rejects_unknown_provider_without_model(
+    db: Session, redis_client: redis_lib.Redis
+) -> None:
+    user = _make_user(db)
+    _seed(
+        redis_client,
+        user,
+        provider="custom-compatible",
+        api_key="custom-key",
+        models=[],
+    )
+    with pytest.raises(NoProviderKeyError):
+        resolve_for_user_with_fallback(
+            redis_client,
+            user_id=user.id,
+            preferred_provider="anthropic",
+            preferred_model="claude-custom",
+        )
+
+
+def test_fallback_ignores_newer_unroutable_custom_provider(
+    db: Session, redis_client: redis_lib.Redis
+) -> None:
+    user = _make_user(db)
+    _seed(
+        redis_client,
+        user,
+        provider="openai",
+        api_key="sk-openai",
+        models=["gpt-4o-mini"],
+    )
+    _seed(
+        redis_client,
+        user,
+        provider="custom-compatible",
+        api_key="custom-key",
+        models=[],
+    )
+
+    provider, model, resolved = resolve_for_user_with_fallback(
+        redis_client,
+        user_id=user.id,
+        preferred_provider="anthropic",
+        preferred_model="claude-custom",
+    )
+
+    assert (provider, model, resolved.api_key) == (
+        "openai",
+        "gpt-4o-mini",
+        "sk-openai",
+    )
+
+
 def test_resolver_picks_most_recent_when_multiple(
     db: Session, redis_client: redis_lib.Redis
 ) -> None:
@@ -324,6 +377,52 @@ def test_runner_threads_user_key_into_graph_factory(
             "endpoint": None,
         }
     ]
+
+
+def test_runner_honors_explicit_non_mru_key_id(
+    db: Session, redis_client: redis_lib.Redis
+) -> None:
+    user = _make_user(db)
+    selected = _seed(
+        redis_client,
+        user,
+        provider="openai",
+        api_key="sk-selected-old",
+        name="selected",
+    )
+    _seed(
+        redis_client,
+        user,
+        provider="openai",
+        api_key="sk-new-mru",
+        name="new-mru",
+    )
+    factory = _CapturingFactory()
+    runner = RunRunner(
+        graph_factory=factory,
+        redis_client=redis_client,
+        session_factory=SessionLocal,
+    )
+
+    runner._resolve_graph(
+        {
+            "type": "run.start",
+            "thread_id": "explicit-key",
+            "model": {
+                "provider": "openai",
+                "name": "gpt-4o-mini",
+                "key_id": selected["id"],
+            },
+            "acting_user_id": str(user.id),
+        }
+    )
+
+    assert factory.calls[0] == {
+        "provider": "openai",
+        "name": "gpt-4o-mini",
+        "api_key": "sk-selected-old",
+        "endpoint": None,
+    }
 
 
 def test_runner_envelope_without_acting_user_raises(

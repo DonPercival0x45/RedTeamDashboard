@@ -29,6 +29,8 @@ from app.models import (
 )
 from app.services import mcp_lease
 
+pytestmark = pytest.mark.usefixtures("stub_tactical_provider_key")
+
 
 def _outbox_envelope(db: Session, task: Task) -> dict[str, Any]:
     row = db.execute(

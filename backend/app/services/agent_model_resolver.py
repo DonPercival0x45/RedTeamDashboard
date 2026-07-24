@@ -381,7 +381,7 @@ def resolve_llm_for_mode(
     attribution cannot drift from the model that actually ran.
     """
     from app.agents.strategic import _make_chat_model
-    from app.services.ephemeral_provider_key import resolve_for_user
+    from app.services.ephemeral_provider_key import resolve_for_user_with_fallback
 
     provider, model_name = resolve_model_for_mode_with_default(
         session,
@@ -390,7 +390,12 @@ def resolve_llm_for_mode(
         mode=mode,
     )
 
-    key = resolve_for_user(redis_client, user_id=user_id, provider=provider)
+    provider, model_name, key = resolve_for_user_with_fallback(
+        redis_client,
+        user_id=user_id,
+        preferred_provider=provider,
+        preferred_model=model_name,
+    )
     return (
         _make_chat_model(
             provider,

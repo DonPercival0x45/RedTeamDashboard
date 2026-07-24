@@ -426,10 +426,25 @@ empty / children) adopted at every `useQuery` site. Review rule: *any
 
 **Foundation landed locally:** shared accessible `<QueryState>` with retry and
 stale-cache warnings, adopted in engagement Findings, Playbooks catalog/runs,
-run detail, Status/Runs, Running Jobs, Infrastructure, Configurations, and the
-decision inbox. Imported Entities no longer renders a terminal error alongside
-an infinite loader. Analytics and remaining auxiliary-query consumers are the
-next adoption batch.
+run detail, Status/Runs, Running Jobs, Infrastructure, Configurations, the
+decision inbox, and every Analytics panel. Imported Entities no longer renders
+a terminal error alongside an infinite loader. Analytics preserves cached data
+with a stale warning, blocks incomplete exports, and has component regressions
+for failed, legitimately empty, and stale-cache states. Remaining auxiliary
+query consumers are the next adoption batch.
+
+### Provider routing invariant landed locally
+Saved role/mode preferences plus user/process defaults are **soft preferences**:
+if that provider has no live ephemeral credential, user-triggered LLM paths use
+the analyst's newest routable model-provider entry and attribute the actual
+provider/model. One-shot provider choices, explicit `key_id` values, worker
+envelopes, and tool-secret names remain strict. Direct and Tactical producers
+pin the resolved key row into the cache and durable envelope so queue delay or
+same-provider rotation cannot silently change accounts. Missing credentials
+return an actionable 400; Redis credential/queue outages return 503. Coverage
+now spans helper selection, direct responses/cache/envelopes, worker key use,
+Tactical telemetry/cache/envelopes, v3 mode construction, finding chat,
+strategist attribution, tool review/pricing, and failure responses.
 
 ### Notable consistency/copy offenders (each maps to a small fix)
 - **Entity quick-actions dead on v3** (already P1) — every new engagement.

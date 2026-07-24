@@ -43,10 +43,7 @@ from app.models import (
     RoadmapSuggestion,
 )
 from app.services.agent_model_resolver import resolve_user_model_with_default
-from app.services.ephemeral_provider_key import (
-    NoProviderKeyError,
-    resolve_for_user,
-)
+from app.services.ephemeral_provider_key import resolve_for_user_with_fallback
 
 _MAX_POOL_SIZE = 200
 _MAX_BODY_CHARS = 800  # per-row truncation in the prompt so token counts stay bounded
@@ -220,12 +217,12 @@ def detect_combine_clusters(
     provider, model_name = resolve_user_model_with_default(
         session, user_id=acting_user_id
     )
-    try:
-        resolved = resolve_for_user(
-            redis_client, user_id=acting_user_id, provider=provider
-        )
-    except NoProviderKeyError as exc:
-        raise exc
+    provider, model_name, resolved = resolve_for_user_with_fallback(
+        redis_client,
+        user_id=acting_user_id,
+        preferred_provider=provider,
+        preferred_model=model_name,
+    )
 
     llm = _make_chat_model(
         provider, model_name, api_key=resolved.api_key, endpoint=resolved.endpoint
@@ -313,12 +310,12 @@ def bulk_rank_suggestions(
     provider, model_name = resolve_user_model_with_default(
         session, user_id=acting_user_id
     )
-    try:
-        resolved = resolve_for_user(
-            redis_client, user_id=acting_user_id, provider=provider
-        )
-    except NoProviderKeyError as exc:
-        raise exc
+    provider, model_name, resolved = resolve_for_user_with_fallback(
+        redis_client,
+        user_id=acting_user_id,
+        preferred_provider=provider,
+        preferred_model=model_name,
+    )
 
     llm = _make_chat_model(
         provider, model_name, api_key=resolved.api_key, endpoint=resolved.endpoint

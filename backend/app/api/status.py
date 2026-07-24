@@ -24,6 +24,7 @@ from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import redis as redis_lib
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -65,6 +66,7 @@ from app.schemas.status import (
     StepEntry,
     StepLogResponse,
 )
+from app.services.ephemeral_provider_key import NoProviderKeyError
 
 router = APIRouter()
 
@@ -1883,11 +1885,20 @@ def _redispatch_task(
             )
         )
         session.commit()
-        status_code = 400 if isinstance(exc, ValueError) else 502
-        raise HTTPException(
-            status_code=status_code,
-            detail=f"task retry dispatch failed: {exc}",
-        ) from exc
+        if isinstance(exc, NoProviderKeyError):
+            status_code = 400
+            detail: object = {
+                "code": "missing_provider_key",
+                "message": str(exc),
+                "action_url": "/settings/keys",
+            }
+        elif isinstance(exc, redis_lib.RedisError):
+            status_code = 503
+            detail = "temporary credential/queue service outage; retry shortly"
+        else:
+            status_code = 400 if isinstance(exc, ValueError) else 502
+            detail = f"task retry dispatch failed: {exc}"
+        raise HTTPException(status_code=status_code, detail=detail) from exc
 
     session.add(
         AuditLog(

@@ -174,8 +174,12 @@ def test_inflight_run_discards_proposals_if_engagement_is_archived(
     monkeypatch.setattr(service, "_resolve_model", lambda *_args: ("test", "fake"))
     monkeypatch.setattr(
         service,
-        "resolve_for_user",
-        lambda *_args, **_kwargs: SimpleNamespace(api_key="ephemeral", endpoint=None),
+        "resolve_for_user_with_fallback",
+        lambda *_args, **_kwargs: (
+            "test",
+            "fake",
+            SimpleNamespace(api_key="ephemeral", endpoint=None),
+        ),
     )
     monkeypatch.setattr(service, "_make_chat_model", lambda *_args, **_kwargs: ArchivingLLM())
 
@@ -268,8 +272,12 @@ def test_inflight_run_rejects_output_when_strategy_revision_changes(
     monkeypatch.setattr(service, "_resolve_model", lambda *_args: ("test", "fake"))
     monkeypatch.setattr(
         service,
-        "resolve_for_user",
-        lambda *_args, **_kwargs: SimpleNamespace(api_key="ephemeral", endpoint=None),
+        "resolve_for_user_with_fallback",
+        lambda *_args, **_kwargs: (
+            "test",
+            "fake",
+            SimpleNamespace(api_key="ephemeral", endpoint=None),
+        ),
     )
     monkeypatch.setattr(service, "_make_chat_model", lambda *_args, **_kwargs: RevisingLLM())
 

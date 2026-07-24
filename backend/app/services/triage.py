@@ -34,7 +34,7 @@ from app.models import (
     Finding,
 )
 from app.services.agent_model_resolver import resolve_agent_model_with_default
-from app.services.ephemeral_provider_key import resolve_for_user
+from app.services.ephemeral_provider_key import resolve_for_user_with_fallback
 
 _SYSTEM_PROMPT = (
     "You write concise pentest-finding summaries for inclusion in a "
@@ -69,9 +69,9 @@ def triage_finding_summary(
     """Generate a triage summary; persist a cost-tracking row.
 
     Returns ``(execution, summary_text)``. Caller commits the session.
-    Raises whatever ``resolve_for_user`` / the LLM SDK raise — the API
-    layer maps ``NoProviderKeyError`` to a 400 with a pointer to
-    /settings/keys; other failures bubble as a 502.
+    Raises whatever the key resolver / LLM SDK raise — the API layer maps
+    ``NoProviderKeyError`` to a 400 with a pointer to /settings/keys; other
+    failures bubble as a 502.
     """
     provider, model_name = resolve_agent_model_with_default(
         session,
@@ -79,8 +79,11 @@ def triage_finding_summary(
         engagement_id=finding.engagement_id,
         role=AgentName.triage,
     )
-    resolved = resolve_for_user(
-        redis_client, user_id=acting_user_id, provider=provider
+    provider, model_name, resolved = resolve_for_user_with_fallback(
+        redis_client,
+        user_id=acting_user_id,
+        preferred_provider=provider,
+        preferred_model=model_name,
     )
     llm = _make_chat_model(
         provider,
@@ -184,8 +187,11 @@ def rewrite_finding_summary(
         engagement_id=finding.engagement_id,
         role=AgentName.triage,
     )
-    resolved = resolve_for_user(
-        redis_client, user_id=acting_user_id, provider=provider
+    provider, model_name, resolved = resolve_for_user_with_fallback(
+        redis_client,
+        user_id=acting_user_id,
+        preferred_provider=provider,
+        preferred_model=model_name,
     )
     llm = _make_chat_model(
         provider,

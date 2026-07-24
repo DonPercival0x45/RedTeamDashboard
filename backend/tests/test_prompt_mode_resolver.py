@@ -160,7 +160,7 @@ def test_unknown_bare_model_keeps_name_and_uses_default_provider(
     assert result == ("custom", "bespoke-model")
 
 
-def test_llm_builder_uses_mode_preference_and_acting_user_key(
+def test_llm_builder_uses_actual_fallback_provider_and_model(
     db: Session,
     user: User,
     engagement: Engagement,
@@ -171,10 +171,16 @@ def test_llm_builder_uses_mode_preference_and_acting_user_key(
     captured: dict[str, Any] = {}
     redis_client = object()
 
-    def resolve_key(redis: object, **kwargs: Any) -> SimpleNamespace:
+    def resolve_key(
+        redis: object, **kwargs: Any
+    ) -> tuple[str, str, SimpleNamespace]:
         captured["redis"] = redis
         captured["key_kwargs"] = kwargs
-        return SimpleNamespace(api_key="secret", endpoint="https://models.example/v1")
+        return (
+            "moonshot",
+            "kimi-k2.5",
+            SimpleNamespace(api_key="secret", endpoint="https://models.example/v1"),
+        )
 
     def make_model(provider: str, model: str, **kwargs: Any) -> object:
         captured["model_args"] = (provider, model)
@@ -182,7 +188,8 @@ def test_llm_builder_uses_mode_preference_and_acting_user_key(
         return llm
 
     monkeypatch.setattr(
-        "app.services.ephemeral_provider_key.resolve_for_user", resolve_key
+        "app.services.ephemeral_provider_key.resolve_for_user_with_fallback",
+        resolve_key,
     )
     monkeypatch.setattr("app.agents.strategic._make_chat_model", make_model)
 
@@ -194,11 +201,15 @@ def test_llm_builder_uses_mode_preference_and_acting_user_key(
         mode=AgentPromptMode.analysis,
     )
 
-    assert result == (llm, "openai", "gpt-4o-mini")
+    assert result == (llm, "moonshot", "kimi-k2.5")
     assert captured == {
         "redis": redis_client,
-        "key_kwargs": {"user_id": user.id, "provider": "openai"},
-        "model_args": ("openai", "gpt-4o-mini"),
+        "key_kwargs": {
+            "user_id": user.id,
+            "preferred_provider": "openai",
+            "preferred_model": "gpt-4o-mini",
+        },
+        "model_args": ("moonshot", "kimi-k2.5"),
         "model_kwargs": {
             "api_key": "secret",
             "endpoint": "https://models.example/v1",

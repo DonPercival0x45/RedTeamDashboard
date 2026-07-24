@@ -55,7 +55,7 @@ from app.models import (
 )
 from app.orchestrator.tools import all_tools, get_tool
 from app.services.agent_model_resolver import resolve_agent_model_with_default
-from app.services.ephemeral_provider_key import resolve_for_user
+from app.services.ephemeral_provider_key import resolve_for_user_with_fallback
 from app.services.finding_activity import build_finding_activity
 
 _SYSTEM_PROMPT = """You are a finding-scoped copilot for an authorized security engagement.
@@ -606,7 +606,12 @@ def generate_finding_chat_reply(
         engagement_id=finding.engagement_id,
         role=AgentName.strategic,
     )
-    resolved = resolve_for_user(redis_client, user_id=acting_user_id, provider=provider)
+    provider, model_name, resolved = resolve_for_user_with_fallback(
+        redis_client,
+        user_id=acting_user_id,
+        preferred_provider=provider,
+        preferred_model=model_name,
+    )
     llm = _make_chat_model(
         provider,
         model_name,
@@ -738,7 +743,12 @@ def summarize_finding_chat(
             engagement_id=finding.engagement_id,
             role=AgentName.strategic,
         )
-        resolved = resolve_for_user(redis_client, user_id=acting_user_id, provider=provider)
+        provider, model_name, resolved = resolve_for_user_with_fallback(
+            redis_client,
+            user_id=acting_user_id,
+            preferred_provider=provider,
+            preferred_model=model_name,
+        )
         llm = _make_chat_model(
             provider,
             model_name,

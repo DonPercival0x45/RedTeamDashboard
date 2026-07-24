@@ -226,6 +226,7 @@ def test_retry_task_redispatches_worker_command(
     redis_client,
     engagement: Engagement,
     initial_status: TaskStatus,
+    stub_tactical_provider_key: None,
 ) -> None:
     task = Task(
         engagement_id=engagement.id,
@@ -355,6 +356,7 @@ def test_cancelled_state_wins_policy_commit_race(
     redis_client,
     engagement: Engagement,
     monkeypatch: pytest.MonkeyPatch,
+    stub_tactical_provider_key: None,
 ) -> None:
     previous_run_id = uuid.uuid4()
     task = Task(

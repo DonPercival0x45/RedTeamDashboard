@@ -4062,7 +4062,7 @@ def delete_attachment(
 
 def _require_user_provider_key(
     redis_client: RedisClient, *, user_id: uuid.UUID, provider: str
-) -> None:
+) -> uuid.UUID:
     """Raise 400 if the acting user has no ephemeral key cached for ``provider``.
 
     Keys live in Redis with a sliding TTL (locked 2026-06-29) — when the
@@ -4076,7 +4076,9 @@ def _require_user_provider_key(
     )
 
     try:
-        resolve_for_user(redis_client, user_id=user_id, provider=provider)
+        resolved = resolve_for_user(
+            redis_client, user_id=user_id, provider=provider
+        )
     except NoProviderKeyError as exc:
         raise HTTPException(
             status_code=400,
@@ -4085,6 +4087,7 @@ def _require_user_provider_key(
                 "Upload one at /settings/keys before kicking off a run."
             ),
         ) from exc
+    return resolved.row_id
 
 
 @router.post(
@@ -4129,20 +4132,42 @@ def start_run(
 
     # Resolve effective model: an explicit request wins. Otherwise honor the
     # acting analyst's default before falling back to process configuration.
+    chosen_key_id = body.model.key_id if body.model is not None else None
     if body.model is not None:
+        # An explicit provider/model (and optional key id) is a strict analyst
+        # choice; never silently route it to a different vendor.
         provider, model_name = body.model.provider, body.model.name
     else:
         from app.services.agent_model_resolver import resolve_user_model_with_default
+        from app.services.ephemeral_provider_key import (
+            NoProviderKeyError,
+            resolve_for_user_with_fallback,
+        )
 
-        provider, model_name = resolve_user_model_with_default(
+        preferred_provider, preferred_model = resolve_user_model_with_default(
             session, user_id=user.id
         )
+        try:
+            provider, model_name, resolved = resolve_for_user_with_fallback(
+                redis_client,
+                user_id=user.id,
+                preferred_provider=preferred_provider,
+                preferred_model=preferred_model,
+            )
+            chosen_key_id = resolved.row_id
+        except NoProviderKeyError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "no model-provider key is cached for your session. "
+                    "Upload one at /settings/keys before kicking off a run."
+                ),
+            ) from exc
     # v1.4.12: if the analyst pinned a specific cached key, validate it
     # belongs to them and matches the provider BEFORE we stash it for the
     # worker. resolve_for_user with key_id does the membership/kind/provider
     # checks and raises NoProviderKeyError on any mismatch.
-    chosen_key_id = body.model.key_id if body.model is not None else None
-    if chosen_key_id is not None:
+    if body.model is not None and chosen_key_id is not None:
         from app.services.ephemeral_provider_key import (
             NoProviderKeyError,
             resolve_for_user,
@@ -4164,8 +4189,12 @@ def start_run(
                     "re-select it at /settings/keys."
                 ),
             ) from exc
-    else:
-        _require_user_provider_key(redis_client, user_id=user.id, provider=provider)
+    elif body.model is not None:
+        # Pin the MRU row selected at enqueue so worker delay/rotation cannot
+        # switch credentials behind the analyst's explicit provider choice.
+        chosen_key_id = _require_user_provider_key(
+            redis_client, user_id=user.id, provider=provider
+        )
     effective_model = RunModel(provider=provider, name=model_name, key_id=chosen_key_id)
 
     thread_id = uuid.uuid4()
@@ -4246,6 +4275,7 @@ def start_run(
             "model": {
                 "provider": effective_model.provider,
                 "name": effective_model.name,
+                "key_id": str(chosen_key_id) if chosen_key_id else None,
             },
         },
         model_provider=effective_model.provider,
@@ -4267,6 +4297,7 @@ def start_run(
                 "model": {
                     "provider": effective_model.provider,
                     "name": effective_model.name,
+                    "key_id": str(chosen_key_id) if chosen_key_id else None,
                 },
             },
         )
@@ -4285,6 +4316,7 @@ def start_run(
             "model": {
                 "provider": effective_model.provider,
                 "name": effective_model.name,
+                "key_id": str(chosen_key_id) if chosen_key_id else None,
             },
             "acting_user_id": str(user.id),
             "mcp_url": mcp_url,

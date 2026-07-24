@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Iterator
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -27,6 +28,7 @@ from app.agents.strategic import StrategicAgent
 from app.agents.tactical import TacticalAgent, TacticalRefusedExploit
 from app.main import app
 from app.models import (
+    AgentExecution,
     AgentName,
     AgentTrigger,
     CommandOutbox,
@@ -47,6 +49,8 @@ from app.models import (
     TaskStatus,
     User,
 )
+
+pytestmark = pytest.mark.usefixtures("stub_tactical_provider_key")
 
 HDR = {"X-User-Id": "phase9@example.com"}
 
@@ -414,6 +418,77 @@ def test_tactical_dispatches_scan_task(
     assert envelope["type"] == "run.start"
     assert "subfinder" in envelope["prompt"]
     assert "acme.test" in envelope["prompt"]
+
+
+def test_tactical_persists_actual_mru_fallback_model(
+    db: Session,
+    engagement: Engagement,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task = Task(
+        engagement_id=engagement.id,
+        title="Subdomain enum with fallback",
+        kind=TaskKind.enum,
+        owner_eligibility=OwnerEligibility.agent,
+        status=TaskStatus.pending,
+        payload={"tool": "subfinder", "target": "fallback.acme.test"},
+    )
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+    user = _seed_user(db, "tactical-fallback")
+    captured: dict[str, Any] = {}
+
+    monkeypatch.setattr(
+        "app.agents.tactical.resolve_agent_model",
+        lambda *_args, **_kwargs: ("anthropic", "claude-preferred"),
+    )
+
+    def fallback(_redis: object, **kwargs: Any) -> tuple[str, str, object]:
+        captured["preferred"] = kwargs
+        return (
+            "openai",
+            "gpt-mru",
+            SimpleNamespace(row_id=uuid.UUID(int=2)),
+        )
+
+    monkeypatch.setattr(
+        "app.agents.tactical.resolve_for_user_with_fallback", fallback
+    )
+    redis = _FakeRedis()
+    TacticalAgent(redis).dispatch(db, task=task, acting_user_id=user.id)
+    db.commit()
+
+    execution = db.execute(
+        select(AgentExecution).where(
+            AgentExecution.engagement_id == engagement.id,
+            AgentExecution.agent == AgentName.tactical,
+            AgentExecution.input["task_id"].astext == str(task.id),
+        )
+    ).scalar_one()
+    outbox = db.execute(
+        select(CommandOutbox).where(CommandOutbox.task_id == task.id)
+    ).scalar_one()
+    import json
+
+    envelope = json.loads(outbox.encoded_payload["data"])
+    assert captured["preferred"] == {
+        "user_id": user.id,
+        "preferred_provider": "anthropic",
+        "preferred_model": "claude-preferred",
+    }
+    assert envelope["model"] == {
+        "provider": "openai",
+        "name": "gpt-mru",
+        "key_id": str(uuid.UUID(int=2)),
+    }
+    assert (execution.model_provider, execution.model_name) == (
+        "openai",
+        "gpt-mru",
+    )
+    assert redis.hset_calls[-1][1]["provider"] == "openai"
+    assert redis.hset_calls[-1][1]["name"] == "gpt-mru"
+    assert redis.hset_calls[-1][1]["key_id"] == str(uuid.UUID(int=2))
 
 
 # ── HTTP surface ───────────────────────────────────────────────────────────

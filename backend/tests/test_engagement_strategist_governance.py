@@ -165,10 +165,19 @@ def test_manual_strategist_delimits_untrusted_records_and_records_context_hash(
     monkeypatch.setattr(service, "_resolve_model", lambda *_args: ("test", "fake-model"))
     monkeypatch.setattr(
         service,
-        "resolve_for_user",
-        lambda *_args, **_kwargs: SimpleNamespace(api_key="not-persisted", endpoint=None),
+        "resolve_for_user_with_fallback",
+        lambda *_args, **_kwargs: (
+            "openai",
+            "gpt-mru",
+            SimpleNamespace(api_key="not-persisted", endpoint="https://mru.test/v1"),
+        ),
     )
-    monkeypatch.setattr(service, "_make_chat_model", lambda *_args, **_kwargs: FakeLLM())
+
+    def make_chat_model(provider: str, model: str, **kwargs: object) -> FakeLLM:
+        captured["model"] = (provider, model, kwargs)
+        return FakeLLM()
+
+    monkeypatch.setattr(service, "_make_chat_model", make_chat_model)
     monkeypatch.setattr(service.pricing, "cost_usd", lambda *_args, **_kwargs: 0.0)
 
     execution, output, context_hash, suggestions = run_engagement_strategist(
@@ -181,6 +190,17 @@ def test_manual_strategist_delimits_untrusted_records_and_records_context_hash(
 
     assert suggestions == []
     assert output.situation_summary == "Reviewed canonical records only."
+    assert execution.model_provider == "openai"
+    assert execution.model_name == "gpt-mru"
+    assert captured["model"] == (
+        "openai",
+        "gpt-mru",
+        {
+            "api_key": "not-persisted",
+            "endpoint": "https://mru.test/v1",
+            "max_tokens": 16_000,
+        },
+    )
     messages = captured["messages"]
     assert isinstance(messages, list)
     system = messages[0][1]

@@ -47,7 +47,7 @@ from app.models import (
 from app.services.agent_model_resolver import resolve_agent_model_with_default
 from app.services.ephemeral_provider_key import (
     NoProviderKeyError,
-    resolve_for_user,
+    resolve_for_user_with_fallback,
 )
 
 _MAX_SOURCE_CHARS = 40_000  # roughly ~10k tokens of source at the outside
@@ -165,8 +165,11 @@ def review_tool_source(
     )
 
     try:
-        resolved = resolve_for_user(
-            redis_client, user_id=acting_user_id, provider=provider
+        provider, model_name, resolved = resolve_for_user_with_fallback(
+            redis_client,
+            user_id=acting_user_id,
+            preferred_provider=provider,
+            preferred_model=model_name,
         )
     except NoProviderKeyError:
         return _skipped("no provider key")
