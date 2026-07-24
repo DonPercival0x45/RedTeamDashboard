@@ -36,6 +36,87 @@ mocks). Starting Docker unblocks layers 2 + 5 of the test platform.
   Fix in the next wave.
 - **P3 — polish, hygiene, latent, or masked-by-polling.** Batch.
 
+## 2A. Operator use-case blockers (reported by the user 2026-07-24)
+
+The operator reported the product is "nigh unusable" for their use-case with 4
+specific complaints. Each was verified against the current branch; status and
+the fix are below. **These gate the operator's actual use of the product and
+take precedence over the generic backlog order.**
+
+### ✅ Complaint 3 — "API configurations were not being respected"
+**Status: FIXED** in `6c5432b` (acting-user default honored across every
+user-triggered LLM path — role/mode pref → user default → process fallback).
+Both peers regression-validated it; **962 backend tests pass** including the
+new resolver tests. No further action.
+
+### 🟡 Complaint 1 — "Playbooks are referenced in engagements but buried in an entirely different screen"
+**Status: PARTIALLY FIXED.** `382a97a` mounts `PlaybooksTab` inline on the v3
+Scope tab, so a v3 engagement can now kick/manage playbook runs without
+leaving the workspace. **Remaining gaps (NOT fixed):**
+- No first-class engagement surface: `EngagementNav` has **no** Playbooks view;
+  playbooks are crammed into Scope, and **Automation ▸ Playbooks is still a
+  separate top-level screen**.
+- **Status tab is blind to playbook runs** (`get_engagement_status` returns
+  agents/tasks/approvals only) — the "track everything in flight" pane doesn't
+  show the v3 execution surface or let you cancel it. *(playbooks journey P2-3.)*
+- **No unified approval queue** for awaiting playbook runs (bell only lists
+  LangGraph interrupts). *(playbooks journey P2-2.)*
+
+**Fix (Wave 4):** add a **Playbooks** view to `EngagementNav` that renders
+`PlaybooksTab` (keeping Automation as an admin/cross-engagement convenience);
+add a `playbook_runs` slice to `EngagementStatusResponse` (or at minimum a
+prominent Status deep-link + cancel); surface awaiting playbook runs in the
+approval bell.
+
+### 🔴 Complaint 2 — "A lot of the UI is basically pointless/deprecated because of recent changes"
+**Status: NOT FIXED (broad).** v3 landed enforcement before the UI caught up,
+leaving dead/misleading surfaces. Confirmed items:
+- **Entity quick-actions are dead on v3** (set a prompt that's never consumed;
+  P1). Hide on v3 or bridge to a playbook kickoff.
+- **Uploaded-tool invocation UI never shipped** (`invokeTool`/`listToolInvocations`
+  have zero callers; Tools page still copy-promises it "in v0.12.0" at v3.0.1).
+- **3 of 5 Automation tabs are `ComingSoonTab` placeholders** (recon/scanning/
+  exploitation) while the header says "pick a workflow to run."
+- **Legacy banner / Status "legacy run history" copy** shows on brand-new v3
+  engagements with no legacy history.
+- Stale comments/copy (`vm-action-menu` "disabled/coming soon" that shipped,
+  `costs-view` invocations count that can never be >0).
+
+**Fix (Wave 4/5):** a dedicated **deprecated-UI sweep** — for each surface,
+either wire it to the v3 path, hide it for v3, or correct the copy. Deliver as
+one coherent pass (not scattered one-offs).
+
+### 🔴 Complaint 4 — "Playbook findings aren't ported to the engagement, and the kick modal asks me to re-type scope that's already in findings/scope"
+**Status: NOT FIXED — two bugs, both confirmed.**
+
+**4a. Playbook findings never persist to the Findings table** (`P2-10`). The
+internal DNS/WHOIS tools count answers as `findings_new`/`findings_total`, but
+`grep Finding( / _persist_finding / FindingOrigin` across `services/playbook/`
+returns **nothing** — no `Finding` row is ever created. So a run shows "N
+findings" in its detail modal while the engagement's **Findings tab stays
+empty**, and `engagement_rollup`'s gather (`thread_id == run.id`) finds nothing
+→ the post-run v3 analysis never fires. This is the single biggest reason the
+product "doesn't work" for the operator.
+**Fix (Wave 3, elevated to P1):** define one finding contract — executors
+return structured candidates; the runner persists/dedupes them and stamps
+`FindingOrigin.thread_id = run.id` transactionally, then derives counters from
+persisted outcomes.
+
+**4b. The kick modal re-types scope instead of surfacing existing data.**
+`KickRunModal` is a free-form `Textarea`; it never loads the engagement's
+existing `ScopeItem`s / findings / entities (it doesn't even call `useScope`).
+The operator must re-type targets that are already in the engagement — and
+there's **no scope-membership validation** server-side, so arbitrary/out-of-
+scope targets are queued and handed straight to tools (violating the
+in-scope-only invariant; the arbitrary-scope P1).
+**Fix (Wave 3/4, elevated to P1):** replace the textarea with a **picker
+sourced from `useScope(slug)` non-exclusion items** (+ optionally entities),
+send scope **IDs** (or canonical values), and **enforce membership/normalization
+in `POST /engagements/{slug}/playbook-runs`** so the server rejects unknown/
+excluded/other-engagement items regardless of what a client sends.
+
+---
+
 ## 3. Master backlog (deduplicated across all audits)
 
 ### 🔴 P1 — broken journeys / safety
