@@ -524,10 +524,20 @@ class StrategicAgent:
                 "acting analyst's BYO key — construct with "
                 "StrategicAgent(redis_client=...)"
             )
-        from app.services.ephemeral_provider_key import resolve_for_user
+        from app.services.ephemeral_provider_key import (
+            resolve_for_user_with_fallback,
+        )
 
-        resolved = resolve_for_user(
-            self._redis, user_id=acting_user_id, provider=provider
+        # v3.0.2 — fall back to the user's MRU model_provider key if the
+        # settings-default provider (or the pinned Configuration) has no
+        # matching key cached. Otherwise the analyst hit a hard 400 when
+        # settings.llm_provider = "anthropic" but they only uploaded
+        # (e.g.) an OpenAI or Kimi key.
+        provider, model_name, resolved = resolve_for_user_with_fallback(
+            self._redis,
+            user_id=acting_user_id,
+            preferred_provider=provider,
+            preferred_model=model_name,
         )
         return (
             _make_chat_model(

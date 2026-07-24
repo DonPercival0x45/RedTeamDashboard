@@ -465,13 +465,14 @@ function EngagementDetail({ slug }: { slug: string }) {
           {view === "scope" && (
             <div className="space-y-6">
               <ScopeEditor slug={slug} canWrite={canWrite} />
-              {engagement.status === "active" ? (
+              {engagement.intelligence_architecture === "v3" ? null : engagement.status === "active" ? (
                 // v1.11.0: ToolsPanel + RunPrompt share a bridge so a
                 // click on a tool button drops its example prompt into
                 // the run textarea below.
                 // v1.15.0 (#93): entity quick-actions on the Entities
                 // tab also seed the textarea via ``initialPrompt``; both
                 // paths coexist because RunPrompt owns the prompt state.
+                // v3.0.2: hidden entirely on v3 — playbooks drive collection.
                 <RunPromptBridgeProvider>
                   <ToolsPanel />
                   <div className="mt-6">
