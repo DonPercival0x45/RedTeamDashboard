@@ -121,7 +121,14 @@ def _patch_llm(monkeypatch: pytest.MonkeyPatch) -> _FakeLLM:
     import app.services.finding_chat as chat
 
     fake = _FakeLLM()
-    monkeypatch.setattr(chat, "default_provider_model", lambda: ("anthropic", "fake-1"))
+    # finding_chat resolves (provider, model) via resolve_agent_model_with_default
+    # (role pref -> user default -> process fallback). Short-circuit it so the
+    # test never depends on settings.llm_provider / a live DB user default.
+    monkeypatch.setattr(
+        chat,
+        "resolve_agent_model_with_default",
+        lambda *_args, **_kwargs: ("anthropic", "fake-1"),
+    )
     monkeypatch.setattr(
         chat,
         "resolve_for_user",
@@ -135,7 +142,11 @@ def _patch_plain_llm(monkeypatch: pytest.MonkeyPatch) -> _FakePlainLLM:
     import app.services.finding_chat as chat
 
     fake = _FakePlainLLM()
-    monkeypatch.setattr(chat, "default_provider_model", lambda: ("anthropic", "fake-1"))
+    monkeypatch.setattr(
+        chat,
+        "resolve_agent_model_with_default",
+        lambda *_args, **_kwargs: ("anthropic", "fake-1"),
+    )
     monkeypatch.setattr(
         chat,
         "resolve_for_user",
