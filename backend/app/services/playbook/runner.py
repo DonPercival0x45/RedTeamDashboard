@@ -42,7 +42,8 @@ from app.runs.streams import outbound_stream
 from app.services import coverage as cov
 from app.services import methodology as meth
 from app.services.command_outbox import enqueue_event
-from app.services.playbook.executor import PlaybookExecutor, StepResult
+from app.services.playbook.executor import InternalExecutor, PlaybookExecutor, StepResult
+from app.services.playbook.finding_persist import persist_step_findings
 
 logger = structlog.get_logger(__name__)
 
@@ -522,10 +523,52 @@ def _run_one(
         if result.error and not run.last_error:
             run.last_error = result.error
 
-    run.findings_new += result.findings_new
+    # Operator complaint 4a — persist the step's findings into the engagement's
+    # Findings table so they surface in the UI and link back to this run (the
+    # post-run gather-then-analyze milestone gathers by FindingOrigin.thread_id
+    # == run.id). Only the internal executor path persists here; the MCP server
+    # persists lease findings on its own side. Counters below describe the
+    # *persisted* outcome, not the raw tool-answer count.
+    persisted = {"new": 0, "total": 0, "created": 0}
+    if result.ok and not getattr(result, "stub", False) and isinstance(
+        executor, InternalExecutor
+    ):
+        try:
+            actor_uuid = uuid.UUID(actor_id) if actor_id else None
+        except (ValueError, TypeError):
+            actor_uuid = None
+        try:
+            persisted = persist_step_findings(
+                session,
+                engagement_id=engagement.id,
+                run_id=run.id,
+                tool_slug=step_tool_slug,
+                scope_item=scope_item,
+                args=dict(step_args_template or {}),
+                data=dict(result.data or {}),
+                acting_user_id=actor_uuid,
+            )
+        except Exception:  # noqa: BLE001 - persistence must not break the run
+            logger.exception(
+                "playbook.step.finding_persist_failed",
+                playbook=playbook.slug,
+                tool=step_tool_slug,
+                scope_item=scope_item,
+            )
+
+    if isinstance(executor, InternalExecutor):
+        # Real tools: counters describe the *persisted* outcome (deduped items
+        # now in the Findings table). A tool with no projector (stub/custom)
+        # persists nothing, so fall back to its declared count.
+        run.findings_new += persisted["new"]
+        run.findings_total += persisted["new"]
+    else:
+        # MCP / test executors persist on their own side (or not at all); use
+        # the tool's declared counts (backward-compatible behavior).
+        run.findings_new += result.findings_new
+        run.findings_total += result.findings_total
     run.findings_unvalidated += result.findings_unvalidated
     run.findings_high_severity += result.findings_high_severity
-    run.findings_total += result.findings_total
 
     if getattr(result, "stub", False):
         status = CoverageRecordStatus.stub
