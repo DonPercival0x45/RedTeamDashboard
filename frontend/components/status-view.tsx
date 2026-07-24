@@ -167,8 +167,10 @@ export function summarizeEvent(event: RunEvent): string {
 
 export function StatusView({
   slug,
+  allowLegacyRetry = true,
 }: {
   slug: string;
+  allowLegacyRetry?: boolean;
 }) {
   // v1.0.0: react-query owns the fetch + 2s polling + focus revalidation.
   // The old useEffect + setInterval + manual reload is gone; the useQuery
@@ -590,6 +592,20 @@ export function StatusView({
 
       {error && <p className="text-sm text-critical">{error}</p>}
 
+      {!allowLegacyRetry && (
+        <p className="rounded-md border border-border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+          Legacy run history is read-only for v3 engagements. Start and manage
+          new work in{" "}
+          <Link
+            href={`/automation?tab=playbooks&slug=${encodeURIComponent(slug)}`}
+            className="font-medium text-foreground underline underline-offset-4"
+          >
+            Playbooks
+          </Link>
+          .
+        </p>
+      )}
+
       {/* Box grid */}
       {data == null && !error ? (
         <p className="text-sm text-muted-foreground">Loading…</p>
@@ -625,6 +641,7 @@ export function StatusView({
                         onCancel={() => onCancel(entity)}
                         retrying={retryingId === entity.id}
                         cancelling={cancellingId === entity.id}
+                        allowRetry={allowLegacyRetry}
                       />
                     ))}
                   </div>
@@ -780,6 +797,7 @@ function StatusBox({
   onCancel,
   retrying,
   cancelling,
+  allowRetry,
 }: {
   entity: StatusEntity;
   onExpand: () => void;
@@ -787,6 +805,7 @@ function StatusBox({
   onCancel: () => void;
   retrying: boolean;
   cancelling: boolean;
+  allowRetry: boolean;
 }) {
   const Icon = COLOR_ICON[entity.color];
   const OutcomeIcon = entity.outcome ? OUTCOME_ICON[entity.outcome] : null;
@@ -868,7 +887,7 @@ function StatusBox({
             {cancelling ? "Cancelling…" : "Cancel"}
           </Button>
         )}
-        {entity.retryable && (
+        {allowRetry && entity.retryable && (
           <Button
             size="sm"
             variant="outline"

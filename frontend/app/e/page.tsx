@@ -24,6 +24,7 @@ import { StatusView } from "@/components/status-view";
 import { DiagnosticsView } from "@/components/diagnostics-view";
 import { StrategyView } from "@/components/strategy-view";
 import { LegacyEngagementBanner } from "@/components/legacy-engagement-banner";
+import { PlaybooksTab } from "@/components/playbooks/playbooks-tab";
 import { GrantsCard } from "@/components/grants-card";
 import { RunPrompt } from "@/components/run-prompt";
 import { RunPromptBridgeProvider } from "@/components/run-prompt-context";
@@ -457,7 +458,12 @@ function EngagementDetail({ slug }: { slug: string }) {
 
           {view === "costs" && <CostsView slug={slug} />}
 
-          {view === "status" && <StatusView slug={slug} />}
+          {view === "status" && (
+            <StatusView
+              slug={slug}
+              allowLegacyRetry={engagement.intelligence_architecture !== "v3"}
+            />
+          )}
 
           {view === "contributions" && <ContributionsView slug={slug} />}
           {view === "diagnostics" && <DiagnosticsView slug={slug} />}
@@ -466,22 +472,29 @@ function EngagementDetail({ slug }: { slug: string }) {
             <div className="space-y-6">
               <ScopeEditor slug={slug} canWrite={canWrite} />
               {engagement.status === "active" ? (
-                // v1.11.0: ToolsPanel + RunPrompt share a bridge so a
-                // click on a tool button drops its example prompt into
-                // the run textarea below.
-                // v1.15.0 (#93): entity quick-actions on the Entities
-                // tab also seed the textarea via ``initialPrompt``; both
-                // paths coexist because RunPrompt owns the prompt state.
-                <RunPromptBridgeProvider>
-                  <ToolsPanel />
-                  <div className="mt-6">
-                    <RunPrompt
-                      slug={slug}
-                      initialPrompt={pendingPrompt ?? undefined}
-                      onPromptConsumed={() => setPendingPrompt(null)}
-                    />
-                  </div>
-                </RunPromptBridgeProvider>
+                engagement.intelligence_architecture === "v3" ? (
+                  // v3 engagements cannot launch the legacy LangGraph prompt
+                  // runner. Keep collection in the same workspace, but route
+                  // kickoff through POST /engagements/{slug}/playbook-runs.
+                  <PlaybooksTab engagementSlug={slug} />
+                ) : (
+                  // v1.11.0: ToolsPanel + RunPrompt share a bridge so a
+                  // click on a tool button drops its example prompt into
+                  // the run textarea below.
+                  // v1.15.0 (#93): entity quick-actions on the Entities
+                  // tab also seed the textarea via ``initialPrompt``; both
+                  // paths coexist because RunPrompt owns the prompt state.
+                  <RunPromptBridgeProvider>
+                    <ToolsPanel />
+                    <div className="mt-6">
+                      <RunPrompt
+                        slug={slug}
+                        initialPrompt={pendingPrompt ?? undefined}
+                        onPromptConsumed={() => setPendingPrompt(null)}
+                      />
+                    </div>
+                  </RunPromptBridgeProvider>
+                )
               ) : (
                 <p className="text-sm text-muted-foreground">
                   This engagement is {engagement.status}; runs are disabled.
