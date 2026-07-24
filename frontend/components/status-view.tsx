@@ -15,7 +15,6 @@
 // "Live events" panel below the boxes.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   Activity,
@@ -38,6 +37,8 @@ import { DateTime } from "@/components/date-time";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CopyJsonButton } from "@/components/copy-json-button";
+import { QueryState } from "@/components/query-state";
+import { RunDetailModal } from "@/components/playbooks/run-detail-modal";
 import {
   useCancelAgentExecutionMutation,
   useCancelTaskMutation,
@@ -91,10 +92,12 @@ const KIND_LABEL: Record<StatusKind, string> = {
   agent: "Agent",
   task: "Task",
   approval: "Approval",
+  playbook: "Playbook",
 };
 
 const KIND_FILTERS: (StatusKind | "all")[] = [
   "all",
+  "playbook",
   "agent",
   "task",
   "approval",
@@ -180,6 +183,7 @@ export function StatusView({
     data,
     error: queryError,
     refetch,
+    isFetching,
   } = useEngagementStatus(slug);
   const retryTaskMutation = useRetryTaskMutation(slug);
   const retryAgentMutation = useRetryAgentExecutionMutation(slug);
@@ -187,7 +191,6 @@ export function StatusView({
   const cancelAgentMutation = useCancelAgentExecutionMutation(slug);
 
   const [localError, setLocalError] = useState<string | null>(null);
-  const error = localError ?? (queryError instanceof Error ? queryError.message : queryError ? String(queryError) : null);
 
   const searchParams = useSearchParams();
   const pathname = usePathname();
@@ -201,7 +204,7 @@ export function StatusView({
   const initialSearch = searchParams?.get("statusSearch") ?? "";
   const initialView = searchParams?.get("statusView");
   const [filter, setFilter] = useState<StatusKind | "all">(
-    initialKind && ["agent", "task", "approval"].includes(initialKind)
+    initialKind && ["agent", "task", "approval", "playbook"].includes(initialKind)
       ? (initialKind as StatusKind)
       : "all",
   );
@@ -218,6 +221,7 @@ export function StatusView({
   const [agentFilter, setAgentFilter] = useState(initialAgent);
   const [viewMode, setViewMode] = useState<ViewMode>(initialView === "table" ? "table" : "cards");
   const [expanded, setExpanded] = useState<StatusEntity | null>(null);
+  const [selectedPlaybookRunId, setSelectedPlaybookRunId] = useState<string | null>(null);
   const [retryingId, setRetryingId] = useState<string | null>(null);
   const [cancellingId, setCancellingId] = useState<string | null>(null);
   const [bulkCancelling, setBulkCancelling] = useState(false);
@@ -234,15 +238,28 @@ export function StatusView({
   // effect below re-runs on the next render (its ``expanded`` dep flips
   // back to null) and immediately re-opens the modal — bug reported
   // from the Automation running-jobs hyperlink flow.
+  const stripRunParam = useCallback(() => {
+    if (!searchParams?.get("run")) return;
+    const next = new URLSearchParams(searchParams.toString());
+    next.delete("run");
+    const query = next.toString();
+    router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
+  }, [pathname, router, searchParams]);
   const closeExpanded = useCallback(() => {
     setExpanded(null);
-    if (searchParams?.get("run")) {
-      const next = new URLSearchParams(searchParams.toString());
-      next.delete("run");
-      const query = next.toString();
-      router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
+    stripRunParam();
+  }, [stripRunParam]);
+  const closePlaybook = useCallback(() => {
+    setSelectedPlaybookRunId(null);
+    stripRunParam();
+  }, [stripRunParam]);
+  const openEntity = useCallback((entity: StatusEntity) => {
+    if (entity.kind === "playbook") {
+      setSelectedPlaybookRunId(entity.id);
+    } else {
+      setExpanded(entity);
     }
-  }, [pathname, router, searchParams]);
+  }, []);
   const [dateRange, setDateRange] = useState<DateRange>(
     initialRange && ["24h", "7d", "14d", "30d"].includes(initialRange)
       ? (initialRange as DateRange)
@@ -292,7 +309,7 @@ export function StatusView({
 
   const all = useMemo<StatusEntity[]>(
     () => data
-      ? [...data.agents, ...data.tasks, ...data.approvals].sort((a, b) => {
+      ? [...data.agents, ...data.tasks, ...data.approvals, ...(data.playbook_runs ?? [])].sort((a, b) => {
           const ta = (a.started_at || a.completed_at || "").toString();
           const tb = (b.started_at || b.completed_at || "").toString();
           return tb.localeCompare(ta);
@@ -346,7 +363,7 @@ export function StatusView({
   //     the entity id and thread_id differ but both share a UUID
   //     prefix on the same run — a startsWith match catches either).
   useEffect(() => {
-    if (!runParam || expanded || all.length === 0) return;
+    if (!runParam || expanded || selectedPlaybookRunId || all.length === 0) return;
     const match = all.find(
       (e) =>
         e.id === runParam ||
@@ -359,8 +376,8 @@ export function StatusView({
           return input?.thread_id === runParam;
         })(),
     );
-    if (match) setExpanded(match);
-  }, [runParam, expanded, all]);
+    if (match) openEntity(match);
+  }, [runParam, expanded, selectedPlaybookRunId, all, openEntity]);
 
   // Filter pipeline: kind → color → outcome → agent role → date range → search.
   const searchTerm = search.trim().toLowerCase();
@@ -590,26 +607,24 @@ export function StatusView({
         />
       </div>
 
-      {error && <p className="text-sm text-critical">{error}</p>}
-
-      {!allowLegacyRetry && (
-        <p className="rounded-md border border-border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
-          Legacy run history is read-only for v3 engagements. Start and manage
-          new work in{" "}
-          <Link
-            href={`/automation?tab=playbooks&slug=${encodeURIComponent(slug)}`}
-            className="font-medium text-foreground underline underline-offset-4"
-          >
-            Playbooks
-          </Link>
-          .
+      <QueryState
+        isLoading={data == null && !queryError}
+        error={queryError}
+        hasData={data != null}
+        loadingLabel="Loading runs…"
+        errorLabel="Could not load engagement runs."
+        onRetry={() => void refetch()}
+        isRetrying={isFetching}
+        compact={data != null}
+      />
+      {localError && (
+        <p role="alert" className="text-sm text-destructive">
+          Action failed: {localError}
         </p>
       )}
 
       {/* Box grid */}
-      {data == null && !error ? (
-        <p className="text-sm text-muted-foreground">Loading…</p>
-      ) : visible.length === 0 ? (
+      {data == null ? null : visible.length === 0 ? (
         <p className="text-sm text-muted-foreground">
           Nothing to show. {filter !== "all" || colorFilter !== "all" || outcomeFilter !== "all" || agentFilter !== "all"
             ? "Try clearing filters."
@@ -636,7 +651,7 @@ export function StatusView({
                       <StatusBox
                         key={`${entity.kind}-${entity.id}`}
                         entity={entity}
-                        onExpand={() => setExpanded(entity)}
+                        onExpand={() => openEntity(entity)}
                         onRetry={() => onRetry(entity)}
                         onCancel={() => onCancel(entity)}
                         retrying={retryingId === entity.id}
@@ -662,13 +677,14 @@ export function StatusView({
                         <th className="px-3 py-2">Outcome</th>
                         <th className="px-3 py-2">Started</th>
                         <th className="px-3 py-2">Synopsis</th>
+                        <th className="px-3 py-2 text-right">Action</th>
                       </tr>
                     </thead>
                     <tbody>
                       {shown.map((entity) => (
                         <tr
                           key={`${entity.kind}-${entity.id}`}
-                          onClick={() => setExpanded(entity)}
+                          onClick={() => openEntity(entity)}
                           className="cursor-pointer border-b border-border/50 last:border-0 hover:bg-muted/30"
                         >
                           <td className="px-3 py-2">
@@ -692,6 +708,20 @@ export function StatusView({
                           </td>
                           <td className="whitespace-nowrap px-3 py-2 text-xs text-muted-foreground"><DateTime value={entity.started_at} /></td>
                           <td className="max-w-md px-3 py-2 text-xs text-muted-foreground">{entity.synopsis ?? entity.subtitle ?? "—"}</td>
+                          <td className="px-3 py-2 text-right">
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="ghost"
+                              aria-label={`${entity.kind === "playbook" ? "Manage" : "Expand"} ${entity.title}`}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                openEntity(entity);
+                              }}
+                            >
+                              {entity.kind === "playbook" ? "Manage" : "Expand"}
+                            </Button>
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -730,6 +760,12 @@ export function StatusView({
           slug={slug}
           entity={expanded}
           onClose={closeExpanded}
+        />
+      )}
+      {selectedPlaybookRunId && (
+        <RunDetailModal
+          runId={selectedPlaybookRunId}
+          onClose={closePlaybook}
         />
       )}
     </div>
@@ -903,7 +939,7 @@ function StatusBox({
           </Button>
         )}
         <Button size="sm" variant="ghost" onClick={onExpand}>
-          Expand
+          {entity.kind === "playbook" ? "Manage" : "Expand"}
         </Button>
       </div>
     </div>
@@ -936,7 +972,7 @@ function ExpandedDetail({
       <div
         role="dialog"
         aria-modal="true"
-        aria-label="Status detail"
+        aria-label="Run detail"
         className="fixed left-1/2 top-1/2 z-[70] flex max-h-[85vh] w-[min(800px,94vw)] -translate-x-1/2 -translate-y-1/2 flex-col rounded-lg border border-border bg-popover p-5 shadow-xl"
       >
         <div className="flex items-start justify-between gap-4">

@@ -169,8 +169,8 @@ export default function AgentRunsPage() {
             </h1>
             <p className="mt-1 text-sm text-muted-foreground">
               Tenant-global runs — planner rank / combine / re-evaluate,
-              admin roadmap ops. Engagement-scoped runs live on each
-              engagement&apos;s Status tab.
+              admin roadmap ops. Engagement-scoped runs live in each
+              engagement&apos;s Runs view.
             </p>
           </div>
           <Button size="sm" variant="outline" onClick={() => void refetch()}>

@@ -25,6 +25,7 @@ import { DiagnosticsView } from "@/components/diagnostics-view";
 import { StrategyView } from "@/components/strategy-view";
 import { LegacyEngagementBanner } from "@/components/legacy-engagement-banner";
 import { PlaybooksTab } from "@/components/playbooks/playbooks-tab";
+import { QueryState } from "@/components/query-state";
 import { GrantsCard } from "@/components/grants-card";
 import { RunPrompt } from "@/components/run-prompt";
 import { RunPromptBridgeProvider } from "@/components/run-prompt-context";
@@ -242,6 +243,7 @@ function EngagementDetail({ slug }: { slug: string }) {
           });
         } else if (event.type === "approval.pending" && canWrite) {
           void qc.invalidateQueries({ queryKey: qk.pendingApprovals() });
+          void qc.invalidateQueries({ queryKey: qk.decisionInbox() });
           setPending({
             approval_id: event.approval_id,
             thread_id: event.thread_id,
@@ -430,12 +432,34 @@ function EngagementDetail({ slug }: { slug: string }) {
 
         <div className="min-w-0 flex-1">
           {view === "findings" && (
-            <FindingsView
-              slug={slug}
-              findings={findings}
-              onUpdated={upsertFinding}
-              onDeleted={removeFinding}
-            />
+            findingsQuery.data === undefined &&
+            (findingsQuery.isLoading || findingsQuery.error) ? (
+              <QueryState
+                isLoading={findingsQuery.isLoading}
+                error={findingsQuery.error}
+                loadingLabel="Loading findings…"
+                errorLabel="Could not load engagement findings."
+                onRetry={() => void findingsQuery.refetch()}
+                isRetrying={findingsQuery.isFetching}
+              />
+            ) : (
+              <div className="space-y-3">
+                <QueryState
+                  isLoading={false}
+                  error={findingsQuery.error}
+                  hasData
+                  compact
+                  onRetry={() => void findingsQuery.refetch()}
+                  isRetrying={findingsQuery.isFetching}
+                />
+                <FindingsView
+                  slug={slug}
+                  findings={findings}
+                  onUpdated={upsertFinding}
+                  onDeleted={removeFinding}
+                />
+              </div>
+            )
           )}
 
           {view === "strategy" && (

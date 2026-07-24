@@ -2,10 +2,10 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.models import ApprovalStatus, RiskLevel
 
@@ -35,6 +35,35 @@ class ApprovalInboxRead(ApprovalRead):
 
     engagement_slug: str
     engagement_name: str
+
+
+class ToolDecisionInboxRead(ApprovalInboxRead):
+    """Legacy tool approval in the unified decision inbox."""
+
+    kind: Literal["tool_approval"] = "tool_approval"
+
+
+class PlaybookDecisionInboxRead(BaseModel):
+    """Awaiting PlaybookRun enriched for the tenant-global decision inbox."""
+
+    kind: Literal["playbook_run"] = "playbook_run"
+    id: UUID
+    engagement_id: UUID
+    engagement_slug: str
+    engagement_name: str
+    created_at: datetime
+    playbook_slug: str
+    playbook_name: str
+    playbook_version: int
+    executor: str
+    scope_subset: list[str]
+    requested_by: UUID | None = None
+
+
+DecisionInboxItem = Annotated[
+    ToolDecisionInboxRead | PlaybookDecisionInboxRead,
+    Field(discriminator="kind"),
+]
 
 
 class ApprovalDecision(BaseModel):

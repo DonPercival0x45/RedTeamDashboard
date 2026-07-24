@@ -9,6 +9,7 @@ import { useState } from "react";
 import { AdminOnlyGate } from "@/components/admin-only-gate";
 import { InfraStatTiles } from "@/components/infrastructure/infra-stat-tiles";
 import { VmTable } from "@/components/infrastructure/vm-table";
+import { QueryState } from "@/components/query-state";
 import { useInfraStatus, useMe, useVms } from "@/lib/hooks";
 
 export default function InfrastructurePage() {
@@ -45,16 +46,47 @@ function InfrastructureView() {
         </p>
       </div>
 
-      {mockBanner}
-
-      <InfraStatTiles
-        vms={vms}
-        loading={vmsQuery.isLoading}
-        onFilter={setFilter}
-        activeFilter={filter}
+      <QueryState
+        isLoading={statusQuery.isLoading}
+        error={statusQuery.error}
+        hasData={statusQuery.data !== undefined}
+        loadingLabel="Checking infrastructure configuration…"
+        errorLabel="Could not load infrastructure status."
+        onRetry={() => void statusQuery.refetch()}
+        isRetrying={statusQuery.isFetching}
+        compact
       />
 
-      <VmTable vms={vms} loading={vmsQuery.isLoading} filter={filter} />
+      {mockBanner}
+
+      {vmsQuery.data === undefined && (vmsQuery.isLoading || vmsQuery.error) ? (
+        <QueryState
+          isLoading={vmsQuery.isLoading}
+          error={vmsQuery.error}
+          loadingLabel="Loading virtual machines…"
+          errorLabel="Could not load the virtual-machine inventory."
+          onRetry={() => void vmsQuery.refetch()}
+          isRetrying={vmsQuery.isFetching}
+        />
+      ) : (
+        <>
+          <QueryState
+            isLoading={false}
+            error={vmsQuery.error}
+            hasData
+            onRetry={() => void vmsQuery.refetch()}
+            isRetrying={vmsQuery.isFetching}
+            compact
+          />
+          <InfraStatTiles
+            vms={vms}
+            loading={false}
+            onFilter={setFilter}
+            activeFilter={filter}
+          />
+          <VmTable vms={vms} loading={false} filter={filter} />
+        </>
+      )}
     </div>
   );
 }

@@ -19,6 +19,7 @@ import Link from "next/link";
 import { useMemo, useRef, useState } from "react";
 import { AlertCircle, Download, SlidersHorizontal, Trash2, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { QueryState } from "@/components/query-state";
 import {
   useAgentConfigurations,
   useClearAgentConfigurationMutation,
@@ -162,6 +163,39 @@ export default function SettingsConfigurationsPage() {
         </p>
       </div>
 
+      <div className="space-y-2">
+        <QueryState
+          isLoading={engagementsQ.isLoading}
+          error={engagementsQ.error}
+          hasData={engagementsQ.data !== undefined}
+          loadingLabel="Loading engagements…"
+          errorLabel="Could not load engagements."
+          onRetry={() => void engagementsQ.refetch()}
+          isRetrying={engagementsQ.isFetching}
+          compact
+        />
+        <QueryState
+          isLoading={configsQ.isLoading}
+          error={configsQ.error}
+          hasData={configsQ.data !== undefined}
+          loadingLabel="Loading model configurations…"
+          errorLabel="Could not load model configurations."
+          onRetry={() => void configsQ.refetch()}
+          isRetrying={configsQ.isFetching}
+          compact
+        />
+        <QueryState
+          isLoading={providerKeysQ.isLoading}
+          error={providerKeysQ.error}
+          hasData={providerKeysQ.data !== undefined}
+          loadingLabel="Loading provider models…"
+          errorLabel="Could not load provider models."
+          onRetry={() => void providerKeysQ.refetch()}
+          isRetrying={providerKeysQ.isFetching}
+          compact
+        />
+      </div>
+
       <div className="flex flex-wrap items-center gap-2">
         <Button
           type="button"
@@ -208,7 +242,7 @@ export default function SettingsConfigurationsPage() {
         </div>
       )}
 
-      {availableModels.length === 0 && (
+      {providerKeysQ.data !== undefined && availableModels.length === 0 && (
         <div className="rounded border border-dashed border-border bg-muted/40 px-4 py-3 text-sm text-muted-foreground">
           No models discovered yet. Cache a provider key at{" "}
           <Link
@@ -224,7 +258,7 @@ export default function SettingsConfigurationsPage() {
 
       <div className="grid gap-6 md:grid-cols-[minmax(220px,280px)_1fr]">
         <aside className="space-y-1 rounded border border-border bg-card p-2">
-          {engagements.length === 0 && (
+          {engagementsQ.data !== undefined && engagements.length === 0 && (
             <div className="px-2 py-4 text-sm text-muted-foreground">
               No engagements yet.
             </div>
@@ -267,7 +301,7 @@ export default function SettingsConfigurationsPage() {
         </aside>
 
         <section className="space-y-4">
-          {selectedEngagement === null && (
+          {engagementsQ.data !== undefined && selectedEngagement === null && (
             <div className="rounded border border-dashed border-border px-4 py-8 text-center text-sm text-muted-foreground">
               Pick an engagement to configure.
             </div>
@@ -320,7 +354,12 @@ export default function SettingsConfigurationsPage() {
                         <select
                           id={`agent-cfg-${role.key}`}
                           value={current}
-                          disabled={isBusy || availableModels.length === 0}
+                          disabled={
+                            isBusy ||
+                            availableModels.length === 0 ||
+                            configsQ.data === undefined ||
+                            providerKeysQ.data === undefined
+                          }
                           onChange={(e) => setRoleModel(role.key, e.target.value)}
                           className="mt-1 w-full rounded border border-border bg-background px-2 py-1.5 text-sm"
                         >

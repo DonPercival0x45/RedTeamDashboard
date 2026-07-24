@@ -17,6 +17,7 @@ import {
   Dialog,
   DialogClose,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -97,6 +98,9 @@ export function KickRunModal({
       <DialogContent className="max-w-lg">
         <DialogHeader>
           <DialogTitle>Kick playbook run</DialogTitle>
+          <DialogDescription>
+            Select authorized targets from this engagement&apos;s scope.
+          </DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
           <div>

@@ -47,6 +47,9 @@ from app.models import (
     MCPLease,
     MCPLeaseStatus,
     OwnerEligibility,
+    Playbook,
+    PlaybookRun,
+    PlaybookRunStatus,
     Task,
     TaskKind,
     TaskStatus,
@@ -194,6 +197,22 @@ def _approval_outcome(row: Approval) -> StatusOutcome | None:
     return "success"
 
 
+def _playbook_outcome(row: PlaybookRun) -> StatusOutcome | None:
+    if row.status in {
+        PlaybookRunStatus.awaiting_approval,
+        PlaybookRunStatus.pending,
+        PlaybookRunStatus.running,
+    }:
+        return None
+    if row.status == PlaybookRunStatus.completed:
+        # A successful coverage run is still successful when it finds no
+        # issues; zero findings is not equivalent to an empty/no-op run.
+        return "success"
+    if row.status == PlaybookRunStatus.partial:
+        return "partial"
+    return "errored"
+
+
 def _agent_synopsis(row: AgentExecution, outcome: StatusOutcome | None) -> str:
     """One-line "here's what I tried / what happened / why I failed"."""
     if outcome == "errored":
@@ -264,6 +283,31 @@ def _approval_synopsis(row: Approval, outcome: StatusOutcome | None) -> str:
     return f"Approved {tool}."
 
 
+def _playbook_synopsis(row: PlaybookRun, playbook: Playbook) -> str:
+    targets = len(row.scope_subset or [])
+    if row.status == PlaybookRunStatus.awaiting_approval:
+        return f"Awaiting analyst approval for {playbook.name} on {targets} target(s)."
+    if row.status == PlaybookRunStatus.pending:
+        return f"Queued {playbook.name} for {targets} target(s)."
+    if row.status == PlaybookRunStatus.running:
+        completed = row.steps_succeeded + row.steps_failed
+        return f"Running {playbook.name}: {completed}/{row.steps_total} step(s) finished."
+    if row.status == PlaybookRunStatus.completed:
+        return (
+            f"Completed {row.steps_succeeded}/{row.steps_total} step(s); "
+            f"persisted {row.findings_new} new finding item(s)."
+        )
+    if row.status == PlaybookRunStatus.partial:
+        return (
+            f"Completed with partial results: {row.steps_succeeded} succeeded, "
+            f"{row.steps_failed} failed."
+        )
+    if row.status == PlaybookRunStatus.cancelled:
+        reason = row.rejection_reason or row.last_error or "cancelled by analyst"
+        return f"Cancelled: {reason[:120]}"
+    return f"Failed: {(row.last_error or 'unknown error')[:120]}"
+
+
 # ── status colour mappers ────────────────────────────────────────────────
 
 
@@ -291,6 +335,16 @@ def _approval_color(s: ApprovalStatus) -> StatusColor:
     if s == ApprovalStatus.denied:
         return "failed"
     return "completed"  # approved | edited | auto
+
+
+def _playbook_color(s: PlaybookRunStatus) -> StatusColor:
+    if s in {PlaybookRunStatus.awaiting_approval, PlaybookRunStatus.pending}:
+        return "pending"
+    if s == PlaybookRunStatus.running:
+        return "active"
+    if s in {PlaybookRunStatus.completed, PlaybookRunStatus.partial}:
+        return "completed"
+    return "failed"
 
 
 # ── status transition history (derived) ─────────────────────────────────
@@ -371,6 +425,48 @@ def _approval_history(row: Approval) -> list[StatusTransition]:
                 status=_approval_color(row.status),
                 raw_status=row.status.value,
                 at=row.decided_at,
+            )
+        )
+    return history
+
+
+def _playbook_history(row: PlaybookRun) -> list[StatusTransition]:
+    history = [
+        StatusTransition(
+            status="pending",
+            raw_status=(
+                PlaybookRunStatus.awaiting_approval.value
+                if row.approved_at is not None
+                or row.rejected_at is not None
+                or row.status == PlaybookRunStatus.awaiting_approval
+                else PlaybookRunStatus.pending.value
+            ),
+            at=row.created_at,
+        )
+    ]
+    if row.approved_at:
+        history.append(
+            StatusTransition(status="pending", raw_status="approved", at=row.approved_at)
+        )
+    if row.started_at:
+        history.append(
+            StatusTransition(
+                status="active",
+                raw_status=PlaybookRunStatus.running.value,
+                at=row.started_at,
+            )
+        )
+    terminal_at = row.completed_at or row.rejected_at
+    if terminal_at and row.status not in {
+        PlaybookRunStatus.awaiting_approval,
+        PlaybookRunStatus.pending,
+        PlaybookRunStatus.running,
+    }:
+        history.append(
+            StatusTransition(
+                status=_playbook_color(row.status),
+                raw_status=row.status.value,
+                at=terminal_at,
             )
         )
     return history
@@ -494,6 +590,48 @@ def _approval_to_entity(row: Approval) -> StatusEntity:
             "authorization_id": (str(row.authorization_id) if row.authorization_id else None),
         },
         history=_approval_history(row),
+    )
+
+
+def _playbook_to_entity(row: PlaybookRun, playbook: Playbook) -> StatusEntity:
+    scope = [str(item) for item in (row.scope_subset or [])]
+    if len(scope) <= 2:
+        target_summary = ", ".join(scope) or "no targets"
+    else:
+        target_summary = f"{', '.join(scope[:2])} +{len(scope) - 2} more"
+    return StatusEntity(
+        id=row.id,
+        kind="playbook",
+        title=playbook.name,
+        subtitle=f"Playbook v{playbook.version} · {target_summary}",
+        color=_playbook_color(row.status),
+        raw_status=row.status.value,
+        started_at=row.started_at or row.created_at,
+        completed_at=row.completed_at or row.rejected_at,
+        retryable=False,
+        run_slug=_run_slug(row.id),
+        outcome=_playbook_outcome(row),
+        synopsis=_playbook_synopsis(row, playbook),
+        log={
+            "playbook_slug": playbook.slug,
+            "playbook_version": playbook.version,
+            "executor": row.executor_kind.value,
+            "scope_subset": scope,
+            "steps_total": row.steps_total,
+            "steps_succeeded": row.steps_succeeded,
+            "steps_failed": row.steps_failed,
+            "findings_new": row.findings_new,
+            "findings_unvalidated": row.findings_unvalidated,
+            "findings_high_severity": row.findings_high_severity,
+            "findings_total": row.findings_total,
+            "requested_by": str(row.requested_by) if row.requested_by else None,
+            "approved_by": str(row.approved_by) if row.approved_by else None,
+            "approval_reason": row.approval_reason,
+            "rejected_by": str(row.rejected_by) if row.rejected_by else None,
+            "rejection_reason": row.rejection_reason,
+            "last_error": row.last_error,
+        },
+        history=_playbook_history(row),
     )
 
 
@@ -794,11 +932,21 @@ def get_engagement_status(
             .limit(200)
         ).scalars()
     )
+    playbook_runs = list(
+        session.execute(
+            select(PlaybookRun, Playbook)
+            .join(Playbook, Playbook.id == PlaybookRun.playbook_id)
+            .where(PlaybookRun.engagement_id == eng.id)
+            .order_by(PlaybookRun.created_at.desc())
+            .limit(200)
+        ).all()
+    )
 
     return EngagementStatusResponse(
         agents=[_agent_to_entity(a) for a in agents],
         tasks=[_task_to_entity(t) for t in tasks],
         approvals=[_approval_to_entity(a) for a in approvals],
+        playbook_runs=[_playbook_to_entity(run, playbook) for run, playbook in playbook_runs],
     )
 
 
@@ -1181,6 +1329,81 @@ def get_approval_steps(
         entity_id=approval_id,
         thread_id=row.thread_id or None,
     )
+
+
+@router.get(
+    "/engagements/{slug}/status/playbooks/{run_id}/steps",
+    response_model=StepLogResponse,
+)
+def get_playbook_steps(
+    slug: str,
+    run_id: uuid.UUID,
+    session: DbSession,
+    _user: CurrentUser,
+) -> StepLogResponse:
+    """Durable lifecycle trace for a PlaybookRun.
+
+    Playbook runs are database-driven rather than Redis-thread-driven, so their
+    useful step summary comes from the run's lifecycle timestamps and counters.
+    """
+    eng = _engagement_by_slug(session, slug)
+    row = session.get(PlaybookRun, run_id)
+    if row is None or row.engagement_id != eng.id:
+        raise HTTPException(status_code=404, detail="playbook run not found")
+    playbook = session.get(Playbook, row.playbook_id)
+    name = playbook.name if playbook else "Playbook"
+    steps = [
+        StepEntry(
+            at=row.created_at,
+            kind="playbook.requested",
+            label=f"Requested {name} for {len(row.scope_subset or [])} target(s).",
+            detail={"scope_subset": row.scope_subset, "executor": row.executor_kind.value},
+        )
+    ]
+    if row.approved_at:
+        steps.append(
+            StepEntry(
+                at=row.approved_at,
+                kind="playbook.approved",
+                label="Run approved by an analyst.",
+                detail={"reason": row.approval_reason},
+            )
+        )
+    if row.rejected_at:
+        steps.append(
+            StepEntry(
+                at=row.rejected_at,
+                kind="playbook.rejected",
+                label=f"Run rejected: {row.rejection_reason or 'no reason supplied'}",
+                detail={"reason": row.rejection_reason},
+            )
+        )
+    if row.started_at:
+        steps.append(
+            StepEntry(
+                at=row.started_at,
+                kind="playbook.started",
+                label=f"Started {row.steps_total} planned step(s).",
+                detail=None,
+            )
+        )
+    if row.completed_at and row.rejected_at is None:
+        steps.append(
+            StepEntry(
+                at=row.completed_at,
+                kind=f"playbook.{row.status.value}",
+                label=_playbook_synopsis(row, playbook) if playbook else row.status.value,
+                detail={
+                    "steps_succeeded": row.steps_succeeded,
+                    "steps_failed": row.steps_failed,
+                    "findings_new": row.findings_new,
+                    "findings_total": row.findings_total,
+                    "last_error": row.last_error,
+                },
+            )
+        )
+    steps.sort(key=lambda step: step.at)
+    return StepLogResponse(steps=steps, truncated=False)
 
 
 # ── retry endpoints ──────────────────────────────────────────────────────

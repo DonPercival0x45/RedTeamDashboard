@@ -766,9 +766,11 @@ function ImportedEntitiesSection({ slug }: { slug: string }) {
       {loadError && <p className="text-xs text-critical">{loadError}</p>}
 
       {items === undefined ? (
-        <p className="text-sm text-muted-foreground">
-          Loading imported entities…
-        </p>
+        loadError ? null : (
+          <p className="text-sm text-muted-foreground">
+            Loading imported entities…
+          </p>
+        )
       ) : visibleItems.length === 0 ? (
         <p className="text-sm text-muted-foreground">
           No imported entities yet — upload a Maltego .mtgx to populate.

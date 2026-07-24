@@ -401,8 +401,15 @@ need me, what just happened* — have no single honest answer:
 - **Playbook kickoff lives in Scope + Automation, never as a first-class Runs
   nav item**; the engagement nav has no Runs view at all.
 **Structural fix (Wave 4, elevates complaint #1):** union `PlaybookRun` into
-the Status feed + `/tasks/running` + the approval inbox; add a dedicated
-**Runs** nav item; give awaiting playbook runs a bell badge.
+the Status feed + running-jobs + the approval inbox; add a dedicated **Runs**
+nav item; give awaiting playbook runs a bell badge.
+
+**Landed locally:** Status now includes playbook runs and durable lifecycle
+steps; the nav is labeled **Runs**; a compatibility-safe `/jobs/running`
+composes legacy tasks + live playbooks; `/decision-inbox` composes both
+approval state machines with a discriminated contract; the Radix bell reuses
+the correct existing decision modal for each kind. Awaiting playbooks cannot
+bypass the reason/actor-preserving reject path via generic cancellation.
 
 ### Root cause B — React Query errors are swallowed into `?? []` / `!data`
 **Six+ surfaces collapse "failed" into "empty" or "loading forever":**
@@ -416,6 +423,13 @@ the Status feed + `/tasks/running` + the approval inbox; add a dedicated
 **Systemic fix (Wave 4):** a shared `<QueryState>` helper (error / loading /
 empty / children) adopted at every `useQuery` site. Review rule: *any
 `useQuery` whose `error` isn't read is a bug.*
+
+**Foundation landed locally:** shared accessible `<QueryState>` with retry and
+stale-cache warnings, adopted in engagement Findings, Playbooks catalog/runs,
+run detail, Status/Runs, Running Jobs, Infrastructure, Configurations, and the
+decision inbox. Imported Entities no longer renders a terminal error alongside
+an infinite loader. Analytics and remaining auxiliary-query consumers are the
+next adoption batch.
 
 ### Notable consistency/copy offenders (each maps to a small fix)
 - **Entity quick-actions dead on v3** (already P1) — every new engagement.

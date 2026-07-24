@@ -25,10 +25,20 @@ from app.models import (
     AuditLog,
     Authorization,
     Engagement,
+    Playbook,
+    PlaybookRun,
+    PlaybookRunStatus,
 )
 from app.models.command_outbox import CommandOutbox
 from app.runs.streams import inbound_stream, load_run_model
-from app.schemas.approval import ApprovalDecision, ApprovalInboxRead, ApprovalRead
+from app.schemas.approval import (
+    ApprovalDecision,
+    ApprovalInboxRead,
+    ApprovalRead,
+    DecisionInboxItem,
+    PlaybookDecisionInboxRead,
+    ToolDecisionInboxRead,
+)
 from app.services.command_outbox import enqueue_command, publish_entry
 
 router = APIRouter()
@@ -76,6 +86,61 @@ def list_approval_inbox(
         )
         for approval, slug, name in rows
     ]
+
+
+@router.get("/decision-inbox", response_model=list[DecisionInboxItem])
+def list_decision_inbox(
+    session: DbSession,
+    _user: CurrentUser,
+    limit: Annotated[int, Query(ge=1, le=200)] = 100,
+) -> list[DecisionInboxItem]:
+    """Tenant-global queue of every decision currently awaiting an analyst.
+
+    Keep both write state machines separate; this endpoint only composes their
+    read models so the app-shell bell cannot hide gated playbook runs.
+    """
+    tool_rows = session.execute(
+        select(Approval, Engagement.slug, Engagement.name)
+        .join(Engagement, Engagement.id == Approval.engagement_id)
+        .where(Approval.status == ApprovalStatus.pending)
+        .order_by(Approval.created_at.asc(), Approval.id.asc())
+        .limit(limit)
+    ).all()
+    playbook_rows = session.execute(
+        select(PlaybookRun, Playbook, Engagement.slug, Engagement.name)
+        .join(Playbook, Playbook.id == PlaybookRun.playbook_id)
+        .join(Engagement, Engagement.id == PlaybookRun.engagement_id)
+        .where(PlaybookRun.status == PlaybookRunStatus.awaiting_approval)
+        .order_by(PlaybookRun.created_at.asc(), PlaybookRun.id.asc())
+        .limit(limit)
+    ).all()
+
+    items: list[DecisionInboxItem] = [
+        ToolDecisionInboxRead(
+            **ApprovalRead.model_validate(approval).model_dump(),
+            engagement_slug=slug,
+            engagement_name=name,
+        )
+        for approval, slug, name in tool_rows
+    ]
+    items.extend(
+        PlaybookDecisionInboxRead(
+            id=run.id,
+            engagement_id=run.engagement_id,
+            engagement_slug=slug,
+            engagement_name=engagement_name,
+            created_at=run.created_at,
+            playbook_slug=playbook.slug,
+            playbook_name=playbook.name,
+            playbook_version=playbook.version,
+            executor=run.executor_kind.value,
+            scope_subset=[str(item) for item in (run.scope_subset or [])],
+            requested_by=run.requested_by,
+        )
+        for run, playbook, slug, engagement_name in playbook_rows
+    )
+    items.sort(key=lambda item: (item.created_at, item.kind, str(item.id)))
+    return items[:limit]
 
 
 @router.get("/approvals/{approval_id}", response_model=ApprovalRead)

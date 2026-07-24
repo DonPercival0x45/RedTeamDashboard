@@ -150,6 +150,29 @@ export interface ApprovalInboxItem extends Approval {
   engagement_name: string;
 }
 
+export interface ToolDecisionInboxItem extends ApprovalInboxItem {
+  kind: "tool_approval";
+}
+
+export interface PlaybookDecisionInboxItem {
+  kind: "playbook_run";
+  id: string;
+  engagement_id: string;
+  engagement_slug: string;
+  engagement_name: string;
+  created_at: string;
+  playbook_slug: string;
+  playbook_name: string;
+  playbook_version: number;
+  executor: "internal" | "mcp";
+  scope_subset: string[];
+  requested_by: string | null;
+}
+
+export type DecisionInboxItem =
+  | ToolDecisionInboxItem
+  | PlaybookDecisionInboxItem;
+
 export type Severity = "info" | "low" | "medium" | "high" | "critical";
 
 export type FindingPhase =
@@ -284,7 +307,7 @@ export interface LoggedEvent {
 // ── Status tab (v0.8.0) ───────────────────────────────────────────────────
 
 export type StatusColor = "active" | "pending" | "completed" | "failed";
-export type StatusKind = "agent" | "task" | "approval";
+export type StatusKind = "agent" | "task" | "approval" | "playbook";
 // v1.2.0: sub-outcome nuance under the four colours. null on
 // still-running / pending rows.
 export type StatusOutcome = "success" | "empty" | "partial" | "errored";
@@ -320,6 +343,7 @@ export interface EngagementStatusResponse {
   agents: StatusEntity[];
   tasks: StatusEntity[];
   approvals: StatusEntity[];
+  playbook_runs: StatusEntity[];
 }
 
 // v1.2.0: one line in the per-entity step log. Newest last.

@@ -254,7 +254,12 @@ def cancel_run(
         raise KeyError(str(run_id))
     if run.status is PlaybookRunStatus.cancelled:
         return run
-    if run.status in TERMINAL_STATUSES:
+    if run.status not in {
+        PlaybookRunStatus.pending,
+        PlaybookRunStatus.running,
+    }:
+        # awaiting_approval must go through reject_run so the analyst identity
+        # and required rejection reason are preserved in the audit trail.
         raise RunNotCancellableError(run_id, run.status)
     ts = _now(now)
     run.status = PlaybookRunStatus.cancelled

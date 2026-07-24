@@ -9,11 +9,12 @@
 //      3s while anything is running/pending/awaiting; 15s otherwise.
 
 import { useState } from "react";
-import { Play, Loader2 } from "lucide-react";
+import { Play } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { KickRunModal } from "@/components/playbooks/kick-run-modal";
 import { RunDetailModal } from "@/components/playbooks/run-detail-modal";
+import { QueryState } from "@/components/query-state";
 import { usePlaybooks, usePlaybookRuns } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
 import type { PlaybookRead, PlaybookRunRead, PlaybookRunStatus } from "@/lib/types";
@@ -156,53 +157,88 @@ export function PlaybooksTab({ engagementSlug }: { engagementSlug: string }) {
 
       <section>
         <h3 className="text-sm font-semibold mb-3">Catalog</h3>
-        {playbooksQuery.isLoading ? (
-          <p className="text-sm text-muted-foreground flex items-center gap-2">
-            <Loader2 className="h-3 w-3 animate-spin" /> Loading playbooks…
-          </p>
-        ) : catalog.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
-            No playbooks in the catalog yet.
-          </p>
+        {playbooksQuery.data === undefined &&
+        (playbooksQuery.isLoading || playbooksQuery.error) ? (
+          <QueryState
+            isLoading={playbooksQuery.isLoading}
+            error={playbooksQuery.error}
+            loadingLabel="Loading playbooks…"
+            errorLabel="Could not load the playbook catalog."
+            onRetry={() => void playbooksQuery.refetch()}
+            isRetrying={playbooksQuery.isFetching}
+          />
         ) : (
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            {catalog.map((pb) => (
-              <PlaybookCard key={pb.id} playbook={pb} onKick={setKickPlaybook} />
-            ))}
-          </div>
+          <>
+            <QueryState
+              isLoading={false}
+              error={playbooksQuery.error}
+              hasData
+              compact
+              onRetry={() => void playbooksQuery.refetch()}
+              isRetrying={playbooksQuery.isFetching}
+            />
+            {catalog.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                No playbooks in the catalog yet.
+              </p>
+            ) : (
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                {catalog.map((pb) => (
+                  <PlaybookCard key={pb.id} playbook={pb} onKick={setKickPlaybook} />
+                ))}
+              </div>
+            )}
+          </>
         )}
       </section>
 
       <section>
         <h3 className="text-sm font-semibold mb-3">Runs</h3>
-        {runsQuery.isLoading ? (
-          <p className="text-sm text-muted-foreground flex items-center gap-2">
-            <Loader2 className="h-3 w-3 animate-spin" /> Loading runs…
-          </p>
-        ) : runs.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
-            No playbook runs on this engagement yet.
-          </p>
+        {runsQuery.data === undefined && (runsQuery.isLoading || runsQuery.error) ? (
+          <QueryState
+            isLoading={runsQuery.isLoading}
+            error={runsQuery.error}
+            loadingLabel="Loading runs…"
+            errorLabel="Could not load playbook runs."
+            onRetry={() => void runsQuery.refetch()}
+            isRetrying={runsQuery.isFetching}
+          />
         ) : (
-          <div className="overflow-hidden rounded-lg border border-border">
-            <table className="w-full text-left">
-              <thead className="bg-muted/50 text-xs uppercase tracking-wide text-muted-foreground">
-                <tr>
-                  <th className="px-3 py-2">Status</th>
-                  <th className="px-3 py-2">Playbook</th>
-                  <th className="px-3 py-2">Executor</th>
-                  <th className="px-3 py-2">Scope</th>
-                  <th className="px-3 py-2">Steps</th>
-                  <th className="px-3 py-2">Started</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-border">
-                {runs.map((run) => (
-                  <RunRow key={run.id} run={run} onOpen={setOpenRun} />
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <>
+            <QueryState
+              isLoading={false}
+              error={runsQuery.error}
+              hasData
+              compact
+              onRetry={() => void runsQuery.refetch()}
+              isRetrying={runsQuery.isFetching}
+            />
+            {runs.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                No playbook runs on this engagement yet.
+              </p>
+            ) : (
+              <div className="overflow-hidden rounded-lg border border-border">
+                <table className="w-full text-left">
+                  <thead className="bg-muted/50 text-xs uppercase tracking-wide text-muted-foreground">
+                    <tr>
+                      <th className="px-3 py-2">Status</th>
+                      <th className="px-3 py-2">Playbook</th>
+                      <th className="px-3 py-2">Executor</th>
+                      <th className="px-3 py-2">Scope</th>
+                      <th className="px-3 py-2">Steps</th>
+                      <th className="px-3 py-2">Started</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {runs.map((run) => (
+                      <RunRow key={run.id} run={run} onOpen={setOpenRun} />
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
         )}
       </section>
 

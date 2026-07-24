@@ -302,7 +302,7 @@ export function RunPrompt({
         <CardTitle>Start a run</CardTitle>
         <CardDescription>
           Describe the authorized enumeration or scanning work you want to
-          begin. You can follow progress from Status.
+          begin. You can follow progress from Runs.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -473,7 +473,7 @@ export function RunPrompt({
                     {lastDispatched.threadId.slice(0, 8)}
                   </code>{" "}
                   · {lastDispatched.provider}/{lastDispatched.modelName}. Follow
-                  progress and any approval requests from <strong>Status</strong>.
+                  progress and any approval requests from <strong>Runs</strong>.
                 </p>
               </div>
               <button
