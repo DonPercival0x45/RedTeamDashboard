@@ -170,5 +170,107 @@ P2-20 deploy.yml → P2-21 npm advisories → P2-22 ARM scope.
   coding.
 - **Auth cluster (P2-1/2/3)** touches every request path — ship behind the new
   test platform and a focused regression run.
-- The 6-way user-journey audit in flight may surface additional P2/P3 UX items;
-  this doc's P2/P3 tables will grow when it lands.
+
+## 8. User-journey audit — refinements & new findings (6-slice sweep)
+
+A focused read-only sweep of real operator journeys (onboarding/auth,
+engagement setup, findings, strategy/intelligence, playbooks/approvals/status,
+reporting/tools/settings/cross-cutting) ran across the branch. Findings below
+**merge into** the waves in §5 — new items are tagged `[NEW]`; severity
+**bumps** from the §3 tables are called out. (`findings.md` slice re-running;
+its P2/P3s will append here.)
+
+### Severity bumps (promote in §3)
+- **Playbook cancel attribution (was P2-7)** → **P1**. Charter invariant
+  ("audit_log captures every action"); cancel discards the actor and writes
+  no `AuditLog`. Add `cancelled_by` + write `playbook_run.cancelled`.
+- **v3 entity quick-actions (was P2-15)** → **P1**. Every recon button in the
+  entity slide-over is dead UX on v3 (now the only architecture the wizard
+  creates) — `pendingPrompt` is set then dropped because Scope mounts
+  Playbooks, not RunPrompt.
+
+### New P1 (stop-the-line for a journey)
+- **[NEW] No React error boundary anywhere** — `app/error.tsx` +
+  `app/global-error.tsx` are absent, so one unguarded field on any data-dense
+  route (Analytics, Infrastructure, report readiness, findings) white-screens
+  the **whole route** with no in-app recovery. *Wave 4.*
+- **[NEW] No browser path to mint a CLI/API key** — `POST /api-keys` requires
+  `X-API-Key` (`RequireScope`), unreachable from an Entra browser session; no
+  Settings panel exists. Browser→CLI onboarding is a dead-end. *Wave 4*
+  (add admin-only `/admin/api-keys` via `CurrentAdminUser` + a panel).
+- **[NEW] Work-item results & comments are backend-only** — `strategy-api.ts`
+  defines `listWorkItemResults`/`createWorkItemResult`/`decideWorkItemResult`
+  but **zero components import them**; `WorkItemFlyout` renders no results/
+  comments/accept-reject. Agent-proposed results are invisible. *Wave 4.*
+
+### New P2 (degraded surfaces)
+- **[NEW] Uploaded-tool invocation UI never shipped** — `invokeTool`/
+  `listToolInvocations`/`getToolInvocation` have **no callers**; the Tools page
+  still copy-promises invocation "in v0.12.0" (we're at v3.0.1). Either ship
+  the invocation affordance or correct the copy + delete the dead fns. *Wave 5.*
+- **[NEW] `pendingPrompt` leaks across engagements** — slug-change reset clears
+  events but not `pendingPrompt`; a legacy quick-action can prefill another
+  engagement's run box. *Wave 4* (one line: `setPendingPrompt(null)` in the
+  slug effect).
+- **[NEW] Methodologies outage dead-ends `/new`** — wizard hard-requires a
+  methodology and offers no legacy fallback; a catalog outage blocks all new
+  engagement creation. *Wave 4.*
+- **[NEW] PDF export discards backend error detail** —
+  `downloadEngagementReport` throws bare `${status} ${statusText}` (unlike the
+  JSON export's parsed `ApiError`); PDF failures are undiagnosable from the UI.
+  *Wave 5* (~6 lines).
+- **[NEW] Engagement Memory has no API/UI** — `MemoryElement`/`memory.py` are
+  internal-only; no `GET /engagements/{slug}/memory`, no restore path from
+  the UI. *Wave 4* (read + restore endpoints + Strategy panel).
+- **[NEW] Status tab is blind to playbook runs on v3** — `get_engagement_status`
+  returns agents/tasks/approvals only; v3 analysts must context-switch to find/
+  cancel their primary execution surface. *Wave 4* (add a `playbook_runs` slice
+  or a deep-link card).
+- **[NEW] No unified approval queue for awaiting playbook runs** — the bell
+  lists LangGraph interrupts only; awaiting playbook runs live per-engagement.
+  *Wave 4* (`GET /playbook-runs?status=awaiting_approval` + inbox badge).
+- **[NEW] Settings "← engagements" back-link leaves the modal open** on every
+  panel (navigation happens under a still-open overlay). *Wave 4* (one line:
+  `useEffect(() => setSettingsOpen(false), [pathname])`).
+- **[NEW] Admin-gated settings pages fire guaranteed 403s for user/guest**
+  before the role guard renders (`integrations`/`management`/`tools` call their
+  admin hooks unconditionally on direct-URL). *Wave 4* (gate hooks on
+  `me?.is_admin` / `AdminOnlyGate`).
+- **[NEW] `?setup=initial-guidance` deep-link is read but never produced** —
+  two info banners are unreachable in normal flow (dead code). *Wave 4.*
+
+### New P3 (polish/hygiene batch — Wave 6)
+- Dead `IdentityMenu` component (superseded by `LeftSidebar` `UserChip`).
+- `/settings/keys` copy omits that **sign-out clears all provider keys**
+  (contradicts "held for the entire session").
+- `/settings/keys` comment falsely claims a guest `enabled` guard exists.
+- CLI README stale "web viewer is read-only" claim.
+- Kick modal doesn't dedupe scope (duplicate rows → duplicate coverage records).
+- Approve double-click → benign 409 flash (no optimistic disable/close).
+- `LegacyEngagementBanner` dismiss copy says "next login" but it's
+  tab-scoped `sessionStorage`.
+- "Convert to v3" button is a tab-switch dressed as an action (no scroll/focus).
+- v3 Status banner shows "legacy run history is read-only" on brand-new
+  engagements with no legacy history.
+- `/new` wizard has no guest gate (guests fill the form, 403 on submit).
+- Engagement-card inline scope-add diverges from the full editor (no Found/
+  note fields).
+- `ReadOnlyNotice` conflates engagement status with work-state completion.
+- Strategy workspace bypasses React Query (manual seq-counter fetch of 8–13
+  slices every 30s + on focus).
+- `KickRunModal` missing `DialogDescription` (a11y — surfaced by the new test).
+- Pervasive native `confirm`/`alert`/`prompt` (37 sites) — not themed/a11y.
+- App shell not responsive (no mobile/tablet layout).
+- Automation defaults to Reporting, not Playbooks; 3 of 5 tabs are placeholders.
+- `vm-actions-menu.tsx` header comment still says actions are "disabled /
+  coming soon" (they shipped).
+- `costs-view.tsx` reads an `invocations` count that can never be >0 from UI.
+
+### Reconciliation (orphan-reclaim)
+The playbooks journey reviewer notes `playbook_worker._execute`'s outer
+try/except marks botched runs `failed` (Python-level exceptions are handled).
+This is **consistent** with Ken#3's P1-1: the orphan case is **not** a Python
+exception — it's a hard `SIGKILL`/OOM or the daemon-thread `join(timeout=5)`
+abandoning the in-flight transaction during graceful rolling deploy, which
+never reaches the except handler. P1-1 stands for crash/deploys.
+
