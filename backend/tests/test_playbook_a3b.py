@@ -27,6 +27,8 @@ from app.models import (
     EngagementWorkState,
     PlaybookRun,
     PlaybookRunStatus,
+    ScopeItem,
+    ScopeKind,
     User,
     UserRole,
 )
@@ -275,6 +277,14 @@ def engagement(db: Session) -> Engagement:
     )
     db.add(eng)
     db.commit()
+    # POST /playbook-runs now enforces the in-scope-only invariant; seed the
+    # target the HTTP tests use so they exercise the happy path.
+    db.add(
+        ScopeItem(
+            engagement_id=eng.id, kind=ScopeKind.domain, value="foo.example"
+        )
+    )
+    db.commit()
     meth.load_seed_catalog(db)
     meth.select_for_engagement(
         db,
@@ -370,6 +380,71 @@ def test_create_playbook_run_unknown_playbook_404(
         json={"playbook_slug": "never", "scope_subset": ["x"]},
     )
     assert resp.status_code == 404
+
+
+def test_create_playbook_run_rejects_out_of_scope_target(
+    db: Session, client: TestClient, user: User, engagement: Engagement
+) -> None:
+    """Complaint 4b — arbitrary/out-of-scope targets must not be queued."""
+    load_seed_playbooks(db)
+    db.commit()
+    resp = client.post(
+        f"/engagements/{engagement.slug}/playbook-runs",
+        headers=_headers(user),
+        json={"playbook_slug": "osint-passive-domain", "scope_subset": ["other.example"]},
+    )
+    assert resp.status_code == 422
+    assert "other.example" in resp.text
+
+
+def test_create_playbook_run_allows_in_scope_subdomain(
+    db: Session, client: TestClient, user: User, engagement: Engagement
+) -> None:
+    """A subdomain of a declared domain include is in scope."""
+    load_seed_playbooks(db)
+    db.commit()
+    resp = client.post(
+        f"/engagements/{engagement.slug}/playbook-runs",
+        headers=_headers(user),
+        json={"playbook_slug": "osint-passive-domain", "scope_subset": ["api.foo.example"]},
+    )
+    assert resp.status_code == 202, resp.text
+
+
+def test_create_playbook_run_rejects_excluded_target(
+    db: Session, client: TestClient, user: User, engagement: Engagement
+) -> None:
+    """An exclusion wins even when it also matches an include."""
+    load_seed_playbooks(db)
+    db.add(
+        ScopeItem(
+            engagement_id=engagement.id,
+            kind=ScopeKind.domain,
+            value="secret.foo.example",
+            is_exclusion=True,
+        )
+    )
+    db.commit()
+    resp = client.post(
+        f"/engagements/{engagement.slug}/playbook-runs",
+        headers=_headers(user),
+        json={"playbook_slug": "osint-passive-domain", "scope_subset": ["secret.foo.example"]},
+    )
+    assert resp.status_code == 422
+    assert "secret.foo.example" in resp.text
+
+
+def test_create_playbook_run_rejects_empty_scope_subset(
+    db: Session, client: TestClient, user: User, engagement: Engagement
+) -> None:
+    load_seed_playbooks(db)
+    db.commit()
+    resp = client.post(
+        f"/engagements/{engagement.slug}/playbook-runs",
+        headers=_headers(user),
+        json={"playbook_slug": "osint-passive-domain", "scope_subset": []},
+    )
+    assert resp.status_code == 422
 
 
 def test_list_and_get_playbook_run_round_trip(

@@ -30,6 +30,7 @@ from app.models import (
     PlaybookExecutorKind,
     PlaybookRun,
     PlaybookStep,
+    ScopeItem,
 )
 from app.schemas.playbook import (
     PlaybookApprovalPayload,
@@ -62,6 +63,7 @@ from app.services.playbook import (
     update_playbook,
     update_step,
 )
+from app.services.scope_matcher import evaluate_scope_candidates, infer_scope_kind
 
 router = APIRouter()
 
@@ -73,6 +75,50 @@ def _engagement_by_slug(session: Session, slug: str) -> Engagement:
     if eng is None:
         raise HTTPException(status_code=404, detail=f"engagement '{slug}' not found")
     return eng
+
+
+def _validate_scope_subset(
+    session: Session, engagement: Engagement, scope_subset: list[str]
+) -> None:
+    """Enforce the in-scope-only invariant on playbook run targets.
+
+    ``scope_subset`` values are handed straight to playbook tools, so an
+    unvalidated free-form string would let an analyst run a playbook against
+    an out-of-engagement target. Require every value to be non-empty and to
+    evaluate as *in scope* for the engagement (declared include, or a
+    subdomain/IP inside one) and not match any exclusion. Reuses the canonical
+    ``scope_matcher`` used by every other execution gate.
+    """
+    if not scope_subset:
+        raise HTTPException(
+            status_code=422,
+            detail="scope_subset is required — pick at least one in-scope target.",
+        )
+    items = list(
+        session.execute(
+            select(ScopeItem).where(ScopeItem.engagement_id == engagement.id)
+        ).scalars()
+    )
+    rejected: list[str] = []
+    for raw in scope_subset:
+        value = str(raw).strip()
+        if not value:
+            rejected.append("(empty value)")
+            continue
+        match = evaluate_scope_candidates(
+            [(value, infer_scope_kind(value))], items
+        )
+        if not match.allowed:
+            rejected.append(f"{value!r} ({match.reason})")
+    if rejected:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "scope_subset targets must be in the engagement scope and not "
+                f"match an exclusion. Rejected: {'; '.join(rejected)}. "
+                "Add the target to Scope first."
+            ),
+        )
 
 
 def _run_read(session: Session, run: PlaybookRun) -> PlaybookRunRead:
@@ -393,6 +439,10 @@ def create_playbook_run(
                 f"{sorted(k.value for k in PlaybookExecutorKind)}"
             ),
         ) from exc
+    # In-scope-only invariant (complaint 4b): every submitted target must be in
+    # the engagement's declared scope and not match an exclusion, before we queue
+    # anything for the worker to hand to tools.
+    _validate_scope_subset(session, engagement, payload.scope_subset)
     run = enqueue_run(
         session,
         engagement=engagement,

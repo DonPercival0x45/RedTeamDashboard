@@ -1,13 +1,12 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { PlaybookRead } from "@/lib/types";
+import type { PlaybookRead, ScopeItem } from "@/lib/types";
 
-// Component-layer proof: the KickRunModal is the v3 playbook kickoff surface
-// and its scope parsing is the exact UX flagged by the audit (free-form text
-// passed straight through). This test locks in the current submit payload so
-// any future change to scope parsing is deliberate, not accidental, and it
-// proves @testing-library/react works against the Radix Dialog primitives.
+// Component-layer proof: the KickRunModal is the v3 playbook kickoff surface.
+// It now presents the engagement's EXISTING scope as a picker (no re-typing),
+// so these tests lock in the picker behaviour + the submit payload, and prove
+// @testing-library/react works against the Radix Dialog primitives.
 
 const mockMutateAsync = vi.fn().mockResolvedValue(undefined);
 const mockCreate = vi.fn((_slug: string) => ({
@@ -15,8 +14,59 @@ const mockCreate = vi.fn((_slug: string) => ({
   isPending: false,
 }));
 
+const scopeItems: ScopeItem[] = [
+  {
+    id: "s1",
+    engagement_id: "e1",
+    kind: "domain",
+    value: "foo.example",
+    is_exclusion: false,
+    note: null,
+    created_at: "",
+    updated_at: "",
+  },
+  {
+    id: "s2",
+    engagement_id: "e1",
+    kind: "domain",
+    value: "bar.example",
+    is_exclusion: false,
+    note: null,
+    created_at: "",
+    updated_at: "",
+  },
+  {
+    id: "s3",
+    engagement_id: "e1",
+    kind: "ip",
+    value: "10.0.0.9",
+    is_exclusion: false,
+    note: "edge host",
+    created_at: "",
+    updated_at: "",
+  },
+  {
+    id: "s4",
+    engagement_id: "e1",
+    kind: "domain",
+    value: "excluded.example",
+    is_exclusion: true, // must NOT be offered
+    note: null,
+    created_at: "",
+    updated_at: "",
+  },
+];
+
+let mockScopeData: ScopeItem[] = scopeItems;
+const mockUseScope = vi.fn((_slug: string) => ({
+  data: mockScopeData,
+  isLoading: false,
+  error: null,
+}));
+
 vi.mock("@/lib/hooks", () => ({
   useCreatePlaybookRunMutation: (slug: string) => mockCreate(slug),
+  useScope: (slug: string) => mockUseScope(slug),
 }));
 
 import { KickRunModal } from "@/components/playbooks/kick-run-modal";
@@ -35,6 +85,8 @@ const playbook: PlaybookRead = {
 beforeEach(() => {
   mockMutateAsync.mockClear();
   mockCreate.mockClear();
+  mockUseScope.mockClear();
+  mockScopeData = scopeItems;
 });
 
 afterEach(() => {
@@ -42,7 +94,21 @@ afterEach(() => {
 });
 
 describe("KickRunModal", () => {
-  it("parses comma + newline separated scope into the run payload", async () => {
+  it("offers only non-exclusion scope items as pickable targets", () => {
+    render(
+      <KickRunModal
+        engagementSlug="acme"
+        playbook={playbook}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("foo.example")).toBeInTheDocument();
+    expect(screen.getByText("bar.example")).toBeInTheDocument();
+    expect(screen.getByText("10.0.0.9")).toBeInTheDocument();
+    expect(screen.queryByText("excluded.example")).not.toBeInTheDocument();
+  });
+
+  it("submits only the selected targets in the run payload", async () => {
     const user = userEvent.setup();
     const onClose = vi.fn();
     render(
@@ -53,23 +119,40 @@ describe("KickRunModal", () => {
       />,
     );
 
-    const scope = screen.getByLabelText(/scope selection/i);
-    await user.type(scope, "foo.example, bar.example{Enter}baz.example");
-
+    await user.click(screen.getByText("foo.example"));
+    await user.click(screen.getByText("bar.example"));
     await user.click(screen.getByRole("button", { name: /kick run/i }));
 
     await waitFor(() => expect(mockMutateAsync).toHaveBeenCalledTimes(1));
     expect(mockMutateAsync).toHaveBeenCalledWith({
       playbook_slug: "osint-enrichment",
       playbook_version: 3,
-      scope_subset: ["foo.example", "bar.example", "baz.example"],
+      scope_subset: ["foo.example", "bar.example"],
       executor: "internal",
     });
-    // onClose fires after a successful kick so the parent unmounts the modal.
     expect(onClose).toHaveBeenCalled();
   });
 
-  it("disables Kick until at least one scope item is entered", async () => {
+  it("select-all picks every non-exclusion target", async () => {
+    const user = userEvent.setup();
+    render(
+      <KickRunModal
+        engagementSlug="acme"
+        playbook={playbook}
+        onClose={vi.fn()}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /select all/i }));
+    await user.click(screen.getByRole("button", { name: /kick run/i }));
+    await waitFor(() => expect(mockMutateAsync).toHaveBeenCalledTimes(1));
+    expect(mockMutateAsync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scope_subset: ["foo.example", "bar.example", "10.0.0.9"],
+      }),
+    );
+  });
+
+  it("disables Kick until at least one target is selected", async () => {
     const user = userEvent.setup();
     render(
       <KickRunModal
@@ -80,9 +163,27 @@ describe("KickRunModal", () => {
     );
     const kick = screen.getByRole("button", { name: /kick run/i });
     expect(kick).toBeDisabled();
-
-    await user.type(screen.getByLabelText(/scope selection/i), "only.example");
+    await user.click(screen.getByText("foo.example"));
     expect(kick).toBeEnabled();
+  });
+
+  it("guides the analyst to add scope when the engagement has none", () => {
+    mockScopeData = [];
+    render(
+      <KickRunModal
+        engagementSlug="acme"
+        playbook={playbook}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(
+      screen.getByText(/no in-scope targets on this engagement yet/i),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /kick run/i })).toBeDisabled();
+    expect(screen.getByRole("link", { name: /scope tab/i })).toHaveAttribute(
+      "href",
+      expect.stringContaining("view=scope"),
+    );
   });
 
   it("shows the error message when the kick fails and keeps the modal open", async () => {
@@ -96,10 +197,8 @@ describe("KickRunModal", () => {
         onClose={onClose}
       />,
     );
-
-    await user.type(screen.getByLabelText(/scope selection/i), "x.example");
+    await user.click(screen.getByText("foo.example"));
     await user.click(screen.getByRole("button", { name: /kick run/i }));
-
     await waitFor(() =>
       expect(screen.getByText(/engagement not active/i)).toBeInTheDocument(),
     );

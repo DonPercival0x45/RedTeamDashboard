@@ -36,6 +36,8 @@ from app.models import (
     Playbook,
     PlaybookRun,
     PlaybookRunStatus,
+    ScopeItem,
+    ScopeKind,
     User,
     UserRole,
 )
@@ -78,6 +80,12 @@ def engagement(db: Session) -> Engagement:
         work_state=EngagementWorkState.active,
     )
     db.add(eng)
+    db.flush()
+    # POST /playbook-runs enforces in-scope-only; seed the target the HTTP
+    # tests submit.
+    db.add(
+        ScopeItem(engagement_id=eng.id, kind=ScopeKind.domain, value="foo.com")
+    )
     db.flush()
     meth.load_seed_catalog(db)
     meth.select_for_engagement(

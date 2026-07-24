@@ -1,11 +1,17 @@
 "use client";
 
-// v3 Track A — kick a playbook run. Analyst picks scope items + executor
-// (internal / mcp) and hits Kick. Backend returns 202 with the pending row
-// (or awaiting_approval for active playbooks); the parent's usePlaybookRuns
-// hook re-fetches immediately via the mutation's onSuccess invalidation.
+// v3 Track A — kick a playbook run. The analyst picks from the engagement's
+// EXISTING non-exclusion scope items (never re-typed), chooses the executor
+// (internal / mcp), and hits Kick. The backend independently re-validates
+// every submitted value against the engagement scope before queuing, so this
+// picker is a convenience, not the security boundary.
+//
+// Backend returns 202 with the pending row (or awaiting_approval for active
+// playbooks); the parent's usePlaybookRuns hook re-fetches immediately via
+// the mutation's onSuccess invalidation.
 
-import { useState } from "react";
+import Link from "next/link";
+import { useMemo, useState } from "react";
 import { Loader2 } from "lucide-react";
 import {
   Dialog,
@@ -16,11 +22,17 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
-import { useCreatePlaybookRunMutation } from "@/lib/hooks";
-import type { PlaybookExecutorKind, PlaybookRead } from "@/lib/types";
+import { useCreatePlaybookRunMutation, useScope } from "@/lib/hooks";
+import type {
+  PlaybookExecutorKind,
+  PlaybookRead,
+  ScopeItem,
+} from "@/lib/types";
+
+function kindLabel(item: ScopeItem): string {
+  return item.kind.toUpperCase();
+}
 
 export function KickRunModal({
   engagementSlug,
@@ -31,16 +43,37 @@ export function KickRunModal({
   playbook: PlaybookRead;
   onClose: () => void;
 }) {
-  const [scopeText, setScopeText] = useState("");
-  const [executor, setExecutor] = useState<PlaybookExecutorKind>("internal");
   const create = useCreatePlaybookRunMutation(engagementSlug);
+  const scopeQuery = useScope(engagementSlug);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [executor, setExecutor] = useState<PlaybookExecutorKind>("internal");
   const [error, setError] = useState<string | null>(null);
 
-  const scope = scopeText
-    .split(/[,\n]/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-  const canSubmit = scope.length > 0 && !create.isPending;
+  // Only non-exclusion scope items are runnable targets.
+  const scopeItems = useMemo(
+    () => (scopeQuery.data ?? []).filter((s) => !s.is_exclusion),
+    [scopeQuery.data],
+  );
+  const loading = scopeQuery.isLoading;
+  const loadError = scopeQuery.error;
+
+  const toggle = (value: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(value)) next.delete(value);
+      else next.add(value);
+      return next;
+    });
+  };
+  const allSelected =
+    scopeItems.length > 0 && selected.size === scopeItems.length;
+  const toggleAll = () => {
+    setSelected((prev) =>
+      allSelected ? new Set() : new Set(scopeItems.map((s) => s.value)),
+    );
+  };
+
+  const canSubmit = selected.size > 0 && !create.isPending && !loading;
 
   const submit = async () => {
     setError(null);
@@ -48,7 +81,9 @@ export function KickRunModal({
       await create.mutateAsync({
         playbook_slug: playbook.slug,
         playbook_version: playbook.version,
-        scope_subset: scope,
+        scope_subset: scopeItems
+          .filter((s) => selected.has(s.value))
+          .map((s) => s.value),
         executor,
       });
       onClose();
@@ -76,19 +111,72 @@ export function KickRunModal({
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="scope-subset">
-              Scope selection ({scope.length})
-            </Label>
-            <Textarea
-              id="scope-subset"
-              value={scopeText}
-              onChange={(e) => setScopeText(e.target.value)}
-              placeholder={`Scope items (comma or newline separated).\nExample: foo.example, bar.example`}
-              className="min-h-[6rem] font-mono text-xs"
-            />
+            <div className="flex items-center justify-between">
+              <Label>Targets in scope ({selected.size} selected)</Label>
+              {scopeItems.length > 0 && (
+                <button
+                  type="button"
+                  onClick={toggleAll}
+                  className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+                >
+                  {allSelected ? "Clear all" : "Select all"}
+                </button>
+              )}
+            </div>
+
+            {loading ? (
+              <p className="flex items-center gap-2 rounded-md border border-dashed border-border p-3 text-xs text-muted-foreground">
+                <Loader2 className="h-3 w-3 animate-spin" /> Loading scope…
+              </p>
+            ) : loadError ? (
+              <p className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-xs text-destructive">
+                Could not load scope —{" "}
+                {loadError instanceof Error ? loadError.message : "try again."}
+              </p>
+            ) : scopeItems.length === 0 ? (
+              <div className="rounded-md border border-dashed border-border p-3 text-xs text-muted-foreground">
+                <p>No in-scope targets on this engagement yet.</p>
+                <p className="mt-1">
+                  Add scope on the{" "}
+                  <Link
+                    href={`/e?slug=${encodeURIComponent(
+                      engagementSlug,
+                    )}&view=scope`}
+                    className="font-medium text-foreground underline underline-offset-2"
+                  >
+                    Scope tab
+                  </Link>{" "}
+                  first, then kick the playbook.
+                </p>
+              </div>
+            ) : (
+              <ul className="max-h-56 space-y-1 overflow-y-auto rounded-md border border-border p-2">
+                {scopeItems.map((item) => (
+                  <li key={item.id}>
+                    <label className="flex cursor-pointer items-center gap-2 rounded px-1 py-1 text-xs hover:bg-muted/60">
+                      <input
+                        type="checkbox"
+                        checked={selected.has(item.value)}
+                        onChange={() => toggle(item.value)}
+                        className="h-3.5 w-3.5 accent-current"
+                      />
+                      <span className="rounded border border-border bg-muted/50 px-1 py-0.5 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+                        {kindLabel(item)}
+                      </span>
+                      <span className="font-mono">{item.value}</span>
+                      {item.note ? (
+                        <span className="truncate text-muted-foreground">
+                          · {item.note}
+                        </span>
+                      ) : null}
+                    </label>
+                  </li>
+                ))}
+              </ul>
+            )}
             <p className="text-xs text-muted-foreground">
-              One scope-item identifier per line or separated by commas. The
-              runner iterates each step against each scope item.
+              The runner iterates each step against every selected target.
+              Targets must already be in scope — add new ones on the Scope tab.
             </p>
           </div>
 

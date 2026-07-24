@@ -33,6 +33,8 @@ from app.models import (
     PlaybookRun,
     PlaybookRunStatus,
     PlaybookStep,
+    ScopeItem,
+    ScopeKind,
     User,
     UserRole,
 )
@@ -496,6 +498,11 @@ def test_analyst_authored_active_playbook_hits_the_gate(
         work_state=EngagementWorkState.active,
     )
     db.add(eng)
+    db.flush()
+    # POST /playbook-runs enforces in-scope-only; seed the submitted target.
+    db.add(
+        ScopeItem(engagement_id=eng.id, kind=ScopeKind.domain, value="foo.com")
+    )
     db.flush()
     meth.load_seed_catalog(db)
     meth.select_for_engagement(
