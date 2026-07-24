@@ -29,6 +29,13 @@ out/
 *.tsbuildinfo
 next-env.d.ts
 
+# ---- Frontend test artifacts ----
+coverage/
+test-results/
+playwright-report/
+playwright/.cache/
+.nyc_output/
+
 # ---- Editors / OS ----
 .vscode/
 .idea/
