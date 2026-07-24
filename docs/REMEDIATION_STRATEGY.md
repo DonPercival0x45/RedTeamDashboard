@@ -382,3 +382,73 @@ exception — it's a hard `SIGKILL`/OOM or the daemon-thread `join(timeout=5)`
 abandoning the in-flight transaction during graceful rolling deploy, which
 never reaches the except handler. P1-1 stands for crash/deploys.
 
+## 9. User-friendliness / institutional-knowledge audit (3-slice sweep)
+
+A persona-driven sweep (brand-new analyst, zero tribal knowledge) across
+navigation/IA, consistency/copy, and onboarding/learnability. Two systemic
+root causes explain most of the "user unfriendly" pain; the fixes are
+structural, not one-off.
+
+### Root cause A — v3 objects aren't first-class on legacy surfaces
+The v3 migration added PlaybookRun / awaiting_approval / Strategy-intelligence
+**without retracting** tasks / Approval / RunPrompt / the Status feed. A new
+analyst's three most common questions — *is anything running, does anything
+need me, what just happened* — have no single honest answer:
+- **Status is a museum for v3** (shows legacy history, never playbook runs;
+  the global "Running jobs" banner polls legacy `/tasks/running`).
+- **Two parallel approval systems never meet** — the bell reads only the legacy
+  `Approval` table; gated playbook runs (`awaiting_approval`) produce no badge.
+- **Playbook kickoff lives in Scope + Automation, never as a first-class Runs
+  nav item**; the engagement nav has no Runs view at all.
+**Structural fix (Wave 4, elevates complaint #1):** union `PlaybookRun` into
+the Status feed + `/tasks/running` + the approval inbox; add a dedicated
+**Runs** nav item; give awaiting playbook runs a bell badge.
+
+### Root cause B — React Query errors are swallowed into `?? []` / `!data`
+**Six+ surfaces collapse "failed" into "empty" or "loading forever":**
+- Findings fetch failure → "No findings yet." (coaches the user to re-run and
+  create duplicates) — the worst instance.
+- Run-detail modal → "Loading run…" spins forever on error.
+- Playbooks catalog/runs failures → honest-looking empty states.
+- Observations/Status render error line **and** "nothing here, go do work"
+  coaching copy underneath.
+- Engagements list shows "Loading…" forever alongside the error line.
+**Systemic fix (Wave 4):** a shared `<QueryState>` helper (error / loading /
+empty / children) adopted at every `useQuery` site. Review rule: *any
+`useQuery` whose `error` isn't read is a bug.*
+
+### Notable consistency/copy offenders (each maps to a small fix)
+- **Entity quick-actions dead on v3** (already P1) — every new engagement.
+- **"Once v0.12 ships" copy on a v3.0.1 app** (Tools page, 3 instances).
+- **"Legacy run history" banner on fresh v3 engagements** (no legacy history).
+- **`canWrite` hardcoded `true`** — guests see an armed write workspace that
+  403s on submit (Settings pages gate correctly; `/e` doesn't).
+- **Dismiss copy says "next login" but is tab-scoped** `sessionStorage`.
+- **3 of 5 Automation tabs are placeholders** (Recon/Scanning/Exploitation);
+  "Exploitation" promises a charter-forbidden feature; default tab is the last.
+- **Native `confirm`/`alert`/`prompt` in 16 files** vs Radix elsewhere —
+  including `confirm()` fired from inside a Radix dialog (run-detail cancel).
+- **Internal jargon as UI vocabulary**: "Gated" (= approval required),
+  "Memory", "v3 rollout", truncated-UUID attribution, `stream open/closed`
+  subtitle, fake percentage progress bars, two state machines both labeled
+  "active".
+- **Stale guidance pointing v3 users at legacy-only paths** (dossier,
+  default-tools-banner, getting-started step 4).
+- **Dead `IdentityMenu` component** still in the tree.
+
+### IA fixes (target ~6 nav items, one guessable job each)
+- Merge **Contributions** + **Diagnostics** into Status as sub-views (heatmap,
+  "export debug bundle"). Diagnostics is a dev tool in prime analyst nav space.
+- Rename **Dossier → IP Intel** (it's an enrichment slice, not a target report).
+- **Observations vs Findings** is an unguessable distinction — merge as a note
+  type or relabel.
+- Pick one Settings shell (modal as primary); add the two orphaned panels
+  (Agent Runs admin-only, What's New); align the Models/Keys label drift.
+
+### Onboarding keepers (don't break these)
+`/new` setup-aware redirect; Scope-tab empty state; Run Prompt
+provider-readiness banner; Keys-page guest card (the role-gating pattern `/e`
+is missing); engagements-list genuine-empty + pending-teaching banners;
+type-the-slug delete confirmation; the run → findings feedback toast.
+
+
