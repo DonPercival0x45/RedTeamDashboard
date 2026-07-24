@@ -10,7 +10,7 @@ import type { PlaybookRead } from "@/lib/types";
 // proves @testing-library/react works against the Radix Dialog primitives.
 
 const mockMutateAsync = vi.fn().mockResolvedValue(undefined);
-const mockCreate = vi.fn(() => ({
+const mockCreate = vi.fn((_slug: string) => ({
   mutateAsync: mockMutateAsync,
   isPending: false,
 }));
