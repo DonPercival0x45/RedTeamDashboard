@@ -57,11 +57,15 @@ const scopeItems: ScopeItem[] = [
   },
 ];
 
-let mockScopeData: ScopeItem[] = scopeItems;
+let mockScopeData: ScopeItem[] | undefined = scopeItems;
+let mockScopeError: Error | null = null;
+const mockScopeRefetch = vi.fn();
 const mockUseScope = vi.fn((_slug: string) => ({
   data: mockScopeData,
   isLoading: false,
-  error: null,
+  isFetching: false,
+  error: mockScopeError,
+  refetch: mockScopeRefetch,
 }));
 
 vi.mock("@/lib/hooks", () => ({
@@ -86,7 +90,9 @@ beforeEach(() => {
   mockMutateAsync.mockClear();
   mockCreate.mockClear();
   mockUseScope.mockClear();
+  mockScopeRefetch.mockClear();
   mockScopeData = scopeItems;
+  mockScopeError = null;
 });
 
 afterEach(() => {
@@ -94,7 +100,7 @@ afterEach(() => {
 });
 
 describe("KickRunModal", () => {
-  it("offers only non-exclusion scope items as pickable targets", () => {
+  it("offers only included targets compatible with the playbook", () => {
     render(
       <KickRunModal
         engagementSlug="acme"
@@ -104,7 +110,7 @@ describe("KickRunModal", () => {
     );
     expect(screen.getByText("foo.example")).toBeInTheDocument();
     expect(screen.getByText("bar.example")).toBeInTheDocument();
-    expect(screen.getByText("10.0.0.9")).toBeInTheDocument();
+    expect(screen.queryByText("10.0.0.9")).not.toBeInTheDocument();
     expect(screen.queryByText("excluded.example")).not.toBeInTheDocument();
   });
 
@@ -147,7 +153,7 @@ describe("KickRunModal", () => {
     await waitFor(() => expect(mockMutateAsync).toHaveBeenCalledTimes(1));
     expect(mockMutateAsync).toHaveBeenCalledWith(
       expect.objectContaining({
-        scope_subset: ["foo.example", "bar.example", "10.0.0.9"],
+        scope_subset: ["foo.example", "bar.example"],
       }),
     );
   });
@@ -177,13 +183,28 @@ describe("KickRunModal", () => {
       />,
     );
     expect(
-      screen.getByText(/no in-scope targets on this engagement yet/i),
+      screen.getByText(/no included domain targets are available/i),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /kick run/i })).toBeDisabled();
     expect(screen.getByRole("link", { name: /scope tab/i })).toHaveAttribute(
       "href",
       expect.stringContaining("view=scope"),
     );
+  });
+
+  it("keeps cached compatible targets visible after a refresh error", () => {
+    mockScopeError = new Error("refresh failed");
+    render(
+      <KickRunModal
+        engagementSlug="acme"
+        playbook={playbook}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Refresh failed; showing cached data.",
+    );
+    expect(screen.getByText("foo.example")).toBeInTheDocument();
   });
 
   it("shows the error message when the kick fails and keeps the modal open", async () => {

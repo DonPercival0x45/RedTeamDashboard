@@ -54,6 +54,7 @@ from app.api.status import router as status_router
 from app.api.strategy import router as strategy_router
 from app.api.strategy_suggestions import router as strategy_suggestions_router
 from app.api.tool_invocations import router as tool_invocations_router
+from app.api.tool_runs import router as tool_runs_router
 from app.api.tools import router as tools_router
 from app.core.config import settings
 from app.core.logging import configure_logging
@@ -97,6 +98,7 @@ app.include_router(reports_router)
 app.include_router(entities_router)
 app.include_router(me_router)
 app.include_router(methodology_router)
+app.include_router(tool_runs_router)
 app.include_router(playbook_router)
 app.include_router(roadmap_suggestions_router)
 app.include_router(integrations_router)

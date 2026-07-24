@@ -33,6 +33,9 @@ from app.models import (
     CoverageNodeTier,
     CoverageRecordStatus,
     Engagement,
+    EngagementArchitecture,
+    EngagementStatus,
+    EngagementWorkState,
     Playbook,
     PlaybookExecutorKind,
     PlaybookRun,
@@ -43,7 +46,6 @@ from app.services import coverage as cov
 from app.services import methodology as meth
 from app.services.command_outbox import enqueue_event
 from app.services.playbook.executor import InternalExecutor, PlaybookExecutor, StepResult
-from app.services.playbook.finding_persist import persist_step_findings
 
 logger = structlog.get_logger(__name__)
 
@@ -156,6 +158,13 @@ class RunNotAwaitingApprovalError(Exception):
         )
 
 
+def _locked_run(session: Session, run_id: uuid.UUID) -> PlaybookRun | None:
+    """Serialize analyst lifecycle transitions for one playbook run."""
+    return session.execute(
+        select(PlaybookRun).where(PlaybookRun.id == run_id).with_for_update()
+    ).scalar_one_or_none()
+
+
 def approve_run(
     session: Session,
     *,
@@ -174,7 +183,7 @@ def approve_run(
     a second call finds the row already pending and no-ops. Terminal /
     running / already-cancelled → ``RunNotAwaitingApprovalError`` (409).
     """
-    run = session.get(PlaybookRun, run_id)
+    run = _locked_run(session, run_id)
     if run is None:
         raise KeyError(str(run_id))
     if run.status is PlaybookRunStatus.pending and run.approved_by is not None:
@@ -212,7 +221,7 @@ def reject_run(
     existing idempotency contract; terminal-but-not-cancelled →
     ``RunNotAwaitingApprovalError``.
     """
-    run = session.get(PlaybookRun, run_id)
+    run = _locked_run(session, run_id)
     if run is None:
         raise KeyError(str(run_id))
     if run.status is PlaybookRunStatus.cancelled and run.rejected_by is not None:
@@ -249,7 +258,7 @@ def cancel_run(
     Idempotent for the (pending/running) → cancelled transition: a second
     call on an already-cancelled run is a no-op.
     """
-    run = session.get(PlaybookRun, run_id)
+    run = _locked_run(session, run_id)
     if run is None:
         raise KeyError(str(run_id))
     if run.status is PlaybookRunStatus.cancelled:
@@ -371,6 +380,16 @@ def execute_pending_run(
         run.status = PlaybookRunStatus.failed
         run.completed_at = _now(now)
         run.last_error = "playbook or engagement missing"
+        session.flush()
+        return run
+    if (
+        engagement.intelligence_architecture != EngagementArchitecture.v3
+        or engagement.status != EngagementStatus.active
+        or engagement.work_state == EngagementWorkState.completed
+    ):
+        run.status = PlaybookRunStatus.failed
+        run.completed_at = _now(now)
+        run.last_error = "engagement is no longer an active writable v3 engagement"
         session.flush()
         return run
 
@@ -528,52 +547,45 @@ def _run_one(
         if result.error and not run.last_error:
             run.last_error = result.error
 
-    # Operator complaint 4a — persist the step's findings into the engagement's
-    # Findings table so they surface in the UI and link back to this run (the
-    # post-run gather-then-analyze milestone gathers by FindingOrigin.thread_id
-    # == run.id). Only the internal executor path persists here; the MCP server
-    # persists lease findings on its own side. Counters below describe the
-    # *persisted* outcome, not the raw tool-answer count.
-    persisted = {"new": 0, "total": 0, "created": 0}
-    if result.ok and not getattr(result, "stub", False) and isinstance(
-        executor, InternalExecutor
-    ):
-        try:
-            actor_uuid = uuid.UUID(actor_id) if actor_id else None
-        except (ValueError, TypeError):
-            actor_uuid = None
-        try:
-            persisted = persist_step_findings(
+    if isinstance(executor, InternalExecutor):
+        # Internal tools persist through one canonical bridge. Run counters are
+        # derived from the canonical grouped Finding, never from raw answers.
+        bridge = None
+        if result.ok and not getattr(result, "stub", False):
+            from app.services.playbook.finding_bridge import bridge_step_to_finding
+
+            try:
+                actor_uuid = uuid.UUID(actor_id) if actor_id else None
+            except (ValueError, TypeError):
+                actor_uuid = None
+            bridge = bridge_step_to_finding(
                 session,
                 engagement_id=engagement.id,
-                run_id=run.id,
-                tool_slug=step_tool_slug,
+                playbook_tool=step_tool_slug,
                 scope_item=scope_item,
-                args=dict(step_args_template or {}),
-                data=dict(result.data or {}),
+                args_template=step_args_template,
+                data=result.data,
+                thread_id=run.id,
                 acting_user_id=actor_uuid,
+                operation_id=run.id,
             )
-        except Exception:  # noqa: BLE001 - persistence must not break the run
-            logger.exception(
-                "playbook.step.finding_persist_failed",
-                playbook=playbook.slug,
-                tool=step_tool_slug,
-                scope_item=scope_item,
+        if bridge is not None:
+            run.findings_new += bridge.items_added
+            # Multiple tools can enrich the same canonical group in one run.
+            # Count the group's latest total once, then only its growth.
+            seen_totals: dict[uuid.UUID, int] = getattr(
+                run, "_bridge_finding_totals", {}
             )
-
-    if isinstance(executor, InternalExecutor):
-        # Real tools: counters describe the *persisted* outcome (deduped items
-        # now in the Findings table). A tool with no projector (stub/custom)
-        # persists nothing, so fall back to its declared count.
-        run.findings_new += persisted["new"]
-        run.findings_total += persisted["new"]
+            previous = seen_totals.get(bridge.finding_id, 0)
+            run.findings_total += max(bridge.items_total - previous, 0)
+            seen_totals[bridge.finding_id] = max(previous, bridge.items_total)
+            run._bridge_finding_totals = seen_totals  # type: ignore[attr-defined]
     else:
-        # MCP / test executors persist on their own side (or not at all); use
-        # the tool's declared counts (backward-compatible behavior).
+        # MCP/test executors own persistence; preserve their declared counts.
         run.findings_new += result.findings_new
         run.findings_total += result.findings_total
-    run.findings_unvalidated += result.findings_unvalidated
-    run.findings_high_severity += result.findings_high_severity
+        run.findings_unvalidated += result.findings_unvalidated
+        run.findings_high_severity += result.findings_high_severity
 
     if getattr(result, "stub", False):
         status = CoverageRecordStatus.stub

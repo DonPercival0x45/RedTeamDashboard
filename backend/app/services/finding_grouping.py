@@ -342,10 +342,13 @@ def extract_items(
                     "a": [v for v in (data.get("a") or []) if isinstance(v, str)],
                     "aaaa": [v for v in (data.get("aaaa") or []) if isinstance(v, str)],
                     "cname": [v for v in (data.get("cname") or []) if isinstance(v, str)],
+                    "mx": [v for v in (data.get("mx") or []) if isinstance(v, str)],
+                    "ns": [v for v in (data.get("ns") or []) if isinstance(v, str)],
+                    "txt": [v for v in (data.get("txt") or []) if isinstance(v, str)],
                 }
             ]
         items: list[dict[str, Any]] = []
-        for kind in ("a", "aaaa", "cname"):
+        for kind in ("a", "aaaa", "cname", "mx", "ns", "txt"):
             for value in data.get(kind) or []:
                 if isinstance(value, str) and value.strip():
                     items.append(

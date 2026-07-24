@@ -31,6 +31,7 @@ from app.main import app
 from app.models import (
     CommandOutbox,
     Engagement,
+    EngagementArchitecture,
     EngagementStatus,
     EngagementWorkState,
     Playbook,
@@ -78,6 +79,7 @@ def engagement(db: Session) -> Engagement:
         slug=f"a5-{uuid.uuid4().hex[:8]}",
         status=EngagementStatus.active,
         work_state=EngagementWorkState.active,
+        intelligence_architecture=EngagementArchitecture.v3,
     )
     db.add(eng)
     db.flush()

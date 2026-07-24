@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 from app.main import app
 from app.models import (
     Engagement,
+    EngagementArchitecture,
     EngagementStatus,
     EngagementWorkState,
     PlaybookRun,
@@ -147,6 +148,7 @@ def test_dns_inventory_counts_answers(monkeypatch: pytest.MonkeyPatch) -> None:
             table = {
                 "A": ["1.2.3.4"],
                 "AAAA": ["2001:db8::1"],
+                "CNAME": ["alias.foo.com."],
                 "MX": ["10 mail.foo.com."],
                 "TXT": ["v=spf1 -all"],
                 "NS": ["ns1.foo.com.", "ns2.foo.com."],
@@ -160,8 +162,8 @@ def test_dns_inventory_counts_answers(monkeypatch: pytest.MonkeyPatch) -> None:
 
     result = dns_inventory.run("foo.com", {"domain": "foo.com"})
     assert result.ok is True
-    # 1 A + 1 AAAA + 1 MX + 1 TXT + 2 NS = 6.
-    assert result.findings_total == 6
+    # 1 A + 1 AAAA + 1 CNAME + 1 MX + 1 TXT + 2 NS = 7.
+    assert result.findings_total == 7
     assert result.data["records"]["A"] == ["1.2.3.4"]
 
 
@@ -274,6 +276,7 @@ def engagement(db: Session) -> Engagement:
         slug=f"a3b-{uuid.uuid4().hex[:8]}",
         status=EngagementStatus.active,
         work_state=EngagementWorkState.active,
+        intelligence_architecture=EngagementArchitecture.v3,
     )
     db.add(eng)
     db.commit()
@@ -369,6 +372,54 @@ def test_create_playbook_run_guest_blocked(
         json={"playbook_slug": "osint-passive-domain", "scope_subset": ["foo.example"]},
     )
     assert resp.status_code == 403
+
+
+def test_create_playbook_run_rejects_legacy_or_archived_engagement(
+    db: Session, client: TestClient, user: User, engagement: Engagement
+) -> None:
+    load_seed_playbooks(db)
+    engagement.intelligence_architecture = EngagementArchitecture.legacy
+    db.commit()
+    legacy = client.post(
+        f"/engagements/{engagement.slug}/playbook-runs",
+        headers=_headers(user),
+        json={"playbook_slug": "osint-passive-domain", "scope_subset": ["foo.example"]},
+    )
+    assert legacy.status_code == 409
+
+    engagement.intelligence_architecture = EngagementArchitecture.v3
+    engagement.status = EngagementStatus.archived
+    db.commit()
+    archived = client.post(
+        f"/engagements/{engagement.slug}/playbook-runs",
+        headers=_headers(user),
+        json={"playbook_slug": "osint-passive-domain", "scope_subset": ["foo.example"]},
+    )
+    assert archived.status_code == 409
+
+
+def test_create_playbook_run_rejects_incompatible_scope_kind(
+    db: Session, client: TestClient, user: User, engagement: Engagement
+) -> None:
+    load_seed_playbooks(db)
+    db.add(
+        ScopeItem(
+            engagement_id=engagement.id,
+            kind=ScopeKind.ip,
+            value="203.0.113.10",
+        )
+    )
+    db.commit()
+    response = client.post(
+        f"/engagements/{engagement.slug}/playbook-runs",
+        headers=_headers(user),
+        json={
+            "playbook_slug": "osint-passive-domain",
+            "scope_subset": ["203.0.113.10"],
+        },
+    )
+    assert response.status_code == 422
+    assert "incompatible" in response.text
 
 
 def test_create_playbook_run_unknown_playbook_404(

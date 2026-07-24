@@ -127,6 +127,20 @@ function RunRow({
         {run.steps_succeeded}/{run.steps_total}
       </td>
       <td className="px-3 py-2 text-xs text-muted-foreground">{started}</td>
+      <td className="px-3 py-2 text-right">
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          aria-label={`Manage ${run.playbook_slug} run`}
+          onClick={(event) => {
+            event.stopPropagation();
+            onOpen(run);
+          }}
+        >
+          Manage
+        </Button>
+      </td>
     </tr>
   );
 }
@@ -228,6 +242,7 @@ export function PlaybooksTab({ engagementSlug }: { engagementSlug: string }) {
                       <th className="px-3 py-2">Scope</th>
                       <th className="px-3 py-2">Steps</th>
                       <th className="px-3 py-2">Started</th>
+                      <th className="px-3 py-2 text-right">Action</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border">

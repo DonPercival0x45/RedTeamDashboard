@@ -31,6 +31,7 @@ import { RunPrompt } from "@/components/run-prompt";
 import { RunPromptBridgeProvider } from "@/components/run-prompt-context";
 import { ScopeEditor } from "@/components/scope-editor";
 import { ToolsPanel } from "@/components/tools-panel";
+import { V3ToolsPanel } from "@/components/v3-tools-panel";
 import { subscribeToEvents } from "@/lib/events";
 import {
   prefetchEngagementView,
@@ -82,8 +83,6 @@ const VALID_VIEWS = new Set<EngagementView>([
 function EngagementDetail({ slug }: { slug: string }) {
   const router = useRouter();
   const params = useSearchParams();
-  // Single-tenant: any signed-in analyst can act on the engagement.
-  const canWrite = true;
 
   const viewParam = params.get("view");
   // v2.4.0: naked-URL default landing view is Strategy (was Findings).
@@ -122,6 +121,7 @@ function EngagementDetail({ slug }: { slug: string }) {
   const engagementQuery = useEngagement(slug);
   const findingsQuery = useFindings(slug);
   const { data: me } = useMe();
+  const canWrite = me !== undefined && me.role !== "guest";
   const engagement = engagementQuery.data ?? null;
   const findings = findingsQuery.data ?? [];
   const archiveMutation = useArchiveEngagementMutation(slug);
@@ -469,10 +469,14 @@ function EngagementDetail({ slug }: { slug: string }) {
           {view === "entities" && (
             <EntitiesView
               slug={slug}
-              onQuickAction={(p) => {
-                setPendingPrompt(p);
-                setView("scope");
-              }}
+              onQuickAction={
+                canWrite && engagement.intelligence_architecture !== "v3"
+                  ? (prompt) => {
+                      setPendingPrompt(prompt);
+                      setView("scope");
+                    }
+                  : undefined
+              }
             />
           )}
 
@@ -486,6 +490,7 @@ function EngagementDetail({ slug }: { slug: string }) {
             <StatusView
               slug={slug}
               allowLegacyRetry={engagement.intelligence_architecture !== "v3"}
+              canWrite={canWrite}
             />
           )}
 
@@ -496,18 +501,20 @@ function EngagementDetail({ slug }: { slug: string }) {
             <div className="space-y-6">
               <ScopeEditor slug={slug} canWrite={canWrite} />
               {engagement.status === "active" ? (
-                engagement.intelligence_architecture === "v3" ? (
-                  // v3 engagements cannot launch the legacy LangGraph prompt
-                  // runner. Keep collection in the same workspace, but route
-                  // kickoff through POST /engagements/{slug}/playbook-runs.
-                  <PlaybooksTab engagementSlug={slug} />
+                !canWrite ? (
+                  <p className="rounded-md border border-border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+                    Guest access is read-only. An analyst or admin can run tools
+                    and playbooks.
+                  </p>
+                ) : engagement.intelligence_architecture === "v3" ? (
+                  <div className="space-y-6">
+                    {/* Deterministic one-tool actions and full playbook runs are
+                        complementary v3 collection surfaces. Both use the same
+                        scope matcher and canonical finding bridge. */}
+                    <V3ToolsPanel slug={slug} />
+                    <PlaybooksTab engagementSlug={slug} />
+                  </div>
                 ) : (
-                  // v1.11.0: ToolsPanel + RunPrompt share a bridge so a
-                  // click on a tool button drops its example prompt into
-                  // the run textarea below.
-                  // v1.15.0 (#93): entity quick-actions on the Entities
-                  // tab also seed the textarea via ``initialPrompt``; both
-                  // paths coexist because RunPrompt owns the prompt state.
                   <RunPromptBridgeProvider>
                     <ToolsPanel />
                     <div className="mt-6">

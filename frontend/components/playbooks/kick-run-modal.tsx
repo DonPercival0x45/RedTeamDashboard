@@ -22,6 +22,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { QueryState } from "@/components/query-state";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { useCreatePlaybookRunMutation, useScope } from "@/lib/hooks";
@@ -50,10 +51,16 @@ export function KickRunModal({
   const [executor, setExecutor] = useState<PlaybookExecutorKind>("internal");
   const [error, setError] = useState<string | null>(null);
 
-  // Only non-exclusion scope items are runnable targets.
+  // Only included targets compatible with the playbook's asset class are
+  // offered. The backend independently enforces the same compatibility.
   const scopeItems = useMemo(
-    () => (scopeQuery.data ?? []).filter((s) => !s.is_exclusion),
-    [scopeQuery.data],
+    () =>
+      (scopeQuery.data ?? []).filter(
+        (item) =>
+          !item.is_exclusion &&
+          item.kind === playbook.applies_to_asset_class,
+      ),
+    [playbook.applies_to_asset_class, scopeQuery.data],
   );
   const loading = scopeQuery.isLoading;
   const loadError = scopeQuery.error;
@@ -128,20 +135,24 @@ export function KickRunModal({
               )}
             </div>
 
-            {loading ? (
-              <p className="flex items-center gap-2 rounded-md border border-dashed border-border p-3 text-xs text-muted-foreground">
-                <Loader2 className="h-3 w-3 animate-spin" /> Loading scope…
-              </p>
-            ) : loadError ? (
-              <p className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-xs text-destructive">
-                Could not load scope —{" "}
-                {loadError instanceof Error ? loadError.message : "try again."}
-              </p>
-            ) : scopeItems.length === 0 ? (
+            <QueryState
+              isLoading={scopeQuery.data === undefined && loading}
+              error={loadError}
+              hasData={scopeQuery.data !== undefined}
+              loadingLabel="Loading scope…"
+              errorLabel="Could not load scope targets."
+              onRetry={() => void scopeQuery.refetch()}
+              isRetrying={scopeQuery.isFetching}
+              compact={scopeQuery.data !== undefined}
+            />
+            {scopeQuery.data === undefined ? null : scopeItems.length === 0 ? (
               <div className="rounded-md border border-dashed border-border p-3 text-xs text-muted-foreground">
-                <p>No in-scope targets on this engagement yet.</p>
+                <p>
+                  No included {playbook.applies_to_asset_class} targets are
+                  available for this playbook.
+                </p>
                 <p className="mt-1">
-                  Add scope on the{" "}
+                  Add a compatible target on the{" "}
                   <Link
                     href={`/e?slug=${encodeURIComponent(
                       engagementSlug,

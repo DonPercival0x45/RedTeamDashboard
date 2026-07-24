@@ -33,6 +33,7 @@ from app.models import (
     AuditLog,
     CommandOutbox,
     Engagement,
+    EngagementArchitecture,
     EngagementStatus,
     EngagementWorkState,
     PlaybookRun,
@@ -124,6 +125,7 @@ def engagement(db: Session) -> Engagement:
         slug=f"a3c-{uuid.uuid4().hex[:8]}",
         status=EngagementStatus.active,
         work_state=EngagementWorkState.active,
+        intelligence_architecture=EngagementArchitecture.v3,
     )
     db.add(eng)
     db.flush()
@@ -306,6 +308,25 @@ def test_execute_drives_claimed_run_to_completed(
     assert coverage_audits
     assert all(row.actor_type is ActorType.user for row in coverage_audits)
     assert {row.actor_id for row in coverage_audits} == {str(user.id)}
+
+
+def test_execute_rechecks_engagement_lifecycle_after_queueing(
+    db: Session, engagement: Engagement, playbook
+) -> None:
+    run = enqueue_run(
+        db, engagement=engagement, playbook=playbook, scope_subset=["foo.com"],
+    )
+    db.commit()
+    engagement.status = EngagementStatus.archived
+    db.commit()
+    executor = MockExecutor()
+
+    result = execute_pending_run(db, run_id=run.id, executor=executor)
+    db.commit()
+
+    assert result.status is PlaybookRunStatus.failed
+    assert "active writable v3" in (result.last_error or "")
+    assert executor.calls == []
 
 
 def test_execute_bails_on_cancelled_pending(

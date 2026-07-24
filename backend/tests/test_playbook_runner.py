@@ -42,6 +42,7 @@ from app.models import (
     CoverageRecord,
     CoverageRecordStatus,
     Engagement,
+    EngagementArchitecture,
     EngagementPhase,
     EngagementStatus,
     EngagementWorkState,
@@ -110,6 +111,7 @@ def engagement_with_methodology(db: Session) -> Engagement:
         slug=f"run-{uuid.uuid4().hex[:8]}",
         status=EngagementStatus.active,
         work_state=EngagementWorkState.active,
+        intelligence_architecture=EngagementArchitecture.v3,
     )
     db.add(eng)
     db.flush()
@@ -414,6 +416,7 @@ def test_no_methodology_skips_milestone(
         slug=f"nom-{uuid.uuid4().hex[:8]}",
         status=EngagementStatus.active,
         work_state=EngagementWorkState.active,
+        intelligence_architecture=EngagementArchitecture.v3,
     )
     db.add(eng)
     db.flush()

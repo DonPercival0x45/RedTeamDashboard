@@ -14,6 +14,7 @@ from app.models import (
     Approval,
     ApprovalStatus,
     Engagement,
+    EngagementArchitecture,
     EngagementStatus,
     EngagementWorkState,
     OwnerEligibility,
@@ -44,6 +45,7 @@ def surface_data(db: Session):
         slug=f"surface-{uuid.uuid4().hex[:8]}",
         status=EngagementStatus.active,
         work_state=EngagementWorkState.active,
+        intelligence_architecture=EngagementArchitecture.v3,
     )
     playbook = Playbook(
         slug=f"surface-pb-{uuid.uuid4().hex[:8]}",

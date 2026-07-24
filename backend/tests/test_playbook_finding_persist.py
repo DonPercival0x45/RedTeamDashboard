@@ -11,11 +11,12 @@ import uuid
 from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.models import (
     Engagement,
+    EngagementArchitecture,
     EngagementStatus,
     EngagementWorkState,
     Finding,
@@ -42,6 +43,7 @@ def engagement(db: Session) -> Engagement:
         slug=f"p4a-{uuid.uuid4().hex[:8]}",
         status=EngagementStatus.active,
         work_state=EngagementWorkState.active,
+        intelligence_architecture=EngagementArchitecture.v3,
     )
     db.add(eng)
     db.flush()
@@ -100,7 +102,11 @@ class _FakeDnsExecutor(InternalExecutor):
             data={
                 "records": {
                     "A": ["203.0.113.10", "203.0.113.11"],
+                    "AAAA": ["2001:db8::10"],
+                    "CNAME": ["alias.foo.example"],
                     "MX": ["10 mail.foo.example"],
+                    "TXT": ["v=spf1 -all"],
+                    "NS": ["ns1.foo.example"],
                 }
             },
         )
@@ -131,26 +137,30 @@ def test_run_persists_findings_and_links_to_run(
     db.commit()
 
     assert run.status is PlaybookRunStatus.completed
-    # 3 answers across A + MX persisted as items.
-    assert run.findings_new == 3
-    assert run.findings_total == 3
+    # All six DNS record types persist through canonical grouping.
+    assert run.findings_new == 7
+    assert run.findings_total == 7
 
     # A canonical Finding row exists, grouped by (tool, target), with all items.
     finding = db.execute(
         select(Finding).where(
             Finding.engagement_id == engagement.id,
-            Finding.group_key == "playbook:dns-inventory:foo.example",
+            Finding.group_key == "dns_records:foo.example",
         )
     ).scalar_one()
-    assert finding.source_tool == "dns-inventory"
+    assert finding.source_tool == "dns_lookup"
     assert finding.target == "foo.example"
     assert finding.status is FindingStatus.validated  # OSINT auto-validates
     items = (finding.details or {}).get("items") or []
-    labels = {i.get("label") for i in items}
+    labels = {f"{i.get('type')}={i.get('value')}" for i in items}
     assert labels == {
         "A=203.0.113.10",
         "A=203.0.113.11",
+        "AAAA=2001:db8::10",
+        "CNAME=alias.foo.example",
         "MX=10 mail.foo.example",
+        "TXT=v=spf1 -all",
+        "NS=ns1.foo.example",
     }
 
     # The finding links back to the run so post-run analysis can gather it.
@@ -185,15 +195,51 @@ def test_rerun_dedups_items_instead_of_duplicating(
     )
     db.commit()
     assert run2.findings_new == 0
+    assert run2.findings_total == 7
     # Still exactly one canonical row.
     rows = db.execute(
         select(Finding).where(
             Finding.engagement_id == engagement.id,
-            Finding.group_key == "playbook:dns-inventory:foo.example",
+            Finding.group_key == "dns_records:foo.example",
         )
     ).scalars().all()
     assert len(rows) == 1
-    assert len((rows[0].details or {}).get("items") or []) == 3
+    assert len((rows[0].details or {}).get("items") or []) == 7
+    rerun_origin = db.execute(
+        select(FindingOrigin).where(
+            FindingOrigin.finding_id == rows[0].id,
+            FindingOrigin.thread_id == run2.id,
+        )
+    ).scalar_one()
+    assert rerun_origin.source_tool == "dns-inventory"
+
+
+def test_bridge_failure_does_not_poison_playbook_transaction(
+    db: Session,
+    engagement: Engagement,
+    dns_playbook: Playbook,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def broken_upsert(*_args, **_kwargs):
+        # Real database failure leaves a transaction aborted unless the bridge
+        # contains it in a SAVEPOINT.
+        db.execute(text("SELECT 1 / 0"))
+
+    monkeypatch.setattr(
+        "app.services.playbook.finding_bridge.upsert_grouped_finding",
+        broken_upsert,
+    )
+    run = start_run(
+        db,
+        engagement=engagement,
+        playbook=dns_playbook,
+        scope_subset=["foo.example"],
+        executor=_FakeDnsExecutor(),
+    )
+    db.commit()
+    assert run.status is PlaybookRunStatus.completed
+    assert run.findings_new == 0
+    assert run.findings_total == 0
 
 
 def test_stub_steps_persist_nothing(

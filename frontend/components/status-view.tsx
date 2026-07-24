@@ -171,9 +171,11 @@ export function summarizeEvent(event: RunEvent): string {
 export function StatusView({
   slug,
   allowLegacyRetry = true,
+  canWrite = true,
 }: {
   slug: string;
   allowLegacyRetry?: boolean;
+  canWrite?: boolean;
 }) {
   // v1.0.0: react-query owns the fetch + 2s polling + focus revalidation.
   // The old useEffect + setInterval + manual reload is gone; the useQuery
@@ -418,11 +420,19 @@ export function StatusView({
 
   // Bulk-cancel targets: in-flight tasks + running agents. Deferred work needs
   // an explicit per-card disposition so it is never swept away accidentally.
-  const activeForBulkCancel = all.filter(
-    (e) =>
-      (e.kind === "task" &&
-        ["pending", "dispatched", "running"].includes(e.raw_status)) ||
-      (e.kind === "agent" && e.raw_status === "running"),
+  const activeForBulkCancel = useMemo(
+    () =>
+      canWrite
+        ? all.filter(
+            (entity) =>
+              (entity.kind === "task" &&
+                ["pending", "dispatched", "running"].includes(
+                  entity.raw_status,
+                )) ||
+              (entity.kind === "agent" && entity.raw_status === "running"),
+          )
+        : [],
+    [all, canWrite],
   );
 
   const onBulkCancel = useCallback(async () => {
@@ -553,18 +563,20 @@ export function StatusView({
             </button>
           ))}
         </div>
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={() => void onBulkCancel()}
-          disabled={bulkCancelling || activeForBulkCancel.length === 0}
-          className="ml-2"
-        >
-          <CircleSlash className="mr-1.5 h-3.5 w-3.5" />
-          {bulkCancelling
-            ? "Cancelling…"
-            : `Cancel all active (${activeForBulkCancel.length})`}
-        </Button>
+        {canWrite && (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => void onBulkCancel()}
+            disabled={bulkCancelling || activeForBulkCancel.length === 0}
+            className="ml-2"
+          >
+            <CircleSlash className="mr-1.5 h-3.5 w-3.5" />
+            {bulkCancelling
+              ? "Cancelling…"
+              : `Cancel all active (${activeForBulkCancel.length})`}
+          </Button>
+        )}
         <div className="ml-auto flex rounded-md border border-border p-0.5">
           <button
             type="button"
@@ -656,7 +668,8 @@ export function StatusView({
                         onCancel={() => onCancel(entity)}
                         retrying={retryingId === entity.id}
                         cancelling={cancellingId === entity.id}
-                        allowRetry={allowLegacyRetry}
+                        allowRetry={allowLegacyRetry && canWrite}
+                        allowMutations={canWrite}
                       />
                     ))}
                   </div>
@@ -766,6 +779,7 @@ export function StatusView({
         <RunDetailModal
           runId={selectedPlaybookRunId}
           onClose={closePlaybook}
+          canWrite={canWrite}
         />
       )}
     </div>
@@ -834,6 +848,7 @@ function StatusBox({
   retrying,
   cancelling,
   allowRetry,
+  allowMutations,
 }: {
   entity: StatusEntity;
   onExpand: () => void;
@@ -842,13 +857,15 @@ function StatusBox({
   retrying: boolean;
   cancelling: boolean;
   allowRetry: boolean;
+  allowMutations: boolean;
 }) {
   const Icon = COLOR_ICON[entity.color];
   const OutcomeIcon = entity.outcome ? OUTCOME_ICON[entity.outcome] : null;
   const cancellable =
-    (entity.kind === "task" &&
+    allowMutations &&
+    ((entity.kind === "task" &&
       ["pending", "deferred", "dispatched", "running"].includes(entity.raw_status)) ||
-    (entity.kind === "agent" && entity.raw_status === "running");
+    (entity.kind === "agent" && entity.raw_status === "running"));
   return (
     <div
       className={cn(

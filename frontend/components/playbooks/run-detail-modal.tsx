@@ -65,10 +65,12 @@ export function RunDetailModal({
   runId,
   onClose,
   returnFocus,
+  canWrite = true,
 }: {
   runId: string;
   onClose: () => void;
   returnFocus?: () => void;
+  canWrite?: boolean;
 }) {
   const openerRef = useRef<HTMLElement | null>(
     typeof document === "undefined" ? null : (document.activeElement as HTMLElement | null),
@@ -275,7 +277,7 @@ export function RunDetailModal({
           </div>
         )}
         <DialogFooter>
-          {run && run.status === "awaiting_approval" ? (
+          {run && canWrite && run.status === "awaiting_approval" ? (
             mode === "reject" ? (
               <>
                 <Button
@@ -330,6 +332,7 @@ export function RunDetailModal({
               </>
             )
           ) : run &&
+            canWrite &&
             (run.status === "pending" || run.status === "running") ? (
             mode === "cancel" ? (
               <>

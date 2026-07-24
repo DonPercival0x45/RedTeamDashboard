@@ -14,7 +14,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { useDecisionInbox } from "@/lib/hooks";
+import { useDecisionInbox, useMe } from "@/lib/hooks";
 import type { ToolDecisionInboxItem } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -52,6 +52,8 @@ export function ApprovalInbox({
   collapsed?: boolean;
 } = {}) {
   const query = useDecisionInbox();
+  const { data: me } = useMe();
+  const canWrite = me !== undefined && me.role !== "guest";
   const decisions = query.data ?? [];
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -147,7 +149,14 @@ export function ApprovalInbox({
                       <li key={`${row.kind}-${row.id}`}>
                         <button
                           type="button"
+                          disabled={row.kind === "tool_approval" && !canWrite}
+                          title={
+                            row.kind === "tool_approval" && !canWrite
+                              ? "Guest access is read-only"
+                              : undefined
+                          }
                           onClick={() => {
+                            if (row.kind === "tool_approval" && !canWrite) return;
                             setOpen(false);
                             if (row.kind === "tool_approval") {
                               setSelectedApproval(toPending(row));
@@ -155,7 +164,7 @@ export function ApprovalInbox({
                               setSelectedPlaybookRunId(row.id);
                             }
                           }}
-                          className="flex w-full items-start gap-3 px-4 py-3 text-left hover:bg-muted/40"
+                          className="flex w-full items-start gap-3 px-4 py-3 text-left hover:bg-muted/40 disabled:cursor-not-allowed disabled:opacity-60"
                         >
                           <span className="mt-0.5 rounded-full border border-amber-500/50 bg-amber-500/10 px-2 py-0.5 text-[10px] uppercase text-amber-700 dark:text-amber-200">
                             {row.kind === "tool_approval" ? row.risk : "Playbook"}
@@ -208,6 +217,7 @@ export function ApprovalInbox({
           runId={selectedPlaybookRunId}
           onClose={() => setSelectedPlaybookRunId(null)}
           returnFocus={() => triggerRef.current?.focus()}
+          canWrite={canWrite}
         />
       )}
     </div>

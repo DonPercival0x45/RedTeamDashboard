@@ -5,6 +5,7 @@ const useDecisionInbox = vi.fn();
 
 vi.mock("@/lib/hooks", () => ({
   useDecisionInbox: () => useDecisionInbox(),
+  useMe: () => ({ data: { role: "user" } }),
 }));
 
 vi.mock("@/components/approvals-modal", () => ({

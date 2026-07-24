@@ -289,3 +289,91 @@ def resolve_for_user(
         api_key=winner.get("api_key"),
         endpoint=winner.get("endpoint"),
     )
+
+
+# v3.0.2 — per-provider fallback model names used when the fallback path
+# picks a different provider than the caller preferred. Only kicks in when
+# the chosen key row has no explicit ``models`` entry to steal.
+_FALLBACK_MODELS: dict[str, str] = {
+    "anthropic": "claude-opus-4-8",
+    "openai": "gpt-4o",
+    "moonshot": "moonshot-v1-8k",
+    "google": "gemini-2.5-pro",
+    "xai": "grok-2",
+    "mistral": "mistral-large-latest",
+    "cohere": "command-r-plus",
+    "together": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+    "groq": "llama-3.3-70b-versatile",
+    "deepseek": "deepseek-chat",
+    "azure": "gpt-4",
+    "ollama": "llama3.2",
+}
+
+
+def resolve_for_user_with_fallback(
+    redis: redis_lib.Redis,
+    *,
+    user_id: uuid.UUID,
+    preferred_provider: str,
+    preferred_model: str,
+) -> tuple[str, str, ResolvedProviderKey]:
+    """Resolve ``preferred_provider``; if the user has no cached key for
+    it, fall back to their MRU model_provider key regardless of provider.
+
+    Returns ``(provider, model_name, ResolvedProviderKey)`` — provider and
+    model_name reflect whatever was actually chosen. When the fallback
+    fires, ``model_name`` becomes the first entry in the picked key's
+    ``models`` list, or a :data:`_FALLBACK_MODELS` per-provider default.
+
+    Fixes the v3.0.2 trap where ``settings.llm_provider`` defaults to
+    ``anthropic`` but the analyst has only uploaded (say) an OpenAI or
+    Kimi key — the Strategist / Planner / Correlate agents used to 400
+    with ``no ephemeral provider key cached for 'anthropic'``. Now they
+    seamlessly use whatever the analyst actually has.
+
+    Raises :class:`NoProviderKeyError` if the user has no usable
+    ``model_provider`` entry at all.
+    """
+    try:
+        resolved = resolve_for_user(
+            redis, user_id=user_id, provider=preferred_provider
+        )
+        return preferred_provider, preferred_model, resolved
+    except NoProviderKeyError:
+        pass
+
+    # Fallback: walk the user's cached model_provider keys, take MRU.
+    candidates = [
+        e
+        for e in list_all(redis, user_id=user_id)
+        if e.get("kind") == "model_provider"
+        and (e.get("api_key") or e.get("is_local"))
+    ]
+    if not candidates:
+        # Preserve the original error message (still names the preferred
+        # provider so the UI's "re-upload at /settings/keys" pointer
+        # remains actionable).
+        raise NoProviderKeyError(
+            user_id=user_id, provider=preferred_provider.strip().lower()
+        )
+
+    candidates.sort(key=lambda e: e.get("updated_at") or "", reverse=True)
+    winner = candidates[0]
+    fallback_provider = str(winner["provider"]).strip().lower()
+    winner_models = winner.get("models") or []
+    if isinstance(winner_models, list) and winner_models:
+        fallback_model = str(winner_models[0])
+    else:
+        fallback_model = _FALLBACK_MODELS.get(
+            fallback_provider, preferred_model
+        )
+
+    resolved = ResolvedProviderKey(
+        row_id=uuid.UUID(str(winner["id"])),
+        name=str(winner.get("name") or ""),
+        provider=fallback_provider,
+        is_local=bool(winner.get("is_local")),
+        api_key=winner.get("api_key"),
+        endpoint=winner.get("endpoint"),
+    )
+    return fallback_provider, fallback_model, resolved

@@ -27,6 +27,7 @@ from app.db.session import SessionLocal
 from app.main import app
 from app.models import (
     Engagement,
+    EngagementArchitecture,
     EngagementStatus,
     EngagementWorkState,
     Playbook,
@@ -145,6 +146,7 @@ def test_delete_playbook_refuses_when_runs_exist(
         slug=f"a5bd-{uuid.uuid4().hex[:6]}",
         status=EngagementStatus.active,
         work_state=EngagementWorkState.active,
+        intelligence_architecture=EngagementArchitecture.v3,
     )
     db.add(eng)
     db.flush()
@@ -366,6 +368,7 @@ def test_delete_playbook_with_runs_409(
         slug=f"a5bh-{uuid.uuid4().hex[:6]}",
         status=EngagementStatus.active,
         work_state=EngagementWorkState.active,
+        intelligence_architecture=EngagementArchitecture.v3,
     )
     db.add(eng)
     db.flush()
@@ -496,6 +499,7 @@ def test_analyst_authored_active_playbook_hits_the_gate(
         slug=eng_slug,
         status=EngagementStatus.active,
         work_state=EngagementWorkState.active,
+        intelligence_architecture=EngagementArchitecture.v3,
     )
     db.add(eng)
     db.flush()

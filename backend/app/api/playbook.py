@@ -25,7 +25,12 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import CurrentNonGuestUser, CurrentUser, DbSession
 from app.models import (
+    ActorType,
+    AuditLog,
     Engagement,
+    EngagementArchitecture,
+    EngagementStatus,
+    EngagementWorkState,
     Playbook,
     PlaybookExecutorKind,
     PlaybookRun,
@@ -77,8 +82,21 @@ def _engagement_by_slug(session: Session, slug: str) -> Engagement:
     return eng
 
 
+def _ensure_playbook_engagement_mutable(engagement: Engagement) -> None:
+    if engagement.intelligence_architecture != EngagementArchitecture.v3:
+        raise HTTPException(status_code=409, detail="playbook runs require a v3 engagement")
+    if engagement.status != EngagementStatus.active:
+        raise HTTPException(status_code=409, detail="engagement is not active")
+    if engagement.work_state == EngagementWorkState.completed:
+        raise HTTPException(status_code=409, detail="completed engagement is read-only")
+
+
 def _validate_scope_subset(
-    session: Session, engagement: Engagement, scope_subset: list[str]
+    session: Session,
+    engagement: Engagement,
+    scope_subset: list[str],
+    *,
+    asset_class: str,
 ) -> None:
     """Enforce the in-scope-only invariant on playbook run targets.
 
@@ -105,9 +123,14 @@ def _validate_scope_subset(
         if not value:
             rejected.append("(empty value)")
             continue
-        match = evaluate_scope_candidates(
-            [(value, infer_scope_kind(value))], items
-        )
+        kind = infer_scope_kind(value)
+        if kind.value != asset_class:
+            rejected.append(
+                f"{value!r} (kind {kind.value!r} is incompatible with "
+                f"playbook asset class {asset_class!r})"
+            )
+            continue
+        match = evaluate_scope_candidates([(value, kind)], items)
         if not match.allowed:
             rejected.append(f"{value!r} ({match.reason})")
     if rejected:
@@ -413,6 +436,7 @@ def create_playbook_run(
     the ``collection.job.completed`` milestone at end-of-run.
     """
     engagement = _engagement_by_slug(session, slug)
+    _ensure_playbook_engagement_mutable(engagement)
     playbook = catalog.get_by_slug(session, payload.playbook_slug, payload.playbook_version)
     if playbook is None:
         raise HTTPException(
@@ -442,7 +466,12 @@ def create_playbook_run(
     # In-scope-only invariant (complaint 4b): every submitted target must be in
     # the engagement's declared scope and not match an exclusion, before we queue
     # anything for the worker to hand to tools.
-    _validate_scope_subset(session, engagement, payload.scope_subset)
+    _validate_scope_subset(
+        session,
+        engagement,
+        payload.scope_subset,
+        asset_class=playbook.applies_to_asset_class,
+    )
     run = enqueue_run(
         session,
         engagement=engagement,
@@ -531,13 +560,21 @@ def cancel_playbook_run(
       and bails cleanly.
     * Terminal → 409 conflict.
     """
-    del user
     try:
         run = cancel_run(session, run_id=run_id, reason="cancelled by analyst")
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=f"playbook run {run_id} not found") from exc
     except RunNotCancellableError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    session.add(
+        AuditLog(
+            engagement_id=run.engagement_id,
+            actor_type=ActorType.user,
+            actor_id=str(user.id),
+            event_type="playbook.cancelled",
+            payload={"playbook_run_id": str(run.id), "status": run.status.value},
+        )
+    )
     session.commit()
     session.refresh(run)
     return _run_read(session, run)
