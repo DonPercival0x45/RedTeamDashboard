@@ -73,3 +73,17 @@ CVE-2026-39822
 # regen (deferred — clean IPv6 needed for npm install).
 # -----------------------------------------------------------------------------
 GHSA-f88m-g3jw-g9cj
+
+# -----------------------------------------------------------------------------
+# postcss (build-time CSS pipeline) — v3.0.1 addition.
+# CVE-2026-45623 is arbitrary file read / info disclosure via crafted CSS
+# input to postcss's parser. next@15.5.21 hard-pins postcss@8.4.31 (exact,
+# not caret) as a direct dep; the resolved lockfile can't be overridden
+# without npm `overrides`, which risks breaking `next build`.
+# The viewer container runs `next start` on pre-compiled bundles — postcss
+# is invoked only during the CI build stage, on our own tailwind.css +
+# component styles. The exploit vector requires attacker-controlled CSS
+# input, which never reaches the build. Revisit when Next.js bumps its
+# pinned postcss (upstream tracking: vercel/next.js).
+# -----------------------------------------------------------------------------
+CVE-2026-45623
