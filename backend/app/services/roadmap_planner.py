@@ -42,7 +42,7 @@ from app.models import (
     AgentTrigger,
     RoadmapSuggestion,
 )
-from app.orchestrator.llm import default_provider_model
+from app.services.agent_model_resolver import resolve_user_model_with_default
 from app.services.ephemeral_provider_key import (
     NoProviderKeyError,
     resolve_for_user,
@@ -217,7 +217,9 @@ def detect_combine_clusters(
     if len(pool) < 2:
         return CombineResult()
 
-    provider, model_name = default_provider_model()
+    provider, model_name = resolve_user_model_with_default(
+        session, user_id=acting_user_id
+    )
     try:
         resolved = resolve_for_user(
             redis_client, user_id=acting_user_id, provider=provider
@@ -308,7 +310,9 @@ def bulk_rank_suggestions(
     if not pool:
         return RankResult()
 
-    provider, model_name = default_provider_model()
+    provider, model_name = resolve_user_model_with_default(
+        session, user_id=acting_user_id
+    )
     try:
         resolved = resolve_for_user(
             redis_client, user_id=acting_user_id, provider=provider

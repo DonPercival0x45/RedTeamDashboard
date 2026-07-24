@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -220,7 +220,7 @@ def delete_playbook_endpoint(
     slug: str,
     session: DbSession,
     _user: CurrentNonGuestUser,
-) -> None:
+) -> Response:
     """A5b: delete the latest version. Refuses (409) when runs reference it —
     the FK is RESTRICT so Postgres would reject anyway; we surface it first."""
     playbook = catalog.get_by_slug(session, slug)
@@ -231,6 +231,7 @@ def delete_playbook_endpoint(
     except PlaybookHasRunsError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     session.commit()
+    return Response(status_code=204)
 
 
 @router.post(
@@ -306,7 +307,7 @@ def delete_step_endpoint(
     step_id: uuid.UUID,
     session: DbSession,
     _user: CurrentNonGuestUser,
-) -> None:
+) -> Response:
     """A5b: remove a step. Adjacent steps keep their sort_order; the runner
     iterates by ORDER BY sort_order so gaps don't matter."""
     playbook = catalog.get_by_slug(session, slug)
@@ -317,6 +318,7 @@ def delete_step_endpoint(
     except StepNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     session.commit()
+    return Response(status_code=204)
 
 
 @router.get("/playbooks/{slug}", response_model=PlaybookDetail)

@@ -33,7 +33,7 @@ from app.models import (
     AgentTrigger,
     Finding,
 )
-from app.orchestrator.llm import default_provider_model
+from app.services.agent_model_resolver import resolve_agent_model_with_default
 from app.services.ephemeral_provider_key import resolve_for_user
 
 _SYSTEM_PROMPT = (
@@ -73,7 +73,12 @@ def triage_finding_summary(
     layer maps ``NoProviderKeyError`` to a 400 with a pointer to
     /settings/keys; other failures bubble as a 502.
     """
-    provider, model_name = default_provider_model()
+    provider, model_name = resolve_agent_model_with_default(
+        session,
+        user_id=acting_user_id,
+        engagement_id=finding.engagement_id,
+        role=AgentName.triage,
+    )
     resolved = resolve_for_user(
         redis_client, user_id=acting_user_id, provider=provider
     )
@@ -173,7 +178,12 @@ def rewrite_finding_summary(
     in the draft. Returns ``(execution, rewritten_text)``; caller commits.
     Raises whatever the key resolver / LLM SDK raise.
     """
-    provider, model_name = default_provider_model()
+    provider, model_name = resolve_agent_model_with_default(
+        session,
+        user_id=acting_user_id,
+        engagement_id=finding.engagement_id,
+        role=AgentName.triage,
+    )
     resolved = resolve_for_user(
         redis_client, user_id=acting_user_id, provider=provider
     )

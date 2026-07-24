@@ -53,8 +53,8 @@ from app.models import (
     TaskKind,
     TaskStatus,
 )
-from app.orchestrator.llm import default_provider_model
 from app.orchestrator.tools import all_tools, get_tool
+from app.services.agent_model_resolver import resolve_agent_model_with_default
 from app.services.ephemeral_provider_key import resolve_for_user
 from app.services.finding_activity import build_finding_activity
 
@@ -600,7 +600,12 @@ def generate_finding_chat_reply(
     acting_user_id: uuid.UUID,
 ) -> tuple[AgentExecution, ConversationMessage]:
     """Ask the BYO LLM for the assistant response and persist the bubble."""
-    provider, model_name = default_provider_model()
+    provider, model_name = resolve_agent_model_with_default(
+        session,
+        user_id=acting_user_id,
+        engagement_id=finding.engagement_id,
+        role=AgentName.strategic,
+    )
     resolved = resolve_for_user(redis_client, user_id=acting_user_id, provider=provider)
     llm = _make_chat_model(
         provider,
@@ -727,7 +732,12 @@ def summarize_finding_chat(
 
     summary = _fallback_summary(messages)
     try:
-        provider, model_name = default_provider_model()
+        provider, model_name = resolve_agent_model_with_default(
+            session,
+            user_id=acting_user_id,
+            engagement_id=finding.engagement_id,
+            role=AgentName.strategic,
+        )
         resolved = resolve_for_user(redis_client, user_id=acting_user_id, provider=provider)
         llm = _make_chat_model(
             provider,

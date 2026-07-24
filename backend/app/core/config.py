@@ -47,10 +47,12 @@ class Settings(BaseSettings):
 
     # v3 A4: URL the playbook worker's ``MCPExecutor`` hits when a run is
     # created with ``executor_kind='mcp'``. Defaults to the colocated MCP
-    # server on the backend service inside the compose network. Deployments
-    # that route MCP to the secondary Container App override this to the
-    # ``aca_mcp_url`` value + ``/mcp``.
-    playbook_mcp_url: str = "http://backend:8001/mcp"
+    # server on the backend service — the backend listens on container
+    # port 8000 (Dockerfile EXPOSE + uvicorn --port 8000), so the worker
+    # reaches it as ``backend:8000`` inside the compose network. Deployments
+    # that route MCP to the secondary Container App override this to that
+    # app's URL + ``/mcp``.
+    playbook_mcp_url: str = "http://backend:8000/mcp"
 
     # CORS allow-origins for the browser viewer. Defaults cover local dev.
     # Kit deploys override this with the central viewer's origin (Phase 6)

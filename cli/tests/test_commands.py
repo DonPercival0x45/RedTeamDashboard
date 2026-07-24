@@ -145,6 +145,42 @@ def test_run_start_with_model_includes_model_in_body(
     assert body["model"] == {"provider": "openai", "name": "gpt-4o-mini"}
 
 
+def test_run_start_accepts_moonshot_provider(
+    seeded_config: Config,
+    httpx_mock: HTTPXMock,
+) -> None:
+    httpx_mock.add_response(
+        url="http://localhost:8000/engagements/acme/runs",
+        json={
+            "engagement_id": "1",
+            "thread_id": "t1",
+            "events_stream": "runs:1:events",
+            "model": {"provider": "moonshot", "name": "kimi-k2-turbo-preview"},
+        },
+    )
+    _invoke(
+        [
+            "--json",
+            "run",
+            "start",
+            "acme",
+            "-p",
+            "go",
+            "--provider",
+            "moonshot",
+            "--model",
+            "kimi-k2-turbo-preview",
+            "--no-tail",
+        ],
+        seeded_config.path,
+    )
+    body = json.loads(httpx_mock.get_request().read())
+    assert body["model"] == {
+        "provider": "moonshot",
+        "name": "kimi-k2-turbo-preview",
+    }
+
+
 def test_run_start_provider_without_model_fails(seeded_config: Config) -> None:
     runner = CliRunner()
     result = runner.invoke(

@@ -31,7 +31,7 @@ from app.models import (
     RoadmapSuggestion,
     RoadmapSuggestionStatus,
 )
-from app.orchestrator.llm import default_provider_model
+from app.services.agent_model_resolver import resolve_user_model_with_default
 
 logger = structlog.get_logger(__name__)
 
@@ -164,6 +164,7 @@ class PlanningAgent:
 
     def _resolve_llm(
         self,
+        session: Session | None = None,
         *,
         acting_user_id: uuid.UUID,
     ) -> tuple[Any, str, str]:
@@ -204,9 +205,14 @@ class PlanningAgent:
 
         # Backwards-compatible escape hatch for installs that have not yet
         # configured a platform credential. Explicit constructor overrides
-        # still win in tests; otherwise preserve the historical run default.
+        # still win in tests; otherwise honor the author's live default before
+        # falling back to the process-wide provider.
         if not (self._provider and self._model_name):
-            provider, model_name = default_provider_model()
+            if session is None:
+                raise RuntimeError("PlanningAgent BYO fallback requires a DB session")
+            provider, model_name = resolve_user_model_with_default(
+                session, user_id=acting_user_id
+            )
         if self._redis is None:
             raise RuntimeError(
                 "PlanningAgent needs PLANNER_API_KEY (preferred), an org "
@@ -272,7 +278,7 @@ class PlanningAgent:
                     "a BYO key"
                 )
             llm, provider, model_name = self._resolve_llm(
-                acting_user_id=suggestion.author_user_id
+                session, acting_user_id=suggestion.author_user_id
             )
             execution.model_provider = provider
             execution.model_name = model_name

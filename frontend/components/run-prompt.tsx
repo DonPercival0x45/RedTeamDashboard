@@ -129,6 +129,8 @@ export function RunPrompt({
     DEFAULT_MODELS.anthropic,
   );
   const [customModel, setCustomModel] = useState<string>("");
+  const [modelSelectionInitialized, setModelSelectionInitialized] =
+    useState(false);
   // v1.4.12: optionally pin a specific cached key for this run (roadmap #3).
   // null/"" = auto (MRU). Reset whenever the provider changes.
   const [keyId, setKeyId] = useState<string>("");
@@ -140,27 +142,43 @@ export function RunPrompt({
     isLoading: keysLoading,
     error: keysError,
   } = useProviderKeys();
-  // v1.4.11: pre-select the analyst's saved default model (roadmap #3 / #12)
-  // instead of the hardcoded Anthropic default. Fires once when /me loads.
-  const { data: me } = useMe();
+  // Seed provider + model atomically after both /me and the live key cache
+  // settle. Before this completes the submit button stays disabled, so the
+  // temporary Anthropic placeholder can never become an explicit request.
+  // If the analyst has no saved default, prefer the first live model-provider
+  // key rather than demanding the process-default provider's credential.
+  const { data: me, isLoading: meLoading } = useMe();
   useEffect(() => {
-    if (!me) return;
-    const dp = me.default_llm_provider;
-    const dm = me.default_llm_model;
-    if (!dp && !dm) return;
-    const nextProvider = (dp as LLMProvider) || provider;
-    if (dp) setProvider(nextProvider);
-    if (dm) {
-      const presets = getPresetModels(nextProvider);
-      if (presets.includes(dm)) {
-        setModelSelect(dm);
-      } else {
-        setModelSelect(CUSTOM_VALUE);
-        setCustomModel(dm);
-      }
+    if (modelSelectionInitialized || meLoading || keysLoading) return;
+
+    const supported = new Set(PROVIDER_OPTIONS.map((option) => option.value));
+    const savedProvider = me?.default_llm_provider as LLMProvider | undefined;
+    const firstLiveKey = keys.find((key) =>
+      supported.has(key.provider as LLMProvider),
+    );
+    const nextProvider =
+      (savedProvider && supported.has(savedProvider) ? savedProvider : undefined) ??
+      (firstLiveKey?.provider as LLMProvider | undefined) ??
+      "anthropic";
+    const providerKey = keys.find((key) => key.provider === nextProvider);
+    const nextModel =
+      me?.default_llm_model ??
+      providerKey?.models?.find((model) => model.trim()) ??
+      DEFAULT_MODELS[nextProvider];
+
+    setProvider(nextProvider);
+    if (nextModel && getPresetModels(nextProvider).includes(nextModel)) {
+      setModelSelect(nextModel);
+      setCustomModel("");
+    } else if (nextModel) {
+      setModelSelect(CUSTOM_VALUE);
+      setCustomModel(nextModel);
+    } else {
+      setModelSelect(CUSTOM_VALUE);
+      setCustomModel("");
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [me?.default_llm_provider, me?.default_llm_model]);
+    setModelSelectionInitialized(true);
+  }, [keys, keysLoading, me, meLoading, modelSelectionInitialized]);
   const runToast = useRunToast();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -205,7 +223,9 @@ export function RunPrompt({
   );
   const isLocalProvider = provider === "ollama";
   const providerReady =
-    isLocalProvider || (!keysLoading && !keysError && providerKeys.length > 0);
+    !meLoading &&
+    modelSelectionInitialized &&
+    (isLocalProvider || (!keysLoading && !keysError && providerKeys.length > 0));
 
   const onProviderChange = (next: LLMProvider) => {
     setProvider(next);

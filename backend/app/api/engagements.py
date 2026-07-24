@@ -97,7 +97,6 @@ from app.models import (
     User,
 )
 from app.models.api_key import APIKeyScope
-from app.orchestrator.llm import default_provider_model
 from app.runs.streams import inbound_stream, outbound_stream, store_run_model
 from app.schemas.engagement import (
     EngagementCreate,
@@ -4128,11 +4127,16 @@ def start_run(
             ),
         )
 
-    # Resolve effective model: body wins, else fall back to env defaults.
+    # Resolve effective model: an explicit request wins. Otherwise honor the
+    # acting analyst's default before falling back to process configuration.
     if body.model is not None:
         provider, model_name = body.model.provider, body.model.name
     else:
-        provider, model_name = default_provider_model()
+        from app.services.agent_model_resolver import resolve_user_model_with_default
+
+        provider, model_name = resolve_user_model_with_default(
+            session, user_id=user.id
+        )
     # v1.4.12: if the analyst pinned a specific cached key, validate it
     # belongs to them and matches the provider BEFORE we stash it for the
     # worker. resolve_for_user with key_id does the membership/kind/provider

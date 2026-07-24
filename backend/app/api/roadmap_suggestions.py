@@ -366,8 +366,8 @@ def detect_combines(
         raise HTTPException(
             status_code=400,
             detail=(
-                "No provider key configured — set your Anthropic key at "
-                "/settings/keys before running an agent operation."
+                f"No {exc.provider} provider key is cached for this session. "
+                "Add or refresh it at /settings/keys before running this operation."
             ),
         ) from exc
     except roadmap_planner.PoolTooLargeError as exc:
@@ -407,8 +407,8 @@ def rank_suggestions(
         raise HTTPException(
             status_code=400,
             detail=(
-                "No provider key configured — set your Anthropic key at "
-                "/settings/keys before running an agent operation."
+                f"No {exc.provider} provider key is cached for this session. "
+                "Add or refresh it at /settings/keys before running this operation."
             ),
         ) from exc
     except roadmap_planner.PoolTooLargeError as exc:

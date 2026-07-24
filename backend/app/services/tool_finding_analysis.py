@@ -86,10 +86,10 @@ async def _extract_findings_via_llm(
     from pydantic import BaseModel, Field
 
     from app.agents.strategic import _make_chat_model
-    from app.orchestrator.llm import default_provider_model
+    from app.services.agent_model_resolver import resolve_user_row_model_with_default
     from app.services.ephemeral_provider_key import resolve_for_user
 
-    provider, model_name = default_provider_model()
+    provider, model_name = resolve_user_row_model_with_default(invoker)
     resolved = resolve_for_user(
         redis, user_id=invoker.id, provider=provider
     )

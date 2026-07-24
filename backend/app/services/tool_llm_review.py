@@ -44,7 +44,7 @@ from app.models import (
     AgentName,
     AgentTrigger,
 )
-from app.orchestrator.llm import default_provider_model
+from app.services.agent_model_resolver import resolve_agent_model_with_default
 from app.services.ephemeral_provider_key import (
     NoProviderKeyError,
     resolve_for_user,
@@ -157,7 +157,12 @@ def review_tool_source(
     Persists one ``AgentExecution`` row per call (running → completed /
     failed) so cost accounting lines up with Strategic / Tactical /
     Triage."""
-    provider, model_name = default_provider_model()
+    provider, model_name = resolve_agent_model_with_default(
+        session,
+        user_id=acting_user_id,
+        engagement_id=None,
+        role=AgentName.tool_review,
+    )
 
     try:
         resolved = resolve_for_user(
