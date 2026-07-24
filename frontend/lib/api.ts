@@ -257,6 +257,32 @@ export function archiveEngagement(slug: string): Promise<Engagement> {
   return request<Engagement>(`/engagements/${slug}`, { method: "DELETE" });
 }
 
+// v3.0.3 — direct tool execution (no LLM, no Tactical). Used by the
+// Scope tab's "Current tools" list to run a playbook tool against the
+// engagement's default scope target (or an explicit override).
+export type ToolRunResult = {
+  ok: boolean;
+  tool: string;
+  scope: string;
+  findings_new: number;
+  findings_total: number;
+  finding_id: string | null;
+  stub: boolean;
+  error: string | null;
+  data: Record<string, unknown>;
+};
+
+export function runToolDirect(
+  slug: string,
+  toolSlug: string,
+  body: { scope?: string; args?: Record<string, unknown> } = {},
+): Promise<ToolRunResult> {
+  return request<ToolRunResult>(
+    `/engagements/${slug}/tools/${toolSlug}/run`,
+    { method: "POST", body: JSON.stringify(body) },
+  );
+}
+
 export function flushEngagement(slug: string): Promise<void> {
   return request<void>(`/engagements/${slug}/flush`, { method: "POST" });
 }

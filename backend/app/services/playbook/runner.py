@@ -527,6 +527,31 @@ def _run_one(
     run.findings_high_severity += result.findings_high_severity
     run.findings_total += result.findings_total
 
+    # v3.0.3 — bridge tool output into a Finding row so the Findings
+    # tab actually reflects what the playbook found. Stubs skipped
+    # (they don't produce real content); non-bridgeable tools return
+    # None; the bridge itself swallows exceptions so a persistence
+    # failure never fails the run.
+    if result.ok and not getattr(result, "stub", False):
+        from app.services.playbook.finding_bridge import bridge_step_to_finding
+
+        try:
+            bridge_step_to_finding(
+                session,
+                engagement_id=engagement.id,
+                playbook_tool=step_tool_slug,
+                scope_item=scope_item,
+                args_template=step_args_template,
+                data=result.data,
+                thread_id=str(run.id),
+            )
+        except Exception:  # noqa: BLE001 - bridge is best-effort
+            logger.exception(
+                "playbook.finding_bridge.raised",
+                tool=step_tool_slug,
+                scope_item=scope_item,
+            )
+
     if getattr(result, "stub", False):
         status = CoverageRecordStatus.stub
     elif result.ok:

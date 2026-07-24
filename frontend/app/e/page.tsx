@@ -29,6 +29,7 @@ import { RunPrompt } from "@/components/run-prompt";
 import { RunPromptBridgeProvider } from "@/components/run-prompt-context";
 import { ScopeEditor } from "@/components/scope-editor";
 import { ToolsPanel } from "@/components/tools-panel";
+import { V3ToolsPanel } from "@/components/v3-tools-panel";
 import { subscribeToEvents } from "@/lib/events";
 import {
   prefetchEngagementView,
@@ -465,14 +466,27 @@ function EngagementDetail({ slug }: { slug: string }) {
           {view === "scope" && (
             <div className="space-y-6">
               <ScopeEditor slug={slug} canWrite={canWrite} />
-              {engagement.intelligence_architecture === "v3" ? null : engagement.status === "active" ? (
+              {engagement.intelligence_architecture === "v3" ? (
+                // v3.0.3: deterministic click-to-run tools panel. No
+                // LangGraph / Tactical / prompt textarea — each button
+                // hits POST /engagements/{slug}/tools/{slug}/run and
+                // writes a Finding row via the same grouping helper the
+                // playbook runner uses.
+                engagement.status === "active" ? (
+                  <V3ToolsPanel slug={slug} />
+                ) : (
+                  <p className="text-sm text-muted-foreground">
+                    This engagement is {engagement.status}; tool runs are
+                    disabled.
+                  </p>
+                )
+              ) : engagement.status === "active" ? (
                 // v1.11.0: ToolsPanel + RunPrompt share a bridge so a
                 // click on a tool button drops its example prompt into
                 // the run textarea below.
                 // v1.15.0 (#93): entity quick-actions on the Entities
                 // tab also seed the textarea via ``initialPrompt``; both
                 // paths coexist because RunPrompt owns the prompt state.
-                // v3.0.2: hidden entirely on v3 — playbooks drive collection.
                 <RunPromptBridgeProvider>
                   <ToolsPanel />
                   <div className="mt-6">
