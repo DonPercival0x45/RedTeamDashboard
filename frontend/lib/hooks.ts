@@ -1419,7 +1419,10 @@ export function useCancelPlaybookRunMutation() {
     mutationFn: (runId: string) => cancelPlaybookRun(runId),
     onSuccess: (run) => {
       qc.invalidateQueries({ queryKey: qk.playbookRun(run.id) });
-      qc.invalidateQueries({ queryKey: ["playbook-runs", run.engagement_id] });
+      // List keys are slug-prefixed (qk.playbookRuns(slug, status)), and
+      // ``run.engagement_id`` is a UUID that never matches. Invalidate the
+      // bare prefix so the run list refreshes immediately, like approve/reject.
+      qc.invalidateQueries({ queryKey: ["playbook-runs"] });
     },
   });
 }

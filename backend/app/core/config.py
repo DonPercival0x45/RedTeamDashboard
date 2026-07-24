@@ -183,7 +183,7 @@ class Settings(BaseSettings):
     # ``api.github.com/repos/<github_repo>/releases`` + runs the same
     # categorization enricher install.sh writes into the static bundle,
     # caches for ``releases_cache_ttl_seconds``. Overridable per-deploy
-    # via env ``RTD_GITHUB_REPO`` if a fork wants to point at a
+    # via env ``GITHUB_REPO`` if a fork wants to point at a
     # different origin.
     github_repo: str = "DonPercival0x45/RedTeamDashboard"
     releases_cache_ttl_seconds: int = 3600
@@ -191,7 +191,7 @@ class Settings(BaseSettings):
     # v0.12.0 — Tools tab sandbox runner selection.
     # ``docker`` = LocalDockerRunner (mounts /var/run/docker.sock, used
     # in local dev + CI). ``aci`` = ACIRunner (Azure Container Instances
-    # via managed identity, used in prod). Set via env RTD_SANDBOX_RUNNER.
+    # via managed identity, used in prod). Set via env ``SANDBOX_RUNNER``.
     sandbox_runner: str = "docker"
     # Azure Files share used by ACIRunner to hand source into the
     # spawned container. Populated by Bicep in v0.12+ prod installs.
