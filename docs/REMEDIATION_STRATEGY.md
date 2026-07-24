@@ -177,8 +177,7 @@ A focused read-only sweep of real operator journeys (onboarding/auth,
 engagement setup, findings, strategy/intelligence, playbooks/approvals/status,
 reporting/tools/settings/cross-cutting) ran across the branch. Findings below
 **merge into** the waves in §5 — new items are tagged `[NEW]`; severity
-**bumps** from the §3 tables are called out. (`findings.md` slice re-running;
-its P2/P3s will append here.)
+**bumps** from the §3 tables are called out.
 
 ### Severity bumps (promote in §3)
 - **Playbook cancel attribution (was P2-7)** → **P1**. Charter invariant
@@ -265,6 +264,34 @@ its P2/P3s will append here.)
 - `vm-actions-menu.tsx` header comment still says actions are "disabled /
   coming soon" (they shipped).
 - `costs-view.tsx` reads an `invocations` count that can never be >0 from UI.
+
+### Findings workspace (highest-traffic surface — 6th slice)
+No P0/P1 on this surface, but 3 evidence-backed P2s + 8 P3s:
+
+- **[NEW] `finding.updated` SSE events silently dropped** — the worker emits
+  `finding.updated` when a live re-run folds new hits into a grouped parent,
+  but the frontend handler covers only `finding.created`/`run.completed`/
+  `run.errored`/`approval.pending` (and `finding.updated` isn't even in the
+  `RunEvent` union). Grouped parent counts/items go stale **while work is in
+  flight** until window refocus. *Wave 4* (add the event type + invalidate
+  `qk.findings(slug)`; do NOT upsert — the payload is only a count).
+- **[NEW] Failed findings fetch renders as "No findings yet."** —
+  `findingsQuery.error` is never folded into the page error, so a 500/401
+  shows the first-run empty state and an analyst may re-import (creating
+  duplicates). *Wave 4* (render a distinct "could not load — retry" banner).
+- **[NEW] Attachment evidence path fails silently** — upload/delete wrap the
+  call in `try/finally` with no `catch` (silent 413/415/403/network), the
+  file input never resets `value` (same file can't be re-selected after
+  delete), and list-load failure renders "No attachments yet." *Wave 4*
+  (error state + `event.target.value=""`).
+- **P3 batch:** bulk-delete result note set into an already-unmounted bar;
+  summary-history + comments fetch failures render empty copy; failed image
+  preview stuck on "Loading preview…"; tag add/remove fails silently; **guest
+  role sees a fully-armed write workspace** (every action 403s, some
+  silently) — gate on `me?.role !== "guest"`; slug-less finding page fires a
+  malformed `GET /engagements//findings` (add `enabled: Boolean(slug)`);
+  AddFindingModal copy promises an observed-date fallback that doesn't exist;
+  observation link/unlink failures silent.
 
 ### Reconciliation (orphan-reclaim)
 The playbooks journey reviewer notes `playbook_worker._execute`'s outer
