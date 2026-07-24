@@ -35,7 +35,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import CurrentNonGuestUser, DbSession
-from app.models import ActorType, AuditLog, Engagement, ScopeItem, User
+from app.models import ActorType, AuditLog, Engagement, ScopeItem
 from app.services.playbook.executor import StepResult
 from app.services.playbook.finding_bridge import (
     TOOL_ALIASES,

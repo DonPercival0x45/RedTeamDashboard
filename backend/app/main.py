@@ -43,7 +43,6 @@ from app.api.integrations import router as integrations_router
 from app.api.intelligence import router as intelligence_router
 from app.api.me import router as me_router
 from app.api.methodology import router as methodology_router
-from app.api.tool_runs import router as tool_runs_router
 from app.api.orchestrator import router as orchestrator_router
 from app.api.orchestrator_tools import router as orchestrator_tools_router
 from app.api.playbook import router as playbook_router
@@ -55,6 +54,7 @@ from app.api.status import router as status_router
 from app.api.strategy import router as strategy_router
 from app.api.strategy_suggestions import router as strategy_suggestions_router
 from app.api.tool_invocations import router as tool_invocations_router
+from app.api.tool_runs import router as tool_runs_router
 from app.api.tools import router as tools_router
 from app.core.config import settings
 from app.core.logging import configure_logging
