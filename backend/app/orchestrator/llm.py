@@ -30,7 +30,7 @@ _OPENAI_COMPATIBLE_BASES: dict[str, str] = {
     "mistral": "https://api.mistral.ai/v1",
     "google": "https://generativelanguage.googleapis.com/v1beta/openai",
     "cohere": "https://api.cohere.com/compatibility/v1",
-    "moonshot": "https://api.moonshot.cn/v1",
+    "moonshot": "https://api.kimi.com/coding/v1",
     "custom": "",
 }
 

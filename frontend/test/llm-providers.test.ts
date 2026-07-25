@@ -66,6 +66,12 @@ describe("getPreset / getPresetModels / getProviderLabel", () => {
     expect(getPreset("does-not-exist")).toBeUndefined();
   });
 
+  it("uses the Kimi coding endpoint for Moonshot credentials", () => {
+    expect(getPreset("moonshot")?.endpoint).toBe(
+      "https://api.kimi.com/coding/v1",
+    );
+  });
+
   it("returns preset models or empty array for unknown", () => {
     expect(getPresetModels("anthropic")).toContain("claude-opus-4-7");
     expect(getPresetModels("custom")).toEqual([]);

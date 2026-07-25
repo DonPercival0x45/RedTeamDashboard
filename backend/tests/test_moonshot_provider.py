@@ -47,7 +47,7 @@ def test_moonshot_uses_openai_compatible_endpoint_in_both_factories(
         api_key="test-key",
     )
 
-    expected = "https://api.moonshot.cn/v1"
+    expected = "https://api.kimi.com/coding/v1"
     assert tool_bound.kwargs["base_url"] == expected
     assert tool_bound.bound_tools is not None
     assert strategic_model.kwargs["base_url"] == expected
