@@ -66,3 +66,24 @@ export function exactScopeRules(
       comparableScopeValue(item.kind, item.value) === value,
   );
 }
+
+export function scopeActionState(
+  entity: Pick<Entity, "type" | "value" | "scope_status">,
+  items: ScopeItem[],
+) {
+  const rules = exactScopeRules(entity, items);
+  const exactIncludes = rules.filter((item) => !item.is_exclusion);
+  const exactExclusions = rules.filter((item) => item.is_exclusion);
+  const hasExactRule = exactIncludes.length > 0 || exactExclusions.length > 0;
+  return {
+    rules,
+    exactIncludes,
+    exactExclusions,
+    // Never hide two mutations behind one button. Existing exact rules must be
+    // explicitly removed before the opposite disposition can be created.
+    canAdd: !hasExactRule && entity.scope_status !== "live",
+    canExclude: !hasExactRule,
+    isIncluded: exactIncludes.length > 0 || entity.scope_status === "live",
+    isExcluded: exactExclusions.length > 0,
+  };
+}

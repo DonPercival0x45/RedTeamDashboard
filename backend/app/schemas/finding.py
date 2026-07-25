@@ -403,3 +403,7 @@ class EntityRead(BaseModel):
     # scope target. Legacy is only populated for deletions performed after
     # v2.19 shipped (older hard-deletes left no audit trace).
     scope_status: str = "oos"
+    # Classification is advisory only: no entity or finding is deleted. The UI
+    # may collapse conservative third-party patterns while keeping them reviewable.
+    relevance: str = "review"
+    relevance_reason: str | None = None

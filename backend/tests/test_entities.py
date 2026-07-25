@@ -29,6 +29,22 @@ from app.models import (
     UserRole,
 )
 from app.services import entity_store
+from app.services.entities import classify_entity_relevance
+
+
+def test_relevance_conservatively_collapses_only_clear_vendor_role_mailboxes() -> None:
+    assert classify_entity_relevance(
+        "email", "abuse@godaddy.com", "oos"
+    ) == (
+        "likely_third_party",
+        "Role mailbox on a domain outside current scope",
+    )
+    assert classify_entity_relevance(
+        "email", "security@client-supplier.example", "oos"
+    )[0] == "review"
+    assert classify_entity_relevance(
+        "email", "abuse@godaddy.com", "live"
+    ) == ("in_scope", None)
 
 
 @pytest.fixture()

@@ -9,12 +9,13 @@
 
 ## 1. Current state
 
-`fix/v3-playbook-run-ui` is **ahead of `origin/main` by 27 committed
+`fix/v3-playbook-run-ui` is **ahead of `origin/main` by 28 committed
 rollback points**. The most recent completed slices are:
 
 | commit | what | status |
 |--------|------|--------|
-| current slice | Entity-to-playbook launch and safe per-step built-in/MCP transport routing | ✅ fixed |
+| current slice | scope actions avoid duplicate/opposite mutations; conservative vendor-contact chaff is collapsed but retained | ✅ fixed |
+| `3091040` | Entity-to-playbook launch and safe per-step built-in/MCP transport routing | ✅ fixed |
 | `dbc56d0` | Playbooks expand authorized discoveries into later steps, support stop-on-error, and preview execution plans | ✅ fixed |
 | `8ee1b35` | durable Intelligence jobs, operational MCP playbooks, DeHashed evidence lookup, and durable active-tool approval | ✅ fixed |
 | `6c9b2d2` | Runs keeps playbook decisions beside history; effective scope drives targets and destructive scope changes use in-app confirmation | ✅ fixed |
@@ -30,8 +31,8 @@ rollback points**. The most recent completed slices are:
 
 **Current validation evidence:**
 - backend: Ruff clean; **204 focused playbook/entity/provider tests pass**;
-  full suite **1033 passed / 4 documented Windows-host failures / 2 skipped**
-- frontend: `tsc --noEmit` and `next build` clean; **69 Vitest tests pass**
+  full suite **1034 passed / 4 documented Windows-host failures / 2 skipped**
+- frontend: `tsc --noEmit` and `next build` clean; **71 Vitest tests pass**
 - CLI: **35 passed / 1 skipped** (documented Windows permissions limitation)
 - local backend tests reset an isolated `rtd_test` database and Redis DB 15;
   pytest refuses the operator-facing `rtd` database outside disposable CI
@@ -51,6 +52,15 @@ use built-in or connected-service transports. Mixed recipes route each tool
 through its server-owned executor affinity and mint MCP leases only for MCP
 steps. Analysts can launch from an exact, currently effective Entity scope row;
 the matching target is preselected without trusting arbitrary UI state.
+
+Entity scope controls now reflect actual applicability: already-included targets
+show a disabled **In scope** state or a single **Remove from scope** action;
+exact exclusions must be explicitly removed before adding the opposite rule;
+bulk actions count and mutate only applicable selections. Derived Entities also
+receive a conservative advisory relevance tag. Clear role mailboxes on domains
+outside scope (for example `abuse@godaddy.com`) are collapsed as likely
+third-party contacts by default, remain one click away, and are never deleted,
+suppressed, or treated as authorization decisions.
 
 The previous Docker blocker is resolved. Four known Windows-host limitations
 remain documented separately (three SSE tail tests and the report renderer's

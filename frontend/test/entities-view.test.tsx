@@ -147,6 +147,46 @@ describe("EntitiesView", () => {
     });
   });
 
+  it("collapses likely vendor contacts without deleting or hiding review access", () => {
+    vi.mocked(useEntities).mockReturnValue(
+      query([
+        {
+          type: "email",
+          value: "abuse@godaddy.com",
+          count: 1,
+          severity: "info",
+          first_seen: "2026-07-24T00:00:00Z",
+          last_seen: "2026-07-24T00:00:00Z",
+          findings: [],
+          scope_status: "oos",
+          relevance: "likely_third_party",
+          relevance_reason: "Role mailbox on a domain outside current scope",
+        },
+        {
+          type: "email",
+          value: "security@supplier.example",
+          count: 1,
+          severity: "info",
+          first_seen: "2026-07-24T00:00:00Z",
+          last_seen: "2026-07-24T00:00:00Z",
+          findings: [],
+          scope_status: "oos",
+          relevance: "review",
+          relevance_reason: "Outside current scope; retain for analyst review",
+        },
+      ]) as never,
+    );
+    renderView(true);
+
+    expect(screen.queryByRole("button", { name: "abuse@godaddy.com" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "security@supplier.example" })).toBeInTheDocument();
+    expect(screen.getByText("Advisory only — nothing is deleted or removed from evidence.")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Show collapsed vendor contacts" }));
+    expect(screen.getByRole("button", { name: "abuse@godaddy.com" })).toBeInTheDocument();
+    expect(screen.getByText("Likely vendor")).toBeInTheDocument();
+  });
+
   it("keeps guest entity management read-only", () => {
     renderView(false);
 
@@ -221,7 +261,7 @@ describe("EntitiesView", () => {
     expect(screen.getByRole("checkbox", { name: "Select legacy.example" })).toBeChecked();
     expect(screen.getByRole("checkbox", { name: "Select person@example.com" })).toBeChecked();
 
-    fireEvent.click(screen.getByRole("button", { name: "Add to scope" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add 3 to scope" }));
     await waitFor(() =>
       expect(importScope).toHaveBeenCalledWith(
         "acme",
@@ -252,14 +292,14 @@ describe("EntitiesView", () => {
     renderView(true);
 
     fireEvent.click(screen.getByRole("checkbox", { name: "Select 203.0.113.7" }));
-    fireEvent.click(screen.getByRole("button", { name: "Exclude" }));
+    fireEvent.click(screen.getByRole("button", { name: "Exclude 1" }));
 
     await waitFor(() =>
       expect(importScope).toHaveBeenCalledWith("acme", "!203.0.113.7", "found"),
     );
   });
 
-  it("lets an analyst change and remove exact scope rules from the entity dialog", async () => {
+  it("requires removing an exclusion before adding the opposite rule", async () => {
     vi.mocked(useEntities).mockReturnValue(
       query([
         {
@@ -297,13 +337,16 @@ describe("EntitiesView", () => {
     const dialog = screen.getByRole("dialog");
     expect(within(dialog).getByText(/Excluded · 1 exact rule/)).toBeInTheDocument();
 
-    fireEvent.click(within(dialog).getByRole("button", { name: "Add to scope" }));
-    await waitFor(() =>
-      expect(importScope).toHaveBeenCalledWith("acme", "blocked.example", "found"),
+    expect(
+      within(dialog).queryByRole("button", { name: "Add to scope" }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Remove exclusion" }),
     );
-    await waitFor(() =>
-      expect(deleteScopeItem).toHaveBeenCalledWith("acme", "scope-exclusion"),
-    );
+    expect(
+      screen.getByRole("dialog", { name: /remove exact scope rule/i }),
+    ).toBeInTheDocument();
+    expect(importScope).not.toHaveBeenCalled();
   });
 
   it("confirms exact rule removal in an in-app window", async () => {
@@ -327,7 +370,7 @@ describe("EntitiesView", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "Manage scope for scope.example" }),
     );
-    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove from scope" }));
     expect(
       screen.getByRole("dialog", { name: /remove exact scope rule/i }),
     ).toBeInTheDocument();

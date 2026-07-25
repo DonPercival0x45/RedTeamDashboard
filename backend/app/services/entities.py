@@ -112,6 +112,40 @@ def include_scope_entities(
     return result
 
 
+_VENDOR_ROLE_MAILBOXES = {
+    "abuse",
+    "domains",
+    "hostmaster",
+    "noc",
+    "privacy",
+    "registrar",
+    "whois",
+}
+
+
+def classify_entity_relevance(
+    entity_type: str,
+    entity_value: str,
+    scope_status: str,
+) -> tuple[str, str | None]:
+    """Conservatively sort likely third-party chaff without deleting evidence.
+
+    Only a narrow, explainable pattern is auto-classified. Everything else
+    outside scope remains in the review bucket because CDN, SaaS, registrar,
+    and supplier infrastructure may be explicitly authorized in some tests.
+    """
+    if scope_status == "live":
+        return "in_scope", None
+    if entity_type == "email" and "@" in entity_value:
+        local_part = entity_value.rsplit("@", 1)[0].lower()
+        if local_part in _VENDOR_ROLE_MAILBOXES:
+            return (
+                "likely_third_party",
+                "Role mailbox on a domain outside current scope",
+            )
+    return "review", "Outside current scope; retain for analyst review"
+
+
 def annotate_scope_status(
     entities: list[dict[str, Any]],
     *,
@@ -121,12 +155,22 @@ def annotate_scope_status(
     """Attach ``scope_status`` to each entity dict in place and return the list."""
     items = list(current_scope_items)
     for entity in entities:
-        entity["scope_status"] = classify_entity_scope_status(
-            str(entity.get("type") or ""),
-            str(entity.get("value") or ""),
+        entity_type = str(entity.get("type") or "")
+        entity_value = str(entity.get("value") or "")
+        scope_status = classify_entity_scope_status(
+            entity_type,
+            entity_value,
             items,
             retired_scope_values,
         )
+        relevance, reason = classify_entity_relevance(
+            entity_type,
+            entity_value,
+            scope_status,
+        )
+        entity["scope_status"] = scope_status
+        entity["relevance"] = relevance
+        entity["relevance_reason"] = reason
     return entities
 
 _EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")

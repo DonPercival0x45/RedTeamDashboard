@@ -3,7 +3,7 @@ import {
   normalizeIdentityValue,
   sameEntityIdentity,
 } from "@/app/e/entities/entity-workbench-client";
-import { scopeTargetForEntity } from "@/lib/entity-scope";
+import { scopeActionState, scopeTargetForEntity } from "@/lib/entity-scope";
 
 describe("entity workbench identity matching", () => {
   it("preserves email local-part case while normalizing its domain", () => {
@@ -50,6 +50,28 @@ describe("entity workbench identity matching", () => {
     expect(sameEntityIdentity("account", "Admin", "account", "admin")).toBe(
       false,
     );
+  });
+
+  it("does not offer duplicate or opposite exact-scope mutations", () => {
+    const entity = { type: "domain", value: "example.com", scope_status: "live" as const };
+    const include = {
+      id: "scope-1",
+      engagement_id: "eng-1",
+      kind: "domain" as const,
+      value: "example.com",
+      is_exclusion: false,
+      note: null,
+      created_at: "",
+      updated_at: "",
+    };
+    const included = scopeActionState(entity, [include]);
+    expect(included.canAdd).toBe(false);
+    expect(included.canExclude).toBe(false);
+    expect(included.exactIncludes).toEqual([include]);
+
+    const broader = scopeActionState(entity, []);
+    expect(broader.canAdd).toBe(false);
+    expect(broader.canExclude).toBe(true);
   });
 
   it("maps supported discovered entities to authoritative scope kinds", () => {

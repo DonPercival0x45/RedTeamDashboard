@@ -49,7 +49,6 @@ import {
   importEntitiesDarkweb,
   importEntitiesMaltego,
   importScope,
-  listScope,
   mergeDeleteEntityGroup,
   restoreStoredEntity,
   suppressStoredEntity,
@@ -62,7 +61,11 @@ import {
   useScope,
   useStoredEntities,
 } from "@/lib/hooks";
-import { entityKey, exactScopeRules, scopeTargetForEntity } from "@/lib/entity-scope";
+import {
+  entityKey,
+  scopeActionState,
+  scopeTargetForEntity,
+} from "@/lib/entity-scope";
 import { cn } from "@/lib/utils";
 import type {
   DarkwebImportResult,
@@ -284,6 +287,7 @@ export function EntitiesView({
   const [scopeStatus, setScopeStatus] = useState<
     "all" | "live" | "legacy" | "oos"
   >("all");
+  const [hideLikelyThirdParty, setHideLikelyThirdParty] = useState(true);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
   const [scopeSaving, setScopeSaving] = useState(false);
@@ -310,7 +314,14 @@ export function EntitiesView({
 
   const types = ["all", ...Array.from(new Set(entities.map((e) => e.type)))];
   const q = search.trim().toLowerCase();
+  const likelyThirdPartyCount = entities.filter(
+    (entity) => entity.relevance === "likely_third_party",
+  ).length;
   const visible = entities
+    .filter(
+      (entity) =>
+        !hideLikelyThirdParty || entity.relevance !== "likely_third_party",
+    )
     .filter((e) => type === "all" || e.type === type)
     .filter((e) => scopeStatus === "all" || e.scope_status === scopeStatus)
     .filter((e) => !q || e.value.toLowerCase().includes(q))
@@ -324,7 +335,17 @@ export function EntitiesView({
     ? entities.find((entity) => entityKey(entity) === selectedKey) ?? null
     : null;
   const selectableVisible = visible.filter((entity) => scopeTargetForEntity(entity));
-  const selectedEntities = entities.filter((entity) => selectedKeys.has(entityKey(entity)));
+  const selectedEntities = entities.filter(
+    (entity) =>
+      selectedKeys.has(entityKey(entity)) &&
+      (!hideLikelyThirdParty || entity.relevance !== "likely_third_party"),
+  );
+  const includeCandidates = selectedEntities.filter(
+    (entity) => scopeActionState(entity, scopeItems).canAdd,
+  );
+  const exclusionCandidates = selectedEntities.filter(
+    (entity) => scopeActionState(entity, scopeItems).canExclude,
+  );
   const allVisibleSelected =
     selectableVisible.length > 0 &&
     selectableVisible.every((entity) => selectedKeys.has(entityKey(entity)));
@@ -348,7 +369,6 @@ export function EntitiesView({
     setScopeError(null);
     setScopeMessage(null);
     try {
-      const currentScopeItems = scopeQuery.data ?? (await listScope(slug));
       const text = assignable
         .map((entity) => `${disposition === "exclude" ? "!" : ""}${entity.value}`)
         .join("\n");
@@ -357,18 +377,6 @@ export function EntitiesView({
         throw new Error(
           `${result.errors.length} selected ${result.errors.length === 1 ? "entity was" : "entities were"} not valid scope targets.`,
         );
-      }
-
-      // An explicit "Add to scope" reverses exact entity-level exclusions.
-      // Broader parent-domain/CIDR exclusions remain authoritative and visible
-      // after the entity query refreshes.
-      if (disposition === "include") {
-        const exclusionIds = assignable.flatMap((entity) =>
-          exactScopeRules(entity, currentScopeItems)
-            .filter((item) => item.is_exclusion)
-            .map((item) => item.id),
-        );
-        await Promise.all(exclusionIds.map((id) => deleteScopeItem(slug, id)));
       }
 
       const assignedKeys = new Set(assignable.map(entityKey));
@@ -431,6 +439,25 @@ export function EntitiesView({
           Declared targets appear immediately; playbook and tool evidence adds
           discovered infrastructure and provenance.
         </p>
+        {likelyThirdPartyCount > 0 ? (
+          <div className="flex flex-wrap items-center gap-2 pt-2 text-xs">
+            <Badge variant="outline">
+              {likelyThirdPartyCount} likely third-party
+            </Badge>
+            <button
+              type="button"
+              className="text-muted-foreground underline underline-offset-2 hover:text-foreground"
+              onClick={() => setHideLikelyThirdParty((current) => !current)}
+            >
+              {hideLikelyThirdParty
+                ? "Show collapsed vendor contacts"
+                : "Hide likely vendor contacts"}
+            </button>
+            <span className="text-muted-foreground">
+              Advisory only — nothing is deleted or removed from evidence.
+            </span>
+          </div>
+        ) : null}
       </div>
 
       <div className="relative">
@@ -506,25 +533,39 @@ export function EntitiesView({
           <Button
             type="button"
             size="sm"
-            onClick={() => void assignScope(selectedEntities, "include")}
-            disabled={selectedEntities.length === 0 || scopeSaving}
+            onClick={() => void assignScope(includeCandidates, "include")}
+            disabled={includeCandidates.length === 0 || scopeSaving}
+            title={
+              selectedEntities.length > 0 && includeCandidates.length === 0
+                ? "Every selected entity is already in scope or has an exact rule to resolve first."
+                : undefined
+            }
           >
             {scopeSaving ? (
               <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
             ) : (
               <ListPlus className="mr-1.5 h-3.5 w-3.5" />
             )}
-            Add to scope
+            {includeCandidates.length > 0
+              ? `Add ${includeCandidates.length} to scope`
+              : "Add to scope"}
           </Button>
           <Button
             type="button"
             size="sm"
             variant="outline"
-            onClick={() => void assignScope(selectedEntities, "exclude")}
-            disabled={selectedEntities.length === 0 || scopeSaving}
+            onClick={() => void assignScope(exclusionCandidates, "exclude")}
+            disabled={exclusionCandidates.length === 0 || scopeSaving}
+            title={
+              selectedEntities.length > 0 && exclusionCandidates.length === 0
+                ? "Every selected entity already has an exact scope rule to resolve first."
+                : undefined
+            }
           >
             <Ban className="mr-1.5 h-3.5 w-3.5" />
-            Exclude
+            {exclusionCandidates.length > 0
+              ? `Exclude ${exclusionCandidates.length}`
+              : "Exclude"}
           </Button>
         </div>
       )}
@@ -647,6 +688,15 @@ export function EntitiesView({
                     >
                       <ScopeStatusBadge status={e.scope_status} />
                     </button>
+                    {e.relevance === "likely_third_party" ? (
+                      <Badge
+                        variant="outline"
+                        className="ml-1 border-violet-500/40 text-violet-700 dark:text-violet-300"
+                        title={e.relevance_reason ?? undefined}
+                      >
+                        Likely vendor
+                      </Badge>
+                    ) : null}
                   </td>
                   <td className="px-3 py-2.5 tabular-nums text-muted-foreground">
                     {e.count}
@@ -1293,9 +1343,14 @@ function EntitySlideOver({
   const nextStep = chain.find((a) => a.tool && !doneTools.has(a.tool));
   const ipThumbnail = useIpThumbnailPoint(entity, slug);
   const scopeTarget = scopeTargetForEntity(entity);
-  const exactRules = exactScopeRules(entity, scopeItems);
-  const exactIncludes = exactRules.filter((item) => !item.is_exclusion);
-  const exactExclusions = exactRules.filter((item) => item.is_exclusion);
+  const {
+    rules: exactRules,
+    exactIncludes,
+    exactExclusions,
+    canAdd,
+    canExclude,
+    isIncluded,
+  } = scopeActionState(entity, scopeItems);
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="left-auto right-0 top-0 flex h-dvh w-full max-w-lg translate-x-0 translate-y-0 flex-col gap-0 rounded-none border-y-0 border-r-0 p-0 sm:rounded-none">
@@ -1314,6 +1369,15 @@ function EntitySlideOver({
               {entity.severity}
             </Badge>
             <ScopeStatusBadge status={entity.scope_status} />
+            {entity.relevance === "likely_third_party" ? (
+              <Badge
+                variant="outline"
+                className="border-violet-500/40 text-violet-700 dark:text-violet-300"
+                title={entity.relevance_reason ?? undefined}
+              >
+                Likely third-party
+              </Badge>
+            ) : null}
             <span className="text-xs text-muted-foreground">
               {entity.count} finding{entity.count === 1 ? "" : "s"}
             </span>
@@ -1321,6 +1385,13 @@ function EntitySlideOver({
         </DialogHeader>
 
         <div className="flex-1 overflow-y-auto px-6 py-5">
+          {entity.relevance === "likely_third_party" && entity.relevance_reason ? (
+            <p className="mb-4 rounded-md border border-violet-500/30 bg-violet-500/5 px-3 py-2 text-xs text-muted-foreground">
+              {entity.relevance_reason}. Kept for review because vendor infrastructure
+              can still be authorized for an engagement.
+            </p>
+          ) : null}
+
           <section className="space-y-3 rounded-lg border border-border bg-card/40 p-4">
             <div>
               <h3 className="text-sm font-medium">Scope assignment</h3>
@@ -1335,29 +1406,54 @@ function EntitySlideOver({
               </p>
             ) : canWrite ? (
               <div className="flex flex-wrap gap-2">
-                <Button
-                  type="button"
-                  size="sm"
-                  onClick={() => onAssignScope("include")}
-                  disabled={scopeSaving}
-                >
-                  {scopeSaving ? (
-                    <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <ListPlus className="mr-1.5 h-3.5 w-3.5" />
-                  )}
-                  Add to scope
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  onClick={() => onAssignScope("exclude")}
-                  disabled={scopeSaving}
-                >
-                  <Ban className="mr-1.5 h-3.5 w-3.5" />
-                  Exclude
-                </Button>
+                {exactExclusions.length > 0 ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => onRemoveScopeRules(exactExclusions)}
+                    disabled={scopeSaving}
+                  >
+                    Remove exclusion
+                  </Button>
+                ) : exactIncludes.length > 0 ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => onRemoveScopeRules(exactIncludes)}
+                    disabled={scopeSaving}
+                  >
+                    Remove from scope
+                  </Button>
+                ) : (
+                  <>
+                    <Button
+                      type="button"
+                      size="sm"
+                      onClick={() => onAssignScope("include")}
+                      disabled={!canAdd || scopeSaving}
+                      title={isIncluded ? "Already included by current scope." : undefined}
+                    >
+                      {scopeSaving ? (
+                        <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <ListPlus className="mr-1.5 h-3.5 w-3.5" />
+                      )}
+                      {isIncluded ? "In scope" : "Add to scope"}
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => onAssignScope("exclude")}
+                      disabled={!canExclude || scopeSaving}
+                    >
+                      <Ban className="mr-1.5 h-3.5 w-3.5" />
+                      Exclude
+                    </Button>
+                  </>
+                )}
               </div>
             ) : (
               <Badge variant="outline">Read-only</Badge>
@@ -1401,17 +1497,7 @@ function EntitySlideOver({
                     <span>
                       In scope · {exactIncludes.length} exact {exactIncludes.length === 1 ? "rule" : "rules"}
                     </span>
-                    {canWrite && (
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => onRemoveScopeRules(exactIncludes)}
-                        disabled={scopeSaving}
-                      >
-                        Remove
-                      </Button>
-                    )}
+
                   </div>
                 )}
                 {exactExclusions.length > 0 && (
@@ -1419,17 +1505,7 @@ function EntitySlideOver({
                     <span>
                       Excluded · {exactExclusions.length} exact {exactExclusions.length === 1 ? "rule" : "rules"}
                     </span>
-                    {canWrite && (
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => onRemoveScopeRules(exactExclusions)}
-                        disabled={scopeSaving}
-                      >
-                        Remove
-                      </Button>
-                    )}
+
                   </div>
                 )}
               </div>

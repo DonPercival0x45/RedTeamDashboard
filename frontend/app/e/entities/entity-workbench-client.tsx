@@ -35,7 +35,7 @@ import {
   listStoredEntities,
   listTasks,
 } from "@/lib/api";
-import { exactScopeRules, scopeTargetForEntity } from "@/lib/entity-scope";
+import { scopeActionState, scopeTargetForEntity } from "@/lib/entity-scope";
 import { useMe } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
 import type { Entity, Finding, ScopeItem, Severity, StoredEntity, Task } from "@/lib/types";
@@ -200,9 +200,17 @@ export function EntityWorkbenchPage() {
   );
   const actionCount = (ACTIONS[type] ?? []).length;
   const scopeTarget = scopeTargetForEntity({ type, value });
-  const exactRules = exactScopeRules({ type, value }, scope ?? []);
-  const exactIncludes = exactRules.filter((item) => !item.is_exclusion);
-  const exactExclusions = exactRules.filter((item) => item.is_exclusion);
+  const {
+    rules: exactRules,
+    exactIncludes,
+    exactExclusions,
+    canAdd,
+    canExclude,
+    isIncluded,
+  } = scopeActionState(
+    { type, value, scope_status: entity?.scope_status ?? "oos" },
+    scope ?? [],
+  );
 
   const assignScope = async (disposition: "include" | "exclude") => {
     if (!canWrite || !scopeTarget || scopeSaving) return;
@@ -210,10 +218,6 @@ export function EntityWorkbenchPage() {
     setScopeError(null);
     setScopeMessage(null);
     try {
-      const currentScope = scope ?? (await listScope(slug));
-      const currentExactExclusions = exactScopeRules({ type, value }, currentScope).filter(
-        (item) => item.is_exclusion,
-      );
       const result = await importScope(
         slug,
         `${disposition === "exclude" ? "!" : ""}${value}`,
@@ -221,11 +225,6 @@ export function EntityWorkbenchPage() {
       );
       if (result.errors.length > 0) {
         throw new Error(result.errors.map((item) => item.reason).join("; "));
-      }
-      if (disposition === "include") {
-        await Promise.all(
-          currentExactExclusions.map((item) => deleteScopeItem(slug, item.id)),
-        );
       }
       setScopeMessage(
         disposition === "include"
@@ -310,31 +309,54 @@ export function EntityWorkbenchPage() {
               : `${TYPE_LABEL[type] ?? type} entities cannot be scope targets`}
           </span>
           {scopeTarget && canWrite ? (
-            <>
-              <Button
-                type="button"
-                size="sm"
-                onClick={() => void assignScope("include")}
-                disabled={scopeSaving}
-              >
-                {scopeSaving ? (
-                  <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <ListPlus className="mr-1.5 h-3.5 w-3.5" />
-                )}
-                Add to scope
-              </Button>
+            exactExclusions.length > 0 ? (
               <Button
                 type="button"
                 size="sm"
                 variant="outline"
-                onClick={() => void assignScope("exclude")}
+                onClick={() => void removeRules(exactExclusions)}
                 disabled={scopeSaving}
               >
-                <Ban className="mr-1.5 h-3.5 w-3.5" />
-                Exclude
+                Remove exclusion
               </Button>
-            </>
+            ) : exactIncludes.length > 0 ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => void removeRules(exactIncludes)}
+                disabled={scopeSaving}
+              >
+                Remove from scope
+              </Button>
+            ) : (
+              <>
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => void assignScope("include")}
+                  disabled={!canAdd || scopeSaving}
+                  title={isIncluded ? "Already included by current scope." : undefined}
+                >
+                  {scopeSaving ? (
+                    <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <ListPlus className="mr-1.5 h-3.5 w-3.5" />
+                  )}
+                  {isIncluded ? "In scope" : "Add to scope"}
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => void assignScope("exclude")}
+                  disabled={!canExclude || scopeSaving}
+                >
+                  <Ban className="mr-1.5 h-3.5 w-3.5" />
+                  Exclude
+                </Button>
+              </>
+            )
           ) : !canWrite ? (
             <Badge variant="outline">Read-only</Badge>
           ) : null}
@@ -345,33 +367,11 @@ export function EntityWorkbenchPage() {
             {exactIncludes.length > 0 && (
               <div className="flex items-center justify-between gap-3">
                 <span>In scope · {exactIncludes.length} exact {exactIncludes.length === 1 ? "rule" : "rules"}</span>
-                {canWrite && (
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => void removeRules(exactIncludes)}
-                    disabled={scopeSaving}
-                  >
-                    Remove
-                  </Button>
-                )}
               </div>
             )}
             {exactExclusions.length > 0 && (
               <div className="flex items-center justify-between gap-3">
                 <span>Excluded · {exactExclusions.length} exact {exactExclusions.length === 1 ? "rule" : "rules"}</span>
-                {canWrite && (
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => void removeRules(exactExclusions)}
-                    disabled={scopeSaving}
-                  >
-                    Remove
-                  </Button>
-                )}
               </div>
             )}
           </div>

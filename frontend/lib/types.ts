@@ -687,6 +687,8 @@ export interface Entity {
   last_seen: string;
   findings: EntityFindingRef[];
   scope_status: EntityScopeStatus;
+  relevance?: "in_scope" | "review" | "likely_third_party";
+  relevance_reason?: string | null;
 }
 
 export interface Observation {
