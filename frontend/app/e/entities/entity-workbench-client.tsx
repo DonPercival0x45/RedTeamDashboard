@@ -10,18 +10,33 @@ import {
 } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { ArrowLeft, Boxes, Clipboard, Network, RefreshCcw, ShieldCheck } from "lucide-react";
+import {
+  ArrowLeft,
+  Ban,
+  Boxes,
+  Clipboard,
+  ListPlus,
+  Loader2,
+  Network,
+  RefreshCcw,
+  ShieldCheck,
+} from "lucide-react";
 import { DateTime } from "@/components/date-time";
 import { QueryState } from "@/components/query-state";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { CopyJsonButton } from "@/components/copy-json-button";
 import {
+  deleteScopeItem,
+  importScope,
   listEntities,
   listFindings,
   listScope,
   listStoredEntities,
   listTasks,
 } from "@/lib/api";
+import { exactScopeRules, scopeTargetForEntity } from "@/lib/entity-scope";
+import { useMe } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
 import type { Entity, Finding, ScopeItem, Severity, StoredEntity, Task } from "@/lib/types";
 
@@ -87,6 +102,8 @@ const ACTIONS: Record<string, ToolAction[]> = {
 
 export function EntityWorkbenchPage() {
   const params = useSearchParams();
+  const { data: me } = useMe();
+  const canWrite = Boolean(me && me.role !== "guest");
   const slug = params.get("slug") ?? "";
   const type = params.get("type") ?? "";
   const value = params.get("value") ?? "";
@@ -105,6 +122,9 @@ export function EntityWorkbenchPage() {
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [loadComplete, setLoadComplete] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [scopeSaving, setScopeSaving] = useState(false);
+  const [scopeMessage, setScopeMessage] = useState<string | null>(null);
+  const [scopeError, setScopeError] = useState<string | null>(null);
   const loadedSlugRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -179,6 +199,64 @@ export function EntityWorkbenchPage() {
     [scope, type, value],
   );
   const actionCount = (ACTIONS[type] ?? []).length;
+  const scopeTarget = scopeTargetForEntity({ type, value });
+  const exactRules = exactScopeRules({ type, value }, scope ?? []);
+  const exactIncludes = exactRules.filter((item) => !item.is_exclusion);
+  const exactExclusions = exactRules.filter((item) => item.is_exclusion);
+
+  const assignScope = async (disposition: "include" | "exclude") => {
+    if (!canWrite || !scopeTarget || scopeSaving) return;
+    setScopeSaving(true);
+    setScopeError(null);
+    setScopeMessage(null);
+    try {
+      const currentScope = scope ?? (await listScope(slug));
+      const currentExactExclusions = exactScopeRules({ type, value }, currentScope).filter(
+        (item) => item.is_exclusion,
+      );
+      const result = await importScope(
+        slug,
+        `${disposition === "exclude" ? "!" : ""}${value}`,
+        "found",
+      );
+      if (result.errors.length > 0) {
+        throw new Error(result.errors.map((item) => item.reason).join("; "));
+      }
+      if (disposition === "include") {
+        await Promise.all(
+          currentExactExclusions.map((item) => deleteScopeItem(slug, item.id)),
+        );
+      }
+      setScopeMessage(
+        disposition === "include"
+          ? "Entity added to scope."
+          : "Entity excluded from scope.",
+      );
+      refresh();
+    } catch (err) {
+      setScopeError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setScopeSaving(false);
+    }
+  };
+
+  const removeRules = async (items: ScopeItem[]) => {
+    if (!canWrite || items.length === 0 || scopeSaving) return;
+    setScopeSaving(true);
+    setScopeError(null);
+    setScopeMessage(null);
+    try {
+      await Promise.all(items.map((item) => deleteScopeItem(slug, item.id)));
+      setScopeMessage(
+        `${items.length} exact scope ${items.length === 1 ? "rule" : "rules"} removed.`,
+      );
+      refresh();
+    } catch (err) {
+      setScopeError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setScopeSaving(false);
+    }
+  };
 
   if (!slug || !type || !value) {
     return <p className="px-6 py-10 text-sm text-destructive">Missing entity route parameters.</p>;
@@ -218,6 +296,96 @@ export function EntityWorkbenchPage() {
         <p className="mt-2 text-sm text-muted-foreground">
           Entity workbench: provenance, related findings, scope status, and next actions.
         </p>
+
+        <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-border pt-4">
+          <span className="mr-auto text-xs text-muted-foreground">
+            {scopeTarget
+              ? exactExclusions.length > 0
+                ? "Explicitly excluded"
+                : entity?.scope_status === "live"
+                  ? "Currently in scope"
+                  : entity?.scope_status === "legacy"
+                    ? "Legacy scope reference"
+                    : "Currently out of scope"
+              : `${TYPE_LABEL[type] ?? type} entities cannot be scope targets`}
+          </span>
+          {scopeTarget && canWrite ? (
+            <>
+              <Button
+                type="button"
+                size="sm"
+                onClick={() => void assignScope("include")}
+                disabled={scopeSaving}
+              >
+                {scopeSaving ? (
+                  <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <ListPlus className="mr-1.5 h-3.5 w-3.5" />
+                )}
+                Add to scope
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => void assignScope("exclude")}
+                disabled={scopeSaving}
+              >
+                <Ban className="mr-1.5 h-3.5 w-3.5" />
+                Exclude
+              </Button>
+            </>
+          ) : !canWrite ? (
+            <Badge variant="outline">Read-only</Badge>
+          ) : null}
+        </div>
+
+        {exactRules.length > 0 && (
+          <div className="mt-3 space-y-2 rounded-md border border-border bg-background/60 p-3 text-xs">
+            {exactIncludes.length > 0 && (
+              <div className="flex items-center justify-between gap-3">
+                <span>In scope · {exactIncludes.length} exact {exactIncludes.length === 1 ? "rule" : "rules"}</span>
+                {canWrite && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => void removeRules(exactIncludes)}
+                    disabled={scopeSaving}
+                  >
+                    Remove
+                  </Button>
+                )}
+              </div>
+            )}
+            {exactExclusions.length > 0 && (
+              <div className="flex items-center justify-between gap-3">
+                <span>Excluded · {exactExclusions.length} exact {exactExclusions.length === 1 ? "rule" : "rules"}</span>
+                {canWrite && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => void removeRules(exactExclusions)}
+                    disabled={scopeSaving}
+                  >
+                    Remove
+                  </Button>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+        {scopeMessage && (
+          <p className="mt-3 text-xs text-emerald-700 dark:text-emerald-300" role="status">
+            {scopeMessage}
+          </p>
+        )}
+        {scopeError && (
+          <p className="mt-3 text-xs text-destructive" role="alert">
+            {scopeError}
+          </p>
+        )}
       </header>
 
       <section className="mt-5 overflow-hidden rounded-lg border border-border bg-card/40">

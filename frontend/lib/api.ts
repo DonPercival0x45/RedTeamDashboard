@@ -332,10 +332,11 @@ export function parseScope(
 export function importScope(
   slug: string,
   text: string,
+  source: "defined" | "found" = "defined",
 ): Promise<import("@/lib/types").ScopeImportResult> {
   return request<import("@/lib/types").ScopeImportResult>(
     `/engagements/${slug}/scope/import`,
-    { method: "POST", body: JSON.stringify({ text }) },
+    { method: "POST", body: JSON.stringify({ text, source }) },
   );
 }
 

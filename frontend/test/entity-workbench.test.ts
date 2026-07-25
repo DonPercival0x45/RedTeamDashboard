@@ -3,6 +3,7 @@ import {
   normalizeIdentityValue,
   sameEntityIdentity,
 } from "@/app/e/entities/entity-workbench-client";
+import { scopeTargetForEntity } from "@/lib/entity-scope";
 
 describe("entity workbench identity matching", () => {
   it("preserves email local-part case while normalizing its domain", () => {
@@ -49,5 +50,21 @@ describe("entity workbench identity matching", () => {
     expect(sameEntityIdentity("account", "Admin", "account", "admin")).toBe(
       false,
     );
+  });
+
+  it("maps supported discovered entities to authoritative scope kinds", () => {
+    expect(scopeTargetForEntity({ type: "subdomain", value: "api.example.com" })).toEqual({
+      kind: "domain",
+      value: "api.example.com",
+    });
+    expect(scopeTargetForEntity({ type: "host", value: "203.0.113.4" })).toEqual({
+      kind: "ip",
+      value: "203.0.113.4",
+    });
+    expect(scopeTargetForEntity({ type: "host", value: "edge.example.com" })).toEqual({
+      kind: "domain",
+      value: "edge.example.com",
+    });
+    expect(scopeTargetForEntity({ type: "email", value: "a@example.com" })).toBeNull();
   });
 });

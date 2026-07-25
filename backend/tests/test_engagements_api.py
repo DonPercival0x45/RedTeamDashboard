@@ -619,6 +619,32 @@ def test_scope_item_source_found_round_trips(
     assert bad.status_code == 422
 
 
+def test_scope_import_preserves_found_provenance_and_deduplicates(
+    client: TestClient, cleanup_slugs: list[str]
+) -> None:
+    eng = _create(client, "Bulk discovered scope")
+    cleanup_slugs.append(eng["slug"])
+    body = {"text": "api.acme.com\n!old.acme.com", "source": "found"}
+
+    first = client.post(
+        f"/engagements/{eng['slug']}/scope/import",
+        json=body,
+        headers=_headers(),
+    )
+    second = client.post(
+        f"/engagements/{eng['slug']}/scope/import",
+        json=body,
+        headers=_headers(),
+    )
+
+    assert first.status_code == 200, first.text
+    assert len(first.json()["created"]) == 2
+    assert {item["source"] for item in first.json()["created"]} == {"found"}
+    assert second.status_code == 200, second.text
+    assert second.json()["created"] == []
+    assert len(second.json()["duplicates"]) == 2
+
+
 def test_engagement_read_carries_scope_counts(
     client: TestClient, cleanup_slugs: list[str]
 ) -> None:

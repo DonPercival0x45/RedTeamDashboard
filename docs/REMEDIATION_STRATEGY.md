@@ -9,7 +9,7 @@
 
 ## 1. Current state
 
-`fix/v3-playbook-run-ui` is **ahead of `origin/main` by 20 committed
+`fix/v3-playbook-run-ui` is **ahead of `origin/main` by 21 committed
 rollback points**. The most recent completed slices are:
 
 | commit | what | status |
@@ -25,7 +25,7 @@ rollback points**. The most recent completed slices are:
 **Current validation evidence:**
 - backend: Ruff clean; **204 focused playbook/entity/provider tests pass**;
   full suite **1010 passed / 4 documented Windows-host failures / 2 skipped**
-- frontend: `tsc --noEmit` and `next build` clean; **49 Vitest tests pass**
+- frontend: `tsc --noEmit` and `next build` clean; **54 Vitest tests pass**
 - CLI: **35 passed / 1 skipped** (documented Windows permissions limitation)
 - local backend tests reset an isolated `rtd_test` database and Redis DB 15;
   pytest refuses the operator-facing `rtd` database outside disposable CI

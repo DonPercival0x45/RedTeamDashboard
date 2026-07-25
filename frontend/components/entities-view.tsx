@@ -4,7 +4,18 @@ import { useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useQueryClient } from "@tanstack/react-query";
-import { Check, Layers, RotateCcw, Search, Trash2, Upload, Zap } from "lucide-react";
+import {
+  Ban,
+  Check,
+  Layers,
+  ListPlus,
+  Loader2,
+  RotateCcw,
+  Search,
+  Trash2,
+  Upload,
+  Zap,
+} from "lucide-react";
 import { QueryState } from "@/components/query-state";
 import type { MapPoint } from "@/components/leaflet-map";
 
@@ -33,8 +44,11 @@ import { Input } from "@/components/ui/input";
 import {
   createEntityGroup,
   dissolveEntityGroup,
+  deleteScopeItem,
   importEntitiesDarkweb,
   importEntitiesMaltego,
+  importScope,
+  listScope,
   mergeDeleteEntityGroup,
   restoreStoredEntity,
   suppressStoredEntity,
@@ -44,14 +58,17 @@ import {
   useEntities,
   useEntityDuplicateCandidates,
   useFindings,
+  useScope,
   useStoredEntities,
 } from "@/lib/hooks";
+import { entityKey, exactScopeRules, scopeTargetForEntity } from "@/lib/entity-scope";
 import { cn } from "@/lib/utils";
 import type {
   DarkwebImportResult,
   Entity,
   EntityDuplicateCandidate,
   MaltegoImportResult,
+  ScopeItem,
   Severity,
   StoredEntity,
 } from "@/lib/types";
@@ -213,9 +230,9 @@ function typeLabel(t: string): string {
   return TYPE_LABEL[t] ?? t;
 }
 
-// v2.19.0: scope-tag badge. Live = matches current scope; Legacy = matched
-// a scope item deleted after v2.19 shipped; OOS = never in scope. Legacy is
-// intentionally muted — it's informational, not a call to action.
+// Scope-status badge. Live = matches current scope; Legacy = matched a scope
+// item that was later removed; OOS = outside the current authorization set.
+// The table wraps this badge in a button that opens explicit scope controls.
 function ScopeStatusBadge({ status }: { status: string }) {
   const label =
     status === "live"
@@ -251,8 +268,11 @@ export function EntitiesView({
 }) {
   // v1.0.0: react-query owns the derived-entities fetch. Focus revalidation
   // catches new findings that landed while the tab was hidden.
+  const qc = useQueryClient();
   const entitiesQuery = useEntities(slug);
+  const scopeQuery = useScope(slug);
   const entities = entitiesQuery.data;
+  const scopeItems = scopeQuery.data ?? [];
   const { error } = entitiesQuery;
   const [search, setSearch] = useState("");
   const [type, setType] = useState<string>("all");
@@ -262,6 +282,10 @@ export function EntitiesView({
     "all" | "live" | "legacy" | "oos"
   >("all");
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
+  const [scopeSaving, setScopeSaving] = useState(false);
+  const [scopeMessage, setScopeMessage] = useState<string | null>(null);
+  const [scopeError, setScopeError] = useState<string | null>(null);
   const detailTriggerRef = useRef<HTMLButtonElement | null>(null);
 
   if (entities === undefined)
@@ -293,10 +317,92 @@ export function EntitiesView({
     );
 
   const selected = selectedKey
-    ? entities.find(
-        (entity) => `${entity.type}\u0000${entity.value}` === selectedKey,
-      ) ?? null
+    ? entities.find((entity) => entityKey(entity) === selectedKey) ?? null
     : null;
+  const selectableVisible = visible.filter((entity) => scopeTargetForEntity(entity));
+  const selectedEntities = entities.filter((entity) => selectedKeys.has(entityKey(entity)));
+  const allVisibleSelected =
+    selectableVisible.length > 0 &&
+    selectableVisible.every((entity) => selectedKeys.has(entityKey(entity)));
+
+  const refreshScopeViews = async () => {
+    await Promise.all([
+      qc.invalidateQueries({ queryKey: qk.scope(slug) }),
+      qc.invalidateQueries({ queryKey: qk.entities(slug) }),
+      qc.invalidateQueries({ queryKey: qk.storedEntities(slug) }),
+      qc.invalidateQueries({ queryKey: qk.engagements() }),
+    ]);
+  };
+
+  const assignScope = async (
+    targets: Entity[],
+    disposition: "include" | "exclude",
+  ) => {
+    const assignable = targets.filter((entity) => scopeTargetForEntity(entity));
+    if (!canWrite || assignable.length === 0 || scopeSaving) return;
+    setScopeSaving(true);
+    setScopeError(null);
+    setScopeMessage(null);
+    try {
+      const currentScopeItems = scopeQuery.data ?? (await listScope(slug));
+      const text = assignable
+        .map((entity) => `${disposition === "exclude" ? "!" : ""}${entity.value}`)
+        .join("\n");
+      const result = await importScope(slug, text, "found");
+      if (result.errors.length > 0) {
+        throw new Error(
+          `${result.errors.length} selected ${result.errors.length === 1 ? "entity was" : "entities were"} not valid scope targets.`,
+        );
+      }
+
+      // An explicit "Add to scope" reverses exact entity-level exclusions.
+      // Broader parent-domain/CIDR exclusions remain authoritative and visible
+      // after the entity query refreshes.
+      if (disposition === "include") {
+        const exclusionIds = assignable.flatMap((entity) =>
+          exactScopeRules(entity, currentScopeItems)
+            .filter((item) => item.is_exclusion)
+            .map((item) => item.id),
+        );
+        await Promise.all(exclusionIds.map((id) => deleteScopeItem(slug, id)));
+      }
+
+      const assignedKeys = new Set(assignable.map(entityKey));
+      setSelectedKeys((previous) => {
+        const next = new Set(previous);
+        assignedKeys.forEach((key) => next.delete(key));
+        return next;
+      });
+      setScopeMessage(
+        disposition === "include"
+          ? `${assignable.length} ${assignable.length === 1 ? "entity" : "entities"} added to scope.`
+          : `${assignable.length} ${assignable.length === 1 ? "entity" : "entities"} excluded from scope.`,
+      );
+    } catch (err) {
+      setScopeError(err instanceof Error ? err.message : String(err));
+    } finally {
+      await refreshScopeViews();
+      setScopeSaving(false);
+    }
+  };
+
+  const removeScopeRules = async (items: ScopeItem[]) => {
+    if (!canWrite || items.length === 0 || scopeSaving) return;
+    setScopeSaving(true);
+    setScopeError(null);
+    setScopeMessage(null);
+    try {
+      await Promise.all(items.map((item) => deleteScopeItem(slug, item.id)));
+      setScopeMessage(
+        `${items.length} exact scope ${items.length === 1 ? "rule" : "rules"} removed.`,
+      );
+    } catch (err) {
+      setScopeError(err instanceof Error ? err.message : String(err));
+    } finally {
+      await refreshScopeViews();
+      setScopeSaving(false);
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -374,6 +480,61 @@ export function EntitiesView({
         ))}
       </div>
 
+      {canWrite && (
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-card/40 p-3">
+          <span className="mr-auto text-xs text-muted-foreground" aria-live="polite">
+            {selectedEntities.length > 0
+              ? `${selectedEntities.length} selected`
+              : "Select entities to update scope in one action."}
+          </span>
+          {selectedEntities.length > 0 && (
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              onClick={() => setSelectedKeys(new Set())}
+              disabled={scopeSaving}
+            >
+              Clear
+            </Button>
+          )}
+          <Button
+            type="button"
+            size="sm"
+            onClick={() => void assignScope(selectedEntities, "include")}
+            disabled={selectedEntities.length === 0 || scopeSaving}
+          >
+            {scopeSaving ? (
+              <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <ListPlus className="mr-1.5 h-3.5 w-3.5" />
+            )}
+            Add to scope
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={() => void assignScope(selectedEntities, "exclude")}
+            disabled={selectedEntities.length === 0 || scopeSaving}
+          >
+            <Ban className="mr-1.5 h-3.5 w-3.5" />
+            Exclude
+          </Button>
+        </div>
+      )}
+
+      {scopeMessage && !selected && (
+        <p className="text-sm text-emerald-700 dark:text-emerald-300" role="status">
+          {scopeMessage}
+        </p>
+      )}
+      {scopeError && !selected && (
+        <p className="text-sm text-critical" role="alert">
+          {scopeError}
+        </p>
+      )}
+
       {visible.length === 0 ? (
         <p className="text-sm text-muted-foreground">
           {entities.length
@@ -385,6 +546,36 @@ export function EntitiesView({
           <table className="w-full border-collapse text-sm">
             <thead>
               <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted-foreground">
+                {canWrite && (
+                  <th className="w-10 px-3 py-2">
+                    <input
+                      type="checkbox"
+                      aria-label="Select all visible scope-compatible entities"
+                      checked={allVisibleSelected}
+                      ref={(node) => {
+                        if (node) {
+                          node.indeterminate =
+                            !allVisibleSelected &&
+                            selectableVisible.some((entity) =>
+                              selectedKeys.has(entityKey(entity)),
+                            );
+                        }
+                      }}
+                      disabled={selectableVisible.length === 0 || scopeSaving}
+                      onChange={(event) => {
+                        setSelectedKeys((previous) => {
+                          const next = new Set(previous);
+                          selectableVisible.forEach((entity) => {
+                            const key = entityKey(entity);
+                            if (event.target.checked) next.add(key);
+                            else next.delete(key);
+                          });
+                          return next;
+                        });
+                      }}
+                    />
+                  </th>
+                )}
                 <th className="px-3 py-2 w-28">Type</th>
                 <th className="px-3 py-2">Value</th>
                 <th className="px-3 py-2 w-24">Scope</th>
@@ -398,6 +589,29 @@ export function EntitiesView({
                   key={`${e.type}:${e.value}`}
                   className="border-b border-border/60 last:border-0 hover:bg-secondary/40"
                 >
+                  {canWrite && (
+                    <td className="px-3 py-2.5">
+                      <input
+                        type="checkbox"
+                        aria-label={`Select ${e.value}`}
+                        checked={selectedKeys.has(entityKey(e))}
+                        disabled={!scopeTargetForEntity(e) || scopeSaving}
+                        title={
+                          scopeTargetForEntity(e)
+                            ? "Select entity"
+                            : `${typeLabel(e.type)} entities cannot be scope targets`
+                        }
+                        onChange={(event) => {
+                          setSelectedKeys((previous) => {
+                            const next = new Set(previous);
+                            if (event.target.checked) next.add(entityKey(e));
+                            else next.delete(entityKey(e));
+                            return next;
+                          });
+                        }}
+                      />
+                    </td>
+                  )}
                   <td className="px-3 py-2.5">
                     <span className="text-xs text-muted-foreground">
                       {typeLabel(e.type)}
@@ -410,14 +624,24 @@ export function EntitiesView({
                       className="rounded-sm text-left hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       onClick={(event) => {
                         detailTriggerRef.current = event.currentTarget;
-                        setSelectedKey(`${e.type}\u0000${e.value}`);
+                        setSelectedKey(entityKey(e));
                       }}
                     >
                       {e.value}
                     </button>
                   </td>
                   <td className="px-3 py-2.5">
-                    <ScopeStatusBadge status={e.scope_status} />
+                    <button
+                      type="button"
+                      aria-label={`Manage scope for ${e.value}`}
+                      className="rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      onClick={(event) => {
+                        detailTriggerRef.current = event.currentTarget;
+                        setSelectedKey(entityKey(e));
+                      }}
+                    >
+                      <ScopeStatusBadge status={e.scope_status} />
+                    </button>
                   </td>
                   <td className="px-3 py-2.5 tabular-nums text-muted-foreground">
                     {e.count}
@@ -443,6 +667,13 @@ export function EntitiesView({
             requestAnimationFrame(() => detailTriggerRef.current?.focus());
           }}
           onQuickAction={onQuickAction}
+          canWrite={canWrite}
+          scopeItems={scopeItems}
+          scopeSaving={scopeSaving}
+          scopeMessage={scopeMessage}
+          scopeError={scopeError}
+          onAssignScope={(disposition) => void assignScope([selected], disposition)}
+          onRemoveScopeRules={(items) => void removeScopeRules(items)}
           doneTools={
             new Set(
               selected.findings
@@ -1001,12 +1232,26 @@ function EntitySlideOver({
   slug,
   onClose,
   onQuickAction,
+  canWrite,
+  scopeItems,
+  scopeSaving,
+  scopeMessage,
+  scopeError,
+  onAssignScope,
+  onRemoveScopeRules,
   doneTools,
 }: {
   entity: Entity;
   slug: string;
   onClose: () => void;
   onQuickAction?: (prompt: string) => void;
+  canWrite: boolean;
+  scopeItems: ScopeItem[];
+  scopeSaving: boolean;
+  scopeMessage: string | null;
+  scopeError: string | null;
+  onAssignScope: (disposition: "include" | "exclude") => void;
+  onRemoveScopeRules: (items: ScopeItem[]) => void;
   doneTools: Set<string>;
 }) {
   // v1.4.14: engagement-aware quick actions (roadmap #8). The chain is
@@ -1016,6 +1261,10 @@ function EntitySlideOver({
   const chain = ENTITY_ACTION_CHAINS[entity.type] ?? [];
   const nextStep = chain.find((a) => a.tool && !doneTools.has(a.tool));
   const ipThumbnail = useIpThumbnailPoint(entity, slug);
+  const scopeTarget = scopeTargetForEntity(entity);
+  const exactRules = exactScopeRules(entity, scopeItems);
+  const exactIncludes = exactRules.filter((item) => !item.is_exclusion);
+  const exactExclusions = exactRules.filter((item) => item.is_exclusion);
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="left-auto right-0 top-0 flex h-dvh w-full max-w-lg translate-x-0 translate-y-0 flex-col gap-0 rounded-none border-y-0 border-r-0 p-0 sm:rounded-none">
@@ -1041,8 +1290,106 @@ function EntitySlideOver({
         </DialogHeader>
 
         <div className="flex-1 overflow-y-auto px-6 py-5">
+          <section className="space-y-3 rounded-lg border border-border bg-card/40 p-4">
+            <div>
+              <h3 className="text-sm font-medium">Scope assignment</h3>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Add this exact target to authorized scope or create an explicit exclusion.
+                Broader domain and CIDR exclusions remain authoritative.
+              </p>
+            </div>
+            {!scopeTarget ? (
+              <p className="text-xs text-muted-foreground">
+                {typeLabel(entity.type)} entities cannot be used as scope targets.
+              </p>
+            ) : canWrite ? (
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => onAssignScope("include")}
+                  disabled={scopeSaving}
+                >
+                  {scopeSaving ? (
+                    <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <ListPlus className="mr-1.5 h-3.5 w-3.5" />
+                  )}
+                  Add to scope
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => onAssignScope("exclude")}
+                  disabled={scopeSaving}
+                >
+                  <Ban className="mr-1.5 h-3.5 w-3.5" />
+                  Exclude
+                </Button>
+              </div>
+            ) : (
+              <Badge variant="outline">Read-only</Badge>
+            )}
+
+            {scopeMessage && (
+              <p className="text-xs text-emerald-700 dark:text-emerald-300" role="status">
+                {scopeMessage}
+              </p>
+            )}
+            {scopeError && (
+              <p className="text-xs text-critical" role="alert">
+                {scopeError}
+              </p>
+            )}
+
+            {exactRules.length > 0 && (
+              <div className="space-y-2 border-t border-border pt-3">
+                <div className="text-xs uppercase tracking-wide text-muted-foreground">
+                  Exact rules
+                </div>
+                {exactIncludes.length > 0 && (
+                  <div className="flex items-center justify-between gap-3 text-xs">
+                    <span>
+                      In scope · {exactIncludes.length} exact {exactIncludes.length === 1 ? "rule" : "rules"}
+                    </span>
+                    {canWrite && (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => onRemoveScopeRules(exactIncludes)}
+                        disabled={scopeSaving}
+                      >
+                        Remove
+                      </Button>
+                    )}
+                  </div>
+                )}
+                {exactExclusions.length > 0 && (
+                  <div className="flex items-center justify-between gap-3 text-xs">
+                    <span>
+                      Excluded · {exactExclusions.length} exact {exactExclusions.length === 1 ? "rule" : "rules"}
+                    </span>
+                    {canWrite && (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => onRemoveScopeRules(exactExclusions)}
+                        disabled={scopeSaving}
+                      >
+                        Remove
+                      </Button>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+          </section>
+
           {ipThumbnail && (
-            <div className="space-y-2">
+            <div className="mt-5 space-y-2">
               <div className="text-xs uppercase tracking-wide text-muted-foreground">
                 Geolocation
               </div>

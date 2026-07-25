@@ -1220,6 +1220,7 @@ def import_scope(
             kind=r.kind,
             value=r.value,
             is_exclusion=r.is_exclusion,
+            source=body.source,
         )
         session.add(item)
         seen.add(key)

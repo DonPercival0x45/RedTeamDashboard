@@ -221,9 +221,12 @@ class ScopeImportRequest(BaseModel):
 
     Whatever the analyst pasted/uploaded — .txt or .csv content, mixed kinds,
     optional ``!`` exclusions, ``#`` comments — goes straight in here.
+    ``source`` lets discovery surfaces retain provenance while reusing the
+    same parser and idempotent import contract as the scope editor.
     """
 
     text: str = Field(min_length=1, max_length=200_000)
+    source: Literal["defined", "found"] = "defined"
 
 
 class ScopeImportPreviewRow(BaseModel):
