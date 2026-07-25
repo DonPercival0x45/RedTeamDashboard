@@ -22,7 +22,6 @@ import {
   regroupFindingsApply,
   regroupFindingsPreview,
   repairFindingGroups,
-  validateFinding,
 } from "@/lib/api";
 import { getWorkItemRollup } from "@/lib/strategy-api";
 import { cn } from "@/lib/utils";
@@ -984,7 +983,6 @@ export function FindingsView({
           finding={selected}
           slug={slug}
           onClose={() => setSelected(null)}
-          onUpdated={handleUpdated}
         />
       )}
 
@@ -1225,16 +1223,11 @@ function FindingSlideOver({
   finding,
   slug,
   onClose,
-  onUpdated,
 }: {
   finding: Finding;
   slug: string;
   onClose: () => void;
-  onUpdated: (f: Finding) => void;
 }) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
@@ -1242,18 +1235,6 @@ function FindingSlideOver({
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [onClose]);
-
-  const decide = async (decision: FindingValidationStatus) => {
-    setBusy(true);
-    setError(null);
-    try {
-      onUpdated(await validateFinding(finding.id, decision));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  };
 
   const groupedItems = Array.isArray((finding.data as { items?: unknown }).items)
     ? (finding.data as { items: unknown[] }).items.length
@@ -1347,29 +1328,9 @@ function FindingSlideOver({
 
           <GroupedItemsPanel finding={finding} />
 
-          {error && (
-            <p className="rounded-md border border-critical/40 bg-critical/10 p-2 text-xs text-critical">
-              {error}
-            </p>
-          )}
         </div>
 
         <footer className="space-y-3 border-t border-border bg-background/70 px-5 py-4">
-          <div className="flex flex-wrap gap-2">
-            <Button
-              size="sm"
-              disabled={busy || finding.status === "validated"}
-              onClick={() => void decide("validated")}
-            >
-              Validate
-            </Button>
-            <Button size="sm" variant="outline" disabled={busy} onClick={() => void decide("rejected")}>
-              Reject
-            </Button>
-            <Button size="sm" variant="outline" disabled={busy} onClick={() => void decide("false_positive")}>
-              False positive
-            </Button>
-          </div>
           <div className="grid grid-cols-2 gap-2">
             <Button asChild variant="outline">
               <Link href={`/e/findings/${finding.id}?slug=${encodeURIComponent(slug)}&tab=details#discovered-context`}>
@@ -1377,17 +1338,16 @@ function FindingSlideOver({
               </Link>
             </Button>
             <Button asChild>
-              <Link href={`/e/findings/${finding.id}?slug=${encodeURIComponent(slug)}`}>
+              <Link href={`/e/findings/${finding.id}?slug=${encodeURIComponent(slug)}&tab=notes`}>
                 <Maximize2 className="mr-2 h-4 w-4" />
-                Open full view
+                Review and decide
               </Link>
             </Button>
           </div>
           <p className="text-center text-[10px] text-muted-foreground">
-            Editing, evidence, AI actions, context, and history live in the full view.
+            Decisions require an evidence-backed rationale in the full workbench.
           </p>
         </footer>
-        <LoaderOverlay show={busy} size={1.2} label="Applying decision" />
       </aside>
     </>
   );

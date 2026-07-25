@@ -570,8 +570,21 @@ supported the resulting Finding.
   known DNS schemas.
 - Findings now defaults to a client-only "Needs validation first" order that
   combines `pending_validation` and `needs_review`, keeps search/sort controls
-  visible on desktop, and bounds the table with a sticky header. The combined
-  validation filter is explicit and does not change the backend API sort contract.
+  visible on desktop, and bounds the table with a sticky header. Validation and
+  bulk status decisions require a recorded rationale; the full workbench then
+  routes the analyst toward evidence, follow-up planning, separately controlled
+  execution, or remediation tracking.
+- The new Paths workspace deterministically assembles bounded, acyclic
+  infrastructure paths from structured DNS evidence. It consolidates repeat
+  observations, retains finding citations and validation dispositions, marks
+  invalidated-only sources as disputed, caps broad path enumeration, and links
+  nodes back to the exact Entity workspace. It never infers authorization,
+  ownership, or exploitability.
+- Migration `0070` adds append-only client remediation updates and analyst
+  retest results as dimensions orthogonal to Finding validation. The finding
+  workbench shows current state and full history; recording a retest never runs
+  a tool, replays an external call, changes report eligibility, or closes a
+  Finding automatically.
 - Leaflet maps are isolated in a local stacking context so Settings and other
   application dialogs stay above the globe. Active service detection now
   requires a successful direct connection before emitting a service finding and

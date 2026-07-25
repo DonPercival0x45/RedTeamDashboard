@@ -426,6 +426,46 @@ export interface FindingActivityEntry {
   ref_id: string | null;
 }
 
+export type FindingRemediationStatus =
+  | "acknowledged"
+  | "in_progress"
+  | "ready_for_retest"
+  | "client_reports_fixed"
+  | "accepted_risk";
+
+export type FindingRetestOutcome =
+  | "fixed"
+  | "partially_fixed"
+  | "not_fixed"
+  | "inconclusive";
+
+export interface FindingRemediationUpdate {
+  id: string;
+  finding_id: string;
+  status: FindingRemediationStatus;
+  note: string | null;
+  reported_at: string;
+  recorded_by_user_id: string | null;
+  created_at: string;
+}
+
+export interface FindingRetest {
+  id: string;
+  finding_id: string;
+  outcome: FindingRetestOutcome;
+  note: string | null;
+  tested_at: string;
+  performed_by_user_id: string | null;
+  created_at: string;
+}
+
+export interface FindingFollowUp {
+  latest_remediation: FindingRemediationUpdate | null;
+  latest_retest: FindingRetest | null;
+  remediation_updates: FindingRemediationUpdate[];
+  retests: FindingRetest[];
+}
+
 export type FindingChatRole = "user" | "assistant" | "system";
 
 export type FindingChatActionType =

@@ -58,6 +58,7 @@ import type {
   StoredEntity,
 } from "@/lib/types";
 import type { MapPoint } from "@/components/leaflet-map";
+import { engagementEntityHref } from "@/lib/engagement-links";
 import {
   buildDossierTimeline,
   extractDossierRelationships,
@@ -343,10 +344,6 @@ function formatDateTime(value: string): string {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(date);
-}
-
-function entityHref(slug: string, entity: Pick<Entity, "type" | "value">): string {
-  return `/e/entities?slug=${encodeURIComponent(slug)}&type=${encodeURIComponent(entity.type)}&value=${encodeURIComponent(entity.value)}`;
 }
 
 function relationshipVerb(kind: string): string {
@@ -664,7 +661,7 @@ export function DossierView({ slug }: { slug: string }) {
               >
                 <div className="flex min-w-0 items-center gap-2 text-sm">
                   <Link
-                    href={entityHref(slug, {
+                    href={engagementEntityHref(slug, {
                       type: relationship.sourceType,
                       value: relationship.sourceValue,
                     })}
@@ -677,7 +674,7 @@ export function DossierView({ slug }: { slug: string }) {
                   </span>
                   <ArrowRight className="h-3 w-3 shrink-0 text-muted-foreground" aria-hidden="true" />
                   <Link
-                    href={entityHref(slug, {
+                    href={engagementEntityHref(slug, {
                       type: relationship.targetType,
                       value: relationship.targetValue,
                     })}
@@ -754,7 +751,7 @@ export function DossierView({ slug }: { slug: string }) {
             {visibleEntities.map(({ entity, pendingFindingCount, needsValidation }) => (
               <Link
                 key={`${entity.type}:${entity.value}`}
-                href={entityHref(slug, entity)}
+                href={engagementEntityHref(slug, entity)}
                 className="rounded-lg border border-border p-3 transition-colors hover:bg-muted/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <div className="flex items-start justify-between gap-2">
@@ -847,7 +844,7 @@ export function DossierView({ slug }: { slug: string }) {
                   : item.runId
                     ? `/e?slug=${encodeURIComponent(slug)}&view=status&run=${encodeURIComponent(item.runId)}`
                     : item.entityType && item.entityValue
-                      ? entityHref(slug, {
+                      ? engagementEntityHref(slug, {
                           type: item.entityType as Entity["type"],
                           value: item.entityValue,
                         })

@@ -1,6 +1,7 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useQueryClient } from "@tanstack/react-query";
@@ -275,6 +276,7 @@ export function EntitiesView({
   // v1.0.0: react-query owns the derived-entities fetch. Focus revalidation
   // catches new findings that landed while the tab was hidden.
   const qc = useQueryClient();
+  const params = useSearchParams();
   const entitiesQuery = useEntities(slug);
   const scopeQuery = useScope(slug);
   const entities = entitiesQuery.data;
@@ -295,6 +297,23 @@ export function EntitiesView({
   const [scopeError, setScopeError] = useState<string | null>(null);
   const [pendingScopeRemoval, setPendingScopeRemoval] = useState<ScopeItem[]>([]);
   const detailTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const deepLinkAppliedRef = useRef(false);
+  const deepLinkType = params.get("type");
+  const deepLinkValue = params.get("value");
+
+  useEffect(() => {
+    if (deepLinkAppliedRef.current || !entities || !deepLinkType || !deepLinkValue) return;
+    const match = entities.find(
+      (entity) => entity.type === deepLinkType && entity.value === deepLinkValue,
+    );
+    deepLinkAppliedRef.current = true;
+    if (!match) return;
+    setHideLikelyThirdParty(false);
+    setType("all");
+    setScopeStatus("all");
+    setSearch(deepLinkValue);
+    setSelectedKey(entityKey(match));
+  }, [deepLinkType, deepLinkValue, entities]);
 
   if (entities === undefined)
     return (

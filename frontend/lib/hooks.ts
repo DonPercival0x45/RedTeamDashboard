@@ -1107,10 +1107,17 @@ export function prefetchEngagementView(
         queryFn: () => getEngagementDiagnostics(slug),
       });
       return;
+    case "attack-paths":
+      void qc.prefetchQuery({
+        queryKey: qk.findings(slug),
+        queryFn: () => listFindings(slug),
+      });
+      return;
     case "strategy":
+    case "dossier":
     case "contributions":
-      // Strategy loads a coordinated dossier; contributions depends on filter
-      // state.
+      // Strategy and Dossier load coordinated projections; contributions
+      // depends on filter state.
       return;
   }
 }

@@ -87,6 +87,8 @@ from app.models import (
     EngagementStatus,
     Finding,
     FindingPhase,
+    FindingRemediationUpdate,
+    FindingRetest,
     FindingStatus,
     FindingSummary,
     Observation,
@@ -135,6 +137,13 @@ from app.schemas.finding import (
     RegroupProposal,
     RepairGroupsResult,
     _normalize_tags,
+)
+from app.schemas.finding_followup import (
+    FindingFollowUpRead,
+    FindingRemediationUpdateCreate,
+    FindingRemediationUpdateRead,
+    FindingRetestCreate,
+    FindingRetestRead,
 )
 from app.schemas.observation import ObservationCreate, ObservationRead
 from app.services import methodology as methodology_service
@@ -1584,6 +1593,127 @@ def validate_finding(
     session.commit()
     session.refresh(finding)
     return _finding_to_read(finding)
+
+
+@router.get(
+    "/findings/{finding_id}/follow-up",
+    response_model=FindingFollowUpRead,
+)
+def get_finding_follow_up(
+    finding_id: uuid.UUID,
+    session: DbSession,
+    _user: CurrentUser,
+) -> FindingFollowUpRead:
+    """Return the canonical append-only remediation and retest history."""
+    get_active_finding_or_404(session, finding_id)
+    remediation = list(
+        session.execute(
+            select(FindingRemediationUpdate)
+            .where(FindingRemediationUpdate.finding_id == finding_id)
+            .order_by(
+                FindingRemediationUpdate.reported_at.desc(),
+                FindingRemediationUpdate.created_at.desc(),
+                FindingRemediationUpdate.id.desc(),
+            )
+        ).scalars()
+    )
+    retests = list(
+        session.execute(
+            select(FindingRetest)
+            .where(FindingRetest.finding_id == finding_id)
+            .order_by(
+                FindingRetest.tested_at.desc(),
+                FindingRetest.created_at.desc(),
+                FindingRetest.id.desc(),
+            )
+        ).scalars()
+    )
+    return FindingFollowUpRead(
+        latest_remediation=remediation[0] if remediation else None,
+        latest_retest=retests[0] if retests else None,
+        remediation_updates=remediation,
+        retests=retests,
+    )
+
+
+@router.post(
+    "/findings/{finding_id}/remediation-updates",
+    response_model=FindingRemediationUpdateRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_finding_remediation_update(
+    finding_id: uuid.UUID,
+    body: FindingRemediationUpdateCreate,
+    session: DbSession,
+    user: CurrentNonGuestUser,
+) -> FindingRemediationUpdate:
+    finding = _lock_active_finding_for_mutation(session, finding_id)
+    row = FindingRemediationUpdate(
+        finding_id=finding.id,
+        status=body.status,
+        note=body.note,
+        reported_at=body.reported_at or datetime.now(tz=UTC),
+        recorded_by_user_id=user.id,
+    )
+    session.add(row)
+    session.flush()
+    session.add(
+        AuditLog(
+            engagement_id=finding.engagement_id,
+            actor_type=ActorType.user,
+            actor_id=str(user.id),
+            event_type="finding.remediation_updated",
+            payload={
+                "finding_id": str(finding.id),
+                "remediation_update_id": str(row.id),
+                "status": body.status.value,
+                "reported_at": row.reported_at.isoformat(),
+            },
+        )
+    )
+    session.commit()
+    session.refresh(row)
+    return row
+
+
+@router.post(
+    "/findings/{finding_id}/retests",
+    response_model=FindingRetestRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_finding_retest(
+    finding_id: uuid.UUID,
+    body: FindingRetestCreate,
+    session: DbSession,
+    user: CurrentNonGuestUser,
+) -> FindingRetest:
+    finding = _lock_active_finding_for_mutation(session, finding_id)
+    row = FindingRetest(
+        finding_id=finding.id,
+        outcome=body.outcome,
+        note=body.note,
+        tested_at=body.tested_at or datetime.now(tz=UTC),
+        performed_by_user_id=user.id,
+    )
+    session.add(row)
+    session.flush()
+    session.add(
+        AuditLog(
+            engagement_id=finding.engagement_id,
+            actor_type=ActorType.user,
+            actor_id=str(user.id),
+            event_type="finding.retest_recorded",
+            payload={
+                "finding_id": str(finding.id),
+                "retest_id": str(row.id),
+                "outcome": body.outcome.value,
+                "tested_at": row.tested_at.isoformat(),
+            },
+        )
+    )
+    session.commit()
+    session.refresh(row)
+    return row
 
 
 # ---------------------------------------------------------------------------

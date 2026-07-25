@@ -96,6 +96,24 @@ def test_bulk_validate_is_atomic_and_audited(
     assert audit.payload["reason"] == "reviewed scanner batch"
 
 
+def test_bulk_validation_requires_rationale(
+    client: TestClient, db: Session, engagement: Engagement
+) -> None:
+    finding = seed(db, engagement.id, "requires rationale")
+    response = client.post(
+        f"/engagements/{engagement.slug}/findings/bulk-update",
+        headers=headers(),
+        json={
+            "finding_ids": [str(finding.id)],
+            "operation": "set_status",
+            "status": "validated",
+        },
+    )
+    assert response.status_code == 422
+    db.refresh(finding)
+    assert finding.status is FindingStatus.pending_validation
+
+
 def test_bulk_update_rejects_partial_selection(
     client: TestClient, db: Session, engagement: Engagement
 ) -> None:

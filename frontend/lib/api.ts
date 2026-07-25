@@ -41,6 +41,11 @@ import type {
   FindingSort,
   FindingSummaryEntry,
   FindingActivityEntry,
+  FindingFollowUp,
+  FindingRemediationStatus,
+  FindingRemediationUpdate,
+  FindingRetest,
+  FindingRetestOutcome,
   FindingChatActionResponse,
   FindingChatResponse,
   FindingChatState,
@@ -373,6 +378,30 @@ export function getFindingActivity(
   return request<FindingActivityEntry[]>(`/findings/${findingId}/activity`);
 }
 
+export function getFindingFollowUp(findingId: string): Promise<FindingFollowUp> {
+  return request<FindingFollowUp>(`/findings/${findingId}/follow-up`);
+}
+
+export function createFindingRemediationUpdate(
+  findingId: string,
+  body: { status: FindingRemediationStatus; note?: string | null },
+): Promise<FindingRemediationUpdate> {
+  return request<FindingRemediationUpdate>(
+    `/findings/${findingId}/remediation-updates`,
+    { method: "POST", body: JSON.stringify(body) },
+  );
+}
+
+export function createFindingRetest(
+  findingId: string,
+  body: { outcome: FindingRetestOutcome; note?: string | null },
+): Promise<FindingRetest> {
+  return request<FindingRetest>(`/findings/${findingId}/retests`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
 export function getFindingChat(findingId: string): Promise<FindingChatState> {
   return request<FindingChatState>(`/findings/${findingId}/chat`);
 }
@@ -487,7 +516,7 @@ export function listEntities(
 export function validateFinding(
   findingId: string,
   decision: FindingValidationStatus,
-  reason?: string,
+  reason: string,
 ): Promise<Finding> {
   return request<Finding>(`/findings/${findingId}/validate`, {
     method: "POST",

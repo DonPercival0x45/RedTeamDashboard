@@ -134,6 +134,11 @@ class FindingBulkUpdate(BaseModel):
     def _normalize_bulk_tags(cls, value: list[str] | None) -> list[str] | None:
         return _normalize_tags(value) if value is not None else None
 
+    @field_validator("reason")
+    @classmethod
+    def _normalize_bulk_reason(cls, value: str | None) -> str | None:
+        return _strip_nonblank(value, field_name="reason")
+
     @model_validator(mode="after")
     def _operation_has_value(self) -> FindingBulkUpdate:
         if self.operation == "set_exclusion":
@@ -148,6 +153,8 @@ class FindingBulkUpdate(BaseModel):
             "remove_tags": self.tags,
         }
         value = required[self.operation]
+        if self.operation == "set_status" and self.reason is None:
+            raise ValueError("operation 'set_status' requires a reason")
         if value is None:
             raise ValueError(f"operation {self.operation!r} requires its matching value")
         if self.operation in {"add_tags", "remove_tags"} and not self.tags:
@@ -338,7 +345,21 @@ class FindingValidate(BaseModel):
     # 'validated' promotes to report-eligible; the others remove it from the
     # report while keeping an audit trail.
     decision: FindingStatus = FindingStatus.validated
-    reason: str | None = None
+    reason: str = Field(min_length=1, max_length=2_000)
+
+    @field_validator("decision")
+    @classmethod
+    def _decision_is_terminal_or_review(cls, value: FindingStatus) -> FindingStatus:
+        if value is FindingStatus.pending_validation:
+            raise ValueError("pending_validation is not a validation decision")
+        return value
+
+    @field_validator("reason")
+    @classmethod
+    def _normalize_reason(cls, value: str) -> str:
+        normalized = _strip_nonblank(value, field_name="reason")
+        assert normalized is not None
+        return normalized
 
 
 class FindingSummaryCreate(BaseModel):

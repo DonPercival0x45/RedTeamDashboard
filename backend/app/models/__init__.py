@@ -71,6 +71,12 @@ from app.models.finding import (
     Severity,
 )
 from app.models.finding_summary import FindingSummary
+from app.models.finding_followup import (
+    FindingRemediationStatus,
+    FindingRemediationUpdate,
+    FindingRetest,
+    FindingRetestOutcome,
+)
 from app.models.integration import Integration, IntegrationPurpose, IntegrationType
 from app.models.mcp_lease import MCPLease, MCPLeaseStatus
 from app.models.memory import (
@@ -172,6 +178,10 @@ __all__ = [
     "Finding",
     "FindingExclusion",
     "FindingOrigin",
+    "FindingRemediationStatus",
+    "FindingRemediationUpdate",
+    "FindingRetest",
+    "FindingRetestOutcome",
     "FindingPhase",
     "FindingStatus",
     "FindingSummary",
