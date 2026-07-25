@@ -17,6 +17,7 @@ Loader called from a service helper — not auto-installed on migration
 (different lifecycle from the methodology catalog: playbooks may be
 analyst-curated per tenant).
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -394,6 +395,159 @@ MAIL_DNS_POSTURE_V1: dict[str, Any] = {
 }
 
 
+MAIL_DNS_POSTURE_V2: dict[str, Any] = {
+    **MAIL_DNS_POSTURE_V1,
+    "version": 2,
+    "name": "Mail authentication posture",
+    "description": (
+        "Keyless, bounded review of MX, SPF, DMARC, MTA-STS, and SMTP TLS "
+        "reporting. DKIM is reported as not tested because selector discovery "
+        "cannot be exhaustive without configured selectors."
+    ),
+    "steps": [
+        {
+            "sort_order": 10,
+            "tool_slug": "mail-auth-posture",
+            "args_template": {"domain": "{{scope_item}}"},
+            "satisfies_node_ids": ["osint.domain.dns"],
+            "description": "Analyze keyless mail-authentication DNS evidence.",
+        }
+    ],
+}
+
+
+SCOPE_HYGIENE_REVIEW_V1: dict[str, Any] = {
+    "slug": "scope-hygiene-review",
+    "version": 1,
+    "name": "Scope hygiene review",
+    "description": (
+        "Reviews client-defined and discovered exact scope entries for provenance, "
+        "external dependencies, non-global IPs, role mailboxes, duplicates, and "
+        "include/exclusion collisions. Report-only: it never changes authorization."
+    ),
+    "applies_to_asset_class": "scope",
+    "active": False,
+    "steps": [
+        {
+            "sort_order": 10,
+            "tool_slug": "scope-hygiene",
+            "args_template": {},
+            "satisfies_node_ids": [],
+            "description": (
+                "Produce explainable keep/review/remove recommendations without mutation."
+            ),
+        }
+    ],
+}
+
+
+DNS_OWNERSHIP_BOUNDARY_V1: dict[str, Any] = {
+    "slug": "dns-ownership-boundary",
+    "version": 1,
+    "name": "DNS ownership boundary",
+    "description": (
+        "Maps authoritative DNS, mail, address, SOA, and CNAME dependencies. "
+        "External infrastructure is evidence for review, not an ownership verdict."
+    ),
+    "applies_to_asset_class": "domain",
+    "active": False,
+    "steps": [
+        {
+            "sort_order": 10,
+            "tool_slug": "dns-ownership-boundary",
+            "args_template": {"domain": "{{scope_item}}"},
+            "satisfies_node_ids": ["osint.domain.dns"],
+            "description": "Map DNS and mail dependencies across the domain boundary.",
+        }
+    ],
+}
+
+
+DANGLING_DNS_TRIAGE_V1: dict[str, Any] = {
+    "slug": "dangling-dns-triage",
+    "version": 1,
+    "name": "Dangling DNS triage",
+    "description": (
+        "Discovers authorized names, follows a bounded CNAME check, and flags "
+        "NXDOMAIN-backed dangling candidates. It never claims provider resources "
+        "or labels a takeover confirmed."
+    ),
+    "applies_to_asset_class": "domain",
+    "active": False,
+    "steps": [
+        {
+            "sort_order": 10,
+            "tool_slug": "mcp_subfinder",
+            "args_template": {"domain": "{{scope_item}}"},
+            "satisfies_node_ids": ["osint.domain.subdomains"],
+            "description": "Discover candidate hostnames passively.",
+        },
+        {
+            "sort_order": 20,
+            "tool_slug": "mcp_crt_sh",
+            "args_template": {"domain": "{{scope_item}}"},
+            "satisfies_node_ids": ["osint.domain.cert"],
+            "description": "Add certificate-transparency hostnames.",
+        },
+        {
+            "sort_order": 30,
+            "tool_slug": "dangling-dns-triage",
+            "args_template": {
+                "domain": "{{scope_item}}",
+                "__target_source": "discovered_domains",
+            },
+            "satisfies_node_ids": [],
+            "description": "Triage authorized CNAME targets without claiming resources.",
+        },
+    ],
+}
+
+
+WEB_SECURITY_BASELINE_V1: dict[str, Any] = {
+    "slug": "web-security-baseline",
+    "version": 1,
+    "name": "Web security baseline",
+    "description": (
+        "Makes one bounded HTTPS request per authorized domain, without redirects "
+        "or crawling, and reviews common response headers and cookie flags."
+    ),
+    "applies_to_asset_class": "domain",
+    "active": False,
+    "steps": [
+        {
+            "sort_order": 10,
+            "tool_slug": "web-security-baseline",
+            "args_template": {"url": "{{scope_item}}"},
+            "satisfies_node_ids": [],
+            "description": "Collect one response and assess baseline browser protections.",
+        }
+    ],
+}
+
+
+CLOUD_EDGE_BOUNDARY_V1: dict[str, Any] = {
+    "slug": "cloud-edge-boundary",
+    "version": 1,
+    "name": "Cloud/CDN edge boundary",
+    "description": (
+        "Correlates CNAME, address, and bounded HTTP header signals for common "
+        "delivery providers. It does not probe for hidden origins or equate an "
+        "edge address with client ownership."
+    ),
+    "applies_to_asset_class": "domain",
+    "active": False,
+    "steps": [
+        {
+            "sort_order": 10,
+            "tool_slug": "cloud-edge-boundary",
+            "args_template": {"domain": "{{scope_item}}"},
+            "satisfies_node_ids": ["osint.domain.dns"],
+            "description": "Map explicit edge-provider signals without origin bypass.",
+        }
+    ],
+}
+
+
 SEED_PLAYBOOKS: list[dict[str, Any]] = [
     OSINT_PASSIVE_DOMAIN_V1,
     PTES_PASSIVE_RECON_V1,
@@ -408,4 +562,10 @@ SEED_PLAYBOOKS: list[dict[str, Any]] = [
     HOST_SERVICE_VALIDATION_V2,
     CIDR_EXPOSURE_SURVEY_V1,
     MAIL_DNS_POSTURE_V1,
+    MAIL_DNS_POSTURE_V2,
+    SCOPE_HYGIENE_REVIEW_V1,
+    DNS_OWNERSHIP_BOUNDARY_V1,
+    DANGLING_DNS_TRIAGE_V1,
+    WEB_SECURITY_BASELINE_V1,
+    CLOUD_EDGE_BOUNDARY_V1,
 ]

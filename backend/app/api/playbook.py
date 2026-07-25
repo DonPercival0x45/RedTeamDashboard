@@ -194,7 +194,23 @@ def _validate_scope_subset(
             rejected.append("(empty value)")
             continue
         kind = infer_scope_kind(value)
-        if kind.value != asset_class:
+        if asset_class == "scope":
+            exact_include = next(
+                (
+                    item
+                    for item in items
+                    if not item.is_exclusion
+                    and item.kind == kind
+                    and item.value == value
+                ),
+                None,
+            )
+            if exact_include is None:
+                rejected.append(
+                    f"{value!r} (scope review requires an exact include row)"
+                )
+                continue
+        elif kind.value != asset_class:
             rejected.append(
                 f"{value!r} (kind {kind.value!r} is incompatible with "
                 f"playbook asset class {asset_class!r})"

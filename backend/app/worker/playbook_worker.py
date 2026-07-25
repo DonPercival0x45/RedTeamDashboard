@@ -152,6 +152,9 @@ class PlaybookWorkerThread:
             delegates: dict[str, PlaybookExecutor] = {}
             if "internal" in required_kinds:
                 from app.services.playbook.tools.breach_lookup import run_from_store
+                from app.services.playbook.tools.scope_hygiene import (
+                    run_scope_hygiene,
+                )
 
                 internal = InternalExecutor()
                 internal.register(
@@ -161,6 +164,14 @@ class PlaybookWorkerThread:
                         engagement_id=engagement.id,
                         scope_context=scope,
                         args=args,
+                    ),
+                )
+                internal.register(
+                    "scope-hygiene",
+                    lambda scope, _args: run_scope_hygiene(
+                        session,
+                        engagement_id=engagement.id,
+                        scope_context=scope,
                     ),
                 )
                 delegates["internal"] = internal

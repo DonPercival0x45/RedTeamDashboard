@@ -233,6 +233,47 @@ describe("KickRunModal", () => {
     expect(screen.queryByRole("button", { name: /^internal/i })).not.toBeInTheDocument();
   });
 
+  it("offers every effective exact kind for a scope hygiene review", async () => {
+    const user = userEvent.setup();
+    const hygiene = {
+      ...playbook,
+      id: "scope-hygiene",
+      slug: "scope-hygiene-review",
+      name: "Scope hygiene review",
+      applies_to_asset_class: "scope",
+      step_count: 1,
+      required_executor: "internal" as const,
+      required_credentials: [],
+      execution_paths: ["Built-in"],
+    };
+    render(
+      <KickRunModal
+        engagementSlug="acme"
+        playbook={hygiene}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("foo.example")).toBeInTheDocument();
+    expect(screen.getByText("10.0.0.9")).toBeInTheDocument();
+    expect(screen.getByText("analyst@example.com")).toBeInTheDocument();
+    expect(screen.queryByText("excluded.example")).not.toBeInTheDocument();
+    expect(screen.getAllByText("client-defined").length).toBeGreaterThan(0);
+
+    await user.click(screen.getByRole("button", { name: "Select all" }));
+    await user.click(screen.getByRole("button", { name: "Kick run" }));
+    expect(mockMutateAsync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scope_subset: [
+          "foo.example",
+          "bar.example",
+          "10.0.0.9",
+          "analyst@example.com",
+        ],
+      }),
+    );
+  });
+
   it("preselects an exact effective entity target without trusting arbitrary values", async () => {
     const user = userEvent.setup();
     const onStarted = vi.fn();

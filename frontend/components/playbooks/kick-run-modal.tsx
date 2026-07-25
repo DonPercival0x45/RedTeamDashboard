@@ -60,7 +60,8 @@ export function KickRunModal({
         (item) =>
           !item.is_exclusion &&
           item.is_effectively_in_scope !== false &&
-          item.kind === playbook.applies_to_asset_class,
+          (playbook.applies_to_asset_class === "scope" ||
+            item.kind === playbook.applies_to_asset_class),
       ),
     [playbook.applies_to_asset_class, scopeQuery.data],
   );
@@ -78,7 +79,8 @@ export function KickRunModal({
     }
     initialTargetHandled.current = true;
     if (
-      initialTarget.type === playbook.applies_to_asset_class &&
+      (playbook.applies_to_asset_class === "scope" ||
+        initialTarget.type === playbook.applies_to_asset_class) &&
       scopeItems.some((item) => item.value === initialTarget.value)
     ) {
       setSelected(new Set([initialTarget.value]));
@@ -231,6 +233,11 @@ export function KickRunModal({
                         {kindLabel(item)}
                       </span>
                       <span className="font-mono">{item.value}</span>
+                {playbook.applies_to_asset_class === "scope" ? (
+                  <span className="ml-auto text-[10px] text-muted-foreground">
+                    {item.source === "found" ? "discovered" : "client-defined"}
+                  </span>
+                ) : null}
                       {item.note ? (
                         <span className="truncate text-muted-foreground">
                           · {item.note}

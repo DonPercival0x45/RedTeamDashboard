@@ -217,6 +217,13 @@ def compute_group_key(
             return None
         return f"wifi_networks:{lat:.1f}:{lon:.1f}"
 
+    if tool == "posture_check":
+        check = str(data.get("check") or "posture").strip().lower()
+        domain = str(data.get("domain") or args.get("domain") or "scope").strip().lower()
+        if check == "scope_hygiene":
+            return "posture:scope_hygiene:scope"
+        return f"posture:{check}:{domain}" if domain else None
+
     if tool == "httpx_probe":
         # One row per response bucket per apex — 200s under one row,
         # 4xx/5xx broken out. Lets the analyst scan the reachable
@@ -398,6 +405,9 @@ def extract_items(
             return []
         return [dict(n) for n in nets if isinstance(n, dict) and n.get("bssid")]
 
+    if tool == "posture_check":
+        return [dict(item) for item in data.get("items") or [] if isinstance(item, dict)]
+
     if tool == "httpx_probe":
         return [
             {
@@ -529,6 +539,11 @@ def item_dedup_key(tool: str | None, item: Mapping[str, Any]) -> str:
         # v2.24.0: BSSID uniquely identifies a wifi radio. Re-runs surface
         # the same BSSID → dedup; new BSSIDs → append.
         return str(item.get("bssid") or "").strip().lower()
+    if tool == "posture_check":
+        return str(
+            item.get("scope_item_id")
+            or f"{item.get('code')}:{item.get('target') or item.get('domain') or ''}"
+        ).lower()
     if tool == "httpx_probe":
         return str(item.get("url") or item.get("final_url") or "").lower()
     if tool in ("portscan", "subnet_sweep"):
@@ -592,6 +607,19 @@ def group_title(tool: str | None, group_key: str, data: Mapping[str, Any] | None
         parts = group_key.split(":")
         coord = ",".join(parts[1:3]) if len(parts) >= 3 else "?"
         return f"Wifi networks near {coord}"
+    if tool == "posture_check":
+        labels = {
+            "scope_hygiene": "Scope hygiene review",
+            "dns_ownership_boundary": "DNS ownership boundary",
+            "dangling_dns_triage": "Dangling DNS triage",
+            "web_security_baseline": "Web security baseline",
+            "mail_auth_posture": "Mail authentication posture",
+            "cloud_edge_boundary": "Cloud/CDN edge boundary",
+        }
+        check = str(data.get("check") or "posture")
+        domain = str(data.get("domain") or "").strip()
+        label = labels.get(check, check.replace("_", " ").title())
+        return f"{label} — {domain}" if domain and domain != "scope" else label
     if tool == "httpx_probe":
         # httpx:<apex>:<bucket>
         parts = group_key.split(":", 2)
@@ -930,6 +958,9 @@ def _representative_target(tool: str | None, group_key: str, data: Mapping[str, 
     if tool in ("subfinder", "crt_sh", "dns_lookup", "whois_lookup"):
         # The apex domain out of the group key.
         return group_key.split(":", 1)[-1]
+    if tool == "posture_check":
+        domain = str(data.get("domain") or "").strip()
+        return domain if domain and domain != "scope" else None
     if tool == "httpx_probe":
         parts = group_key.split(":", 2)
         return parts[1] if len(parts) > 1 else None

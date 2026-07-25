@@ -188,6 +188,42 @@ def _translate(
             "findings": flattened,
         }
 
+    if normalized in {
+        "scope_hygiene",
+        "dns_ownership_boundary",
+        "dangling_dns_triage",
+        "web_security_baseline",
+        "mail_auth_posture",
+        "cloud_edge_boundary",
+    }:
+        check = str(data.get("check") or normalized)
+        target = str(data.get("domain") or domain or "scope").strip()
+        issues = [
+            dict(item)
+            for item in (data.get("issues") or [])
+            if isinstance(item, dict)
+        ]
+        observations = [
+            dict(item)
+            for item in (data.get("observations") or [])
+            if isinstance(item, dict)
+        ]
+        items = issues or observations or [
+            {
+                "code": "no_obvious_issue",
+                "target": target,
+                "message": "No obvious issue was observed by this bounded check",
+                "severity": "info",
+            }
+        ]
+        return "posture_check", {
+            **data,
+            "check": check,
+            "domain": target,
+            "source_tool": playbook_tool,
+            "items": items[:_MAX_ITEMS_PER_STEP],
+        }
+
     if normalized == "breach_lookup":
         records = data.get("records")
         email = str(args.get("email") or data.get("email") or "").strip()
