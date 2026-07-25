@@ -559,6 +559,17 @@ supported the resulting Finding.
   process heartbeat expires, critical component death exits for container
   restart, and the Runs view shows truthful animated worker activity, progress,
   queue depth/age, offline/degraded state, and recent incidents.
+- The Dossier is now the engagement-wide narrative projection: deterministic
+  counts, structured DNS relationship paths, notable entities with first/last
+  seen timestamps, a trust-labelled chronology, research gaps, and direct
+  citations into entity, finding, and run records. The existing infrastructure
+  globe, enriched-IP inventory, and Wi-Fi context remain in the same section.
+  Narrative query failures suppress conclusions rather than presenting missing
+  data as zero, and relationship extraction accepts only known DNS schemas.
+- Leaflet maps are isolated in a local stacking context so Settings and other
+  application dialogs stay above the globe. Active service detection now
+  requires a successful direct connection before emitting a service finding and
+  ignores environment HTTP proxies that could otherwise impersonate a target.
 
 This is additive: `CoverageRecord` remains methodology coverage,
 `Observation` remains the analyst notebook, and `Finding` remains an

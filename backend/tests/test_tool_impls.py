@@ -543,6 +543,70 @@ def test_service_detect_reads_banner() -> None:
     assert "OpenSSH_9.0p1" in (svc.get("product") or "")
 
 
+def test_service_detect_does_not_infer_a_service_on_a_closed_known_port(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import socket
+
+    from app.orchestrator.tools import service_detect as service_detect_module
+
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    probe.bind(("127.0.0.1", 0))
+    closed_port = probe.getsockname()[1]
+    probe.close()
+    monkeypatch.setitem(
+        service_detect_module._SERVICE_NAMES,
+        closed_port,
+        "synthetic-known-service",
+    )
+
+    result = service_detect_impl({"target": "127.0.0.1", "ports": [closed_port]})
+
+    assert result.ok, result.error
+    assert result.data["services"] == [
+        {"port": closed_port, "open": False, "service": None}
+    ]
+    assert result.findings == []
+
+
+def test_service_detect_ignores_environment_http_proxy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import http.server
+    import socket
+    import socketserver
+    import threading
+
+    class ProxyHandler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *args: Any) -> None:  # noqa: ARG002
+            pass
+
+    proxy = socketserver.TCPServer(("127.0.0.1", 0), ProxyHandler)
+    threading.Thread(target=proxy.serve_forever, daemon=True).start()
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    probe.bind(("127.0.0.1", 0))
+    closed_port = probe.getsockname()[1]
+    probe.close()
+    monkeypatch.setenv("HTTP_PROXY", f"http://127.0.0.1:{proxy.server_address[1]}")
+    monkeypatch.setenv("NO_PROXY", "")
+    try:
+        result = service_detect_impl(
+            {"target": "127.0.0.1", "ports": [closed_port]}
+        )
+    finally:
+        proxy.shutdown()
+        proxy.server_close()
+
+    assert result.ok, result.error
+    assert result.data["services"][0]["open"] is False
+    assert result.findings == []
+
+
 def test_service_detect_identifies_http() -> None:
     import http.server
     import socketserver
