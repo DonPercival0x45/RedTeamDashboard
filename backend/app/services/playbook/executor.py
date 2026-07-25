@@ -28,6 +28,8 @@ from typing import Any, Protocol
 
 import structlog
 
+from app.services.redaction import redact_sensitive_text
+
 logger = structlog.get_logger(__name__)
 
 
@@ -412,8 +414,10 @@ class MCPExecutor:
                 error=f"MCP server does not expose tool {tool_slug!r}",
             )
         except BaseException as exc:  # noqa: BLE001 - MCP transport errors are step failures
-            detail = _unwrap_exception_detail(exc)
-            logger.exception(
+            detail = redact_sensitive_text(_unwrap_exception_detail(exc)) or "transport failure"
+            # Do not attach the exception traceback: third-party exception
+            # messages may contain request headers or query credentials.
+            logger.warning(
                 "playbook.mcp_executor_failed",
                 tool=method_name,
                 error=detail,

@@ -514,4 +514,38 @@ provider-readiness banner; Keys-page guest card (the role-gating pattern `/e`
 is missing); engagements-list genuine-empty + pending-teaching banners;
 type-the-slug delete confirmation; the run → findings feedback toast.
 
+## 10. Durable playbook step receipts and evidence boundary
+
+Coverage records answer whether a methodology node was satisfied; they do not
+identify one concrete tool invocation. One invocation can produce zero, one,
+or several coverage records, so the run aggregate previously could not answer
+which target ran, how long it took, what transport was used, or which evidence
+supported the resulting Finding.
+
+**Landed locally on `feat/playbook-evidence-receipts`:**
+
+- `PlaybookStepExecution` stores one immutable, per-target attempt receipt with
+  the catalog-step snapshot, server-owned transport, target-bound redacted
+  arguments, status, duration, and failure detail.
+- `EvidenceArtifact` preserves bounded JSON tool output independently of the
+  Findings workspace. Clean results remain evidence rather than becoming fake
+  security issues; canonical Findings can be linked when the finding bridge
+  creates or enriches one.
+- Secret-like keys, bearer/basic credentials, URI passwords, nested string
+  values, receipt errors, run errors, and coverage notes are sanitized before
+  durable persistence. Oversized artifacts store a preview plus the complete
+  redacted payload digest and byte count.
+- Worker-owned runs now carry an independently refreshed heartbeat. Expired
+  worker leases are marked failed together with any in-flight receipt, with an
+  explicit “outcome unknown; not retried” message. Recovery never replays an
+  external call whose side effects may already have happened.
+- Run details show accessible per-target attempt receipts and lazy-load the
+  redacted evidence payload. Evidence linked to a canonical Finding provides a
+  direct navigation path.
+
+This is additive: `CoverageRecord` remains methodology coverage,
+`Observation` remains the analyst notebook, and `Finding` remains an
+actionable/reportable conclusion. Evidence does not authorize targets, validate
+Findings, or change reportability.
+
 

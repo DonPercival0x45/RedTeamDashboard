@@ -31,13 +31,17 @@ from app.models import (
     EngagementArchitecture,
     EngagementStatus,
     EngagementWorkState,
+    EvidenceArtifact,
     Playbook,
     PlaybookExecutorKind,
     PlaybookRun,
     PlaybookStep,
+    PlaybookStepExecution,
     ScopeItem,
 )
 from app.schemas.playbook import (
+    EvidenceArtifactRead,
+    EvidenceArtifactSummaryRead,
     PlaybookApprovalPayload,
     PlaybookCreatePayload,
     PlaybookDetail,
@@ -46,6 +50,7 @@ from app.schemas.playbook import (
     PlaybookRunPayload,
     PlaybookRunRead,
     PlaybookStepCreatePayload,
+    PlaybookStepExecutionRead,
     PlaybookStepPatchPayload,
     PlaybookStepRead,
 )
@@ -230,12 +235,80 @@ def _validate_scope_subset(
         )
 
 
-def _run_read(session: Session, run: PlaybookRun) -> PlaybookRunRead:
+def _step_execution_reads(
+    session: Session, run_id: uuid.UUID
+) -> list[PlaybookStepExecutionRead]:
+    rows = list(
+        session.execute(
+            select(PlaybookStepExecution)
+            .where(PlaybookStepExecution.playbook_run_id == run_id)
+            .order_by(
+                PlaybookStepExecution.sort_order,
+                PlaybookStepExecution.target,
+                PlaybookStepExecution.attempt,
+                PlaybookStepExecution.started_at,
+                PlaybookStepExecution.id,
+            )
+        ).scalars()
+    )
+    if not rows:
+        return []
+    artifacts = {
+        artifact.playbook_step_execution_id: artifact
+        for artifact in session.execute(
+            select(EvidenceArtifact).where(
+                EvidenceArtifact.playbook_step_execution_id.in_(
+                    [row.id for row in rows]
+                )
+            )
+        ).scalars()
+        if artifact.playbook_step_execution_id is not None
+    }
+    return [
+        PlaybookStepExecutionRead(
+            id=row.id,
+            playbook_step_id=row.playbook_step_id,
+            sort_order=row.sort_order,
+            tool_slug=row.tool_slug,
+            target=row.target,
+            transport=row.transport,
+            attempt=row.attempt,
+            status=row.status.value,
+            arguments=dict(row.arguments or {}),
+            started_at=row.started_at,
+            completed_at=row.completed_at,
+            duration_ms=row.duration_ms,
+            error=row.error,
+            evidence=(
+                EvidenceArtifactSummaryRead(
+                    id=artifact.id,
+                    finding_id=artifact.finding_id,
+                    sha256=artifact.sha256,
+                    size_bytes=artifact.size_bytes,
+                    truncated=artifact.truncated,
+                    redacted=artifact.redacted,
+                )
+                if (artifact := artifacts.get(row.id)) is not None
+                else None
+            ),
+        )
+        for row in rows
+    ]
+
+
+def _run_read(
+    session: Session,
+    run: PlaybookRun,
+    *,
+    include_step_executions: bool = False,
+) -> PlaybookRunRead:
     """Assemble the read model — playbook slug/version come from a join."""
     playbook = session.get(Playbook, run.playbook_id)
+    engagement = session.get(Engagement, run.engagement_id)
     return PlaybookRunRead(
         id=run.id,
         engagement_id=run.engagement_id,
+        engagement_slug=engagement.slug if engagement else "",
         playbook_id=run.playbook_id,
         playbook_slug=playbook.slug if playbook else "",
         playbook_version=playbook.version if playbook else 0,
@@ -259,6 +332,11 @@ def _run_read(session: Session, run: PlaybookRun) -> PlaybookRunRead:
         rejected_by=run.rejected_by,
         rejected_at=run.rejected_at,
         rejection_reason=run.rejection_reason,
+        step_executions=(
+            _step_execution_reads(session, run.id)
+            if include_step_executions
+            else []
+        ),
     )
 
 
@@ -762,6 +840,39 @@ def list_playbook_runs(
     return [_run_read(session, r) for r in rows]
 
 
+@router.get(
+    "/evidence-artifacts/{artifact_id}",
+    response_model=EvidenceArtifactRead,
+)
+def get_evidence_artifact(
+    artifact_id: uuid.UUID,
+    session: DbSession,
+    _user: CurrentUser,
+) -> EvidenceArtifactRead:
+    artifact = session.get(EvidenceArtifact, artifact_id)
+    if artifact is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"evidence artifact {artifact_id} not found",
+        )
+    return EvidenceArtifactRead(
+        id=artifact.id,
+        engagement_id=artifact.engagement_id,
+        playbook_run_id=artifact.playbook_run_id,
+        playbook_step_execution_id=artifact.playbook_step_execution_id,
+        finding_id=artifact.finding_id,
+        kind=artifact.kind,
+        source_tool=artifact.source_tool,
+        target=artifact.target,
+        payload=dict(artifact.payload or {}),
+        sha256=artifact.sha256,
+        size_bytes=artifact.size_bytes,
+        truncated=artifact.truncated,
+        redacted=artifact.redacted,
+        captured_at=artifact.captured_at,
+    )
+
+
 @router.get("/playbook-runs/{run_id}", response_model=PlaybookRunRead)
 def get_playbook_run(
     run_id: uuid.UUID,
@@ -771,4 +882,4 @@ def get_playbook_run(
     run = session.get(PlaybookRun, run_id)
     if run is None:
         raise HTTPException(status_code=404, detail=f"playbook run {run_id} not found")
-    return _run_read(session, run)
+    return _run_read(session, run, include_step_executions=True)

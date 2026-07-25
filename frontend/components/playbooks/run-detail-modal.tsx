@@ -9,7 +9,8 @@
 // Polls via usePlaybookRun so status transitions land promptly.
 
 import { useRef, useState } from "react";
-import { Loader2 } from "lucide-react";
+import Link from "next/link";
+import { ChevronDown, ChevronRight, Loader2 } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -25,11 +26,16 @@ import { QueryState } from "@/components/query-state";
 import {
   useApprovePlaybookRunMutation,
   useCancelPlaybookRunMutation,
+  useEvidenceArtifact,
   usePlaybookRun,
   useRejectPlaybookRunMutation,
 } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
-import type { PlaybookRunStatus } from "@/lib/types";
+import type {
+  PlaybookRunStatus,
+  PlaybookStepExecutionRead,
+  PlaybookStepExecutionStatus,
+} from "@/lib/types";
 
 const STATUS_BADGE: Record<PlaybookRunStatus, string> = {
   awaiting_approval: "border-amber-500/40 text-amber-700 dark:text-amber-300",
@@ -50,6 +56,185 @@ const STATUS_LABEL: Record<PlaybookRunStatus, string> = {
   failed: "Failed",
   cancelled: "Cancelled",
 };
+
+const STEP_STATUS_LABEL: Record<PlaybookStepExecutionStatus, string> = {
+  running: "Running",
+  succeeded: "Succeeded",
+  failed: "Failed",
+  stub: "Stub — no collection",
+  cancelled: "Cancelled",
+};
+
+const STEP_STATUS_BADGE: Record<PlaybookStepExecutionStatus, string> = {
+  running: "border-blue-500/40 text-blue-700 dark:text-blue-300",
+  succeeded: "border-emerald-500/40 text-emerald-700 dark:text-emerald-300",
+  failed: "border-rose-500/40 text-rose-700 dark:text-rose-300",
+  stub: "border-amber-500/40 text-amber-700 dark:text-amber-300",
+  cancelled: "border-zinc-500/40 text-muted-foreground",
+};
+
+function formatDuration(durationMs: number | null) {
+  if (durationMs === null) return "—";
+  if (durationMs < 1000) return `${durationMs} ms`;
+  if (durationMs < 60_000) return `${(durationMs / 1000).toFixed(1)} s`;
+  return `${Math.floor(durationMs / 60_000)}m ${Math.round((durationMs % 60_000) / 1000)}s`;
+}
+
+function EvidenceContent({
+  artifactId,
+  engagementSlug,
+}: {
+  artifactId: string;
+  engagementSlug: string;
+}) {
+  const evidence = useEvidenceArtifact(artifactId);
+  return (
+    <div className="mt-2">
+      <QueryState
+        isLoading={evidence.isLoading}
+        error={evidence.error}
+        hasData={!!evidence.data}
+        compact
+        loadingLabel="Loading evidence…"
+        errorLabel="Could not load this evidence artifact."
+        onRetry={() => void evidence.refetch()}
+        isRetrying={evidence.isFetching}
+      />
+      {evidence.data ? (
+        <div className="space-y-1.5">
+          <p className="text-[11px] text-muted-foreground">
+            Redacted JSON · {evidence.data.size_bytes.toLocaleString()} bytes
+            {evidence.data.truncated ? " · stored preview is truncated" : ""}
+          </p>
+          <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all rounded bg-muted p-2 text-[11px]">
+            {JSON.stringify(evidence.data.payload, null, 2)}
+          </pre>
+          <p className="break-all font-mono text-[10px] text-muted-foreground">
+            SHA-256 {evidence.data.sha256}
+          </p>
+          {evidence.data.finding_id && engagementSlug ? (
+            <Link
+              className="inline-flex rounded-sm text-xs font-medium text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              href={`/e/findings/${evidence.data.finding_id}?slug=${encodeURIComponent(engagementSlug)}`}
+            >
+              Open canonical finding
+            </Link>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function EvidenceDisclosure({
+  receipt,
+  engagementSlug,
+}: {
+  receipt: PlaybookStepExecutionRead;
+  engagementSlug: string;
+}) {
+  const [open, setOpen] = useState(false);
+  if (!receipt.evidence) return null;
+
+  return (
+    <div className="mt-2 border-t border-border/60 pt-2">
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        className="h-7 px-1 text-xs"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+      >
+        {open ? (
+          <ChevronDown className="mr-1 h-3 w-3" />
+        ) : (
+          <ChevronRight className="mr-1 h-3 w-3" />
+        )}
+        {open ? "Hide evidence" : "View evidence"}
+      </Button>
+      {open ? (
+        <EvidenceContent
+          artifactId={receipt.evidence.id}
+          engagementSlug={engagementSlug}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function StepReceipts({
+  receipts,
+  engagementSlug,
+}: {
+  receipts: PlaybookStepExecutionRead[];
+  engagementSlug: string;
+}) {
+  return (
+    <section aria-labelledby="step-receipts-heading" className="space-y-2">
+      <div className="flex items-center justify-between gap-2">
+        <h3 id="step-receipts-heading" className="text-sm font-medium">
+          Step receipts
+        </h3>
+        <span className="text-xs text-muted-foreground">
+          {receipts.length} attempts
+        </span>
+      </div>
+      {receipts.length === 0 ? (
+        <p className="rounded-md border border-dashed border-border p-3 text-xs text-muted-foreground">
+          No step receipts recorded yet. Queued and legacy runs may not have
+          per-target execution history.
+        </p>
+      ) : (
+        <ol className="max-h-[28rem] space-y-2 overflow-y-auto pr-1">
+          {receipts.map((receipt, index) => (
+            <li key={receipt.id} className="rounded-md border border-border p-3">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <h4 className="break-all text-xs font-medium">
+                    Execution {index + 1}: {receipt.tool_slug}
+                  </h4>
+                  <p className="break-all text-xs text-muted-foreground">
+                    {receipt.target}
+                  </p>
+                </div>
+                <Badge
+                  variant="outline"
+                  className={cn("text-[10px]", STEP_STATUS_BADGE[receipt.status])}
+                >
+                  {STEP_STATUS_LABEL[receipt.status]}
+                </Badge>
+              </div>
+              <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-[11px] sm:grid-cols-3">
+                <div>
+                  <dt className="text-muted-foreground">Transport</dt>
+                  <dd>{receipt.transport}</dd>
+                </div>
+                <div>
+                  <dt className="text-muted-foreground">Attempt</dt>
+                  <dd>{receipt.attempt}</dd>
+                </div>
+                <div>
+                  <dt className="text-muted-foreground">Duration</dt>
+                  <dd>{formatDuration(receipt.duration_ms)}</dd>
+                </div>
+              </dl>
+              {receipt.error ? (
+                <p className="mt-2 break-words text-xs text-rose-600 dark:text-rose-400">
+                  {receipt.error}
+                </p>
+              ) : null}
+              <EvidenceDisclosure
+                receipt={receipt}
+                engagementSlug={engagementSlug}
+              />
+            </li>
+          ))}
+        </ol>
+      )}
+    </section>
+  );
+}
 
 function fieldRow(label: string, value: React.ReactNode) {
   return (
@@ -229,6 +414,11 @@ export function RunDetailPanel({
                 : null}
             </div>
 
+            <StepReceipts
+              receipts={run.step_executions ?? []}
+              engagementSlug={run.engagement_slug}
+            />
+
             {run.status === "awaiting_approval" && mode === "reject" ? (
               <div className="space-y-2">
                 <Textarea
@@ -258,7 +448,7 @@ export function RunDetailPanel({
             ) : null}
 
             {error ? (
-              <p className="text-xs text-rose-600 dark:text-rose-400">
+              <p role="alert" className="text-xs text-rose-600 dark:text-rose-400">
                 {error}
               </p>
             ) : null}
@@ -390,7 +580,7 @@ export function RunDetailModal({
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent
-        className="max-w-xl"
+        className="max-h-[calc(100dvh-2rem)] max-w-3xl overflow-y-auto"
         onCloseAutoFocus={(event) => {
           event.preventDefault();
           if (returnFocus) returnFocus();

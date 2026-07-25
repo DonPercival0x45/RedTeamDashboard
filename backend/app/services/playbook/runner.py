@@ -19,12 +19,13 @@ executes it, the others try the next one.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from dataclasses import replace
 from datetime import UTC, datetime
-from typing import Any
+from time import perf_counter
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.engagement import milestones as ms
@@ -40,6 +41,9 @@ from app.models import (
     PlaybookExecutorKind,
     PlaybookRun,
     PlaybookRunStatus,
+    PlaybookStep,
+    PlaybookStepExecution,
+    PlaybookStepExecutionStatus,
 )
 from app.runs.streams import outbound_stream
 from app.services import coverage as cov
@@ -51,9 +55,15 @@ from app.services.playbook.executor import (
     PlaybookExecutor,
     RoutedExecutor,
     StepResult,
+    executor_for_tool_slug,
+    resolve_step_args,
 )
 
 logger = structlog.get_logger(__name__)
+
+
+class _RunCancelledBeforeStep(Exception):
+    """Cancellation won the race immediately before executor dispatch."""
 
 
 TERMINAL_STATUSES = frozenset(
@@ -291,7 +301,11 @@ def cancel_run(
 # ---------------------------------------------------------------------------
 
 
-def claim_next_pending(session: Session) -> PlaybookRun | None:
+def claim_next_pending(
+    session: Session,
+    *,
+    worker_id: str | None = None,
+) -> PlaybookRun | None:
     """Try to claim the oldest pending run for this worker.
 
     Uses ``SELECT ... FOR UPDATE SKIP LOCKED`` so N worker replicas polling
@@ -328,8 +342,78 @@ def claim_next_pending(session: Session) -> PlaybookRun | None:
         return None
     run.status = PlaybookRunStatus.running
     run.started_at = datetime.now(tz=UTC)
+    run.worker_id = worker_id
+    run.worker_heartbeat_at = run.started_at if worker_id else None
     session.flush()
     return run
+
+
+def recover_abandoned_runs(
+    session: Session,
+    *,
+    stale_before: datetime,
+    now: datetime | None = None,
+) -> list[PlaybookRun]:
+    """Fail expired worker leases without replaying uncertain tool calls.
+
+    A process can die after committing a ``running`` receipt but before an
+    executor returns. Replaying that invocation is unsafe because its external
+    side effects are unknown. Recovery therefore records an interrupted
+    failure and leaves an explicit receipt for analyst review.
+    """
+    recovered_at = _now(now)
+    runs = list(
+        session.execute(
+            select(PlaybookRun)
+            .where(
+                PlaybookRun.status == PlaybookRunStatus.running,
+                or_(
+                    PlaybookRun.worker_heartbeat_at < stale_before,
+                    (
+                        PlaybookRun.worker_heartbeat_at.is_(None)
+                        & (PlaybookRun.started_at < stale_before)
+                    ),
+                ),
+            )
+            .with_for_update(skip_locked=True)
+        ).scalars()
+    )
+    for run in runs:
+        message = (
+            "worker heartbeat expired; in-flight step outcome is unknown and "
+            "was not retried"
+        )
+        run.status = PlaybookRunStatus.failed
+        run.completed_at = recovered_at
+        run.last_error = message
+        run.worker_id = None
+        run.worker_heartbeat_at = None
+        receipts = session.execute(
+            select(PlaybookStepExecution).where(
+                PlaybookStepExecution.playbook_run_id == run.id,
+                PlaybookStepExecution.status
+                == PlaybookStepExecutionStatus.running,
+            )
+        ).scalars()
+        for receipt in receipts:
+            receipt.status = PlaybookStepExecutionStatus.failed
+            receipt.completed_at = recovered_at
+            receipt.duration_ms = max(
+                0,
+                round((recovered_at - receipt.started_at).total_seconds() * 1000),
+            )
+            receipt.error = message
+        from app.services.mcp_lease import find_active_for_thread, release
+
+        lease = find_active_for_thread(session, run.id)
+        if lease is not None:
+            release(
+                session,
+                lease_id=lease.id,
+                reason="playbook worker heartbeat expired",
+            )
+    session.flush()
+    return runs
 
 
 def _effective_actor(
@@ -359,6 +443,7 @@ def execute_pending_run(
     now: datetime | None = None,
     actor_type: ActorType = ActorType.system,
     actor_id: str | None = None,
+    progress_commit: Callable[[str], bool] | None = None,
 ) -> PlaybookRun:
     """Drive a claimed run to terminal status.
 
@@ -386,6 +471,8 @@ def execute_pending_run(
         run.status = PlaybookRunStatus.failed
         run.completed_at = _now(now)
         run.last_error = "playbook or engagement missing"
+        run.worker_id = None
+        run.worker_heartbeat_at = None
         session.flush()
         return run
     if (
@@ -396,6 +483,8 @@ def execute_pending_run(
         run.status = PlaybookRunStatus.failed
         run.completed_at = _now(now)
         run.last_error = "engagement is no longer an active writable v3 engagement"
+        run.worker_id = None
+        run.worker_heartbeat_at = None
         session.flush()
         return run
 
@@ -410,6 +499,8 @@ def execute_pending_run(
         run.status = PlaybookRunStatus.failed
         run.completed_at = _now(now)
         run.last_error = "empty scope"
+        run.worker_id = None
+        run.worker_heartbeat_at = None
         session.flush()
         _emit_completion(session, engagement=engagement, playbook=playbook, run=run)
         return run
@@ -438,20 +529,32 @@ def execute_pending_run(
                 run.status = PlaybookRunStatus.cancelled
                 cancelled_mid = True
                 break
-            result = _run_one(
-                session,
-                engagement=engagement,
-                playbook=playbook,
-                run=run,
-                step_tool_slug=step.tool_slug,
-                step_args_template=step.args_template,
-                step_satisfies_node_ids=list(step.satisfies_node_ids or []),
-                scope_item=str(scope_item),
-                executor=executor,
-                now=started,
-                actor_type=effective_actor_type,
-                actor_id=effective_actor_id,
-            )
+            try:
+                result = _run_one(
+                    session,
+                    engagement=engagement,
+                    playbook=playbook,
+                    run=run,
+                    step=step,
+                    scope_item=str(scope_item),
+                    executor=executor,
+                    now=started,
+                    actor_type=effective_actor_type,
+                    actor_id=effective_actor_id,
+                    progress_commit=progress_commit,
+                )
+            except _RunCancelledBeforeStep:
+                run.status = PlaybookRunStatus.cancelled
+                cancelled_mid = True
+                break
+            post_step_status = session.execute(
+                _text("SELECT status FROM playbook_runs WHERE id = :id"),
+                {"id": str(run.id)},
+            ).scalar_one()
+            if post_step_status == PlaybookRunStatus.cancelled.value:
+                run.status = PlaybookRunStatus.cancelled
+                cancelled_mid = True
+                break
             if result.ok:
                 discovered_domains.update(
                     _authorized_discovered_domains(
@@ -471,11 +574,15 @@ def execute_pending_run(
         # milestone so B3 doesn't miss the event (its receiver decides
         # whether cancelled runs get analyzed — likely no, but the signal
         # travels).
+        run.worker_id = None
+        run.worker_heartbeat_at = None
         _emit_completion(session, engagement=engagement, playbook=playbook, run=run)
         return run
 
     run.status = _final_status(run.steps_succeeded, run.steps_failed)
     run.completed_at = _now(now)
+    run.worker_id = None
+    run.worker_heartbeat_at = None
     session.flush()
     _emit_completion(session, engagement=engagement, playbook=playbook, run=run)
     return run
@@ -535,25 +642,67 @@ def _run_one(
     engagement: Engagement,
     playbook: Playbook,
     run: PlaybookRun,
-    step_tool_slug: str,
-    step_args_template: dict[str, Any],
-    step_satisfies_node_ids: list[str],
+    step: PlaybookStep,
     scope_item: str,
     executor: PlaybookExecutor,
     now: datetime,
     actor_type: ActorType,
     actor_id: str | None,
+    progress_commit: Callable[[str], bool] | None = None,
 ) -> StepResult:
     """Invoke one step against one scope item and write coverage records.
 
     Executor exceptions become ``StepResult(ok=False, error=...)`` — a
     thrown tool is a failed step, not a broken run. The tests exercise this.
     """
+    step_tool_slug = step.tool_slug
+    step_args_template = step.args_template or {}
+    step_satisfies_node_ids = list(step.satisfies_node_ids or [])
     execution_args = {
         key: value
         for key, value in step_args_template.items()
         if not str(key).startswith("__")
     }
+
+    from app.services.playbook.evidence import redact_json, redact_text, safe_arguments
+
+    receipt_started_at = datetime.now(tz=UTC)
+    receipt_timer = perf_counter()
+    try:
+        transport = executor_for_tool_slug(step_tool_slug)
+    except ValueError:
+        # Extension/test executors may supply non-catalogued tools. The run's
+        # persisted executor is still the safest truthful fallback label.
+        transport = run.executor_kind.value
+    prior_attempt = session.execute(
+        select(func.max(PlaybookStepExecution.attempt)).where(
+            PlaybookStepExecution.playbook_run_id == run.id,
+            PlaybookStepExecution.playbook_step_id == step.id,
+            PlaybookStepExecution.target == scope_item,
+        )
+    ).scalar_one()
+    receipt = PlaybookStepExecution(
+        playbook_run_id=run.id,
+        playbook_step_id=step.id,
+        sort_order=step.sort_order,
+        tool_slug=step_tool_slug,
+        target=scope_item,
+        transport=transport,
+        attempt=(prior_attempt or 0) + 1,
+        status=PlaybookStepExecutionStatus.running,
+        arguments=safe_arguments(
+            resolve_step_args(step_tool_slug, execution_args, scope_item)
+        ),
+        started_at=receipt_started_at,
+    )
+    session.add(receipt)
+    session.flush()
+    # The worker supplies a commit callback so the running receipt survives a
+    # process failure during the external invocation. Sync tests/services keep
+    # their caller-owned transaction by leaving it unset.
+    if progress_commit is not None and not progress_commit("before"):
+        raise _RunCancelledBeforeStep
+
     try:
         result = executor.run_step(
             tool_slug=step_tool_slug,
@@ -561,13 +710,27 @@ def _run_one(
             scope_context=scope_item,
         )
     except Exception as exc:  # noqa: BLE001 - executor is untrusted; convert to step failure
-        result = StepResult(ok=False, error=f"{type(exc).__name__}: {exc}")
-        logger.exception(
+        result = StepResult(
+            ok=False,
+            error=redact_text(f"{type(exc).__name__}: {exc}"),
+        )
+        logger.warning(
             "playbook.step.executor_raised",
             playbook=playbook.slug,
             tool=step_tool_slug,
             scope_item=scope_item,
+            error=result.error,
         )
+
+    safe_error = redact_text(result.error)
+    safe_data = redact_json(result.data)
+    if safe_error != result.error or safe_data != result.data:
+        result = replace(
+            result,
+            error=safe_error,
+            data=safe_data if isinstance(safe_data, dict) else {"value": safe_data},
+        )
+    collected_result = result
 
     # Every supported real playbook tool persists through the same canonical
     # bridge, regardless of transport. MCP lease calls return raw data to this
@@ -628,6 +791,32 @@ def _run_one(
         status = CoverageRecordStatus.satisfied
     else:
         status = CoverageRecordStatus.failed
+    receipt.status = (
+        PlaybookStepExecutionStatus.stub
+        if getattr(result, "stub", False)
+        else (
+            PlaybookStepExecutionStatus.succeeded
+            if result.ok
+            else PlaybookStepExecutionStatus.failed
+        )
+    )
+    receipt.completed_at = datetime.now(tz=UTC)
+    receipt.duration_ms = max(0, round((perf_counter() - receipt_timer) * 1000))
+    from app.services.playbook.evidence import persist_step_evidence
+
+    receipt.error = result.error
+    persist_step_evidence(
+        session,
+        engagement_id=engagement.id,
+        run_id=run.id,
+        execution=receipt,
+        tool_slug=step_tool_slug,
+        target=scope_item,
+        result=collected_result,
+        finding_id=bridge.finding_id if bridge is not None else None,
+        captured_at=receipt.completed_at,
+    )
+
     for node_id in step_satisfies_node_ids:
         cov.record_coverage_attempt(
             session,
@@ -649,6 +838,8 @@ def _run_one(
             now=now,
         )
     session.flush()
+    if progress_commit is not None:
+        progress_commit("after")
     return result
 
 

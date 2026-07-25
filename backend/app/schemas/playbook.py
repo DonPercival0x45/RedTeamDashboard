@@ -1,10 +1,13 @@
 """API schemas for the playbook runner (A3b)."""
+
 from __future__ import annotations
 
 import uuid
 from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from app.models.playbook_execution import PlaybookStepExecutionStatus
 
 
 class PlaybookStepRead(BaseModel):
@@ -59,6 +62,49 @@ class PlaybookRunPayload(BaseModel):
     executor: str | None = None
 
 
+class EvidenceArtifactSummaryRead(BaseModel):
+    """Bounded evidence metadata included with a step receipt."""
+
+    id: uuid.UUID
+    finding_id: uuid.UUID | None = None
+    sha256: str
+    size_bytes: int
+    truncated: bool
+    redacted: bool
+
+
+class EvidenceArtifactRead(EvidenceArtifactSummaryRead):
+    """Full redacted evidence payload, fetched only when requested."""
+
+    engagement_id: uuid.UUID
+    playbook_run_id: uuid.UUID | None = None
+    playbook_step_execution_id: uuid.UUID | None = None
+    kind: str
+    source_tool: str
+    target: str
+    payload: dict = Field(default_factory=dict)
+    captured_at: datetime
+
+
+class PlaybookStepExecutionRead(BaseModel):
+    """One durable step/target execution receipt."""
+
+    id: uuid.UUID
+    playbook_step_id: uuid.UUID | None = None
+    sort_order: int
+    tool_slug: str
+    target: str
+    transport: str
+    attempt: int
+    status: PlaybookStepExecutionStatus
+    arguments: dict = Field(default_factory=dict)
+    started_at: datetime
+    completed_at: datetime | None = None
+    duration_ms: int | None = None
+    error: str | None = None
+    evidence: EvidenceArtifactSummaryRead | None = None
+
+
 class PlaybookRunRead(BaseModel):
     """One playbook run — status + counts + timing."""
 
@@ -66,6 +112,7 @@ class PlaybookRunRead(BaseModel):
 
     id: uuid.UUID
     engagement_id: uuid.UUID
+    engagement_slug: str
     playbook_id: uuid.UUID
     playbook_slug: str
     playbook_version: int
@@ -92,6 +139,9 @@ class PlaybookRunRead(BaseModel):
     rejected_by: uuid.UUID | None = None
     rejected_at: datetime | None = None
     rejection_reason: str | None = None
+    # Populated by the single-run detail endpoint; list/mutation responses keep
+    # this empty so large histories do not duplicate receipt metadata.
+    step_executions: list[PlaybookStepExecutionRead] = Field(default_factory=list)
 
 
 class PlaybookApprovalPayload(BaseModel):

@@ -2,6 +2,7 @@
 
 Alembic's env.py imports this module so autogenerate can see all tables.
 """
+
 from app.models.agent_execution import (
     AgentExecution,
     AgentExecutionStatus,
@@ -91,6 +92,11 @@ from app.models.playbook import (
     PlaybookRunStatus,
     PlaybookStep,
 )
+from app.models.playbook_execution import (
+    EvidenceArtifact,
+    PlaybookStepExecution,
+    PlaybookStepExecutionStatus,
+)
 from app.models.processing_receipt import ProcessingReceipt, ProcessingReceiptStatus
 from app.models.roadmap_suggestion import (
     RoadmapSuggestion,
@@ -154,6 +160,7 @@ __all__ = [
     "EngagementTimeFrame",
     "EngagementWorkState",
     "Entity",
+    "EvidenceArtifact",
     "EntityFindingLink",
     "EntityGroup",
     "EntityGroupMember",
@@ -187,6 +194,8 @@ __all__ = [
     "PlaybookRun",
     "PlaybookRunStatus",
     "PlaybookStep",
+    "PlaybookStepExecution",
+    "PlaybookStepExecutionStatus",
     "ProcessingReceipt",
     "ProcessingReceiptStatus",
     "RiskLevel",

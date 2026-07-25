@@ -1504,9 +1504,54 @@ export interface PlaybookDetail extends PlaybookRead {
   steps: PlaybookStepRead[];
 }
 
+export type PlaybookStepExecutionStatus =
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "stub"
+  | "cancelled";
+
+export interface EvidenceArtifactSummaryRead {
+  id: string;
+  finding_id: string | null;
+  sha256: string;
+  size_bytes: number;
+  truncated: boolean;
+  redacted: boolean;
+}
+
+export interface EvidenceArtifactRead extends EvidenceArtifactSummaryRead {
+  engagement_id: string;
+  playbook_run_id: string | null;
+  playbook_step_execution_id: string | null;
+  kind: string;
+  source_tool: string;
+  target: string;
+  payload: Record<string, unknown>;
+  captured_at: string;
+}
+
+export interface PlaybookStepExecutionRead {
+  id: string;
+  playbook_step_id: string | null;
+  sort_order: number;
+  tool_slug: string;
+  target: string;
+  transport: string;
+  attempt: number;
+  status: PlaybookStepExecutionStatus;
+  arguments: Record<string, unknown>;
+  started_at: string;
+  completed_at: string | null;
+  duration_ms: number | null;
+  error: string | null;
+  evidence: EvidenceArtifactSummaryRead | null;
+}
+
 export interface PlaybookRunRead {
   id: string;
   engagement_id: string;
+  engagement_slug: string;
   playbook_id: string;
   playbook_slug: string;
   playbook_version: number;
@@ -1523,12 +1568,14 @@ export interface PlaybookRunRead {
   findings_high_severity: number;
   findings_total: number;
   last_error: string | null;
+  requested_by: string | null;
   approved_by: string | null;
   approved_at: string | null;
   approval_reason: string | null;
   rejected_by: string | null;
   rejected_at: string | null;
   rejection_reason: string | null;
+  step_executions: PlaybookStepExecutionRead[];
 }
 
 export interface PlaybookRunCreate {

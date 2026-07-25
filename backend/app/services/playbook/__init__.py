@@ -1,4 +1,5 @@
 """Playbook execution plane — Track A steps A3a / A3b / A3c / A4 / A5 / A5b."""
+
 from app.services.playbook.catalog import (
     PlaybookHasRunsError,
     PlaybookSlugConflictError,
@@ -26,6 +27,7 @@ from app.services.playbook.runner import (
     claim_next_pending,
     enqueue_run,
     execute_pending_run,
+    recover_abandoned_runs,
     reject_run,
     start_run,
 )
@@ -50,6 +52,7 @@ __all__ = [
     "enqueue_run",
     "execute_pending_run",
     "get_by_slug",
+    "recover_abandoned_runs",
     "load_seed_playbooks",
     "reject_run",
     "start_run",

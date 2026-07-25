@@ -88,6 +88,7 @@ import {
   getPlaybook,
   listPlaybookRuns,
   getPlaybookRun,
+  getEvidenceArtifact,
   createPlaybookRun,
   cancelPlaybookRun,
   approvePlaybookRun,
@@ -224,6 +225,8 @@ export const qk = {
     status?: import("@/lib/types").PlaybookRunStatus,
   ) => ["playbook-runs", engagementSlug, status ?? "all"] as const,
   playbookRun: (runId: string) => ["playbook-run", runId] as const,
+  evidenceArtifact: (artifactId: string) =>
+    ["evidence-artifact", artifactId] as const,
   infraStatus: () => ["infra", "status"] as const,
   infraSubscriptions: () => ["infra", "subscriptions"] as const,
   vms: () => ["infra", "vms"] as const,
@@ -1415,6 +1418,20 @@ export function usePlaybookRun(runId: string | null) {
         run.status === "awaiting_approval";
       return live ? 2000 : false;
     },
+  });
+}
+
+export function useEvidenceArtifact(
+  artifactId: string | null,
+  enabled = true,
+) {
+  return useQuery({
+    queryKey: artifactId
+      ? qk.evidenceArtifact(artifactId)
+      : ["evidence-artifact", "none"],
+    queryFn: () => getEvidenceArtifact(artifactId!),
+    enabled: !!artifactId && enabled,
+    staleTime: Infinity,
   });
 }
 

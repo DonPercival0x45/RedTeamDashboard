@@ -26,6 +26,7 @@ import type {
   EngagementArchitecture,
   EngagementStatus,
   EngagementTimeFrame,
+  EvidenceArtifactRead,
   IntelligenceConversionResponse,
   IntelligenceMode,
   IntelligenceRunResponse,
@@ -2050,6 +2051,12 @@ export function listPlaybookRuns(
 
 export function getPlaybookRun(runId: string): Promise<PlaybookRunRead> {
   return request<PlaybookRunRead>(`/playbook-runs/${runId}`);
+}
+
+export function getEvidenceArtifact(
+  artifactId: string,
+): Promise<EvidenceArtifactRead> {
+  return request<EvidenceArtifactRead>(`/evidence-artifacts/${artifactId}`);
 }
 
 export function createPlaybookRun(
