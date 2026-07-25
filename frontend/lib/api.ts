@@ -80,6 +80,7 @@ import type {
   ToolInvocationRead,
   OrchestratorTool,
   PlaybookDetail,
+  PlaybookExecutionPlanRead,
   PlaybookRead,
   PlaybookRunCreate,
   PlaybookRunRead,
@@ -2057,6 +2058,16 @@ export function getEvidenceArtifact(
   artifactId: string,
 ): Promise<EvidenceArtifactRead> {
   return request<EvidenceArtifactRead>(`/evidence-artifacts/${artifactId}`);
+}
+
+export function planPlaybookRun(
+  engagementSlug: string,
+  body: PlaybookRunCreate,
+): Promise<PlaybookExecutionPlanRead> {
+  return request<PlaybookExecutionPlanRead>(
+    `/engagements/${engagementSlug}/playbook-runs/plan`,
+    { method: "POST", body: JSON.stringify(body) },
+  );
 }
 
 export function createPlaybookRun(

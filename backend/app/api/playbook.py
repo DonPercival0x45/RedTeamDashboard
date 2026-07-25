@@ -45,6 +45,7 @@ from app.schemas.playbook import (
     PlaybookApprovalPayload,
     PlaybookCreatePayload,
     PlaybookDetail,
+    PlaybookExecutionPlanRead,
     PlaybookPatchPayload,
     PlaybookRead,
     PlaybookRunPayload,
@@ -74,6 +75,7 @@ from app.services.playbook import (
     update_step,
 )
 from app.services.playbook.executor import executor_kinds_for_tools
+from app.services.playbook.planning import build_execution_plan
 from app.services.scope_matcher import evaluate_scope_candidates, infer_scope_kind
 
 router = APIRouter()
@@ -96,6 +98,55 @@ def _required_executor(playbook: Playbook) -> PlaybookExecutorKind:
     return _executor_for_tool_slugs(
         [step.tool_slug for step in playbook.steps]
     )
+
+
+def _validated_executor(
+    playbook: Playbook,
+    requested_executor: str | None,
+) -> PlaybookExecutorKind:
+    required = _required_executor(playbook)
+    requested = requested_executor or required.value
+    try:
+        selected = PlaybookExecutorKind(requested)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"executor must be one of "
+                f"{sorted(kind.value for kind in PlaybookExecutorKind)}"
+            ),
+        ) from exc
+    if selected is not required:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"playbook '{playbook.slug}' requires executor "
+                f"'{required.value}' for its configured tools"
+            ),
+        )
+    return selected
+
+
+def _playbook_for_payload(
+    session: Session,
+    payload: PlaybookRunPayload,
+) -> Playbook:
+    playbook = catalog.get_by_slug(
+        session,
+        payload.playbook_slug,
+        payload.playbook_version,
+    )
+    if playbook is None:
+        version = (
+            f" version {payload.playbook_version}"
+            if payload.playbook_version is not None
+            else ""
+        )
+        raise HTTPException(
+            status_code=404,
+            detail=f"playbook '{payload.playbook_slug}'{version} not found",
+        )
+    return playbook
 
 
 def _required_credentials(playbook: Playbook) -> list[str]:
@@ -325,6 +376,13 @@ def _run_read(
         findings_high_severity=run.findings_high_severity,
         findings_total=run.findings_total,
         last_error=run.last_error,
+        plan_sha256=run.plan_sha256,
+        planned_at=run.planned_at,
+        execution_plan=(
+            PlaybookExecutionPlanRead.model_validate(run.plan_snapshot)
+            if include_step_executions and run.plan_snapshot
+            else None
+        ),
         requested_by=run.requested_by,
         approved_by=run.approved_by,
         approved_at=run.approved_at,
@@ -633,6 +691,35 @@ def get_playbook(
 
 
 @router.post(
+    "/engagements/{slug}/playbook-runs/plan",
+    response_model=PlaybookExecutionPlanRead,
+)
+def plan_playbook_run(
+    slug: str,
+    payload: PlaybookRunPayload,
+    session: DbSession,
+    _user: CurrentNonGuestUser,
+) -> PlaybookExecutionPlanRead:
+    """Return the authoritative plan without creating or executing a run."""
+    engagement = _engagement_by_slug(session, slug)
+    _ensure_playbook_engagement_mutable(engagement)
+    playbook = _playbook_for_payload(session, payload)
+    executor_kind = _validated_executor(playbook, payload.executor)
+    _validate_scope_subset(
+        session,
+        engagement,
+        payload.scope_subset,
+        asset_class=playbook.applies_to_asset_class,
+    )
+    plan = build_execution_plan(
+        playbook=playbook,
+        scope_subset=payload.scope_subset,
+        required_executor=executor_kind.value,
+    )
+    return PlaybookExecutionPlanRead.model_validate(plan)
+
+
+@router.post(
     "/engagements/{slug}/playbook-runs",
     response_model=PlaybookRunRead,
     status_code=202,
@@ -653,42 +740,10 @@ def create_playbook_run(
     """
     engagement = _engagement_by_slug(session, slug)
     _ensure_playbook_engagement_mutable(engagement)
-    playbook = catalog.get_by_slug(session, payload.playbook_slug, payload.playbook_version)
-    if playbook is None:
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                f"playbook '{payload.playbook_slug}'"
-                + (
-                    f" version {payload.playbook_version}"
-                    if payload.playbook_version is not None
-                    else ""
-                )
-                + " not found"
-            ),
-        )
+    playbook = _playbook_for_payload(session, payload)
     # Persist requester identity because execution and milestone delivery happen
     # later in a worker process; never attempt to recover it from another user.
-    required_executor = _required_executor(playbook)
-    requested_executor = payload.executor or required_executor.value
-    try:
-        executor_kind = PlaybookExecutorKind(requested_executor)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                f"executor must be one of "
-                f"{sorted(k.value for k in PlaybookExecutorKind)}"
-            ),
-        ) from exc
-    if executor_kind is not required_executor:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                f"playbook '{playbook.slug}' requires executor "
-                f"'{required_executor.value}' for its configured tools"
-            ),
-        )
+    executor_kind = _validated_executor(playbook, payload.executor)
     # In-scope-only invariant (complaint 4b): every submitted target must be in
     # the engagement's declared scope and not match an exclusion, before we queue
     # anything for the worker to hand to tools.
@@ -698,6 +753,19 @@ def create_playbook_run(
         payload.scope_subset,
         asset_class=playbook.applies_to_asset_class,
     )
+    plan = build_execution_plan(
+        playbook=playbook,
+        scope_subset=payload.scope_subset,
+        required_executor=executor_kind.value,
+    )
+    if payload.plan_sha256 and payload.plan_sha256 != plan["plan_sha256"]:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "The execution plan changed after preview. Review the refreshed "
+                "targets, transports, and approvals before starting the run."
+            ),
+        )
     run = enqueue_run(
         session,
         engagement=engagement,
@@ -705,6 +773,8 @@ def create_playbook_run(
         scope_subset=payload.scope_subset,
         executor_kind=executor_kind,
         requested_by=user.id,
+        plan_snapshot=plan,
+        plan_sha256=str(plan["plan_sha256"]),
     )
     session.commit()
     session.refresh(run)

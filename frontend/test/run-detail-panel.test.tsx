@@ -29,6 +29,41 @@ vi.mock("@/lib/hooks", () => ({
       findings_high_severity: 0,
       findings_total: 0,
       last_error: null,
+      plan_sha256: "b".repeat(64),
+      planned_at: "2026-07-25T11:59:00Z",
+      execution_plan: {
+        format_version: 1,
+        plan_sha256: "b".repeat(64),
+        playbook_id: "pb-1",
+        playbook_slug: "email-exposure-triage",
+        playbook_version: 1,
+        playbook_name: "Email exposure triage",
+        approval_required: true,
+        required_executor: "internal",
+        execution_paths: ["Built-in"],
+        required_credentials: [],
+        scope_subset: ["analyst@example.com"],
+        minimum_calls: 1,
+        dynamic_expansion: false,
+        steps: [
+          {
+            step_id: "catalog-step-1",
+            sort_order: 10,
+            tool_slug: "breach-lookup",
+            description: "Review imported exposure evidence.",
+            transport: "internal",
+            risk: "passive",
+            credential: null,
+            arguments_sha256: "c".repeat(64),
+            coverage_node_ids: [],
+            target_count: 1,
+            expands_targets: false,
+            target_source: null,
+            on_error: "continue",
+          },
+        ],
+        safety_notes: ["Every target is scope validated."],
+      },
       requested_by: null,
       approved_by: null,
       approved_at: null,
@@ -104,6 +139,18 @@ describe("RunDetailPanel", () => {
     vi.clearAllMocks();
     approve.mutateAsync.mockResolvedValue(undefined);
     reject.mutateAsync.mockResolvedValue(undefined);
+  });
+
+  it("shows the immutable execution boundary beside approval controls", () => {
+    render(<RunDetailPanel runId="run-1" onClose={vi.fn()} canWrite />);
+
+    const section = screen.getByRole("region", {
+      name: "Execution boundary for review",
+    });
+    expect(within(section).getByText(/1 minimum calls/)).toBeInTheDocument();
+    expect(
+      within(section).getByText(/Review imported exposure evidence/),
+    ).toBeInTheDocument();
   });
 
   it("shows durable per-target step receipts without a fake retry control", () => {

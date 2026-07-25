@@ -60,6 +60,41 @@ class PlaybookRunPayload(BaseModel):
     playbook_version: int | None = None
     scope_subset: list[str] = Field(default_factory=list)
     executor: str | None = None
+    plan_sha256: str | None = Field(default=None, min_length=64, max_length=64)
+
+
+class PlaybookExecutionPlanStepRead(BaseModel):
+    step_id: uuid.UUID
+    sort_order: int
+    tool_slug: str
+    description: str | None = None
+    transport: str
+    risk: str
+    credential: str | None = None
+    arguments_sha256: str
+    coverage_node_ids: list[str] = Field(default_factory=list)
+    target_count: int
+    expands_targets: bool
+    target_source: str | None = None
+    on_error: str
+
+
+class PlaybookExecutionPlanRead(BaseModel):
+    format_version: int
+    plan_sha256: str
+    playbook_id: uuid.UUID
+    playbook_slug: str
+    playbook_version: int
+    playbook_name: str
+    approval_required: bool
+    required_executor: str
+    execution_paths: list[str] = Field(default_factory=list)
+    required_credentials: list[str] = Field(default_factory=list)
+    scope_subset: list[str] = Field(default_factory=list)
+    minimum_calls: int
+    dynamic_expansion: bool
+    steps: list[PlaybookExecutionPlanStepRead] = Field(default_factory=list)
+    safety_notes: list[str] = Field(default_factory=list)
 
 
 class EvidenceArtifactSummaryRead(BaseModel):
@@ -129,6 +164,9 @@ class PlaybookRunRead(BaseModel):
     findings_high_severity: int = 0
     findings_total: int = 0
     last_error: str | None = None
+    plan_sha256: str | None = None
+    planned_at: datetime | None = None
+    execution_plan: PlaybookExecutionPlanRead | None = None
     # Request identity is durable even though execution happens in a worker.
     requested_by: uuid.UUID | None = None
     # A5 approval attribution — populated when the run passed through the

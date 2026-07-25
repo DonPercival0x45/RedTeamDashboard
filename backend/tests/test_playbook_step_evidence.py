@@ -22,9 +22,12 @@ from app.models import (
     EngagementWorkState,
     EvidenceArtifact,
     Playbook,
+    PlaybookRun,
     PlaybookRunStatus,
     PlaybookStepExecution,
     PlaybookStepExecutionStatus,
+    ScopeItem,
+    ScopeKind,
     User,
     UserRole,
 )
@@ -303,6 +306,85 @@ def test_cancellation_during_tool_preserves_completed_receipt(db: Session) -> No
     assert receipt.error is None
     db.execute(delete(CommandOutbox).where(CommandOutbox.engagement_id == engagement.id))
     db.commit()
+
+
+def test_authoritative_plan_hash_is_persisted_and_stale_preview_rejected(
+    db: Session,
+) -> None:
+    engagement, playbook = _engagement_and_playbook(db)
+    user = User(
+        id=uuid.uuid4(),
+        email=f"planner-{uuid.uuid4().hex[:6]}@example.com",
+        display_name="Plan reviewer",
+        role=UserRole.user,
+        is_active=True,
+    )
+    db.add_all(
+        [
+            user,
+            ScopeItem(
+                engagement_id=engagement.id,
+                kind=ScopeKind.domain,
+                value="example.com",
+            ),
+        ]
+    )
+    db.commit()
+    client = TestClient(app)
+    headers = {"X-User-Id": user.email}
+    payload = {
+        "playbook_slug": playbook.slug,
+        "playbook_version": playbook.version,
+        "scope_subset": ["example.com"],
+        "executor": "internal",
+    }
+
+    preview = client.post(
+        f"/engagements/{engagement.slug}/playbook-runs/plan",
+        headers=headers,
+        json=payload,
+    )
+    assert preview.status_code == 200, preview.text
+    plan = preview.json()
+    assert len(plan["plan_sha256"]) == 64
+    assert plan["minimum_calls"] == 5
+    assert plan["scope_subset"] == ["example.com"]
+    assert {step["transport"] for step in plan["steps"]} == {"internal"}
+    assert all(len(step["arguments_sha256"]) == 64 for step in plan["steps"])
+    assert all("targets" not in step for step in plan["steps"])
+
+    first_step = playbook.steps[0]
+    original_args = dict(first_step.args_template or {})
+    first_step.args_template = {**original_args, "changed_option": True}
+    db.commit()
+    changed = client.post(
+        f"/engagements/{engagement.slug}/playbook-runs/plan",
+        headers=headers,
+        json=payload,
+    )
+    assert changed.status_code == 200, changed.text
+    assert changed.json()["plan_sha256"] != plan["plan_sha256"]
+    first_step.args_template = original_args
+    db.commit()
+
+    created = client.post(
+        f"/engagements/{engagement.slug}/playbook-runs",
+        headers=headers,
+        json={**payload, "plan_sha256": plan["plan_sha256"]},
+    )
+    assert created.status_code == 202, created.text
+    assert created.json()["plan_sha256"] == plan["plan_sha256"]
+    run = db.get(PlaybookRun, uuid.UUID(created.json()["id"]))
+    assert run is not None
+    assert run.plan_snapshot == plan
+
+    stale = client.post(
+        f"/engagements/{engagement.slug}/playbook-runs",
+        headers=headers,
+        json={**payload, "plan_sha256": "0" * 64},
+    )
+    assert stale.status_code == 409
+    assert "plan changed" in stale.text.lower()
 
 
 def test_run_detail_exposes_receipts_and_fetches_evidence(db: Session) -> None:

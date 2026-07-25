@@ -89,6 +89,7 @@ import {
   listPlaybookRuns,
   getPlaybookRun,
   getEvidenceArtifact,
+  planPlaybookRun,
   createPlaybookRun,
   cancelPlaybookRun,
   approvePlaybookRun,
@@ -227,6 +228,10 @@ export const qk = {
   playbookRun: (runId: string) => ["playbook-run", runId] as const,
   evidenceArtifact: (artifactId: string) =>
     ["evidence-artifact", artifactId] as const,
+  playbookRunPlan: (
+    engagementSlug: string,
+    request: import("@/lib/types").PlaybookRunCreate,
+  ) => ["playbook-run-plan", engagementSlug, request] as const,
   infraStatus: () => ["infra", "status"] as const,
   infraSubscriptions: () => ["infra", "subscriptions"] as const,
   vms: () => ["infra", "vms"] as const,
@@ -1432,6 +1437,20 @@ export function useEvidenceArtifact(
     queryFn: () => getEvidenceArtifact(artifactId!),
     enabled: !!artifactId && enabled,
     staleTime: Infinity,
+  });
+}
+
+export function usePlaybookRunPlan(
+  engagementSlug: string,
+  request: import("@/lib/types").PlaybookRunCreate | null,
+) {
+  return useQuery({
+    queryKey: request
+      ? qk.playbookRunPlan(engagementSlug, request)
+      : ["playbook-run-plan", engagementSlug, "none"],
+    queryFn: () => planPlaybookRun(engagementSlug, request!),
+    enabled: request !== null,
+    staleTime: 0,
   });
 }
 

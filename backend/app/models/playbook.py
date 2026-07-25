@@ -226,6 +226,12 @@ class PlaybookRun(Base, TimestampMixin):
     worker_heartbeat_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), index=True
     )
+    # Immutable server-generated plan reviewed at kickoff. The digest lets the
+    # create endpoint reject a stale client preview rather than silently queue
+    # a different transport/target plan.
+    plan_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    plan_sha256: Mapped[str | None] = mapped_column(String(64), index=True)
+    planned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     steps_total: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default="0"
     )

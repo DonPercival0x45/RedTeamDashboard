@@ -23,6 +23,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
 from time import perf_counter
+from typing import Any
 
 import structlog
 from sqlalchemy import func, or_, select
@@ -109,6 +110,8 @@ def enqueue_run(
     scope_subset: Sequence[str],
     executor_kind: PlaybookExecutorKind = PlaybookExecutorKind.internal,
     requested_by: uuid.UUID | None = None,
+    plan_snapshot: dict[str, Any] | None = None,
+    plan_sha256: str | None = None,
     now: datetime | None = None,
 ) -> PlaybookRun:
     """Create a playbook run. Worker picks it up (or waits for approval).
@@ -138,6 +141,9 @@ def enqueue_run(
         steps_total=len(playbook.steps) * len(scope_subset),
         executor_kind=executor_kind,
         requested_by=requested_by,
+        plan_snapshot=plan_snapshot,
+        plan_sha256=plan_sha256,
+        planned_at=ts if plan_snapshot is not None else None,
         created_at=ts,
     )
     session.add(run)

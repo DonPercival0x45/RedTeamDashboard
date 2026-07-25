@@ -70,6 +70,49 @@ const scopeItems: ScopeItem[] = [
 let mockScopeData: ScopeItem[] | undefined = scopeItems;
 let mockScopeError: Error | null = null;
 const mockScopeRefetch = vi.fn();
+const mockPlanRefetch = vi.fn();
+const mockUsePlan = vi.fn(
+  (_slug: string, request: { scope_subset: string[] } | null) => ({
+    data: request
+      ? {
+          format_version: 1,
+          plan_sha256: "a".repeat(64),
+          playbook_id: "pb-1",
+          playbook_slug: "osint-enrichment",
+          playbook_version: 3,
+          playbook_name: "OSINT Enrichment",
+          approval_required: false,
+          required_executor: "mcp",
+          execution_paths: ["Built-in", "Connected service"],
+          required_credentials: ["freeipapi", "ipinfo"],
+          scope_subset: request.scope_subset,
+          minimum_calls: request.scope_subset.length * 5,
+          dynamic_expansion: true,
+          steps: Array.from({ length: 5 }, (_, index) => ({
+            step_id: `step-${index}`,
+            sort_order: index * 10,
+            tool_slug: `tool-${index}`,
+            description:
+              index === 0 ? "Resolve PTR hostname." : `Step ${index + 1}`,
+            transport: "mcp",
+            risk: "passive",
+            credential: null,
+            arguments_sha256: "c".repeat(64),
+            coverage_node_ids: [],
+            target_count: request.scope_subset.length,
+            expands_targets: index === 4,
+            target_source: index === 4 ? "discovered_domains" : null,
+            on_error: "continue",
+          })),
+          safety_notes: ["Every expanded target is checked."],
+        }
+      : undefined,
+    isLoading: false,
+    isFetching: false,
+    error: null,
+    refetch: mockPlanRefetch,
+  }),
+);
 const mockUseScope = vi.fn((_slug: string) => ({
   data: mockScopeData,
   isLoading: false,
@@ -80,6 +123,8 @@ const mockUseScope = vi.fn((_slug: string) => ({
 
 vi.mock("@/lib/hooks", () => ({
   useCreatePlaybookRunMutation: (slug: string) => mockCreate(slug),
+  usePlaybookRunPlan: (slug: string, request: { scope_subset: string[] } | null) =>
+    mockUsePlan(slug, request),
   useScope: (slug: string) => mockUseScope(slug),
 }));
 
@@ -106,6 +151,8 @@ beforeEach(() => {
   mockCreate.mockClear();
   mockUseScope.mockClear();
   mockScopeRefetch.mockClear();
+  mockPlanRefetch.mockClear();
+  mockUsePlan.mockClear();
   mockScopeData = scopeItems;
   mockScopeError = null;
 });
@@ -188,6 +235,7 @@ describe("KickRunModal", () => {
       playbook_version: 3,
       scope_subset: ["foo.example", "bar.example"],
       executor: "mcp",
+      plan_sha256: "a".repeat(64),
     });
     expect(onClose).toHaveBeenCalled();
   });
@@ -320,10 +368,11 @@ describe("KickRunModal", () => {
     );
 
     expect(screen.getByText("Resolve PTR hostname.")).toBeInTheDocument();
-    expect(screen.getByText(/select targets to calculate/i)).toBeInTheDocument();
+    expect(screen.getByText(/select targets to generate/i)).toBeInTheDocument();
     await user.click(screen.getByText("foo.example"));
-    expect(screen.getByText(/at least 5 tool calls/i)).toBeInTheDocument();
-    expect(screen.getByText(/every expanded target is checked/i)).toBeInTheDocument();
+    expect(screen.getByText(/minimum 5 tool calls/i)).toBeInTheDocument();
+    expect(screen.getByText(/authorized discoveries may add calls/i)).toBeInTheDocument();
+    expect(screen.getByText(/plan aaaaaaaaaaaa/i)).toBeInTheDocument();
   });
 
   it("previews required requester-owned credentials", () => {

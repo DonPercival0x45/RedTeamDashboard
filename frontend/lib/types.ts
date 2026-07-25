@@ -1548,6 +1548,40 @@ export interface PlaybookStepExecutionRead {
   evidence: EvidenceArtifactSummaryRead | null;
 }
 
+export interface PlaybookExecutionPlanStepRead {
+  step_id: string;
+  sort_order: number;
+  tool_slug: string;
+  description: string | null;
+  transport: PlaybookExecutorKind;
+  risk: "passive" | "active";
+  credential: string | null;
+  arguments_sha256: string;
+  coverage_node_ids: string[];
+  target_count: number;
+  expands_targets: boolean;
+  target_source: string | null;
+  on_error: string;
+}
+
+export interface PlaybookExecutionPlanRead {
+  format_version: number;
+  plan_sha256: string;
+  playbook_id: string;
+  playbook_slug: string;
+  playbook_version: number;
+  playbook_name: string;
+  approval_required: boolean;
+  required_executor: PlaybookExecutorKind;
+  execution_paths: string[];
+  required_credentials: string[];
+  scope_subset: string[];
+  minimum_calls: number;
+  dynamic_expansion: boolean;
+  steps: PlaybookExecutionPlanStepRead[];
+  safety_notes: string[];
+}
+
 export interface PlaybookRunRead {
   id: string;
   engagement_id: string;
@@ -1568,6 +1602,9 @@ export interface PlaybookRunRead {
   findings_high_severity: number;
   findings_total: number;
   last_error: string | null;
+  plan_sha256: string | null;
+  planned_at: string | null;
+  execution_plan: PlaybookExecutionPlanRead | null;
   requested_by: string | null;
   approved_by: string | null;
   approved_at: string | null;
@@ -1583,4 +1620,5 @@ export interface PlaybookRunCreate {
   playbook_version?: number;
   scope_subset: string[];
   executor?: PlaybookExecutorKind;
+  plan_sha256?: string;
 }

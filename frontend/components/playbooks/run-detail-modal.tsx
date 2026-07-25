@@ -32,6 +32,7 @@ import {
 } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
 import type {
+  PlaybookExecutionPlanRead,
   PlaybookRunStatus,
   PlaybookStepExecutionRead,
   PlaybookStepExecutionStatus,
@@ -160,6 +161,42 @@ function EvidenceDisclosure({
         />
       ) : null}
     </div>
+  );
+}
+
+function StoredExecutionPlan({ plan }: { plan: PlaybookExecutionPlanRead }) {
+  return (
+    <section aria-labelledby="stored-plan-heading" className="space-y-2 rounded-md border border-border p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 id="stored-plan-heading" className="text-sm font-medium">
+          Execution boundary for review
+        </h3>
+        <span className="font-mono text-[10px] text-muted-foreground">
+          {plan.plan_sha256.slice(0, 12)}…
+        </span>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        {plan.minimum_calls} minimum calls · {plan.scope_subset.length}{" "}
+        {plan.scope_subset.length === 1 ? "target" : "targets"} ·{" "}
+        {plan.execution_paths.join(" + ")}
+        {plan.dynamic_expansion ? " · bounded target expansion" : ""}
+      </p>
+      <ol className="list-decimal space-y-1 pl-5 text-xs text-muted-foreground">
+        {plan.steps.map((step) => (
+          <li key={step.step_id}>
+            {step.description || step.tool_slug} — {step.target_count}{" "}
+            {step.target_count === 1 ? "target" : "targets"} via {step.transport}
+            {step.risk === "active" ? " · active" : ""}
+            {step.expands_targets ? " · may expand after scope revalidation" : ""}
+          </li>
+        ))}
+      </ol>
+      {plan.required_credentials.length > 0 ? (
+        <p className="text-xs text-amber-700 dark:text-amber-300">
+          Requester credentials: {plan.required_credentials.join(", ")}
+        </p>
+      ) : null}
+    </section>
   );
 }
 
@@ -413,6 +450,10 @@ export function RunDetailPanel({
                   )
                 : null}
             </div>
+
+            {run.execution_plan ? (
+              <StoredExecutionPlan plan={run.execution_plan} />
+            ) : null}
 
             <StepReceipts
               receipts={run.step_executions ?? []}

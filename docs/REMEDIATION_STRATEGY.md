@@ -542,6 +542,12 @@ supported the resulting Finding.
 - Run details show accessible per-target attempt receipts and lazy-load the
   redacted evidence payload. Evidence linked to a canonical Finding provides a
   direct navigation path.
+- Kickoff now requests an authoritative server-generated execution plan with
+  exact known targets, ordered steps, transports, risk labels, credential
+  requirements, minimum calls, approval state, and explicit dynamic-expansion
+  semantics. The client submits the plan digest; a changed plan is rejected for
+  review instead of being silently queued. The immutable plan snapshot remains
+  visible beside later approval decisions.
 
 This is additive: `CoverageRecord` remains methodology coverage,
 `Observation` remains the analyst notebook, and `Finding` remains an
