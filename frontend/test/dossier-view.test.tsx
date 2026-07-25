@@ -1,4 +1,5 @@
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const hookState = vi.hoisted(() => ({
@@ -54,6 +55,17 @@ vi.mock("@/lib/hooks", () => ({
         scope_status: "oos",
         relevance: "review",
       },
+      {
+        type: "domain",
+        value: "validated.example",
+        count: 8,
+        severity: "critical",
+        first_seen: "2026-07-25T01:00:00.000Z",
+        last_seen: "2026-07-25T19:00:00.000Z",
+        findings: [],
+        scope_status: "live",
+        relevance: "in_scope",
+      },
     ],
     isLoading: false,
     error: hookState.entitiesError,
@@ -70,19 +82,39 @@ afterEach(() => {
 });
 
 describe("DossierView narrative", () => {
-  it("keeps evidence-backed storytelling and exact DNS provenance together", () => {
+  it("uses strategy-style tabs while keeping exact DNS provenance", async () => {
+    const user = userEvent.setup();
     render(<DossierView slug="example" />);
 
     expect(screen.getByText("Engagement dossier")).toBeInTheDocument();
     expect(screen.getByText("Current picture")).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /Entity review/ })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "Relationships" }));
     expect(screen.getAllByText("a8-67.akam.net").length).toBeGreaterThan(0);
     expect(screen.getAllByText("2.16.40.67").length).toBeGreaterThan(0);
     expect(screen.getByText("How the infrastructure connects")).toBeInTheDocument();
-    expect(screen.getByText("Engagement timeline")).toBeInTheDocument();
-    expect(screen.getByText("Research gaps")).toBeInTheDocument();
     expect(
-      screen.getByText(/do not establish ownership or authorization/i),
+      screen.getByText(/path links back to the finding/i),
     ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: /Entity review/ }));
+    expect(screen.getByText("Entity validation queue")).toBeInTheDocument();
+    expect(screen.getAllByText("Needs validation").length).toBeGreaterThan(0);
+    expect(screen.getByText("2.16.40.67")).toBeInTheDocument();
+    expect(screen.queryByText("validated.example")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "All (2)" }));
+    const entityValues = screen
+      .getAllByText(/2\.16\.40\.67|validated\.example/)
+      .map((node) => node.textContent);
+    expect(entityValues).toEqual(["2.16.40.67", "validated.example"]);
+
+    await user.click(screen.getByRole("tab", { name: "Timeline" }));
+    expect(screen.getByText("Engagement timeline")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "Research gaps" }));
+    expect(screen.getAllByText("Research gaps").length).toBeGreaterThan(1);
   });
 
   it("withholds factual counts and gap conclusions when a source query fails", () => {

@@ -560,12 +560,18 @@ supported the resulting Finding.
   restart, and the Runs view shows truthful animated worker activity, progress,
   queue depth/age, offline/degraded state, and recent incidents.
 - The Dossier is now the engagement-wide narrative projection: deterministic
-  counts, structured DNS relationship paths, notable entities with first/last
-  seen timestamps, a trust-labelled chronology, research gaps, and direct
-  citations into entity, finding, and run records. The existing infrastructure
-  globe, enriched-IP inventory, and Wi-Fi context remain in the same section.
-  Narrative query failures suppress conclusions rather than presenting missing
-  data as zero, and relationship extraction accepts only known DNS schemas.
+  counts, structured DNS relationship paths, entity validation, a trust-labelled
+  chronology, research gaps, and direct citations into entity, finding, and run
+  records. Strategy-style tabs, sticky desktop navigation, bounded searchable
+  lists, and a validation-first entity queue replace the prior long page. The
+  existing infrastructure globe, enriched-IP inventory, and Wi-Fi context remain
+  under Infrastructure. Narrative query failures suppress conclusions rather
+  than presenting missing data as zero, and relationship extraction accepts only
+  known DNS schemas.
+- Findings now defaults to a client-only "Needs validation first" order that
+  combines `pending_validation` and `needs_review`, keeps search/sort controls
+  visible on desktop, and bounds the table with a sticky header. The combined
+  validation filter is explicit and does not change the backend API sort contract.
 - Leaflet maps are isolated in a local stacking context so Settings and other
   application dialogs stay above the globe. Active service detection now
   requires a successful direct connection before emitting a service finding and
