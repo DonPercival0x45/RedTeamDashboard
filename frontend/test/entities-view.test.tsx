@@ -48,13 +48,20 @@ const query = (data: unknown, error: unknown = null) => ({
   refetch: vi.fn(),
 });
 
-function renderView(canWrite = false) {
+function renderView(
+  canWrite = false,
+  onLaunchPlaybook?: (target: { type: string; value: string }) => void,
+) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
   return render(
     <QueryClientProvider client={client}>
-      <EntitiesView slug="acme" canWrite={canWrite} />
+      <EntitiesView
+        slug="acme"
+        canWrite={canWrite}
+        onLaunchPlaybook={onLaunchPlaybook}
+      />
     </QueryClientProvider>,
   );
 }
@@ -109,6 +116,35 @@ describe("EntitiesView", () => {
     fireEvent.keyDown(document, { key: "Escape" });
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     await waitFor(() => expect(trigger).toHaveFocus());
+  });
+
+  it("launches a playbook only from an exact live scope entity", () => {
+    const onLaunch = vi.fn();
+    vi.mocked(useScope).mockReturnValue(
+      query([
+        {
+          id: "scope-1",
+          engagement_id: "eng-1",
+          kind: "domain",
+          value: "scope.example",
+          is_exclusion: false,
+          note: null,
+          created_at: "2026-07-24T00:00:00Z",
+          updated_at: "2026-07-24T00:00:00Z",
+          is_effectively_in_scope: true,
+        },
+      ]) as never,
+    );
+    renderView(true, onLaunch);
+    fireEvent.click(screen.getByRole("button", { name: "scope.example" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Run a playbook for this target" }),
+    );
+
+    expect(onLaunch).toHaveBeenCalledWith({
+      type: "domain",
+      value: "scope.example",
+    });
   });
 
   it("keeps guest entity management read-only", () => {

@@ -49,6 +49,7 @@ from app.services.playbook.executor import (
     InternalExecutor,
     MCPExecutor,
     PlaybookExecutor,
+    RoutedExecutor,
     StepResult,
 )
 
@@ -607,7 +608,7 @@ def _run_one(
         run.findings_total += max(bridge.items_total - previous, 0)
         seen_totals[bridge.finding_id] = max(previous, bridge.items_total)
         run._bridge_finding_totals = seen_totals  # type: ignore[attr-defined]
-    elif not isinstance(executor, (InternalExecutor, MCPExecutor)):
+    elif not isinstance(executor, (InternalExecutor, MCPExecutor, RoutedExecutor)):
         # Test/extension executors may own persistence and declare counts.
         run.findings_new += result.findings_new
         run.findings_total += result.findings_total

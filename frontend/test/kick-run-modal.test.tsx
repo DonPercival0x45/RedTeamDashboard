@@ -98,6 +98,7 @@ const playbook: PlaybookRead = {
   required_credentials: ["freeipapi", "ipinfo"],
   step_preview: ["Resolve PTR hostname.", "Collect ASN context."],
   expands_targets: true,
+  execution_paths: ["Built-in", "Connected service"],
 };
 
 beforeEach(() => {
@@ -225,9 +226,46 @@ describe("KickRunModal", () => {
 
     expect(screen.getByText("Selected automatically")).toBeInTheDocument();
     expect(
-      screen.getByText("This playbook uses connected collection services."),
+      screen.getByText(
+        "Built-in + Connected service — each step is routed to its server-approved transport.",
+      ),
     ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^internal/i })).not.toBeInTheDocument();
+  });
+
+  it("preselects an exact effective entity target without trusting arbitrary values", async () => {
+    const user = userEvent.setup();
+    const onStarted = vi.fn();
+    render(
+      <KickRunModal
+        engagementSlug="acme"
+        playbook={playbook}
+        initialTarget={{ type: "domain", value: "foo.example" }}
+        onStarted={onStarted}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText(/1 selected/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Kick run" }));
+    expect(mockMutateAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ scope_subset: ["foo.example"] }),
+    );
+    expect(onStarted).toHaveBeenCalledOnce();
+  });
+
+  it("does not preselect an absent or incompatible entity target", async () => {
+    render(
+      <KickRunModal
+        engagementSlug="acme"
+        playbook={playbook}
+        initialTarget={{ type: "ip", value: "10.0.0.9" }}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText(/0 selected/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Kick run" })).toBeDisabled();
   });
 
   it("previews steps, minimum calls, and safe discovery expansion", async () => {

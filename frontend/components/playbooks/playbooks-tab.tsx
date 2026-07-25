@@ -145,7 +145,15 @@ function RunRow({
   );
 }
 
-export function PlaybooksTab({ engagementSlug }: { engagementSlug: string }) {
+export function PlaybooksTab({
+  engagementSlug,
+  initialTarget,
+  onTargetConsumed,
+}: {
+  engagementSlug: string;
+  initialTarget?: { type: string; value: string } | null;
+  onTargetConsumed?: () => void;
+}) {
   const playbooksQuery = usePlaybooks();
   const runsQuery = usePlaybookRuns(engagementSlug);
   const [kickPlaybook, setKickPlaybook] = useState<PlaybookRead | null>(null);
@@ -170,7 +178,15 @@ export function PlaybooksTab({ engagementSlug }: { engagementSlug: string }) {
       ) : null}
 
       <section>
-        <h3 className="text-sm font-semibold mb-3">Catalog</h3>
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <h3 className="text-sm font-semibold">Catalog</h3>
+          {initialTarget ? (
+            <p className="rounded-md border border-primary/30 bg-primary/5 px-2.5 py-1 text-xs">
+              Choose a {initialTarget.type} playbook for{" "}
+              <span className="font-mono">{initialTarget.value}</span>
+            </p>
+          ) : null}
+        </div>
         {playbooksQuery.data === undefined &&
         (playbooksQuery.isLoading || playbooksQuery.error) ? (
           <QueryState
@@ -197,9 +213,16 @@ export function PlaybooksTab({ engagementSlug }: { engagementSlug: string }) {
               </p>
             ) : (
               <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                {catalog.map((pb) => (
-                  <PlaybookCard key={pb.id} playbook={pb} onKick={setKickPlaybook} />
-                ))}
+                {[...catalog]
+                  .sort((a, b) =>
+                    initialTarget
+                      ? Number(b.applies_to_asset_class === initialTarget.type) -
+                        Number(a.applies_to_asset_class === initialTarget.type)
+                      : 0,
+                  )
+                  .map((pb) => (
+                    <PlaybookCard key={pb.id} playbook={pb} onKick={setKickPlaybook} />
+                  ))}
               </div>
             )}
           </>
@@ -261,6 +284,12 @@ export function PlaybooksTab({ engagementSlug }: { engagementSlug: string }) {
         <KickRunModal
           engagementSlug={engagementSlug}
           playbook={kickPlaybook}
+          initialTarget={
+            initialTarget?.type === kickPlaybook.applies_to_asset_class
+              ? initialTarget
+              : null
+          }
+          onStarted={onTargetConsumed}
           onClose={() => setKickPlaybook(null)}
         />
       ) : null}

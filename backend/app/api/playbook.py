@@ -68,17 +68,23 @@ from app.services.playbook import (
     update_playbook,
     update_step,
 )
-from app.services.playbook.executor import required_executor_for_tools
+from app.services.playbook.executor import executor_kinds_for_tools
 from app.services.scope_matcher import evaluate_scope_candidates, infer_scope_kind
 
 router = APIRouter()
 
 
 def _executor_for_tool_slugs(tool_slugs: list[str]) -> PlaybookExecutorKind:
+    """Validate the server-owned step plan and return its queue transport.
+
+    Mixed recipes use the MCP queue path while the worker routes each step to
+    its allowlisted executor. The persisted run enum stays backwards compatible.
+    """
     try:
-        return PlaybookExecutorKind(required_executor_for_tools(tool_slugs))
+        kinds = executor_kinds_for_tools(tool_slugs)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return PlaybookExecutorKind.mcp if "mcp" in kinds else PlaybookExecutorKind.internal
 
 
 def _required_executor(playbook: Playbook) -> PlaybookExecutorKind:
@@ -103,6 +109,15 @@ def _step_preview(playbook: Playbook) -> list[str]:
         step.description or step.tool_slug.removeprefix("mcp_").replace("_", " ")
         for step in playbook.steps
     ]
+
+
+def _execution_paths(playbook: Playbook) -> list[str]:
+    try:
+        kinds = executor_kinds_for_tools(step.tool_slug for step in playbook.steps)
+    except ValueError:
+        return []
+    labels = {"internal": "Built-in", "mcp": "Connected service"}
+    return [labels[kind] for kind in ("internal", "mcp") if kind in kinds]
 
 
 def _expands_targets(playbook: Playbook) -> bool:
@@ -277,6 +292,7 @@ def list_playbooks(
             required_credentials=_required_credentials(p),
             step_preview=_step_preview(p),
             expands_targets=_expands_targets(p),
+            execution_paths=_execution_paths(p),
         )
         for p in playbooks
     ]
@@ -321,6 +337,7 @@ def create_playbook_endpoint(
         required_credentials=_required_credentials(pb),
         step_preview=_step_preview(pb),
         expands_targets=_expands_targets(pb),
+        execution_paths=_execution_paths(pb),
         steps=[],
     )
 
@@ -360,6 +377,7 @@ def update_playbook_endpoint(
         required_credentials=_required_credentials(playbook),
         step_preview=_step_preview(playbook),
         expands_targets=_expands_targets(playbook),
+        execution_paths=_execution_paths(playbook),
         steps=[PlaybookStepRead.model_validate(s) for s in playbook.steps],
     )
 
@@ -515,6 +533,7 @@ def get_playbook(
         required_credentials=_required_credentials(playbook),
         step_preview=_step_preview(playbook),
         expands_targets=_expands_targets(playbook),
+        execution_paths=_execution_paths(playbook),
         steps=[PlaybookStepRead.model_validate(s) for s in playbook.steps],
     )
 

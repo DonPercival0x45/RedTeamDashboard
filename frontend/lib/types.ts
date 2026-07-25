@@ -1495,6 +1495,7 @@ export interface PlaybookRead {
   required_credentials?: string[];
   step_preview?: string[];
   expands_targets?: boolean;
+  execution_paths?: string[];
 }
 
 export interface PlaybookDetail extends PlaybookRead {

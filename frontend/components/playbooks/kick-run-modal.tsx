@@ -11,7 +11,7 @@
 // the mutation's onSuccess invalidation.
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import {
   Dialog,
@@ -35,16 +35,21 @@ function kindLabel(item: ScopeItem): string {
 export function KickRunModal({
   engagementSlug,
   playbook,
+  initialTarget,
+  onStarted,
   onClose,
 }: {
   engagementSlug: string;
   playbook: PlaybookRead;
+  initialTarget?: { type: string; value: string } | null;
+  onStarted?: () => void;
   onClose: () => void;
 }) {
   const create = useCreatePlaybookRunMutation(engagementSlug);
   const scopeQuery = useScope(engagementSlug);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
+  const initialTargetHandled = useRef(false);
 
   // Only currently effective includes compatible with the playbook asset
   // class are offered. The backend computes effective scope with the same
@@ -59,6 +64,26 @@ export function KickRunModal({
       ),
     [playbook.applies_to_asset_class, scopeQuery.data],
   );
+
+  // Entity launch hints are untrusted UI state. Preselect only an exact target
+  // returned by the authoritative effective-scope endpoint and compatible with
+  // this recipe. Derived children covered only by broader rules remain opt-in.
+  useEffect(() => {
+    if (
+      initialTargetHandled.current ||
+      scopeQuery.data === undefined ||
+      !initialTarget
+    ) {
+      return;
+    }
+    initialTargetHandled.current = true;
+    if (
+      initialTarget.type === playbook.applies_to_asset_class &&
+      scopeItems.some((item) => item.value === initialTarget.value)
+    ) {
+      setSelected(new Set([initialTarget.value]));
+    }
+  }, [initialTarget, playbook.applies_to_asset_class, scopeItems, scopeQuery.data]);
 
   // A scope row may be deleted or become excluded while this dialog is open.
   // Do not retain an invisible stale selection or submit an empty subset.
@@ -101,6 +126,7 @@ export function KickRunModal({
           .map((s) => s.value),
         executor: playbook.required_executor,
       });
+      onStarted?.();
       onClose();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to kick run.");
@@ -247,9 +273,14 @@ export function KickRunModal({
             <div className="rounded-md border border-border bg-muted/30 px-3 py-2 text-xs">
               <div className="font-medium">Selected automatically</div>
               <div className="mt-0.5 text-muted-foreground">
-                {playbook.required_executor === "mcp"
-                  ? "This playbook uses connected collection services."
-                  : "This playbook uses built-in passive collection tools."}
+                {(playbook.execution_paths?.length ?? 0) > 0
+                  ? playbook.execution_paths?.join(" + ")
+                  : playbook.required_executor === "mcp"
+                    ? "Connected service"
+                    : "Built-in"}
+                {(playbook.execution_paths?.length ?? 0) > 1
+                  ? " — each step is routed to its server-approved transport."
+                  : " collection."}
               </div>
             </div>
           </div>

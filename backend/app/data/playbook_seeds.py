@@ -240,6 +240,26 @@ DOMAIN_WEB_SURFACE_V2: dict[str, Any] = {
 }
 
 
+DOMAIN_WEB_SURFACE_V3: dict[str, Any] = {
+    **DOMAIN_WEB_SURFACE_V2,
+    "version": 3,
+    "description": (
+        "Combines built-in WHOIS with connected passive discovery, then "
+        "expands authorized subdomains into HTTP technology probes. Every "
+        "discovered target is rechecked against current exclusions."
+    ),
+    "steps": [
+        {
+            "tool_slug": "whois",
+            "args_template": {"domain": "{{scope_item}}"},
+            "satisfies_node_ids": [],
+            "description": "Collect registration and nameserver context.",
+        },
+        *DOMAIN_WEB_SURFACE_V2["steps"],
+    ],
+}
+
+
 OSINT_ENRICHMENT_V2: dict[str, Any] = {
     **OSINT_ENRICHMENT_V1,
     "version": 2,
@@ -383,6 +403,7 @@ SEED_PLAYBOOKS: list[dict[str, Any]] = [
     EMAIL_EXPOSURE_TRIAGE_V2,
     DOMAIN_WEB_SURFACE_V1,
     DOMAIN_WEB_SURFACE_V2,
+    DOMAIN_WEB_SURFACE_V3,
     HOST_SERVICE_VALIDATION_V1,
     HOST_SERVICE_VALIDATION_V2,
     CIDR_EXPOSURE_SURVEY_V1,

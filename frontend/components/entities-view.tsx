@@ -262,10 +262,12 @@ export function EntitiesView({
   slug,
   canWrite,
   onQuickAction,
+  onLaunchPlaybook,
 }: {
   slug: string;
   canWrite: boolean;
   onQuickAction?: (prompt: string) => void;
+  onLaunchPlaybook?: (target: { type: string; value: string }) => void;
 }) {
   // v1.0.0: react-query owns the derived-entities fetch. Focus revalidation
   // catches new findings that landed while the tab was hidden.
@@ -670,6 +672,7 @@ export function EntitiesView({
             requestAnimationFrame(() => detailTriggerRef.current?.focus());
           }}
           onQuickAction={onQuickAction}
+          onLaunchPlaybook={onLaunchPlaybook}
           canWrite={canWrite}
           scopeItems={scopeItems}
           scopeSaving={scopeSaving}
@@ -1258,6 +1261,7 @@ function EntitySlideOver({
   slug,
   onClose,
   onQuickAction,
+  onLaunchPlaybook,
   canWrite,
   scopeItems,
   scopeSaving,
@@ -1271,6 +1275,7 @@ function EntitySlideOver({
   slug: string;
   onClose: () => void;
   onQuickAction?: (prompt: string) => void;
+  onLaunchPlaybook?: (target: { type: string; value: string }) => void;
   canWrite: boolean;
   scopeItems: ScopeItem[];
   scopeSaving: boolean;
@@ -1368,6 +1373,23 @@ function EntitySlideOver({
                 {scopeError}
               </p>
             )}
+
+            {onLaunchPlaybook &&
+              canWrite &&
+              entity.scope_status === "live" &&
+              exactIncludes.length > 0 && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  onClick={() =>
+                    onLaunchPlaybook({ type: entity.type, value: entity.value })
+                  }
+                >
+                  <Zap className="mr-1.5 h-3.5 w-3.5" />
+                  Run a playbook for this target
+                </Button>
+              )}
 
             {exactRules.length > 0 && (
               <div className="space-y-2 border-t border-border pt-3">

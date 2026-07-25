@@ -44,11 +44,38 @@ from app.services.playbook import (
 )
 from app.services.playbook.executor import (
     MCPExecutor,
+    RoutedExecutor,
     StepResult,
     _coerce_response,
     _unwrap_content_parts,
 )
 from app.worker.playbook_worker import PlaybookWorkerThread
+
+
+class _RecordingExecutor:
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.calls: list[str] = []
+
+    def run_step(self, *, tool_slug, args_template, scope_context):
+        self.calls.append(tool_slug)
+        return StepResult(ok=True, data={"executor": self.name})
+
+
+def test_routed_executor_dispatches_each_step_by_server_affinity() -> None:
+    internal = _RecordingExecutor("internal")
+    mcp = _RecordingExecutor("mcp")
+    routed = RoutedExecutor({"internal": internal, "mcp": mcp})
+
+    assert routed.run_step(
+        tool_slug="whois", args_template={}, scope_context="example.com"
+    ).data["executor"] == "internal"
+    assert routed.run_step(
+        tool_slug="dns_lookup", args_template={}, scope_context="example.com"
+    ).data["executor"] == "mcp"
+    assert internal.calls == ["whois"]
+    assert mcp.calls == ["dns_lookup"]
+
 
 # ---------------------------------------------------------------------------
 # _coerce_response

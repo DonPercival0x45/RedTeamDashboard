@@ -111,6 +111,10 @@ function EngagementDetail({ slug }: { slug: string }) {
   // quick-action fires on the Entities tab (roadmap #10). Consumed on
   // RunPrompt mount.
   const [pendingPrompt, setPendingPrompt] = useState<string | null>(null);
+  const [pendingPlaybookTarget, setPendingPlaybookTarget] = useState<{
+    type: string;
+    value: string;
+  } | null>(null);
 
   // v1.0.0: engagement + findings live in the React Query cache. Navigating
   // away and back is instant (cache-served) and window-focus revalidates
@@ -487,6 +491,14 @@ function EngagementDetail({ slug }: { slug: string }) {
                     }
                   : undefined
               }
+              onLaunchPlaybook={
+                canWrite && engagement.intelligence_architecture === "v3"
+                  ? (target) => {
+                      setPendingPlaybookTarget(target);
+                      setView("scope");
+                    }
+                  : undefined
+              }
             />
           )}
 
@@ -522,7 +534,11 @@ function EngagementDetail({ slug }: { slug: string }) {
                         complementary v3 collection surfaces. Both use the same
                         scope matcher and canonical finding bridge. */}
                     <V3ToolsPanel slug={slug} />
-                    <PlaybooksTab engagementSlug={slug} />
+                    <PlaybooksTab
+                      engagementSlug={slug}
+                      initialTarget={pendingPlaybookTarget}
+                      onTargetConsumed={() => setPendingPlaybookTarget(null)}
+                    />
                   </div>
                 ) : (
                   <RunPromptBridgeProvider>

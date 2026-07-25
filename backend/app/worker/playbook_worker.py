@@ -36,10 +36,16 @@ from app.models import (
 )
 from app.services.playbook import (
     InternalExecutor,
+    RoutedExecutor,
     claim_next_pending,
     execute_pending_run,
 )
-from app.services.playbook.executor import MCPExecutor, PlaybookExecutor
+from app.services.playbook.executor import (
+    MCPExecutor,
+    PlaybookExecutor,
+    executor_for_tool_slug,
+    executor_kinds_for_tools,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -140,12 +146,33 @@ class PlaybookWorkerThread:
             engagement = session.get(Engagement, run.engagement_id)
             if engagement is None:
                 raise RuntimeError("playbook engagement not found")
-            if kind is PlaybookExecutorKind.mcp:
+            required_kinds = executor_kinds_for_tools(
+                step.tool_slug for step in run.playbook.steps
+            )
+            delegates: dict[str, PlaybookExecutor] = {}
+            if "internal" in required_kinds:
+                from app.services.playbook.tools.breach_lookup import run_from_store
+
+                internal = InternalExecutor()
+                internal.register(
+                    "breach-lookup",
+                    lambda scope, args: run_from_store(
+                        session,
+                        engagement_id=engagement.id,
+                        scope_context=scope,
+                        args=args,
+                    ),
+                )
+                delegates["internal"] = internal
+
+            if "mcp" in required_kinds:
                 from app.services.mcp_lease import mint_for_engagement, release
                 from app.worker.runner import _resolve_tool_secrets
 
                 tool_slugs = []
                 for step in run.playbook.steps:
+                    if executor_for_tool_slug(step.tool_slug) != "mcp":
+                        continue
                     tool_name = step.tool_slug.removeprefix("mcp_")
                     if tool_name == "port_scan":
                         tool_name = "portscan"
@@ -179,26 +206,18 @@ class PlaybookWorkerThread:
                     if self._redis is not None and run.requested_by is not None
                     else {}
                 )
-                executor = self._build_executor(
-                    kind,
+                delegates["mcp"] = self._build_executor(
+                    PlaybookExecutorKind.mcp,
                     lease_token=str(lease.id),
                     engagement_slug=engagement.slug,
                     tool_secrets=secrets,
                 )
-            else:
-                from app.services.playbook.tools.breach_lookup import run_from_store
 
-                internal = InternalExecutor()
-                internal.register(
-                    "breach-lookup",
-                    lambda scope, args: run_from_store(
-                        session,
-                        engagement_id=engagement.id,
-                        scope_context=scope,
-                        args=args,
-                    ),
-                )
-                executor = internal
+            executor = (
+                next(iter(delegates.values()))
+                if len(delegates) == 1
+                else RoutedExecutor(delegates)
+            )
 
             execute_pending_run(session, run_id=run_id, executor=executor)
             if lease_id is not None:

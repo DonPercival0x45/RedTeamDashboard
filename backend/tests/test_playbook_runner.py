@@ -165,7 +165,7 @@ def test_discovered_domains_expand_later_steps_with_scope_revalidation(
     )
     load_seed_playbooks(db)
     playbook = catalog.get_by_slug(db, "domain-web-surface")
-    assert playbook is not None and playbook.version == 2
+    assert playbook is not None and playbook.version == 3
     executor = MockExecutor(
         results={
             "mcp_subfinder": StepResult(
@@ -193,8 +193,8 @@ def test_discovered_domains_expand_later_steps_with_scope_revalidation(
     ]
     assert http_targets == ["api.foo.com", "foo.com"]
     assert all("__target_source" not in call["args"] for call in executor.calls)
-    assert run.steps_total == 5
-    assert run.steps_succeeded == 5
+    assert run.steps_total == 6
+    assert run.steps_succeeded == 6
 
 
 def test_stop_on_error_prevents_dependent_active_step(

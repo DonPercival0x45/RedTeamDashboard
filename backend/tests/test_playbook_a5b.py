@@ -416,7 +416,7 @@ def test_post_step_endpoint_appends(
     assert body["sort_order"] == 10  # first step auto-placed at 10
 
 
-def test_step_editor_rejects_unknown_or_mixed_executor_tools(
+def test_step_editor_rejects_unknown_and_accepts_server_routed_mixed_tools(
     client: TestClient, user: User
 ) -> None:
     unknown_slug = f"unknown-{uuid.uuid4().hex[:6]}"
@@ -455,10 +455,13 @@ def test_step_editor_rejects_unknown_or_mixed_executor_tools(
     mixed = client.post(
         f"/playbooks/{mixed_slug}/steps",
         headers=_h(user),
-        json={"tool_slug": "freeipapi"},
+        json={"tool_slug": "dns_lookup"},
     )
-    assert mixed.status_code == 422
-    assert "incompatible executors" in mixed.json()["detail"]
+    assert mixed.status_code == 201, mixed.text
+    detail = client.get(f"/playbooks/{mixed_slug}", headers=_h(user))
+    assert detail.status_code == 200
+    assert detail.json()["required_executor"] == "mcp"
+    assert detail.json()["execution_paths"] == ["Built-in", "Connected service"]
 
 
 def test_patch_step_endpoint_edits(

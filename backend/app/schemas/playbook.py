@@ -34,6 +34,7 @@ class PlaybookRead(BaseModel):
     required_credentials: list[str] = Field(default_factory=list)
     step_preview: list[str] = Field(default_factory=list)
     expands_targets: bool = False
+    execution_paths: list[str] = Field(default_factory=list)
 
 
 class PlaybookDetail(PlaybookRead):

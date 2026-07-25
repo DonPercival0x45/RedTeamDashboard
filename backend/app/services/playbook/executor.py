@@ -134,6 +134,23 @@ _PLAYBOOK_TOOL_EXECUTOR: dict[str, str] = {
 }
 
 
+def executor_for_tool_slug(tool_slug: str) -> str:
+    """Return the allowlisted transport for one tool, failing closed."""
+    try:
+        return _PLAYBOOK_TOOL_EXECUTOR[str(tool_slug)]
+    except KeyError as exc:
+        raise ValueError(f"unsupported playbook tools: {tool_slug}") from exc
+
+
+def executor_kinds_for_tools(tool_slugs: Iterable[str]) -> set[str]:
+    """Validate tool slugs and return every transport required by the recipe."""
+    slugs = {str(slug) for slug in tool_slugs}
+    unknown = sorted(slugs - _PLAYBOOK_TOOL_EXECUTOR.keys())
+    if unknown:
+        raise ValueError(f"unsupported playbook tools: {', '.join(unknown)}")
+    return {_PLAYBOOK_TOOL_EXECUTOR[slug] for slug in slugs} or {"internal"}
+
+
 def required_executor_for_tools(tool_slugs: Iterable[str]) -> str:
     """Return the one safe executor shared by every catalog step.
 
@@ -141,11 +158,7 @@ def required_executor_for_tools(tool_slugs: Iterable[str]) -> str:
     arbitrary MCP methods must never become runnable merely because an analyst
     typed their slug into the catalog editor.
     """
-    slugs = {str(slug) for slug in tool_slugs}
-    unknown = sorted(slugs - _PLAYBOOK_TOOL_EXECUTOR.keys())
-    if unknown:
-        raise ValueError(f"unsupported playbook tools: {', '.join(unknown)}")
-    executors = {_PLAYBOOK_TOOL_EXECUTOR[slug] for slug in slugs}
+    executors = executor_kinds_for_tools(tool_slugs)
     if len(executors) > 1:
         raise ValueError("playbook steps require incompatible executors")
     return next(iter(executors), "internal")
@@ -187,6 +200,38 @@ def _default_registry() -> dict[str, ToolCallable]:
         "crtsh": _tools.run_crtsh,
         "breach-lookup": _tools.run_breach_lookup,
     }
+
+
+class RoutedExecutor:
+    """Dispatch each allowlisted step to its required transport.
+
+    Homogeneous runs continue to use their concrete executor directly. This
+    router is used only for recipes that intentionally combine built-in and
+    MCP-backed steps; tool-to-transport affinity remains server-owned.
+    """
+
+    def __init__(self, delegates: Mapping[str, PlaybookExecutor]) -> None:
+        self._delegates = dict(delegates)
+
+    def run_step(
+        self,
+        *,
+        tool_slug: str,
+        args_template: Mapping[str, Any],
+        scope_context: str,
+    ) -> StepResult:
+        kind = executor_for_tool_slug(tool_slug)
+        delegate = self._delegates.get(kind)
+        if delegate is None:
+            return StepResult(
+                ok=False,
+                error=f"{kind} executor unavailable for {tool_slug}",
+            )
+        return delegate.run_step(
+            tool_slug=tool_slug,
+            args_template=args_template,
+            scope_context=scope_context,
+        )
 
 
 class InternalExecutor:
