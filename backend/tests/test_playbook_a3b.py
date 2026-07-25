@@ -104,6 +104,29 @@ def test_executor_builtin_target_cannot_override_validated_scope() -> None:
     ]
 
 
+def test_executor_binds_email_breach_lookup_to_validated_mailbox() -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_lookup(scope: str, args: dict[str, Any]) -> StepResult:
+        calls.append({"scope": scope, "args": args})
+        return StepResult(ok=True, stub=True)
+
+    ex = InternalExecutor(registry={"breach-lookup": fake_lookup})
+    result = ex.run_step(
+        tool_slug="breach-lookup",
+        args_template={"email": "redirect@example.net"},
+        scope_context="Analyst@example.com",
+    )
+
+    assert result.ok is True
+    assert calls == [
+        {
+            "scope": "Analyst@example.com",
+            "args": {"email": "Analyst@example.com"},
+        }
+    ]
+
+
 def test_executor_register_replaces_tool() -> None:
     ex = InternalExecutor(registry={"a": lambda *_: StepResult(ok=False, error="old")})
     ex.register("a", lambda *_: StepResult(ok=True, findings_total=1))
@@ -332,7 +355,11 @@ def test_list_playbooks_installs_seeds_on_first_call(
     resp = client.get("/playbooks", headers=_headers(user))
     assert resp.status_code == 200
     slugs = {p["slug"] for p in resp.json()}
-    assert {"osint-passive-domain", "ptes-passive-recon"} <= slugs
+    assert {
+        "osint-passive-domain",
+        "ptes-passive-recon",
+        "email-exposure-triage",
+    } <= slugs
 
 
 def test_get_playbook_detail_returns_steps(
@@ -443,6 +470,41 @@ def test_create_playbook_run_rejects_incompatible_scope_kind(
     )
     assert response.status_code == 422
     assert "incompatible" in response.text
+
+
+def test_create_email_playbook_run_requires_exact_email_scope(
+    db: Session, client: TestClient, user: User, engagement: Engagement
+) -> None:
+    load_seed_playbooks(db)
+    db.add(
+        ScopeItem(
+            engagement_id=engagement.id,
+            kind=ScopeKind.email,
+            value="Analyst@example.com",
+        )
+    )
+    db.commit()
+
+    accepted = client.post(
+        f"/engagements/{engagement.slug}/playbook-runs",
+        headers=_headers(user),
+        json={
+            "playbook_slug": "email-exposure-triage",
+            "scope_subset": ["Analyst@EXAMPLE.COM"],
+        },
+    )
+    wrong_mailbox = client.post(
+        f"/engagements/{engagement.slug}/playbook-runs",
+        headers=_headers(user),
+        json={
+            "playbook_slug": "email-exposure-triage",
+            "scope_subset": ["analyst@example.com"],
+        },
+    )
+
+    assert accepted.status_code == 202, accepted.text
+    assert accepted.json()["steps_total"] == 1
+    assert wrong_mailbox.status_code == 422
 
 
 def test_create_playbook_run_unknown_playbook_404(

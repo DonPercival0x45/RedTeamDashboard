@@ -92,6 +92,7 @@ from app.models import (
     Observation,
     ObservationFindingLink,
     ScopeItem,
+    ScopeKind,
     Severity,
     TaskKind,
     User,
@@ -148,6 +149,7 @@ from app.services.findings import (
     lock_active_finding_or_404,
 )
 from app.services.scope_import import parse_scope_text
+from app.services.scope_matcher import normalize_email
 
 router = APIRouter()
 
@@ -1286,6 +1288,11 @@ def update_scope_item(
     session.refresh(item, with_for_update=True)
     before = _scope_audit_value(item)
     if body.value is not None:
+        if item.kind is ScopeKind.email and normalize_email(body.value) is None:
+            raise HTTPException(
+                status_code=422,
+                detail="email scope must be one valid exact mailbox",
+            )
         item.value = body.value
     if body.is_exclusion is not None:
         item.is_exclusion = body.is_exclusion

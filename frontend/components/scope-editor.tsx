@@ -26,7 +26,7 @@ import {
 import { ScopeImporter } from "@/components/scope-importer";
 import type { ScopeKind } from "@/lib/types";
 
-const KINDS: ScopeKind[] = ["domain", "cidr", "ip", "url"];
+const KINDS: ScopeKind[] = ["domain", "cidr", "ip", "url", "email"];
 
 export function ScopeEditor({
   slug,
@@ -160,7 +160,9 @@ export function ScopeEditor({
                     ? "10.0.0.0/24"
                     : kind === "ip"
                       ? "10.0.0.5"
-                      : "https://acme.com/login"
+                      : kind === "email"
+                        ? "analyst@acme.com"
+                        : "https://acme.com/login"
               }
               required
             />

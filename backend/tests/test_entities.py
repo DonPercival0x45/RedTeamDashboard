@@ -126,6 +126,11 @@ def test_scope_targets_populate_entities_without_duplicate_entry(
             ),
             ScopeItem(
                 engagement_id=engagement.id,
+                kind=ScopeKind.email,
+                value="Analyst@Scope.Example",
+            ),
+            ScopeItem(
+                engagement_id=engagement.id,
                 kind=ScopeKind.ip,
                 value="203.0.113.9",
                 is_exclusion=True,
@@ -144,6 +149,14 @@ def test_scope_targets_populate_entities_without_duplicate_entry(
     assert scope_entity["scope_status"] == "live"
     assert scope_entity["count"] == 0
     assert scope_entity["findings"] == []
+    email_entity = next(
+        entity
+        for entity in before
+        if entity["type"] == "email"
+        and entity["value"] == "Analyst@scope.example"
+    )
+    assert email_entity["scope_status"] == "live"
+    assert email_entity["count"] == 0
     assert not any(entity["value"] == "203.0.113.9" for entity in before)
 
     _seed(

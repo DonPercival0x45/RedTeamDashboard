@@ -15,6 +15,7 @@ class ScopeKind(enum.StrEnum):
     cidr = "cidr"
     ip = "ip"
     url = "url"
+    email = "email"
 
 
 class ScopeItem(Base, TimestampMixin):

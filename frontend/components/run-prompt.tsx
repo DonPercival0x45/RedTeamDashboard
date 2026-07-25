@@ -80,6 +80,8 @@ const SCOPE_ACTION_TEMPLATES: Record<ScopeKind, (value: string) => string> = {
     `Discover live hosts in ${v} and enumerate open ports and services across the range.`,
   url: (v) =>
     `Recon and probe ${v}: fingerprint the stack, enumerate paths, and surface anything notable.`,
+  email: (v) =>
+    `Check the explicitly scoped mailbox ${v} for breach exposure and credential disclosures without broadening authorization to other addresses.`,
 };
 
 export function RunPrompt({

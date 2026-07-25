@@ -36,7 +36,7 @@ export interface Authorization {
   created_at: string;
   updated_at: string;
 }
-export type ScopeKind = "domain" | "cidr" | "ip" | "url";
+export type ScopeKind = "domain" | "cidr" | "ip" | "url" | "email";
 export type RiskLevel = "passive" | "active" | "destructive";
 export type ApprovalStatus =
   | "pending"

@@ -24,7 +24,7 @@ EntityType = str  # email | ip | cidr | domain | subdomain | url | host
 
 # v2.19.0: entity-type → scope-kind mapping for Live/Legacy/OOS classification.
 # `host` and `url` map to a small set of scope kinds we try in order; the first
-# match wins. Emails never live in scope, so they're excluded.
+# match wins. Email scope is exact-mailbox only.
 _ENTITY_KIND_LOOKUP: dict[str, tuple[ScopeKind, ...]] = {
     "ip": (ScopeKind.ip,),
     "cidr": (ScopeKind.cidr,),
@@ -32,6 +32,7 @@ _ENTITY_KIND_LOOKUP: dict[str, tuple[ScopeKind, ...]] = {
     "subdomain": (ScopeKind.domain,),
     "host": (ScopeKind.ip, ScopeKind.domain),
     "url": (ScopeKind.url,),
+    "email": (ScopeKind.email,),
 }
 
 
@@ -48,8 +49,8 @@ def classify_entity_scope_status(
       recorded this exact value (case-insensitive) at some point.
     - oos: neither — discovered from a finding but never a scope target.
 
-    Emails and unknown entity types short-circuit to "oos" — they can't be
-    scope targets by construction.
+    Unknown entity types short-circuit to "oos". Email uses conservative
+    exact-mailbox matching; a scoped domain never authorizes every mailbox.
     """
     kinds = _ENTITY_KIND_LOOKUP.get(entity_type)
     if not kinds:

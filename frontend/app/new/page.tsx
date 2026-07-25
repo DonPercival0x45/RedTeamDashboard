@@ -26,7 +26,7 @@ import type {
   ScopeKind,
 } from "@/lib/types";
 
-const KINDS: ScopeKind[] = ["domain", "cidr", "ip", "url"];
+const KINDS: ScopeKind[] = ["domain", "cidr", "ip", "url", "email"];
 
 interface ScopeDraft {
   kind: ScopeKind;
@@ -173,7 +173,9 @@ export default function NewEngagementPage() {
         ? "10.0.0.0/24"
         : kind === "ip"
           ? "10.0.0.5"
-          : "https://acme.com/login";
+          : kind === "email"
+            ? "analyst@acme.com"
+            : "https://acme.com/login";
 
   return (
     <div className="mx-auto max-w-2xl space-y-6">

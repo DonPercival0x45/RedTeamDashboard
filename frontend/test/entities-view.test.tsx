@@ -183,18 +183,18 @@ describe("EntitiesView", () => {
     );
     expect(screen.getByRole("checkbox", { name: "Select new.example" })).toBeChecked();
     expect(screen.getByRole("checkbox", { name: "Select legacy.example" })).toBeChecked();
-    expect(screen.getByRole("checkbox", { name: "Select person@example.com" })).toBeDisabled();
+    expect(screen.getByRole("checkbox", { name: "Select person@example.com" })).toBeChecked();
 
     fireEvent.click(screen.getByRole("button", { name: "Add to scope" }));
     await waitFor(() =>
       expect(importScope).toHaveBeenCalledWith(
         "acme",
-        "new.example\nlegacy.example",
+        "new.example\nlegacy.example\nperson@example.com",
         "found",
       ),
     );
     expect(await screen.findByRole("status")).toHaveTextContent(
-      "2 entities added to scope",
+      "3 entities added to scope",
     );
   });
 

@@ -55,6 +55,16 @@ const scopeItems: ScopeItem[] = [
     created_at: "",
     updated_at: "",
   },
+  {
+    id: "s5",
+    engagement_id: "e1",
+    kind: "email",
+    value: "analyst@example.com",
+    is_exclusion: false,
+    note: null,
+    created_at: "",
+    updated_at: "",
+  },
 ];
 
 let mockScopeData: ScopeItem[] | undefined = scopeItems;
@@ -113,6 +123,26 @@ describe("KickRunModal", () => {
     expect(screen.getByText("bar.example")).toBeInTheDocument();
     expect(screen.queryByText("10.0.0.9")).not.toBeInTheDocument();
     expect(screen.queryByText("excluded.example")).not.toBeInTheDocument();
+  });
+
+  it("offers scoped mailboxes to email playbooks only", () => {
+    render(
+      <KickRunModal
+        engagementSlug="acme"
+        playbook={{
+          ...playbook,
+          slug: "email-exposure-triage",
+          name: "Email exposure triage",
+          applies_to_asset_class: "email",
+          required_executor: "internal",
+        }}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("analyst@example.com")).toBeInTheDocument();
+    expect(screen.queryByText("foo.example")).not.toBeInTheDocument();
+    expect(screen.queryByText("10.0.0.9")).not.toBeInTheDocument();
   });
 
   it("submits only the selected targets in the run payload", async () => {

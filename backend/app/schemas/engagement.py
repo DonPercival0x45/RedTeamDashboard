@@ -16,6 +16,7 @@ from app.models import (
     EngagementWorkState,
     ScopeKind,
 )
+from app.services.scope_matcher import normalize_email
 
 LLMProvider = Literal[
     "anthropic",
@@ -194,6 +195,12 @@ class ScopeItemCreate(BaseModel):
     # v1.4.13: provenance (roadmap #5). "defined" = client-provided,
     # "found" = added from findings. Defaults to "defined".
     source: Literal["defined", "found"] = "defined"
+
+    @model_validator(mode="after")
+    def validate_email_scope(self) -> ScopeItemCreate:
+        if self.kind is ScopeKind.email and normalize_email(self.value) is None:
+            raise ValueError("email scope must be one valid exact mailbox")
+        return self
 
 
 class ScopeItemUpdate(BaseModel):

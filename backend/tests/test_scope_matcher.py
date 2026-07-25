@@ -11,6 +11,7 @@ from app.services.scope_matcher import (
     evaluate_scope,
     evaluate_scope_candidates,
     infer_scope_kind,
+    normalize_email,
     normalize_url,
 )
 
@@ -51,6 +52,13 @@ def item(kind: ScopeKind, value: str, *, excluded: bool = False) -> ScopeSnapsho
             "included_parent_domain",
         ),
         ("https://10.0.0.5/x", ScopeKind.url, ScopeKind.cidr, "10.0.0.0/24", "included_cidr"),
+        (
+            "Analyst@Example.COM",
+            ScopeKind.email,
+            ScopeKind.email,
+            "Analyst@example.com",
+            "included_exact",
+        ),
     ],
 )
 def test_supported_scope_relationships(
@@ -74,6 +82,25 @@ def test_exclusion_on_any_identity_wins() -> None:
     )
     assert not decision.allowed
     assert decision.matched_exclusion_id == exclude.id
+
+
+def test_email_scope_is_exact_and_does_not_inherit_from_domain() -> None:
+    exact = item(ScopeKind.email, "Analyst@example.com")
+    domain = item(ScopeKind.domain, "example.com")
+    assert evaluate_scope("Analyst@EXAMPLE.COM", ScopeKind.email, [exact]).allowed
+    assert not evaluate_scope("analyst@example.com", ScopeKind.email, [exact]).allowed
+    assert not evaluate_scope("Analyst@example.com", ScopeKind.email, [domain]).allowed
+    assert normalize_email("Analyst@EXAMPLE.COM.") == "Analyst@example.com"
+
+
+def test_email_exclusion_wins() -> None:
+    include = item(ScopeKind.email, "analyst@example.com")
+    exclude = item(ScopeKind.email, "analyst@example.com", excluded=True)
+    decision = evaluate_scope(
+        "analyst@example.com", ScopeKind.email, [include, exclude]
+    )
+    assert not decision.allowed
+    assert decision.reason_code == "excluded_email"
 
 
 def test_domain_boundary_blocks_lookalike() -> None:
@@ -107,6 +134,7 @@ def test_empty_scope_policy_is_explicit() -> None:
         ("10.0.0.0/24", ScopeKind.cidr),
         ("api.example.com", ScopeKind.domain),
         ("api.example.com:8443", ScopeKind.domain),
+        ("analyst@example.com", ScopeKind.email),
     ],
 )
 def test_kind_inference(value: str, expected: ScopeKind) -> None:

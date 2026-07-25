@@ -14,6 +14,7 @@ Per-line rules:
 - A leading ``!`` marks the target as an exclusion. ``!10.0.0.5/32`` excludes
   that host; ``!evil.acme.test`` excludes that subdomain.
 - Kind is auto-detected per token:
+    * validates as an exact mailbox        -> email
     * contains ``://``                     -> url
     * parses as ip_network (strict=False) AND has '/' -> cidr
     * parses as ip_address                 -> ip
@@ -28,6 +29,7 @@ import re
 from dataclasses import dataclass
 
 from app.models import ScopeKind
+from app.services.scope_matcher import normalize_email
 
 # Conservative domain regex — labels 1-63 chars, total <=253, TLD letters only.
 # Doesn't try to validate every RFC edge case; rejecting an oddball is fine
@@ -62,6 +64,8 @@ def detect_kind(value: str) -> ScopeKind | None:
     v = value.strip()
     if not v:
         return None
+    if normalize_email(v) is not None:
+        return ScopeKind.email
     if "://" in v:
         return ScopeKind.url
     if "/" in v:
@@ -125,7 +129,7 @@ def parse_scope_text(
                         line=lineno,
                         raw=token,
                         reason=(
-                            "could not classify as url, cidr, ip, or domain"
+                            "could not classify as email, url, cidr, ip, or domain"
                         ),
                     )
                 )

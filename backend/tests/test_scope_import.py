@@ -1,7 +1,7 @@
 """Bulk scope-import: parser unit tests + HTTP surface tests.
 
 The parser is the load-bearing piece — most of the coverage here is per-line
-classification (domain / cidr / ip / url) plus the `!` exclusion and `#`
+classification (domain / cidr / ip / url / email) plus the `!` exclusion and `#`
 comment markers. The endpoint tests cover dry-run preview, real commit,
 dedupe, and the archived-engagement guard.
 """
@@ -61,6 +61,7 @@ def engagement(db: Session) -> Iterator[Engagement]:
         ("2001:db8::/32", ScopeKind.cidr),
         ("https://acme.test/login", ScopeKind.url),
         ("http://10.0.0.5:8080", ScopeKind.url),
+        ("Analyst@Example.COM", ScopeKind.email),
     ],
 )
 def test_detect_kind_happy(value: str, expected: ScopeKind) -> None:
@@ -76,6 +77,8 @@ def test_detect_kind_happy(value: str, expected: ScopeKind) -> None:
         "",
         "   ",
         "10.0.0.0/99",  # invalid CIDR
+        "not-an-email@",
+        "a..b@example.com",
     ],
 )
 def test_detect_kind_rejects_garbage(value: str) -> None:
@@ -93,6 +96,7 @@ acme.test
 10.0.0.0/24
 192.168.1.1
 https://portal.acme.test
+admin@acme.test
 
 # exclusions
 !10.0.0.5
@@ -107,6 +111,7 @@ https://portal.acme.test
     assert ("10.0.0.0/24", ScopeKind.cidr, False) in kinds
     assert ("192.168.1.1", ScopeKind.ip, False) in kinds
     assert ("https://portal.acme.test", ScopeKind.url, False) in kinds
+    assert ("admin@acme.test", ScopeKind.email, False) in kinds
     assert ("10.0.0.5", ScopeKind.ip, True) in kinds
     assert ("evil.acme.test", ScopeKind.domain, True) in kinds
 
@@ -188,6 +193,30 @@ def test_endpoint_commit_creates_and_dedupes(
         ).scalars()
     )
     assert {r.value for r in rows} == {"acme.test", "10.0.0.0/24", "10.0.0.5"}
+
+
+def test_email_scope_crud_rejects_malformed_mailboxes(
+    client: TestClient, engagement: Engagement
+) -> None:
+    valid = client.post(
+        f"/engagements/{engagement.slug}/scope",
+        json={"kind": "email", "value": "Analyst@example.com"},
+        headers=HDR,
+    )
+    invalid = client.post(
+        f"/engagements/{engagement.slug}/scope",
+        json={"kind": "email", "value": "not-an-email@"},
+        headers=HDR,
+    )
+    patched = client.patch(
+        f"/engagements/{engagement.slug}/scope/{valid.json()['id']}",
+        json={"value": "also-invalid"},
+        headers=HDR,
+    )
+
+    assert valid.status_code == 201, valid.text
+    assert invalid.status_code == 422
+    assert patched.status_code == 422
 
 
 def test_endpoint_rejects_flushed_engagement(

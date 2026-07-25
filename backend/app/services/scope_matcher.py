@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ipaddress
+import re
 import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -49,6 +50,47 @@ def domain_matches(target: str, scope_value: str) -> bool:
     )
 
 
+_EMAIL_LOCAL_RE = re.compile(r"^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+$")
+
+
+def normalize_email(value: str) -> str | None:
+    """Return a conservative mailbox identity.
+
+    The local part remains case-sensitive so authorization never broadens an
+    exact mailbox silently. The domain follows normal DNS/IDNA casing rules.
+    Quoted local parts are intentionally rejected by the scope importer.
+    """
+    candidate = value.strip()
+    if len(candidate) > 254 or candidate.count("@") != 1:
+        return None
+    local, domain = candidate.rsplit("@", 1)
+    if (
+        not local
+        or len(local) > 64
+        or local.startswith(".")
+        or local.endswith(".")
+        or ".." in local
+        or not _EMAIL_LOCAL_RE.fullmatch(local)
+    ):
+        return None
+    normalized_domain = normalize_domain(domain)
+    labels = normalized_domain.split(".")
+    if (
+        len(labels) < 2
+        or any(
+            not label
+            or len(label) > 63
+            or label.startswith("-")
+            or label.endswith("-")
+            or not re.fullmatch(r"[a-z0-9-]+", label)
+            for label in labels
+        )
+        or not re.fullmatch(r"[a-z]{2,63}", labels[-1])
+    ):
+        return None
+    return f"{local}@{normalized_domain}"
+
+
 def _parse_url(value: str):
     candidate = value.strip()
     if "://" not in candidate:
@@ -85,6 +127,8 @@ def normalize_url(value: str) -> str | None:
 
 def infer_scope_kind(value: str) -> ScopeKind:
     candidate = value.strip()
+    if normalize_email(candidate) is not None:
+        return ScopeKind.email
     if "://" in candidate:
         return ScopeKind.url
     try:
@@ -134,6 +178,13 @@ def item_matches(
 ) -> bool:
     if target_kind is ScopeKind.domain:
         return item.kind is ScopeKind.domain and domain_matches(target, item.value)
+
+    if target_kind is ScopeKind.email:
+        if item.kind is not ScopeKind.email:
+            return False
+        left = normalize_email(target)
+        right = normalize_email(item.value)
+        return left is not None and left == right
 
     if target_kind is ScopeKind.url:
         host = extract_host(target)

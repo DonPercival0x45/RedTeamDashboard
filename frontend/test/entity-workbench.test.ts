@@ -65,6 +65,9 @@ describe("entity workbench identity matching", () => {
       kind: "domain",
       value: "edge.example.com",
     });
-    expect(scopeTargetForEntity({ type: "email", value: "a@example.com" })).toBeNull();
+    expect(scopeTargetForEntity({ type: "email", value: "a@example.com" })).toEqual({
+      kind: "email",
+      value: "a@example.com",
+    });
   });
 });

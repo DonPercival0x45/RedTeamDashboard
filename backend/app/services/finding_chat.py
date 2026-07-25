@@ -57,6 +57,7 @@ from app.orchestrator.tools import all_tools, get_tool
 from app.services.agent_model_resolver import resolve_agent_model_with_default
 from app.services.ephemeral_provider_key import resolve_for_user_with_fallback
 from app.services.finding_activity import build_finding_activity
+from app.services.scope_matcher import normalize_email
 
 _SYSTEM_PROMPT = """You are a finding-scoped copilot for an authorized security engagement.
 Use only the dossier supplied by the dashboard. Do not invent evidence, targets,
@@ -573,7 +574,11 @@ def _normalize_action_params(typ: str, params: dict[str, Any]) -> dict[str, Any]
         kind = str(params.get("kind") or "domain").strip().lower()
         return {
             "value": str(params.get("value") or "").strip()[:500],
-            "kind": kind if kind in {"domain", "ip", "cidr", "url"} else "domain",
+            "kind": (
+                kind
+                if kind in {"domain", "ip", "cidr", "url", "email"}
+                else "domain"
+            ),
             "note": str(params.get("note") or "").strip()[:500] or None,
         }
     return dict(params)
@@ -925,6 +930,8 @@ def _accept_add_scope(
         scope_kind = ScopeKind(kind)
     except ValueError:
         scope_kind = ScopeKind.domain
+    if scope_kind is ScopeKind.email and normalize_email(value) is None:
+        raise ValueError("email scope must be one valid exact mailbox")
     item = ScopeItem(
         engagement_id=finding.engagement_id,
         kind=scope_kind,

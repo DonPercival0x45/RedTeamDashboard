@@ -13,16 +13,18 @@ from app.services.playbook.executor import StepResult
 
 
 def run(scope_context: str, args: dict[str, Any]) -> StepResult:
-    domain = args.get("domain") or scope_context
+    email = args.get("email")
+    domain = None if email else (args.get("domain") or scope_context)
     return StepResult(
         ok=True,
         findings_total=0,
         stub=True,
         data={
             "note": (
-                "breach-lookup stub — real corpus lookup lands with the "
-                "provider pick + BYO-key wiring (follow-up to A3b)"
+                "breach-lookup stub — configure a breach-corpus provider and "
+                "requester-owned BYO key before treating this as exposure evidence"
             ),
+            "email": email,
             "domain": domain,
         },
     )

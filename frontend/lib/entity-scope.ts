@@ -29,6 +29,8 @@ export function scopeTargetForEntity(
       return { kind: "domain", value };
     case "url":
       return { kind: "url", value };
+    case "email":
+      return { kind: "email", value };
     case "host":
       return { kind: looksLikeIp(value) ? "ip" : "domain", value };
     default:
@@ -38,7 +40,17 @@ export function scopeTargetForEntity(
 
 function comparableScopeValue(kind: ScopeKind, value: string): string {
   const trimmed = value.trim();
-  return kind === "domain" ? trimmed.toLowerCase().replace(/\.+$/, "") : trimmed;
+  if (kind === "domain") return trimmed.toLowerCase().replace(/\.+$/, "");
+  if (kind === "email") {
+    const separator = trimmed.lastIndexOf("@");
+    if (separator > 0 && separator < trimmed.length - 1) {
+      return `${trimmed.slice(0, separator)}@${trimmed
+        .slice(separator + 1)
+        .toLowerCase()
+        .replace(/\.+$/, "")}`;
+    }
+  }
+  return trimmed;
 }
 
 export function exactScopeRules(

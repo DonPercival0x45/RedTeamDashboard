@@ -90,7 +90,6 @@ _SCOPE_TARGET_ARG: dict[str, str] = {
     "dns_inventory": "domain",
     "subfinder": "domain",
     "crtsh": "domain",
-    "breach-lookup": "domain",
     "freeipapi": "ip",
     "ipinfo": "ip",
 }
@@ -129,9 +128,16 @@ def resolve_step_args(
 ) -> dict[str, Any]:
     """Expand a step template and bind built-in target args to validated scope."""
     args = substitute_scope(args_template, scope_context)
-    target_arg = _SCOPE_TARGET_ARG.get(tool_slug)
-    if target_arg is not None:
+    if tool_slug == "breach-lookup":
+        # The same passive connector supports domain-wide and exact-mailbox
+        # playbooks. The template selects the mode; validated scope remains
+        # authoritative in either case.
+        target_arg = "email" if "email" in args else "domain"
         args[target_arg] = scope_context
+    else:
+        target_arg = _SCOPE_TARGET_ARG.get(tool_slug)
+        if target_arg is not None:
+            args[target_arg] = scope_context
     return args
 
 

@@ -57,6 +57,7 @@ from app.orchestrator.gate import Action, evaluate
 from app.orchestrator.scope import ScopeSnapshot, normalize_scope_items
 from app.orchestrator.tools import phase_for_tool
 from app.orchestrator.tools.runtime import run_tool
+from app.services.scope_matcher import normalize_email
 
 # ---------------------------------------------------------------------------
 # Server definition
@@ -657,7 +658,7 @@ def get_scope(engagement_slug: str = "") -> dict:
             "engagement": engagement_slug,
             "includes": includes,
             "exclusions": exclusions,
-            "scope_kinds": ["domain", "cidr", "ip", "url"],
+            "scope_kinds": ["domain", "cidr", "ip", "url", "email"],
         }
 
 
@@ -672,7 +673,7 @@ def add_scope_item(
     """Add a scope item to an engagement.
 
     Requires cli scope.
-    kind: 'domain' | 'ip' | 'cidr' | 'url'
+    kind: 'domain' | 'ip' | 'cidr' | 'url' | 'email'
     is_exclusion: True to mark this as a target to skip (e.g. a honeypot inside
     an approved CIDR).
     """
@@ -685,7 +686,14 @@ def add_scope_item(
     try:
         scope_kind = ScopeKind(kind)
     except ValueError:
-        return {"error": f"invalid kind '{kind}' — must be one of: domain, ip, cidr, url"}
+        return {
+            "error": (
+                f"invalid kind '{kind}' — must be one of: "
+                "domain, ip, cidr, url, email"
+            )
+        }
+    if scope_kind is ScopeKind.email and normalize_email(value) is None:
+        return {"error": "email scope must be one valid exact mailbox"}
 
     engagement_slug = _infer_engagement_slug(engagement_slug) or ""
     if not engagement_slug:

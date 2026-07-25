@@ -1,8 +1,8 @@
 """Seed playbooks — Track A step A3a.
 
-Two starter playbooks that map to the seeded methodology nodes from A1. Both
-target the ``domain`` asset class since the seeded trees emphasize passive
-domain recon.
+The domain starters map to seeded methodology nodes from A1. Exploration-tier
+IP enrichment and exact-mailbox exposure triage are also installed so email
+scope has an explicit catalog path instead of falling back to domain runs.
 
 * ``osint-passive-domain`` — satisfies the OSINT-minimal starter's four
   passive domain nodes.
@@ -152,8 +152,34 @@ OSINT_ENRICHMENT_V1: dict[str, Any] = {
 }
 
 
+EMAIL_EXPOSURE_TRIAGE_V1: dict[str, Any] = {
+    "slug": "email-exposure-triage",
+    "version": 1,
+    "name": "Email exposure triage",
+    "description": (
+        "Checks an explicitly scoped mailbox against the configured breach-"
+        "corpus connector. Exact email scope is required; authorizing a domain "
+        "does not authorize every mailbox at that domain. Until a deployment "
+        "configures a corpus provider, the step reports stub coverage rather "
+        "than claiming a successful exposure check."
+    ),
+    "applies_to_asset_class": "email",
+    "active": False,
+    "steps": [
+        {
+            "sort_order": 10,
+            "tool_slug": "breach-lookup",
+            "args_template": {"email": "{{scope_item}}"},
+            "satisfies_node_ids": [],
+            "description": "Breach-corpus lookup for the exact mailbox.",
+        },
+    ],
+}
+
+
 SEED_PLAYBOOKS: list[dict[str, Any]] = [
     OSINT_PASSIVE_DOMAIN_V1,
     PTES_PASSIVE_RECON_V1,
     OSINT_ENRICHMENT_V1,
+    EMAIL_EXPOSURE_TRIAGE_V1,
 ]
