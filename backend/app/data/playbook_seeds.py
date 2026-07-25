@@ -218,11 +218,25 @@ DOMAIN_WEB_SURFACE_V1: dict[str, Any] = {
         {
             "sort_order": 40,
             "tool_slug": "mcp_httpx_probe",
-            "args_template": {"url": "{{scope_item}}"},
+            "args_template": {
+                "url": "{{scope_item}}",
+                "__target_source": "discovered_domains",
+            },
             "satisfies_node_ids": [],
             "description": "Identify reachable web services and technology signals.",
         },
     ],
+}
+
+
+DOMAIN_WEB_SURFACE_V2: dict[str, Any] = {
+    **DOMAIN_WEB_SURFACE_V1,
+    "version": 2,
+    "description": (
+        "Runs real passive discovery, then expands authorized subdomains from "
+        "Subfinder and certificate transparency into HTTP technology probes. "
+        "Every discovered target is rechecked against current exclusions."
+    ),
 }
 
 
@@ -279,6 +293,7 @@ HOST_SERVICE_VALIDATION_V1: dict[str, Any] = {
             "args_template": {
                 "target": "{{scope_item}}",
                 "ports": "21,22,25,53,80,110,143,443,445,3389,5432,6379,8080,8443",
+                "__on_error": "stop",
             },
             "satisfies_node_ids": [],
             "description": "TCP-connect scan of a bounded common-port set.",
@@ -294,6 +309,12 @@ HOST_SERVICE_VALIDATION_V1: dict[str, Any] = {
             "description": "Banner, HTTP, and TLS fingerprinting on the approved ports.",
         },
     ],
+}
+
+
+HOST_SERVICE_VALIDATION_V2: dict[str, Any] = {
+    **HOST_SERVICE_VALIDATION_V1,
+    "version": 2,
 }
 
 
@@ -361,7 +382,9 @@ SEED_PLAYBOOKS: list[dict[str, Any]] = [
     EMAIL_EXPOSURE_TRIAGE_V1,
     EMAIL_EXPOSURE_TRIAGE_V2,
     DOMAIN_WEB_SURFACE_V1,
+    DOMAIN_WEB_SURFACE_V2,
     HOST_SERVICE_VALIDATION_V1,
+    HOST_SERVICE_VALIDATION_V2,
     CIDR_EXPOSURE_SURVEY_V1,
     MAIL_DNS_POSTURE_V1,
 ]

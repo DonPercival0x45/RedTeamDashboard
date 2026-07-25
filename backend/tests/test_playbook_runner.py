@@ -145,6 +145,85 @@ def test_substitute_scope_replaces_placeholder() -> None:
     assert out == {"domain": "example.com", "flag": True, "count": 5}
 
 
+def test_discovered_domains_expand_later_steps_with_scope_revalidation(
+    db: Session, engagement_with_methodology: Engagement
+) -> None:
+    db.add_all(
+        [
+            ScopeItem(
+                engagement_id=engagement_with_methodology.id,
+                kind=ScopeKind.domain,
+                value="foo.com",
+            ),
+            ScopeItem(
+                engagement_id=engagement_with_methodology.id,
+                kind=ScopeKind.domain,
+                value="blocked.foo.com",
+                is_exclusion=True,
+            ),
+        ]
+    )
+    load_seed_playbooks(db)
+    playbook = catalog.get_by_slug(db, "domain-web-surface")
+    assert playbook is not None and playbook.version == 2
+    executor = MockExecutor(
+        results={
+            "mcp_subfinder": StepResult(
+                ok=True,
+                data={
+                    "subdomains": ["api.foo.com", "blocked.foo.com"],
+                },
+            ),
+        },
+        default=StepResult(ok=True),
+    )
+
+    run = start_run(
+        db,
+        engagement=engagement_with_methodology,
+        playbook=playbook,
+        scope_subset=["foo.com"],
+        executor=executor,
+    )
+
+    http_targets = [
+        call["scope_context"]
+        for call in executor.calls
+        if call["tool_slug"] == "mcp_httpx_probe"
+    ]
+    assert http_targets == ["api.foo.com", "foo.com"]
+    assert all("__target_source" not in call["args"] for call in executor.calls)
+    assert run.steps_total == 5
+    assert run.steps_succeeded == 5
+
+
+def test_stop_on_error_prevents_dependent_active_step(
+    db: Session, engagement_with_methodology: Engagement
+) -> None:
+    load_seed_playbooks(db)
+    playbook = catalog.get_by_slug(db, "host-service-validation")
+    assert playbook is not None and playbook.version == 2
+    executor = MockExecutor(
+        results={
+            "mcp_port_scan": StepResult(ok=False, error="scanner unavailable"),
+        },
+        default=StepResult(ok=True),
+    )
+
+    run = start_run(
+        db,
+        engagement=engagement_with_methodology,
+        playbook=playbook,
+        scope_subset=["203.0.113.7"],
+        executor=executor,
+    )
+
+    assert [call["tool_slug"] for call in executor.calls] == ["mcp_port_scan"]
+    assert run.status is PlaybookRunStatus.failed
+    assert run.steps_failed == 1
+    assert run.steps_succeeded == 0
+
+
 # ---------------------------------------------------------------------------
 # Happy path
 # ---------------------------------------------------------------------------

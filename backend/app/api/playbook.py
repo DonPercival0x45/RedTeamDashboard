@@ -98,6 +98,20 @@ def _required_credentials(playbook: Playbook) -> list[str]:
     )
 
 
+def _step_preview(playbook: Playbook) -> list[str]:
+    return [
+        step.description or step.tool_slug.removeprefix("mcp_").replace("_", " ")
+        for step in playbook.steps
+    ]
+
+
+def _expands_targets(playbook: Playbook) -> bool:
+    return any(
+        bool((step.args_template or {}).get("__target_source"))
+        for step in playbook.steps
+    )
+
+
 def _ensure_recipe_mutable(session: Session, playbook: Playbook) -> None:
     has_run = session.execute(
         select(PlaybookRun.id)
@@ -261,6 +275,8 @@ def list_playbooks(
             step_count=counts.get(p.id, 0),
             required_executor=_required_executor(p).value,
             required_credentials=_required_credentials(p),
+            step_preview=_step_preview(p),
+            expands_targets=_expands_targets(p),
         )
         for p in playbooks
     ]
@@ -303,6 +319,8 @@ def create_playbook_endpoint(
         step_count=0,
         required_executor=_required_executor(pb).value,
         required_credentials=_required_credentials(pb),
+        step_preview=_step_preview(pb),
+        expands_targets=_expands_targets(pb),
         steps=[],
     )
 
@@ -340,6 +358,8 @@ def update_playbook_endpoint(
         step_count=len(playbook.steps),
         required_executor=_required_executor(playbook).value,
         required_credentials=_required_credentials(playbook),
+        step_preview=_step_preview(playbook),
+        expands_targets=_expands_targets(playbook),
         steps=[PlaybookStepRead.model_validate(s) for s in playbook.steps],
     )
 
@@ -493,6 +513,8 @@ def get_playbook(
         step_count=len(playbook.steps),
         required_executor=_required_executor(playbook).value,
         required_credentials=_required_credentials(playbook),
+        step_preview=_step_preview(playbook),
+        expands_targets=_expands_targets(playbook),
         steps=[PlaybookStepRead.model_validate(s) for s in playbook.steps],
     )
 

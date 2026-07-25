@@ -32,6 +32,8 @@ class PlaybookRead(BaseModel):
     step_count: int = 0
     required_executor: str = "internal"
     required_credentials: list[str] = Field(default_factory=list)
+    step_preview: list[str] = Field(default_factory=list)
+    expands_targets: bool = False
 
 
 class PlaybookDetail(PlaybookRead):

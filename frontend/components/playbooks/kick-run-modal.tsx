@@ -128,6 +128,25 @@ export function KickRunModal({
             </p>
           </div>
 
+          {(playbook.step_preview?.length ?? 0) > 0 ? (
+            <div className="space-y-2 rounded-md border border-border bg-muted/20 p-3">
+              <Label>Execution plan</Label>
+              <ol className="list-decimal space-y-1 pl-5 text-xs text-muted-foreground">
+                {playbook.step_preview?.map((step, index) => (
+                  <li key={`${index}-${step}`}>{step}</li>
+                ))}
+              </ol>
+              <p className="text-xs text-muted-foreground">
+                {selected.size > 0
+                  ? `At least ${selected.size * playbook.step_count} tool calls for the current selection.`
+                  : "Select targets to calculate the minimum tool calls."}
+                {playbook.expands_targets
+                  ? " Authorized discoveries may add later calls; every expanded target is checked against current exclusions."
+                  : ""}
+              </p>
+            </div>
+          ) : null}
+
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <Label>Targets in scope ({selected.size} selected)</Label>

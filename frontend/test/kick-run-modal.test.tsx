@@ -96,6 +96,8 @@ const playbook: PlaybookRead = {
   step_count: 5,
   required_executor: "mcp",
   required_credentials: ["freeipapi", "ipinfo"],
+  step_preview: ["Resolve PTR hostname.", "Collect ASN context."],
+  expands_targets: true,
 };
 
 beforeEach(() => {
@@ -226,6 +228,23 @@ describe("KickRunModal", () => {
       screen.getByText("This playbook uses connected collection services."),
     ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^internal/i })).not.toBeInTheDocument();
+  });
+
+  it("previews steps, minimum calls, and safe discovery expansion", async () => {
+    const user = userEvent.setup();
+    render(
+      <KickRunModal
+        engagementSlug="acme"
+        playbook={playbook}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("Resolve PTR hostname.")).toBeInTheDocument();
+    expect(screen.getByText(/select targets to calculate/i)).toBeInTheDocument();
+    await user.click(screen.getByText("foo.example"));
+    expect(screen.getByText(/at least 5 tool calls/i)).toBeInTheDocument();
+    expect(screen.getByText(/every expanded target is checked/i)).toBeInTheDocument();
   });
 
   it("previews required requester-owned credentials", () => {

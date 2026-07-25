@@ -416,8 +416,15 @@ def execute_pending_run(
     from sqlalchemy import text as _text
 
     cancelled_mid = False
+    halted_on_error = False
+    discovered_domains: set[str] = set()
     for step in playbook.steps:
-        for scope_item in run.scope_subset:
+        target_source = (step.args_template or {}).get("__target_source")
+        step_targets = [str(item) for item in run.scope_subset]
+        if target_source == "discovered_domains":
+            step_targets = sorted({*step_targets, *discovered_domains})
+            run.steps_total += max(0, len(step_targets) - len(run.scope_subset))
+        for scope_item in step_targets:
             # Fresh read of status — a cancel_run committed from another
             # session flips the row and this loop must see it promptly.
             # Uses raw text so we bypass ORM caching + enum-coercion paths
@@ -430,7 +437,7 @@ def execute_pending_run(
                 run.status = PlaybookRunStatus.cancelled
                 cancelled_mid = True
                 break
-            _run_one(
+            result = _run_one(
                 session,
                 engagement=engagement,
                 playbook=playbook,
@@ -444,7 +451,18 @@ def execute_pending_run(
                 actor_type=effective_actor_type,
                 actor_id=effective_actor_id,
             )
-        if cancelled_mid:
+            if result.ok:
+                discovered_domains.update(
+                    _authorized_discovered_domains(
+                        session,
+                        engagement=engagement,
+                        result=result,
+                    )
+                )
+            elif (step.args_template or {}).get("__on_error") == "stop":
+                halted_on_error = True
+                break
+        if cancelled_mid or halted_on_error:
             break
 
     if cancelled_mid:
@@ -524,16 +542,21 @@ def _run_one(
     now: datetime,
     actor_type: ActorType,
     actor_id: str | None,
-) -> None:
+) -> StepResult:
     """Invoke one step against one scope item and write coverage records.
 
     Executor exceptions become ``StepResult(ok=False, error=...)`` — a
     thrown tool is a failed step, not a broken run. The tests exercise this.
     """
+    execution_args = {
+        key: value
+        for key, value in step_args_template.items()
+        if not str(key).startswith("__")
+    }
     try:
         result = executor.run_step(
             tool_slug=step_tool_slug,
-            args_template=step_args_template,
+            args_template=execution_args,
             scope_context=scope_item,
         )
     except Exception as exc:  # noqa: BLE001 - executor is untrusted; convert to step failure
@@ -565,7 +588,7 @@ def _run_one(
                 engagement_id=engagement.id,
                 playbook_tool=step_tool_slug,
                 scope_item=scope_item,
-                args_template=step_args_template,
+                args_template=execution_args,
                 data=result.data,
                 thread_id=run.id,
                 acting_user_id=actor_uuid,
@@ -625,6 +648,47 @@ def _run_one(
             now=now,
         )
     session.flush()
+    return result
+
+
+def _authorized_discovered_domains(
+    session: Session,
+    *,
+    engagement: Engagement,
+    result: StepResult,
+) -> set[str]:
+    """Extract prior-step domains and revalidate every one against scope."""
+    from app.models import ScopeItem, ScopeKind
+    from app.services.scope_matcher import evaluate_scope, normalize_domain
+
+    candidates: set[str] = set()
+    values = result.data.get("subdomains")
+    if isinstance(values, list):
+        candidates.update(
+            normalize_domain(value)
+            for value in values
+            if isinstance(value, str) and value.strip()
+        )
+    for item in result.data.get("lease_findings") or []:
+        if not isinstance(item, dict):
+            continue
+        target = item.get("target")
+        if isinstance(target, str) and target.strip():
+            candidates.add(normalize_domain(target))
+
+    if not candidates:
+        return set()
+    scope_rows = list(
+        session.execute(
+            select(ScopeItem).where(ScopeItem.engagement_id == engagement.id)
+        ).scalars()
+    )
+    return {
+        candidate
+        for candidate in sorted(candidates)[:500]
+        if candidate
+        and evaluate_scope(candidate, ScopeKind.domain, scope_rows).allowed
+    }
 
 
 def _scope_items_by_asset_class(
