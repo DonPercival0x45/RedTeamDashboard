@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
+import redis as redis_lib
 from fastapi import APIRouter, HTTPException, Response
 from sqlalchemy import delete, select
 from sqlalchemy.orm import object_session
@@ -36,6 +37,7 @@ from app.schemas.engagement_strategist import (
     StrategistSummary,
 )
 from app.services.engagement_strategist import run_engagement_strategist
+from app.services.ephemeral_provider_key import NoProviderKeyError
 from app.services.suggestion_router import accept_suggestion
 
 router = APIRouter()
@@ -89,6 +91,9 @@ def _run(
             acting_user_id=user.id,
             mode=mode,
         )
+    except (NoProviderKeyError, redis_lib.RedisError):
+        session.rollback()
+        raise
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"strategist run failed: {exc}") from exc
     return StrategistRunResponse(
@@ -192,6 +197,45 @@ def post_chat(
             raise HTTPException(status_code=404, detail="conversation not found")
     if conversation is None:
         conversation = _latest_conversation(session, engagement.id, user.id)
+    history = (
+        [
+            {"role": row.role, "content": row.content[:4000]}
+            for row in _messages(session, conversation.id)[-19:]
+        ]
+        if conversation is not None
+        else []
+    )
+    # Keep the new prompt in model context without committing it ahead of
+    # provider resolution. A missing key or Redis outage must not leave a
+    # durable user-only message that duplicates on retry.
+    history.append({"role": "user", "content": body.message.strip()[:4000]})
+    try:
+        execution, output, _context_hash, suggestions = run_engagement_strategist(
+            session,
+            redis_client,
+            engagement=engagement,
+            acting_user_id=user.id,
+            mode="chat",
+            analyst_message=body.message,
+            conversation_history=history,
+            create_suggestions=True,
+        )
+    except (NoProviderKeyError, redis_lib.RedisError):
+        session.rollback()
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"strategist chat failed: {exc}") from exc
+
+    current_engagement = session.execute(
+        select(Engagement)
+        .where(Engagement.id == engagement.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
+    if current_engagement is None:
+        raise HTTPException(status_code=404, detail="engagement not found")
+    _mutable(current_engagement)
+
     if conversation is None:
         conversation = Conversation(
             engagement_id=engagement.id,
@@ -209,35 +253,6 @@ def post_chat(
     )
     session.add(user_message)
     conversation.updated_at = datetime.now(tz=UTC)
-    session.commit()
-    session.refresh(user_message)
-    history = [
-        {"role": row.role, "content": row.content[:4000]}
-        for row in _messages(session, conversation.id)[-20:]
-    ]
-    try:
-        execution, output, _context_hash, suggestions = run_engagement_strategist(
-            session,
-            redis_client,
-            engagement=engagement,
-            acting_user_id=user.id,
-            mode="chat",
-            analyst_message=body.message,
-            conversation_history=history,
-            create_suggestions=True,
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"strategist chat failed: {exc}") from exc
-
-    current_engagement = session.execute(
-        select(Engagement)
-        .where(Engagement.id == engagement.id)
-        .with_for_update()
-        .execution_options(populate_existing=True)
-    ).scalar_one_or_none()
-    if current_engagement is None:
-        raise HTTPException(status_code=404, detail="engagement not found")
-    _mutable(current_engagement)
 
     actions = [
         {

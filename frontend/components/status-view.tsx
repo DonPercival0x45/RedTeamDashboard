@@ -145,6 +145,7 @@ export const EVENT_COLORS: Record<RunEvent["type"], string> = {
   "tool.denied": "border-orange-500 text-orange-700 dark:text-orange-200",
   "tool.auto_approved": "border-violet-500 text-violet-700 dark:text-violet-200",
   "finding.created": "border-emerald-500 text-emerald-700 dark:text-emerald-200",
+  "finding.updated": "border-teal-500 text-teal-700 dark:text-teal-200",
   "run.completed": "border-zinc-500 text-zinc-600 dark:text-zinc-300",
   "run.errored": "border-rose-500 text-rose-700 dark:text-rose-200",
 };
@@ -161,6 +162,8 @@ export function summarizeEvent(event: RunEvent): string {
       return `${event.tool} ${JSON.stringify(event.args)} — auto-approved (session grant)`;
     case "finding.created":
       return `${event.tool} → ${JSON.stringify(event.data).slice(0, 140)}`;
+    case "finding.updated":
+      return `${event.tool} enriched ${event.target ?? "a grouped finding"}`;
     case "run.completed":
       return `thread ${event.thread_id.slice(0, 8)}…`;
     case "run.errored":

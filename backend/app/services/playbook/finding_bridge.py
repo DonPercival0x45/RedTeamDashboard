@@ -8,9 +8,12 @@ feedback in the caller's transaction.
 """
 from __future__ import annotations
 
+import copy
+import ipaddress
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 import structlog
@@ -21,7 +24,7 @@ from app.models import Finding, FindingPhase, Severity
 from app.models.finding import default_status_for_phase, record_finding_origins
 from app.services.finding_feedback import stage_finding_feedback
 from app.services.finding_grouping import compute_group_key, upsert_grouped_finding
-from app.services.playbook.executor import substitute_scope
+from app.services.playbook.executor import resolve_step_args
 
 logger = structlog.get_logger(__name__)
 
@@ -33,9 +36,15 @@ TOOL_ALIASES: dict[str, str] = {
     "dns-inventory": "dns_lookup",
     "subfinder": "subfinder",
     "crtsh": "crt_sh",
+    "freeipapi": "freeipapi",
+    "ipinfo": "ipinfo",
 }
 
 _MAX_ITEMS_PER_STEP = 5000
+
+
+class FindingBridgePersistenceError(RuntimeError):
+    """Canonical persistence failed after a tool returned usable output."""
 
 
 @dataclass(frozen=True)
@@ -70,7 +79,7 @@ def _translate(
         record = data.get("record") or {}
         if not isinstance(record, dict) or not record or not domain:
             return None, None
-        return "whois_lookup", {"domain": domain, **record}
+        return "whois_lookup", {**record, "domain": domain}
 
     if normalized == "dns_inventory":
         records = data.get("records") or {}
@@ -87,18 +96,48 @@ def _translate(
             ("NS", "ns"),
         ):
             values = _bounded_strings(records.get(source_key), remaining)
+            if source_key in {"A", "AAAA"}:
+                normalized_values: list[str] = []
+                for value in values:
+                    try:
+                        normalized_values.append(
+                            ipaddress.ip_address(value).compressed
+                        )
+                    except ValueError:
+                        normalized_values.append(value)
+                values = normalized_values
+            elif source_key in {"CNAME", "NS"}:
+                values = [value.lower().rstrip(".") for value in values]
+            elif source_key == "MX":
+                values = [
+                    " ".join(
+                        [*value.split()[:-1], value.split()[-1].lower().rstrip(".")]
+                    )
+                    if value.split()
+                    else value
+                    for value in values
+                ]
             projected[target_key] = values
             remaining -= len(values)
         if not any(projected.values()):
             return None, None
-        return "dns_lookup", {"domain": domain, **projected}
+        return "dns_lookup", {**projected, "domain": domain}
 
     if normalized in {"subfinder", "crtsh"}:
         subdomains = _bounded_strings(data.get("subdomains"), _MAX_ITEMS_PER_STEP)
         if not subdomains or not domain:
             return None, None
         grouping_tool = "subfinder" if normalized == "subfinder" else "crt_sh"
-        return grouping_tool, {"domain": domain, "subdomains": subdomains}
+        return grouping_tool, {
+            "subdomains": [value.lower().rstrip(".") for value in subdomains],
+            "domain": domain,
+        }
+
+    if normalized in {"freeipapi", "ipinfo"}:
+        ip = str(args.get("ip") or data.get("ip") or "").strip()
+        if not ip or not data:
+            return None, None
+        return normalized, {**data, "ip": ip}
 
     return None, None
 
@@ -129,8 +168,9 @@ def bridge_step_to_finding(
     # Resolve the actual target rather than grouping on the literal
     # ``{{scope_item}}`` template. These bridgeable tools are domain-shaped;
     # scope_item is authoritative even if a caller supplied a conflicting arg.
-    resolved_args = substitute_scope(args_template or {}, scope_item)
-    resolved_args["domain"] = scope_item
+    resolved_args = resolve_step_args(
+        playbook_tool, args_template or {}, scope_item
+    )
     grouping_tool, reshaped = _translate(playbook_tool, resolved_args, data)
     if grouping_tool is None or reshaped is None:
         return None
@@ -165,13 +205,61 @@ def bridge_step_to_finding(
                 ),
                 {"lock_key": f"{engagement_id}:{group_key}"},
             )
-            existing_id = session.execute(
-                select(Finding.id).where(
+
+            # Older playbook persistence grouped on the literal template even
+            # though the executor had already queried the real target. Such a
+            # row cannot be trusted (multiple targets may have overwritten one
+            # item), so the next successful resolved run retires it and writes
+            # a fresh canonical group instead of leaving contradictory rows.
+            placeholder_args = dict(resolved_args)
+            placeholder_args["domain"] = "{{scope_item}}"
+            placeholder_data = dict(reshaped)
+            placeholder_data["domain"] = "{{scope_item}}"
+            placeholder_group_key = compute_group_key(
+                grouping_tool, placeholder_args, placeholder_data
+            )
+            if placeholder_group_key and placeholder_group_key != group_key:
+                legacy_rows = list(
+                    session.execute(
+                        select(Finding)
+                        .where(
+                            Finding.engagement_id == engagement_id,
+                            Finding.group_key == placeholder_group_key,
+                            Finding.deleted_at.is_(None),
+                        )
+                        .with_for_update()
+                    ).scalars()
+                )
+                for legacy in legacy_rows:
+                    legacy.deleted_at = datetime.now(tz=UTC)
+                    legacy.details = {
+                        **(legacy.details or {}),
+                        "retired_reason": "literal playbook scope template",
+                        "replaced_by_group_key": group_key,
+                    }
+                if legacy_rows:
+                    session.flush()
+                    logger.warning(
+                        "playbook.finding_bridge.retired_literal_group",
+                        engagement_id=str(engagement_id),
+                        legacy_group_key=placeholder_group_key,
+                        replacement_group_key=group_key,
+                        retired=len(legacy_rows),
+                    )
+
+            existing_row = session.execute(
+                select(Finding).where(
                     Finding.engagement_id == engagement_id,
                     Finding.group_key == group_key,
                     Finding.deleted_at.is_(None),
                 )
             ).scalar_one_or_none()
+            existing_id = existing_row.id if existing_row is not None else None
+            previous_details = (
+                copy.deepcopy(existing_row.details)
+                if existing_row is not None
+                else None
+            )
             status = default_status_for_phase(phase)
             row, added = upsert_grouped_finding(
                 session,
@@ -197,10 +285,14 @@ def bridge_step_to_finding(
                 )
 
             created = existing_id is None
+            enriched = (
+                existing_row is not None
+                and previous_details != row.details
+            )
             if (
                 acting_user_id is not None
                 and operation_id is not None
-                and (created or added > 0)
+                and (created or added > 0 or enriched)
             ):
                 stage_finding_feedback(
                     session,
@@ -212,7 +304,10 @@ def bridge_step_to_finding(
                     thread_id=lineage_thread,
                     tool=grouping_tool,
                     args=resolved_args,
-                    data={"chunk_finding_count": added},
+                    data={
+                        "chunk_finding_count": added,
+                        "enriched_existing_item": enriched,
+                    },
                 )
 
             total = len((row.details or {}).get("items") or [])
@@ -224,7 +319,9 @@ def bridge_step_to_finding(
             group_key=group_key,
             error=str(exc),
         )
-        return None
+        raise FindingBridgePersistenceError(
+            f"could not persist canonical {grouping_tool} finding"
+        ) from exc
 
     logger.info(
         "playbook.finding_bridge.upserted",

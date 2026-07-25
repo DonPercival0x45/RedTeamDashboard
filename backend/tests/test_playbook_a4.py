@@ -149,7 +149,7 @@ def _prime_executor(ex: MCPExecutor, tools: list[_FakeMCPTool]) -> None:
     ex._tool_cache = {t.name: t for t in tools}  # noqa: SLF001
 
 
-def test_mcp_executor_substitutes_scope_and_returns_result() -> None:
+def test_mcp_executor_binds_validated_scope_and_returns_result() -> None:
     tool = _FakeMCPTool(
         "freeipapi",
         [{"type": "text", "text": json.dumps({"country": "US", "asn": 15169})}],
@@ -158,7 +158,7 @@ def test_mcp_executor_substitutes_scope_and_returns_result() -> None:
     _prime_executor(ex, [tool])
     result = ex.run_step(
         tool_slug="freeipapi",
-        args_template={"ip": "{{scope_item}}"},
+        args_template={"ip": "203.0.113.99"},
         scope_context="1.2.3.4",
     )
     assert result.ok is True
@@ -330,6 +330,20 @@ def _headers(u: User) -> dict[str, str]:
     return {"X-User-Id": u.email}
 
 
+def test_catalog_declares_server_owned_executor_affinity(
+    client: TestClient,
+    user: User,
+    enrichment_playbook,
+) -> None:
+    response = client.get("/playbooks", headers=_headers(user))
+
+    assert response.status_code == 200
+    enrichment = next(
+        item for item in response.json() if item["slug"] == "osint-enrichment"
+    )
+    assert enrichment["required_executor"] == "mcp"
+
+
 def test_post_accepts_executor_mcp_and_persists_it(
     db: Session,
     client: TestClient,
@@ -352,7 +366,7 @@ def test_post_accepts_executor_mcp_and_persists_it(
     assert body["status"] == PlaybookRunStatus.pending.value
 
 
-def test_post_defaults_executor_to_internal(
+def test_post_selects_catalog_required_executor_when_omitted(
     db: Session,
     client: TestClient,
     user: User,
@@ -368,7 +382,27 @@ def test_post_defaults_executor_to_internal(
         },
     )
     assert resp.status_code == 202
-    assert resp.json()["executor"] == "internal"
+    assert resp.json()["executor"] == "mcp"
+
+
+def test_post_rejects_incompatible_executor_before_queueing(
+    client: TestClient,
+    user: User,
+    engagement: Engagement,
+    enrichment_playbook,
+) -> None:
+    response = client.post(
+        f"/engagements/{engagement.slug}/playbook-runs",
+        headers=_headers(user),
+        json={
+            "playbook_slug": "osint-enrichment",
+            "scope_subset": ["1.2.3.4"],
+            "executor": "internal",
+        },
+    )
+
+    assert response.status_code == 422
+    assert "requires executor 'mcp'" in response.json()["detail"]
 
 
 def test_post_rejects_unknown_executor_422(

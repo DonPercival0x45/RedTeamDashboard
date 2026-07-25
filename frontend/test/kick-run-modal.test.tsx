@@ -84,6 +84,7 @@ const playbook: PlaybookRead = {
   applies_to_asset_class: "domain",
   active: false,
   step_count: 5,
+  required_executor: "mcp",
 };
 
 beforeEach(() => {
@@ -134,9 +135,25 @@ describe("KickRunModal", () => {
       playbook_slug: "osint-enrichment",
       playbook_version: 3,
       scope_subset: ["foo.example", "bar.example"],
-      executor: "internal",
+      executor: "mcp",
     });
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it("shows the catalog-selected execution path without an incompatible choice", () => {
+    render(
+      <KickRunModal
+        engagementSlug="acme"
+        playbook={playbook}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("Selected automatically")).toBeInTheDocument();
+    expect(
+      screen.getByText("This playbook uses connected collection services."),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^internal/i })).not.toBeInTheDocument();
   });
 
   it("select-all picks every non-exclusion target", async () => {

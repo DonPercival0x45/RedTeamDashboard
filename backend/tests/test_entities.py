@@ -23,6 +23,7 @@ from app.models import (
     FindingPhase,
     FindingStatus,
     ScopeItem,
+    ScopeKind,
     Severity,
     User,
     UserRole,
@@ -111,6 +112,108 @@ def test_extracts_ip_cidr_domain_subdomain_email(
     assert "acme.com" in by_type.get("domain", set())
     assert {"www.acme.com", "mail.acme.com"} <= by_type.get("subdomain", set())
     assert "admin@acme.com" in by_type.get("email", set())
+
+
+def test_scope_targets_populate_entities_without_duplicate_entry(
+    client: TestClient, db: Session, engagement: Engagement
+) -> None:
+    db.add_all(
+        [
+            ScopeItem(
+                engagement_id=engagement.id,
+                kind=ScopeKind.domain,
+                value="Scope.Example.",
+            ),
+            ScopeItem(
+                engagement_id=engagement.id,
+                kind=ScopeKind.ip,
+                value="203.0.113.9",
+                is_exclusion=True,
+            ),
+        ]
+    )
+    db.commit()
+
+    before = _entities(client, engagement.slug)
+    scope_entity = next(
+        entity
+        for entity in before
+        if entity["type"] == "domain"
+        and entity["value"] == "scope.example"
+    )
+    assert scope_entity["scope_status"] == "live"
+    assert scope_entity["count"] == 0
+    assert scope_entity["findings"] == []
+    assert not any(entity["value"] == "203.0.113.9" for entity in before)
+
+    _seed(
+        db,
+        engagement.id,
+        tool="whois_lookup",
+        target="scope.example",
+        details={"items": [{"domain": "scope.example"}]},
+    )
+    after = [
+        entity
+        for entity in _entities(client, engagement.slug)
+        if entity["type"] == "domain"
+        and entity["value"] == "scope.example"
+    ]
+    assert len(after) == 1
+    assert after[0]["scope_status"] == "live"
+    assert after[0]["count"] == 1
+    assert len(after[0]["findings"]) == 1
+
+
+def test_exclusion_does_not_label_finding_derived_entity_as_live(
+    client: TestClient, db: Session, engagement: Engagement
+) -> None:
+    db.add(
+        ScopeItem(
+            engagement_id=engagement.id,
+            kind=ScopeKind.ip,
+            value="203.0.113.9",
+            is_exclusion=True,
+        )
+    )
+    _seed(
+        db,
+        engagement.id,
+        tool="freeipapi",
+        target="203.0.113.9",
+        details={"ip": "203.0.113.9"},
+    )
+
+    entity = next(
+        item
+        for item in _entities(client, engagement.slug)
+        if item["value"] == "203.0.113.9"
+    )
+    assert entity["scope_status"] == "oos"
+
+
+def test_dns_host_values_deduplicate_trailing_dot_variants(
+    client: TestClient, db: Session, engagement: Engagement
+) -> None:
+    _seed(
+        db,
+        engagement.id,
+        tool="dns_lookup",
+        target="scope.example",
+        details={
+            "items": [
+                {"type": "CNAME", "value": "Alias.Example."},
+                {"cname": ["alias.example."]},
+            ]
+        },
+    )
+
+    aliases = [
+        item
+        for item in _entities(client, engagement.slug)
+        if item["value"] == "alias.example"
+    ]
+    assert len(aliases) == 1
 
 
 def test_correlates_same_value_across_findings(

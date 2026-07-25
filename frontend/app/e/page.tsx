@@ -224,6 +224,15 @@ function EngagementDetail({ slug }: { slug: string }) {
             qc.invalidateQueries({ queryKey: qk.entities(slug) }),
             qc.invalidateQueries({ queryKey: ["stored-entities", slug] }),
           ]);
+        } else if (event.type === "finding.updated") {
+          // Grouped playbook/tool reruns can add DNS/WHOIS entities without
+          // creating a new Finding row. Refresh every dependent inventory.
+          void Promise.all([
+            qc.invalidateQueries({ queryKey: qk.findings(slug) }),
+            qc.invalidateQueries({ queryKey: qk.reportReadiness(slug) }),
+            qc.invalidateQueries({ queryKey: qk.entities(slug) }),
+            qc.invalidateQueries({ queryKey: ["stored-entities", slug] }),
+          ]);
         } else if (
           event.type === "run.completed" ||
           event.type === "run.errored"
@@ -469,6 +478,7 @@ function EngagementDetail({ slug }: { slug: string }) {
           {view === "entities" && (
             <EntitiesView
               slug={slug}
+              canWrite={canWrite}
               onQuickAction={
                 canWrite && engagement.intelligence_architecture !== "v3"
                   ? (prompt) => {

@@ -68,9 +68,39 @@ from app.services.playbook import (
     update_playbook,
     update_step,
 )
+from app.services.playbook.executor import required_executor_for_tools
 from app.services.scope_matcher import evaluate_scope_candidates, infer_scope_kind
 
 router = APIRouter()
+
+
+def _executor_for_tool_slugs(tool_slugs: list[str]) -> PlaybookExecutorKind:
+    try:
+        return PlaybookExecutorKind(required_executor_for_tools(tool_slugs))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def _required_executor(playbook: Playbook) -> PlaybookExecutorKind:
+    return _executor_for_tool_slugs(
+        [step.tool_slug for step in playbook.steps]
+    )
+
+
+def _ensure_recipe_mutable(session: Session, playbook: Playbook) -> None:
+    has_run = session.execute(
+        select(PlaybookRun.id)
+        .where(PlaybookRun.playbook_id == playbook.id)
+        .limit(1)
+    ).scalar_one_or_none()
+    if has_run is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "playbook recipes are immutable after their first run; "
+                "create a new version before changing metadata or steps"
+            ),
+        )
 
 
 def _engagement_by_slug(session: Session, slug: str) -> Engagement:
@@ -206,6 +236,7 @@ def list_playbooks(
             applies_to_asset_class=p.applies_to_asset_class,
             active=p.active,
             step_count=counts.get(p.id, 0),
+            required_executor=_required_executor(p).value,
         )
         for p in playbooks
     ]
@@ -246,6 +277,7 @@ def create_playbook_endpoint(
         applies_to_asset_class=pb.applies_to_asset_class,
         active=pb.active,
         step_count=0,
+        required_executor=_required_executor(pb).value,
         steps=[],
     )
 
@@ -261,6 +293,7 @@ def update_playbook_endpoint(
     playbook = catalog.get_by_slug(session, slug)
     if playbook is None:
         raise HTTPException(status_code=404, detail=f"playbook '{slug}' not found")
+    _ensure_recipe_mutable(session, playbook)
     update_playbook(
         session,
         playbook=playbook,
@@ -280,6 +313,7 @@ def update_playbook_endpoint(
         applies_to_asset_class=playbook.applies_to_asset_class,
         active=playbook.active,
         step_count=len(playbook.steps),
+        required_executor=_required_executor(playbook).value,
         steps=[PlaybookStepRead.model_validate(s) for s in playbook.steps],
     )
 
@@ -319,6 +353,10 @@ def add_step_endpoint(
     playbook = catalog.get_by_slug(session, slug)
     if playbook is None:
         raise HTTPException(status_code=404, detail=f"playbook '{slug}' not found")
+    _ensure_recipe_mutable(session, playbook)
+    _executor_for_tool_slugs(
+        [step.tool_slug for step in playbook.steps] + [payload.tool_slug]
+    )
     step = add_step(
         session,
         playbook=playbook,
@@ -349,6 +387,20 @@ def update_step_endpoint(
     playbook = catalog.get_by_slug(session, slug)
     if playbook is None:
         raise HTTPException(status_code=404, detail=f"playbook '{slug}' not found")
+    _ensure_recipe_mutable(session, playbook)
+    try:
+        current_step = next(
+            step for step in playbook.steps if step.id == step_id
+        )
+    except StopIteration as exc:
+        raise HTTPException(status_code=404, detail=f"step {step_id} not found") from exc
+    candidate_slug = payload.tool_slug or current_step.tool_slug
+    _executor_for_tool_slugs(
+        [
+            candidate_slug if step.id == step_id else step.tool_slug
+            for step in playbook.steps
+        ]
+    )
     try:
         step = update_step(
             session,
@@ -382,6 +434,7 @@ def delete_step_endpoint(
     playbook = catalog.get_by_slug(session, slug)
     if playbook is None:
         raise HTTPException(status_code=404, detail=f"playbook '{slug}' not found")
+    _ensure_recipe_mutable(session, playbook)
     try:
         delete_step(session, playbook=playbook, step_id=step_id)
     except StepNotFoundError as exc:
@@ -412,6 +465,7 @@ def get_playbook(
         applies_to_asset_class=playbook.applies_to_asset_class,
         active=playbook.active,
         step_count=len(playbook.steps),
+        required_executor=_required_executor(playbook).value,
         steps=[PlaybookStepRead.model_validate(s) for s in playbook.steps],
     )
 
@@ -453,8 +507,10 @@ def create_playbook_run(
         )
     # Persist requester identity because execution and milestone delivery happen
     # later in a worker process; never attempt to recover it from another user.
+    required_executor = _required_executor(playbook)
+    requested_executor = payload.executor or required_executor.value
     try:
-        executor_kind = PlaybookExecutorKind(payload.executor)
+        executor_kind = PlaybookExecutorKind(requested_executor)
     except ValueError as exc:
         raise HTTPException(
             status_code=422,
@@ -463,6 +519,14 @@ def create_playbook_run(
                 f"{sorted(k.value for k in PlaybookExecutorKind)}"
             ),
         ) from exc
+    if executor_kind is not required_executor:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"playbook '{playbook.slug}' requires executor "
+                f"'{required_executor.value}' for its configured tools"
+            ),
+        )
     # In-scope-only invariant (complaint 4b): every submitted target must be in
     # the engagement's declared scope and not match an exclusion, before we queue
     # anything for the worker to hand to tools.

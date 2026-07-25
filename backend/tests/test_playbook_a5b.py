@@ -379,6 +379,20 @@ def test_delete_playbook_with_runs_409(
     resp = client.delete(f"/playbooks/{custom_playbook.slug}", headers=_h(user))
     assert resp.status_code == 409
 
+    metadata = client.patch(
+        f"/playbooks/{custom_playbook.slug}",
+        headers=_h(user),
+        json={"name": "mutated after enqueue"},
+    )
+    step = client.post(
+        f"/playbooks/{custom_playbook.slug}/steps",
+        headers=_h(user),
+        json={"tool_slug": "whois"},
+    )
+    assert metadata.status_code == 409
+    assert step.status_code == 409
+    assert "immutable after their first run" in step.json()["detail"]
+
 
 def test_post_step_endpoint_appends(
     db: Session, client: TestClient, user: User
@@ -400,6 +414,51 @@ def test_post_step_endpoint_appends(
     body = resp.json()
     assert body["tool_slug"] == "whois"
     assert body["sort_order"] == 10  # first step auto-placed at 10
+
+
+def test_step_editor_rejects_unknown_or_mixed_executor_tools(
+    client: TestClient, user: User
+) -> None:
+    unknown_slug = f"unknown-{uuid.uuid4().hex[:6]}"
+    client.post(
+        "/playbooks",
+        headers=_h(user),
+        json={
+            "slug": unknown_slug,
+            "name": "unknown",
+            "applies_to_asset_class": "ip",
+        },
+    )
+    unknown = client.post(
+        f"/playbooks/{unknown_slug}/steps",
+        headers=_h(user),
+        json={"tool_slug": "portscan", "args_template": {"ip": "{{scope_item}}"}},
+    )
+    assert unknown.status_code == 422
+    assert "unsupported playbook tools" in unknown.json()["detail"]
+
+    mixed_slug = f"mixed-{uuid.uuid4().hex[:6]}"
+    client.post(
+        "/playbooks",
+        headers=_h(user),
+        json={
+            "slug": mixed_slug,
+            "name": "mixed",
+            "applies_to_asset_class": "domain",
+        },
+    )
+    assert client.post(
+        f"/playbooks/{mixed_slug}/steps",
+        headers=_h(user),
+        json={"tool_slug": "whois"},
+    ).status_code == 201
+    mixed = client.post(
+        f"/playbooks/{mixed_slug}/steps",
+        headers=_h(user),
+        json={"tool_slug": "freeipapi"},
+    )
+    assert mixed.status_code == 422
+    assert "incompatible executors" in mixed.json()["detail"]
 
 
 def test_patch_step_endpoint_edits(

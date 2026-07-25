@@ -1,8 +1,8 @@
 "use client";
 
 // v3 Track A — kick a playbook run. The analyst picks from the engagement's
-// EXISTING non-exclusion scope items (never re-typed), chooses the executor
-// (internal / mcp), and hits Kick. The backend independently re-validates
+// EXISTING non-exclusion scope items (never re-typed) and hits Kick. The
+// catalog selects a compatible executor; the backend independently re-validates
 // every submitted value against the engagement scope before queuing, so this
 // picker is a convenience, not the security boundary.
 //
@@ -26,11 +26,7 @@ import { QueryState } from "@/components/query-state";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { useCreatePlaybookRunMutation, useScope } from "@/lib/hooks";
-import type {
-  PlaybookExecutorKind,
-  PlaybookRead,
-  ScopeItem,
-} from "@/lib/types";
+import type { PlaybookRead, ScopeItem } from "@/lib/types";
 
 function kindLabel(item: ScopeItem): string {
   return item.kind.toUpperCase();
@@ -48,7 +44,6 @@ export function KickRunModal({
   const create = useCreatePlaybookRunMutation(engagementSlug);
   const scopeQuery = useScope(engagementSlug);
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [executor, setExecutor] = useState<PlaybookExecutorKind>("internal");
   const [error, setError] = useState<string | null>(null);
 
   // Only included targets compatible with the playbook's asset class are
@@ -92,7 +87,7 @@ export function KickRunModal({
         scope_subset: scopeItems
           .filter((s) => selected.has(s.value))
           .map((s) => s.value),
-        executor,
+        executor: playbook.required_executor,
       });
       onClose();
     } catch (e) {
@@ -196,29 +191,14 @@ export function KickRunModal({
           </div>
 
           <div className="space-y-2">
-            <Label>Executor</Label>
-            <div className="grid grid-cols-2 gap-2">
-              {(["internal", "mcp"] as PlaybookExecutorKind[]).map((kind) => (
-                <button
-                  key={kind}
-                  type="button"
-                  onClick={() => setExecutor(kind)}
-                  className={`rounded-md border px-3 py-2 text-left text-xs transition-colors ${
-                    executor === kind
-                      ? "border-primary bg-primary/10"
-                      : "border-border hover:bg-muted"
-                  }`}
-                >
-                  <div className="font-medium uppercase text-[10px] tracking-wide">
-                    {kind}
-                  </div>
-                  <div className="mt-0.5 text-muted-foreground text-[11px]">
-                    {kind === "internal"
-                      ? "In-process (default)"
-                      : "MCP server"}
-                  </div>
-                </button>
-              ))}
+            <Label>Execution path</Label>
+            <div className="rounded-md border border-border bg-muted/30 px-3 py-2 text-xs">
+              <div className="font-medium">Selected automatically</div>
+              <div className="mt-0.5 text-muted-foreground">
+                {playbook.required_executor === "mcp"
+                  ? "This playbook uses connected collection services."
+                  : "This playbook uses built-in passive collection tools."}
+              </div>
             </div>
           </div>
 

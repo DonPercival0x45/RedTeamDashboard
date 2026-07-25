@@ -199,7 +199,59 @@ def test_fallback_resolver_without_any_key_raises(
         )
 
 
-def test_fallback_resolver_rejects_unknown_provider_without_model(
+def test_fallback_resolver_accepts_routable_custom_provider(
+    db: Session, redis_client: redis_lib.Redis
+) -> None:
+    user = _make_user(db)
+    _seed(
+        redis_client,
+        user,
+        provider="custom",
+        api_key="custom-key",
+        endpoint="https://custom.test/v1",
+        models=["custom-model"],
+    )
+
+    provider, model, resolved = resolve_for_user_with_fallback(
+        redis_client,
+        user_id=user.id,
+        preferred_provider="anthropic",
+        preferred_model="claude-custom",
+    )
+
+    assert (provider, model) == ("custom", "custom-model")
+    assert resolved.endpoint == "https://custom.test/v1"
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "models"),
+    [(None, ["custom-model"]), ("https://custom.test/v1", [])],
+)
+def test_fallback_resolver_rejects_incomplete_custom_provider(
+    db: Session,
+    redis_client: redis_lib.Redis,
+    endpoint: str | None,
+    models: list[str],
+) -> None:
+    user = _make_user(db)
+    _seed(
+        redis_client,
+        user,
+        provider="custom",
+        api_key="custom-key",
+        endpoint=endpoint,
+        models=models,
+    )
+    with pytest.raises(NoProviderKeyError):
+        resolve_for_user_with_fallback(
+            redis_client,
+            user_id=user.id,
+            preferred_provider="anthropic",
+            preferred_model="claude-custom",
+        )
+
+
+def test_fallback_resolver_rejects_unsupported_provider_slug(
     db: Session, redis_client: redis_lib.Redis
 ) -> None:
     user = _make_user(db)
@@ -208,7 +260,8 @@ def test_fallback_resolver_rejects_unknown_provider_without_model(
         user,
         provider="custom-compatible",
         api_key="custom-key",
-        models=[],
+        endpoint="https://custom.test/v1",
+        models=["custom-model"],
     )
     with pytest.raises(NoProviderKeyError):
         resolve_for_user_with_fallback(
@@ -235,7 +288,8 @@ def test_fallback_ignores_newer_unroutable_custom_provider(
         user,
         provider="custom-compatible",
         api_key="custom-key",
-        models=[],
+        endpoint="https://custom.test/v1",
+        models=["custom-model"],
     )
 
     provider, model, resolved = resolve_for_user_with_fallback(

@@ -8,6 +8,7 @@ from collections.abc import Iterator
 from types import SimpleNamespace
 
 import pytest
+import redis as redis_lib
 from fastapi.testclient import TestClient
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
@@ -37,6 +38,7 @@ from app.services.engagement_strategist import (
     build_engagement_dossier,
     run_engagement_strategist,
 )
+from app.services.ephemeral_provider_key import NoProviderKeyError
 
 
 @pytest.fixture()
@@ -108,6 +110,85 @@ def test_v3_engagement_rejects_new_legacy_strategist_calls(
     assert chatted.status_code == 409
     assert "legacy Engagement Strategist calls are retired" in generated.text
     assert history.status_code == 200
+
+
+@pytest.mark.parametrize(
+    ("raised", "expected_status", "expected_code"),
+    [
+        (
+            NoProviderKeyError(
+                user_id=uuid.UUID(int=3), provider="anthropic"
+            ),
+            400,
+            "missing_provider_key",
+        ),
+        (redis_lib.ConnectionError("redis unavailable"), 503, None),
+    ],
+)
+def test_strategist_dependency_failures_keep_actionable_http_status(
+    client: TestClient,
+    engagement: Engagement,
+    monkeypatch: pytest.MonkeyPatch,
+    raised: Exception,
+    expected_status: int,
+    expected_code: str | None,
+) -> None:
+    from app.api import engagement_strategist as api
+
+    monkeypatch.setattr(api.settings, "engagement_strategist_enabled", True)
+
+    def fail(*_args: object, **_kwargs: object) -> object:
+        raise raised
+
+    monkeypatch.setattr(api, "run_engagement_strategist", fail)
+    response = client.post(
+        f"/engagements/{engagement.slug}/strategy/recommend",
+        headers={"X-User-Id": "strategist-errors@example.com"},
+    )
+
+    assert response.status_code == expected_status
+    if expected_code:
+        assert response.json()["detail"]["code"] == expected_code
+    else:
+        assert "temporary credential/queue service outage" in response.json()[
+            "detail"
+        ]
+
+
+@pytest.mark.parametrize(
+    "raised",
+    [
+        NoProviderKeyError(user_id=uuid.UUID(int=4), provider="anthropic"),
+        redis_lib.ConnectionError("redis unavailable"),
+    ],
+)
+def test_strategist_chat_dependency_failure_does_not_persist_orphan_prompt(
+    client: TestClient,
+    db: Session,
+    engagement: Engagement,
+    monkeypatch: pytest.MonkeyPatch,
+    raised: Exception,
+) -> None:
+    from app.api import engagement_strategist as api
+
+    monkeypatch.setattr(api.settings, "engagement_strategist_enabled", True)
+
+    def fail(*_args: object, **_kwargs: object) -> object:
+        raise raised
+
+    monkeypatch.setattr(api, "run_engagement_strategist", fail)
+    response = client.post(
+        f"/engagements/{engagement.slug}/strategy/chat",
+        headers={"X-User-Id": "strategist-chat-errors@example.com"},
+        json={"message": "What should we do next?"},
+    )
+
+    assert response.status_code in {400, 503}
+    assert db.execute(
+        select(ConversationMessage)
+        .join(Conversation, Conversation.id == ConversationMessage.conversation_id)
+        .where(Conversation.engagement_id == engagement.id)
+    ).scalars().all() == []
 
 
 def test_dossier_hash_is_stable_and_injected_record_remains_bounded_data(

@@ -138,7 +138,11 @@ from app.schemas.finding import (
 from app.schemas.observation import ObservationCreate, ObservationRead
 from app.services import methodology as methodology_service
 from app.services.command_outbox import enqueue_command, publish_entry
-from app.services.entities import annotate_scope_status, extract_entities
+from app.services.entities import (
+    annotate_scope_status,
+    extract_entities,
+    include_scope_entities,
+)
 from app.services.findings import (
     get_active_finding_or_404,
     lock_active_finding_or_404,
@@ -1471,8 +1475,9 @@ def list_entities(
         ).scalars()
         if v
     }
+    entities_with_scope = include_scope_entities(list(full), scope_items)
     result = annotate_scope_status(
-        list(full),
+        entities_with_scope,
         current_scope_items=scope_items,
         retired_scope_values=retired_values,
     )

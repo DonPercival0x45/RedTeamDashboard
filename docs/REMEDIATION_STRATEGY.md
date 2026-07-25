@@ -9,23 +9,29 @@
 
 ## 1. Current state
 
-`fix/v3-playbook-run-ui` is **ahead of `origin/main` by 4 commits**:
+`fix/v3-playbook-run-ui` is **ahead of `origin/main` by 18 committed
+rollback points**, with the current Entities/executor wave still uncommitted.
+The most recent completed slices are:
 
 | commit | what | status |
 |--------|------|--------|
-| `382a97a` | v3 engagements route runs through Playbooks; v3 Status hides legacy retry | ✅ fixed |
-| `6c5432b` | **P0** dead 204 routes (app wouldn't import) + Anthropic-key nonsense across all user LLM paths + dead MCP port + RunPrompt UI race + CLI provider set + CLI 0600 Windows skip | ✅ fixed |
-| `a030e30` | `SANDBOX_RUNNER` env-name mismatch (prod sandbox broken) + cancel cache key | ✅ fixed |
-| `166fb19` | **Test platform**: vitest + playwright + compose smoke + docs | ✅ landed |
+| `53ba6e2` | soft provider preferences route to a live MRU key while explicit identities remain strict | ✅ fixed |
+| `737bbd5` | Analytics distinguishes load failure, stale data, and honest empty state | ✅ fixed |
+| `3df18b4` | reconciles v3.0.3 with the canonical playbook finding bridge | ✅ fixed |
+| `0f46281` | playbook runs are first-class across engagement navigation, status, and decisions | ✅ fixed |
+| `3e6470a` | playbook results persist through the canonical Findings contract | ✅ fixed |
 
-**Validation gates now green locally:**
-- backend: ruff clean, `from app.main import app` ok, **965 tests collect**
-- frontend: `tsc --noEmit` clean, `next build` clean, **19 vitest tests pass**
-- CLI: ruff clean, **35 passed / 1 skipped**
+**Current validation evidence:**
+- backend: Ruff clean; **204 focused playbook/entity/provider tests pass**;
+  full suite **1010 passed / 4 documented Windows-host failures / 2 skipped**
+- frontend: `tsc --noEmit` and `next build` clean; **49 Vitest tests pass**
+- CLI: **35 passed / 1 skipped** (documented Windows permissions limitation)
+- Compose: Postgres, Redis, backend, and frontend are running; backend is
+  healthy and the live frontend is published on `http://localhost:3001`
 
-**Blocking the full backend pytest run:** Docker Desktop is **not running** on
-this host. The 965-test suite needs Postgres + Redis (real services, not
-mocks). Starting Docker unblocks layers 2 + 5 of the test platform.
+The previous Docker blocker is resolved. Four known Windows-host limitations
+remain documented separately (three SSE tail tests and the report renderer's
+missing native `libgobject-2.0-0`).
 
 ## 2. Severity rubric
 
@@ -49,30 +55,19 @@ user-triggered LLM path — role/mode pref → user default → process fallback
 Both peers regression-validated it; **962 backend tests pass** including the
 new resolver tests. No further action.
 
-### 🟡 Complaint 1 — "Playbooks are referenced in engagements but buried in an entirely different screen"
-**Status: PARTIALLY FIXED.** `382a97a` mounts `PlaybooksTab` inline on the v3
-Scope tab, so a v3 engagement can now kick/manage playbook runs without
-leaving the workspace. **Remaining gaps (NOT fixed):**
-- No first-class engagement surface: `EngagementNav` has **no** Playbooks view;
-  playbooks are crammed into Scope, and **Automation ▸ Playbooks is still a
-  separate top-level screen**.
-- **Status tab is blind to playbook runs** (`get_engagement_status` returns
-  agents/tasks/approvals only) — the "track everything in flight" pane doesn't
-  show the v3 execution surface or let you cancel it. *(playbooks journey P2-3.)*
-- **No unified approval queue** for awaiting playbook runs (bell only lists
-  LangGraph interrupts). *(playbooks journey P2-2.)*
-
-**Fix (Wave 4):** add a **Playbooks** view to `EngagementNav` that renders
-`PlaybooksTab` (keeping Automation as an admin/cross-engagement convenience);
-add a `playbook_runs` slice to `EngagementStatusResponse` (or at minimum a
-prominent Status deep-link + cancel); surface awaiting playbook runs in the
-approval bell.
+### ✅ Complaint 1 — "Playbooks are referenced in engagements but buried in an entirely different screen"
+**Status: FIXED.** Playbooks now have a first-class engagement view. Their
+running/terminal lifecycle is visible in Status and running jobs, and awaiting
+playbook runs share the unified decision inbox with tool approvals. The Scope
+tab remains the authoritative place to define targets; it is no longer used as
+a substitute Playbooks screen.
 
 ### 🔴 Complaint 2 — "A lot of the UI is basically pointless/deprecated because of recent changes"
 **Status: NOT FIXED (broad).** v3 landed enforcement before the UI caught up,
 leaving dead/misleading surfaces. Confirmed items:
-- **Entity quick-actions are dead on v3** (set a prompt that's never consumed;
-  P1). Hide on v3 or bridge to a playbook kickoff.
+- ~~**Entity quick-actions are dead on v3**~~ **Fixed:** legacy prompt actions
+  are hidden on v3; entity preview remains useful for scope/provenance and
+  links to the full workbench.
 - **Uploaded-tool invocation UI never shipped** (`invokeTool`/`listToolInvocations`
   have zero callers; Tools page still copy-promises it "in v0.12.0" at v3.0.1).
 - **3 of 5 Automation tabs are `ComingSoonTab` placeholders** (recon/scanning/
@@ -86,34 +81,26 @@ leaving dead/misleading surfaces. Confirmed items:
 either wire it to the v3 path, hide it for v3, or correct the copy. Deliver as
 one coherent pass (not scattered one-offs).
 
-### 🔴 Complaint 4 — "Playbook findings aren't ported to the engagement, and the kick modal asks me to re-type scope that's already in findings/scope"
-**Status: NOT FIXED — two bugs, both confirmed.**
+### ✅ Complaint 4 — "Playbook findings aren't ported to the engagement, and the kick modal asks me to re-type scope that's already in findings/scope"
+**Status: FIXED, with legacy repair.**
 
-**4a. Playbook findings never persist to the Findings table** (`P2-10`). The
-internal DNS/WHOIS tools count answers as `findings_new`/`findings_total`, but
-`grep Finding( / _persist_finding / FindingOrigin` across `services/playbook/`
-returns **nothing** — no `Finding` row is ever created. So a run shows "N
-findings" in its detail modal while the engagement's **Findings tab stays
-empty**, and `engagement_rollup`'s gather (`thread_id == run.id`) finds nothing
-→ the post-run v3 analysis never fires. This is the single biggest reason the
-product "doesn't work" for the operator.
-**Fix (Wave 3, elevated to P1):** define one finding contract — executors
-return structured candidates; the runner persists/dedupes them and stamps
-`FindingOrigin.thread_id = run.id` transactionally, then derives counters from
-persisted outcomes.
-
-**4b. The kick modal re-types scope instead of surfacing existing data.**
-`KickRunModal` is a free-form `Textarea`; it never loads the engagement's
-existing `ScopeItem`s / findings / entities (it doesn't even call `useScope`).
-The operator must re-type targets that are already in the engagement — and
-there's **no scope-membership validation** server-side, so arbitrary/out-of-
-scope targets are queued and handed straight to tools (violating the
-in-scope-only invariant; the arbitrary-scope P1).
-**Fix (Wave 3/4, elevated to P1):** replace the textarea with a **picker
-sourced from `useScope(slug)` non-exclusion items** (+ optionally entities),
-send scope **IDs** (or canonical values), and **enforce membership/normalization
-in `POST /engagements/{slug}/playbook-runs`** so the server rejects unknown/
-excluded/other-engagement items regardless of what a client sends.
+- Playbook DNS, WHOIS, subfinder/CT, and MCP IP-enrichment output now uses the
+  canonical finding-grouping bridge, records `FindingOrigin.thread_id`, stages
+  requester-attributed feedback, and derives run counters from persisted
+  canonical rows. Reruns deduplicate items.
+- Validated scope is authoritative for both invocation and persistence. A
+  hard-coded step target cannot redirect a built-in tool while retaining
+  misleading scope attribution.
+- A rerun retires legacy `whois:{{scope_item}}` / literal-target rows and writes
+  a trustworthy resolved group.
+- Kickoff selects existing non-exclusion scope items. The API revalidates scope
+  membership and asset class before queueing.
+- Scope targets and structured playbook discoveries appear in the derived
+  Entities inventory without being duplicated into the separate imported
+  Entity store.
+- Executor affinity is catalog/server-owned. Only an allowlisted, passive tool
+  set can be placed on MCP; unsupported or mixed-transport playbooks fail
+  closed before queueing.
 
 ---
 

@@ -1,10 +1,18 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { ArrowLeft, Boxes, Clipboard, Network, RefreshCcw, ShieldCheck } from "lucide-react";
 import { DateTime } from "@/components/date-time";
+import { QueryState } from "@/components/query-state";
 import { Badge } from "@/components/ui/badge";
 import { CopyJsonButton } from "@/components/copy-json-button";
 import {
@@ -95,10 +103,23 @@ export function EntityWorkbenchPage() {
   const [tasks, setTasks] = useState<Task[] | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [fetchError, setFetchError] = useState<string | null>(null);
+  const [loadComplete, setLoadComplete] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const loadedSlugRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!slug) return;
+    if (loadedSlugRef.current !== slug) {
+      loadedSlugRef.current = slug;
+      setEntities(null);
+      setStored(null);
+      setFindings(null);
+      setScope(null);
+      setTasks(null);
+      setLoadComplete(false);
+    }
     setFetchError(null);
+    setIsRefreshing(true);
     let active = true;
     Promise.allSettled([
       listEntities(slug),
@@ -109,12 +130,19 @@ export function EntityWorkbenchPage() {
     ]).then(([e, s, f, sc, t]) => {
       if (!active) return;
       const errs: string[] = [];
-      setEntities(pick(e, errs, "entities"));
-      setStored(pick(s, errs, "imports"));
-      setFindings(pick(f, errs, "findings"));
-      setScope(pick(sc, errs, "scope"));
-      setTasks(pick(t, errs, "tasks"));
+      if (e.status === "fulfilled") setEntities(e.value);
+      else errs.push("entities");
+      if (s.status === "fulfilled") setStored(s.value);
+      else errs.push("imports");
+      if (f.status === "fulfilled") setFindings(f.value);
+      else errs.push("findings");
+      if (sc.status === "fulfilled") setScope(sc.value);
+      else errs.push("scope");
+      if (t.status === "fulfilled") setTasks(t.value);
+      else errs.push("tasks");
       setFetchError(errs.length ? `Failed to load: ${errs.join(", ")}` : null);
+      setLoadComplete(true);
+      setIsRefreshing(false);
     });
     return () => {
       active = false;
@@ -124,24 +152,31 @@ export function EntityWorkbenchPage() {
   const refresh = useCallback(() => setRefreshKey((k) => k + 1), []);
 
   const entity = useMemo(
-    () => (entities ?? []).find((e) => e.type === type && e.value === value) ?? null,
+    () =>
+      (entities ?? []).find((candidate) =>
+        sameEntityIdentity(candidate.type, candidate.value, type, value),
+      ) ?? null,
     [entities, type, value],
   );
   const storedMatches = useMemo(
-    () => (stored ?? []).filter((e) => e.type === type && e.value === value),
+    () =>
+      (stored ?? []).filter((candidate) =>
+        sameEntityIdentity(candidate.type, candidate.value, type, value),
+      ),
     [stored, type, value],
   );
   const relatedFindings = useMemo(
-    () => relatedForEntity(value, entity, storedMatches, findings ?? []),
-    [entity, findings, storedMatches, value],
+    () => relatedForEntity(type, value, entity, storedMatches, findings ?? []),
+    [entity, findings, storedMatches, type, value],
   );
   const relatedTasks = useMemo(
-    () => (tasks ?? []).filter((t) => taskTouchesEntity(t, value)),
-    [tasks, value],
+    () => (tasks ?? []).filter((task) => taskTouchesEntity(task, type, value)),
+    [tasks, type, value],
   );
   const scopeMatches = useMemo(
-    () => (scope ?? []).filter((s) => scopeMatchesValue(s, value)),
-    [scope, value],
+    () =>
+      (scope ?? []).filter((item) => scopeMatchesEntity(item, type, value)),
+    [scope, type, value],
   );
   const actionCount = (ACTIONS[type] ?? []).length;
 
@@ -149,7 +184,10 @@ export function EntityWorkbenchPage() {
     return <p className="px-6 py-10 text-sm text-destructive">Missing entity route parameters.</p>;
   }
 
-  const loading = entities === null || findings === null;
+  const loading = !loadComplete;
+  const hasAnyData = [entities, stored, findings, scope, tasks].some(
+    (value) => value !== null,
+  );
 
   return (
     <div className="mx-auto max-w-7xl px-4 py-6">
@@ -195,14 +233,25 @@ export function EntityWorkbenchPage() {
         </div>
 
         <div className="p-4">
-          {fetchError && (
-            <p className="mb-3 rounded-md border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-700 dark:text-rose-200">
-              {fetchError}
-            </p>
-          )}
+          {fetchError ? (
+            <QueryState
+              isLoading={false}
+              error={new Error(fetchError)}
+              hasData={hasAnyData}
+              compact={hasAnyData}
+              errorLabel="Some entity context could not be refreshed."
+              onRetry={refresh}
+              isRetrying={isRefreshing}
+            />
+          ) : null}
           {loading ? (
-            <p className="text-sm text-muted-foreground">Loading entity context…</p>
-          ) : tab === "overview" ? (
+            <QueryState
+              isLoading
+              error={null}
+              hasData={false}
+              loadingLabel="Loading entity context…"
+            />
+          ) : !hasAnyData ? null : tab === "overview" ? (
             <OverviewPanel entity={entity} value={value} scopeMatches={scopeMatches} storedMatches={storedMatches} relatedFindings={relatedFindings} relatedTasks={relatedTasks} slug={slug} />
           ) : tab === "findings" ? (
             <FindingsPanel findings={relatedFindings} slug={slug} />
@@ -393,32 +442,189 @@ function ActionHistory({ tasks, slug }: { tasks: Task[]; slug: string }) {
   );
 }
 
-function pick<T>(
-  r: PromiseSettledResult<T[]>,
-  errs: string[],
-  label: string,
-): T[] {
-  if (r.status === "fulfilled") return r.value;
-  errs.push(label);
-  return [];
+function normalizeIdentityType(type: string): string {
+  const aliases: Record<string, string> = {
+    fqdn: "domain",
+    hostname: "host",
+    email_address: "email",
+    mailbox: "email",
+    ip_address: "ip",
+    ipv4: "ip",
+    ipv6: "ip",
+    network: "cidr",
+    netblock: "cidr",
+    uri: "url",
+    website: "url",
+  };
+  const raw = type.trim().toLowerCase();
+  return aliases[raw] ?? raw;
 }
 
-function relatedForEntity(value: string, entity: Entity | null, storedMatches: StoredEntity[], findings: Finding[]) {
-  const ids = new Set([
+function normalizeIp(value: string): string {
+  if (value.includes(":")) {
+    try {
+      const hostname = new URL(`http://[${value}]/`).hostname;
+      return hostname.slice(1, -1);
+    } catch {
+      return value;
+    }
+  }
+  const octets = value.split(".");
+  if (
+    octets.length === 4 &&
+    octets.every((octet) => /^\d+$/.test(octet) && Number(octet) <= 255)
+  ) {
+    return octets.map((octet) => String(Number(octet))).join(".");
+  }
+  return value;
+}
+
+function normalizeCidr(value: string): string {
+  const [address, prefixText, ...rest] = value.split("/");
+  const prefix = Number(prefixText);
+  if (rest.length || !Number.isInteger(prefix)) return value;
+  const normalizedAddress = normalizeIp(address);
+  if (!normalizedAddress.includes(":")) {
+    if (prefix < 0 || prefix > 32) return value;
+    const octets = normalizedAddress.split(".").map(Number);
+    if (octets.length !== 4 || octets.some(Number.isNaN)) return value;
+    const numeric =
+      (((octets[0] << 24) >>> 0) +
+        (octets[1] << 16) +
+        (octets[2] << 8) +
+        octets[3]) >>>
+      0;
+    const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
+    const network = (numeric & mask) >>> 0;
+    return `${[
+      network >>> 24,
+      (network >>> 16) & 255,
+      (network >>> 8) & 255,
+      network & 255,
+    ].join(".")}/${prefix}`;
+  }
+  return prefix >= 0 && prefix <= 128
+    ? `${normalizedAddress}/${prefix}`
+    : value;
+}
+
+export function normalizeIdentityValue(type: string, value: string): string {
+  const kind = normalizeIdentityType(type);
+  const trimmed = value.trim();
+  if (["domain", "subdomain", "host"].includes(kind)) {
+    return trimmed.toLowerCase().replace(/\.$/, "");
+  }
+  if (kind === "email") {
+    const separator = trimmed.lastIndexOf("@");
+    if (separator <= 0 || separator === trimmed.length - 1) return trimmed;
+    return `${trimmed.slice(0, separator)}@${trimmed
+      .slice(separator + 1)
+      .toLowerCase()
+      .replace(/\.$/, "")}`;
+  }
+  if (kind === "url") {
+    try {
+      const parsed = new URL(trimmed);
+      if (!["http:", "https:"].includes(parsed.protocol) || parsed.username) {
+        return trimmed;
+      }
+      parsed.hostname = parsed.hostname.toLowerCase().replace(/\.$/, "");
+      parsed.hash = "";
+      return parsed.toString();
+    } catch {
+      return trimmed;
+    }
+  }
+  if (["hash", "md5", "sha1", "sha256", "sha512"].includes(kind)) {
+    return /^[0-9a-f]+$/i.test(trimmed) && [32, 40, 64, 128].includes(trimmed.length)
+      ? trimmed.toLowerCase()
+      : trimmed;
+  }
+  if (kind === "asn") {
+    const match = /^(?:AS)?0*(\d+)$/i.exec(trimmed);
+    return match ? `AS${Number(match[1])}` : trimmed;
+  }
+  if (kind === "ip") return normalizeIp(trimmed.toLowerCase());
+  if (kind === "cidr") return normalizeCidr(trimmed.toLowerCase());
+  return trimmed;
+}
+
+export function sameEntityIdentity(
+  leftType: string,
+  leftValue: string,
+  rightType: string,
+  rightValue: string,
+): boolean {
+  return (
+    normalizeIdentityType(leftType) === normalizeIdentityType(rightType) &&
+    normalizeIdentityValue(leftType, leftValue) ===
+      normalizeIdentityValue(rightType, rightValue)
+  );
+}
+
+function relatedForEntity(
+  type: string,
+  value: string,
+  entity: Entity | null,
+  storedMatches: StoredEntity[],
+  findings: Finding[],
+): Finding[] {
+  const authoritativeIds = new Set([
     ...(entity?.findings ?? []).map((finding) => finding.id),
-    ...storedMatches.flatMap((stored) => stored.finding_refs.map((finding) => finding.id)),
+    ...storedMatches.flatMap((stored) =>
+      stored.finding_refs.map((finding) => finding.id),
+    ),
   ]);
-  const lower = value.toLowerCase();
-  return findings.filter((f) => ids.has(f.id) || JSON.stringify({ target: f.target, title: f.title, summary: f.summary, data: f.data }).toLowerCase().includes(lower));
+  return findings.filter(
+    (finding) =>
+      authoritativeIds.has(finding.id) ||
+      (finding.target != null &&
+        normalizeIdentityValue(type, finding.target) ===
+          normalizeIdentityValue(type, value)),
+  );
 }
 
-function taskTouchesEntity(task: Task, value: string): boolean {
-  const lower = value.toLowerCase();
-  return JSON.stringify(task.payload).toLowerCase().includes(lower) || task.title.toLowerCase().includes(lower);
+function taskTouchesEntity(task: Task, type: string, value: string): boolean {
+  const wanted = normalizeIdentityValue(type, value);
+  const candidateKeys = new Set([
+    "target",
+    "scope_item",
+    "domain",
+    "hostname",
+    "host",
+    "ip",
+    "cidr",
+    "url",
+    "email",
+  ]);
+  const visit = (candidate: unknown): boolean => {
+    if (!candidate || typeof candidate !== "object") return false;
+    return Object.entries(candidate).some(([key, nested]) => {
+      if (candidateKeys.has(key) && typeof nested === "string") {
+        return normalizeIdentityValue(type, nested) === wanted;
+      }
+      return key === "args" && visit(nested);
+    });
+  };
+  return visit(task.payload);
 }
 
-function scopeMatchesValue(scope: ScopeItem, value: string): boolean {
-  const a = scope.value.toLowerCase();
-  const b = value.toLowerCase();
-  return a === b || a.includes(b) || b.includes(a);
+function scopeMatchesEntity(
+  scope: ScopeItem,
+  entityType: string,
+  entityValue: string,
+): boolean {
+  const scopeType = String(scope.kind);
+  const scopeValue = normalizeIdentityValue(scopeType, scope.value).replace(
+    /^\*\./,
+    "",
+  );
+  const value = normalizeIdentityValue(entityType, entityValue);
+  if (
+    scopeType === "domain" &&
+    ["domain", "subdomain", "host"].includes(entityType)
+  ) {
+    return value === scopeValue || value.endsWith(`.${scopeValue}`);
+  }
+  return sameEntityIdentity(scopeType, scopeValue, entityType, value);
 }

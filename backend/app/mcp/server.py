@@ -301,14 +301,17 @@ def _infer_engagement_slug(provided: str | None) -> str | None:
     supply slug. Returns the inferred slug, or None when neither path
     provides one (caller raises with a clear message).
     """
-    if provided:
-        return provided
     lease = get_current_lease()
     if lease is None:
-        return None
+        return provided or None
     engagement = (lease.context or {}).get("engagement") or {}
     inferred = engagement.get("slug")
-    return inferred if isinstance(inferred, str) and inferred else None
+    pinned = inferred if isinstance(inferred, str) and inferred else None
+    if provided and pinned and provided != pinned:
+        raise ValueError(
+            "engagement_slug conflicts with the active MCP lease"
+        )
+    return pinned or provided or None
 
 
 def _run_osint(
@@ -327,7 +330,10 @@ def _run_osint(
     if denied is not None:
         return denied
 
-    engagement_slug = _infer_engagement_slug(engagement_slug)
+    try:
+        engagement_slug = _infer_engagement_slug(engagement_slug)
+    except ValueError as exc:
+        return {"error": str(exc)}
     if not engagement_slug:
         return {
             "error": (
@@ -346,9 +352,27 @@ def _run_osint(
     with _session() as session:
         try:
             eng = _resolve_engagement(session, engagement_slug)
+            lease = get_current_lease()
+            if lease is not None and lease.engagement_id != eng.id:
+                raise ValueError(
+                    "engagement does not match the active MCP lease"
+                )
             _ensure_mutable_engagement(eng)
         except ValueError as exc:
             return {"error": str(exc)}
+
+        # A server-minted lease may pin the analyst who requested an
+        # asynchronous run. Use that identity for audit/feedback instead of
+        # attributing work to the worker's transport API key.
+        lease = get_current_lease()
+        actor_id = (lease.context or {}).get("acting_user_id") if lease else None
+        if actor_id:
+            try:
+                leased_user = session.get(User, uuid.UUID(str(actor_id)))
+            except ValueError:
+                leased_user = None
+            if leased_user is not None:
+                user = leased_user
 
         scope = _get_scope(session, eng)
         decision = evaluate(tool_name, args, scope)

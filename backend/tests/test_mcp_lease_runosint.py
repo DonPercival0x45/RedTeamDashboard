@@ -202,6 +202,29 @@ def test_run_osint_leased_returns_lease_findings_and_skips_db_store(
     assert audits[0].payload["via"] == "mcp.lease"
 
 
+def test_lease_pinned_engagement_rejects_conflicting_slug(
+    engagement: Engagement,
+    cli_user_and_key: tuple[User, APIKey],
+    task: Task,
+) -> None:
+    user, key = cli_user_and_key
+    lease = _build_lease(task)
+    lease.context = {"engagement": {"slug": engagement.slug}}
+    tokens = _set_caller_context(user, key, lease)
+    try:
+        result = _run_osint(
+            "dns_lookup",
+            "different-engagement",
+            {"domain": "acme.test"},
+        )
+    finally:
+        _reset_caller_context(tokens)
+
+    assert result == {
+        "error": "engagement_slug conflicts with the active MCP lease"
+    }
+
+
 def test_run_osint_without_lease_stores_findings_server_side(
     db: Session,
     engagement: Engagement,

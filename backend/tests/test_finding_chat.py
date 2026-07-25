@@ -269,6 +269,38 @@ def test_missing_provider_key_returns_actionable_error_without_orphan_message(
     assert count == 0
 
 
+def test_finding_chat_ask_returns_503_when_redis_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    client: TestClient,
+    db: Session,
+    finding: Finding,
+) -> None:
+    _patch_llm(monkeypatch)
+    import app.services.finding_chat as chat
+
+    def redis_down(*_args: object, **_kwargs: object) -> object:
+        raise redis_lib.ConnectionError("redis unavailable")
+
+    monkeypatch.setattr(
+        chat, "resolve_for_user_with_fallback", redis_down
+    )
+    response = client.post(
+        f"/findings/{finding.id}/chat",
+        headers=HDR,
+        json={"message": "What should I do next?"},
+    )
+
+    assert response.status_code == 503
+    assert "temporary credential/queue service outage" in response.json()[
+        "detail"
+    ]
+    assert db.execute(
+        select(func.count(ConversationMessage.id))
+        .join(Conversation, Conversation.id == ConversationMessage.conversation_id)
+        .where(Conversation.finding_id == finding.id)
+    ).scalar_one() == 0
+
+
 def test_plain_prose_chat_response_gets_safe_agent_action(
     monkeypatch: pytest.MonkeyPatch,
     client: TestClient,

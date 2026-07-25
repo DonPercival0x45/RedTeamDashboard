@@ -45,7 +45,12 @@ from app.runs.streams import outbound_stream
 from app.services import coverage as cov
 from app.services import methodology as meth
 from app.services.command_outbox import enqueue_event
-from app.services.playbook.executor import InternalExecutor, PlaybookExecutor, StepResult
+from app.services.playbook.executor import (
+    InternalExecutor,
+    MCPExecutor,
+    PlaybookExecutor,
+    StepResult,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -540,24 +545,21 @@ def _run_one(
             scope_item=scope_item,
         )
 
-    if result.ok:
-        run.steps_succeeded += 1
-    else:
-        run.steps_failed += 1
-        if result.error and not run.last_error:
-            run.last_error = result.error
+    # Every supported real playbook tool persists through the same canonical
+    # bridge, regardless of transport. MCP lease calls return raw data to this
+    # worker; they must not create a parallel server-owned finding path.
+    bridge = None
+    if result.ok and not getattr(result, "stub", False):
+        from app.services.playbook.finding_bridge import (
+            FindingBridgePersistenceError,
+            bridge_step_to_finding,
+        )
 
-    if isinstance(executor, InternalExecutor):
-        # Internal tools persist through one canonical bridge. Run counters are
-        # derived from the canonical grouped Finding, never from raw answers.
-        bridge = None
-        if result.ok and not getattr(result, "stub", False):
-            from app.services.playbook.finding_bridge import bridge_step_to_finding
-
-            try:
-                actor_uuid = uuid.UUID(actor_id) if actor_id else None
-            except (ValueError, TypeError):
-                actor_uuid = None
+        try:
+            actor_uuid = uuid.UUID(actor_id) if actor_id else None
+        except (ValueError, TypeError):
+            actor_uuid = None
+        try:
             bridge = bridge_step_to_finding(
                 session,
                 engagement_id=engagement.id,
@@ -569,23 +571,32 @@ def _run_one(
                 acting_user_id=actor_uuid,
                 operation_id=run.id,
             )
-        if bridge is not None:
-            run.findings_new += bridge.items_added
-            # Multiple tools can enrich the same canonical group in one run.
-            # Count the group's latest total once, then only its growth.
-            seen_totals: dict[uuid.UUID, int] = getattr(
-                run, "_bridge_finding_totals", {}
-            )
-            previous = seen_totals.get(bridge.finding_id, 0)
-            run.findings_total += max(bridge.items_total - previous, 0)
-            seen_totals[bridge.finding_id] = max(previous, bridge.items_total)
-            run._bridge_finding_totals = seen_totals  # type: ignore[attr-defined]
-    else:
-        # MCP/test executors own persistence; preserve their declared counts.
+        except FindingBridgePersistenceError as exc:
+            result = StepResult(ok=False, error=str(exc))
+    if bridge is not None:
+        run.findings_new += bridge.items_added
+        # Multiple tools can enrich the same canonical group in one run.
+        # Count the group's latest total once, then only its growth.
+        seen_totals: dict[uuid.UUID, int] = getattr(
+            run, "_bridge_finding_totals", {}
+        )
+        previous = seen_totals.get(bridge.finding_id, 0)
+        run.findings_total += max(bridge.items_total - previous, 0)
+        seen_totals[bridge.finding_id] = max(previous, bridge.items_total)
+        run._bridge_finding_totals = seen_totals  # type: ignore[attr-defined]
+    elif not isinstance(executor, (InternalExecutor, MCPExecutor)):
+        # Test/extension executors may own persistence and declare counts.
         run.findings_new += result.findings_new
         run.findings_total += result.findings_total
         run.findings_unvalidated += result.findings_unvalidated
         run.findings_high_severity += result.findings_high_severity
+
+    if result.ok:
+        run.steps_succeeded += 1
+    else:
+        run.steps_failed += 1
+        if result.error and not run.last_error:
+            run.last_error = result.error
 
     if getattr(result, "stub", False):
         status = CoverageRecordStatus.stub

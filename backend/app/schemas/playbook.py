@@ -30,6 +30,7 @@ class PlaybookRead(BaseModel):
     applies_to_asset_class: str
     active: bool
     step_count: int = 0
+    required_executor: str = "internal"
 
 
 class PlaybookDetail(PlaybookRead):
@@ -43,15 +44,15 @@ class PlaybookRunPayload(BaseModel):
 
     ``playbook_version`` is optional — omit to pin to latest at start.
     ``scope_subset`` = analyst-declared scope_item_ids the run targets.
-    ``executor`` picks which executor drives the run (A4). Defaults to
-    ``internal`` — the in-process implementation A3b landed. ``mcp``
-    dispatches to the MCP server via ``MCPExecutor``.
+    ``executor`` may echo the catalog's server-owned ``required_executor``.
+    When omitted, the server selects the compatible executor. An incompatible
+    explicit value is rejected before the run is queued.
     """
 
     playbook_slug: str
     playbook_version: int | None = None
     scope_subset: list[str] = Field(default_factory=list)
-    executor: str = "internal"
+    executor: str | None = None
 
 
 class PlaybookRunRead(BaseModel):

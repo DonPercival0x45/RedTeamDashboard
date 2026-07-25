@@ -4,7 +4,8 @@ import { useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useQueryClient } from "@tanstack/react-query";
-import { Check, Layers, RotateCcw, Search, Trash2, Upload, X, Zap } from "lucide-react";
+import { Check, Layers, RotateCcw, Search, Trash2, Upload, Zap } from "lucide-react";
+import { QueryState } from "@/components/query-state";
 import type { MapPoint } from "@/components/leaflet-map";
 
 // v2.21.0: thumbnail map for IP-type entities. Dynamic-imported (ssr:false)
@@ -20,6 +21,14 @@ const LeafletMap = dynamic(
 );
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import {
   createEntityGroup,
@@ -233,31 +242,18 @@ function ScopeStatusBadge({ status }: { status: string }) {
 // from external sources (Maltego today, future Dehashed etc.).
 export function EntitiesView({
   slug,
+  canWrite,
   onQuickAction,
 }: {
   slug: string;
+  canWrite: boolean;
   onQuickAction?: (prompt: string) => void;
 }) {
   // v1.0.0: react-query owns the derived-entities fetch. Focus revalidation
   // catches new findings that landed while the tab was hidden.
-  const { data: entities, error } = useEntities(slug);
-  // v1.4.14: roadmap #8 -- which tools have already produced a finding
-  // against each entity value, so the slide-over can suggest the NEXT
-  // un-run recon step instead of repeating completed ones.
-  const { data: findings = [] } = useFindings(slug);
-  const toolsByValue = useMemo(() => {
-    const m = new Map<string, Set<string>>();
-    for (const f of findings) {
-      if (!f.target || !f.tool) continue;
-      let s = m.get(f.target);
-      if (!s) {
-        s = new Set<string>();
-        m.set(f.target, s);
-      }
-      s.add(f.tool);
-    }
-    return m;
-  }, [findings]);
+  const entitiesQuery = useEntities(slug);
+  const entities = entitiesQuery.data;
+  const { error } = entitiesQuery;
   const [search, setSearch] = useState("");
   const [type, setType] = useState<string>("all");
   // v2.19.0: scope-status filter runs alongside type. "all" shows everything,
@@ -265,29 +261,22 @@ export function EntitiesView({
   const [scopeStatus, setScopeStatus] = useState<
     "all" | "live" | "legacy" | "oos"
   >("all");
-  const [selected, setSelected] = useState<Entity | null>(null);
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const detailTriggerRef = useRef<HTMLButtonElement | null>(null);
 
-  if (error)
-    return (
-      <div className="space-y-6">
-        <ImportedEntitiesSection slug={slug} />
-        <section className="space-y-1">
-          <h2 className="text-base font-medium">Derived from findings</h2>
-          <p className="text-xs text-muted-foreground">
-            Extracted on the fly from <code className="font-mono">Finding.target</code>{" "}
-            and <code className="font-mono">Finding.details</code>.
-          </p>
-          <p role="alert" className="pt-2 text-sm text-critical">
-            Could not load derived entities: {error instanceof Error ? error.message : String(error)}
-          </p>
-        </section>
-      </div>
-    );
   if (entities === undefined)
     return (
       <div className="space-y-5">
-        <ImportedEntitiesSection slug={slug} />
-        <p className="text-sm text-muted-foreground">Loading entities…</p>
+        <ImportedEntitiesSection slug={slug} canWrite={canWrite} />
+        <QueryState
+          isLoading={entitiesQuery.isLoading}
+          error={error}
+          hasData={false}
+          loadingLabel="Loading scope and discovered entities…"
+          errorLabel="Could not load scope and discovered entities."
+          onRetry={() => void entitiesQuery.refetch()}
+          isRetrying={entitiesQuery.isFetching}
+        />
       </div>
     );
 
@@ -303,15 +292,33 @@ export function EntitiesView({
         b.count - a.count,
     );
 
+  const selected = selectedKey
+    ? entities.find(
+        (entity) => `${entity.type}\u0000${entity.value}` === selectedKey,
+      ) ?? null
+    : null;
+
   return (
     <div className="space-y-6">
-      <ImportedEntitiesSection slug={slug} />
+      <ImportedEntitiesSection slug={slug} canWrite={canWrite} />
+
+      {error ? (
+        <QueryState
+          isLoading={false}
+          error={error}
+          hasData
+          errorLabel="Could not refresh scope and discovered entities."
+          onRetry={() => void entitiesQuery.refetch()}
+          isRetrying={entitiesQuery.isFetching}
+          compact
+        />
+      ) : null}
 
       <div className="space-y-1">
-        <h2 className="text-base font-medium">Derived from findings</h2>
+        <h2 className="text-base font-medium">Scope and discoveries</h2>
         <p className="text-xs text-muted-foreground">
-          Extracted on the fly from <code className="font-mono">Finding.target</code>{" "}
-          and <code className="font-mono">Finding.details</code>.
+          Declared targets appear immediately; playbook and tool evidence adds
+          discovered infrastructure and provenance.
         </p>
       </div>
 
@@ -371,7 +378,7 @@ export function EntitiesView({
         <p className="text-sm text-muted-foreground">
           {entities.length
             ? "No entities match these filters."
-            : "No entities found yet — they surface as findings come in."}
+            : "No entities yet — add scope or run a collection playbook."}
         </p>
       ) : (
         <div className="overflow-x-auto rounded-lg border border-border">
@@ -389,15 +396,26 @@ export function EntitiesView({
               {visible.map((e) => (
                 <tr
                   key={`${e.type}:${e.value}`}
-                  onClick={() => setSelected(e)}
-                  className="cursor-pointer border-b border-border/60 last:border-0 hover:bg-secondary/40"
+                  className="border-b border-border/60 last:border-0 hover:bg-secondary/40"
                 >
                   <td className="px-3 py-2.5">
                     <span className="text-xs text-muted-foreground">
                       {typeLabel(e.type)}
                     </span>
                   </td>
-                  <td className="px-3 py-2.5 font-mono text-xs">{e.value}</td>
+                  <td className="px-3 py-2.5 font-mono text-xs">
+                    <button
+                      type="button"
+                      aria-haspopup="dialog"
+                      className="rounded-sm text-left hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      onClick={(event) => {
+                        detailTriggerRef.current = event.currentTarget;
+                        setSelectedKey(`${e.type}\u0000${e.value}`);
+                      }}
+                    >
+                      {e.value}
+                    </button>
+                  </td>
                   <td className="px-3 py-2.5">
                     <ScopeStatusBadge status={e.scope_status} />
                   </td>
@@ -420,9 +438,18 @@ export function EntitiesView({
         <EntitySlideOver
           entity={selected}
           slug={slug}
-          onClose={() => setSelected(null)}
+          onClose={() => {
+            setSelectedKey(null);
+            requestAnimationFrame(() => detailTriggerRef.current?.focus());
+          }}
           onQuickAction={onQuickAction}
-          doneTools={toolsByValue.get(selected.value) ?? new Set<string>()}
+          doneTools={
+            new Set(
+              selected.findings
+                .map((finding) => finding.tool)
+                .filter((tool): tool is string => Boolean(tool)),
+            )
+          }
         />
       )}
     </div>
@@ -437,7 +464,13 @@ type LastImport =
   | { kind: "maltego"; result: MaltegoImportResult }
   | { kind: "darkweb"; result: DarkwebImportResult };
 
-function ImportedEntitiesSection({ slug }: { slug: string }) {
+function ImportedEntitiesSection({
+  slug,
+  canWrite,
+}: {
+  slug: string;
+  canWrite: boolean;
+}) {
   // v1.0.0: react-query owns the stored-entities fetch. Import mutations
   // patch the cache directly via qc.setQueryData.
   const qc = useQueryClient();
@@ -604,25 +637,29 @@ function ImportedEntitiesSection({ slug }: { slug: string }) {
             existing rows.
           </p>
         </div>
-        <div>
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            onClick={() => fileRef.current?.click()}
-            disabled={uploading}
-          >
-            <Upload className="mr-1.5 h-3.5 w-3.5" />
-            {uploading ? "Importing…" : "Import"}
-          </Button>
-          <input
-            ref={fileRef}
-            type="file"
-            accept=".mtgx,.json,.csv,application/zip,application/json,text/csv"
-            className="hidden"
-            onChange={onFile}
-          />
-        </div>
+        {canWrite ? (
+          <div>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => fileRef.current?.click()}
+              disabled={uploading}
+            >
+              <Upload className="mr-1.5 h-3.5 w-3.5" />
+              {uploading ? "Importing…" : "Import"}
+            </Button>
+            <input
+              ref={fileRef}
+              type="file"
+              accept=".mtgx,.json,.csv,application/zip,application/json,text/csv"
+              className="hidden"
+              onChange={onFile}
+            />
+          </div>
+        ) : (
+          <Badge variant="outline">Read-only</Badge>
+        )}
       </div>
 
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -639,7 +676,7 @@ function ImportedEntitiesSection({ slug }: { slug: string }) {
         </span>
       </div>
 
-      {duplicateCandidates.length > 0 && (
+      {canWrite && duplicateCandidates.length > 0 && (
         <section className="space-y-2 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3">
           <div>
             <h3 className="text-sm font-medium">Possible duplicate entities</h3>
@@ -842,7 +879,11 @@ function ImportedEntitiesSection({ slug }: { slug: string }) {
                     )}
                   </td>
                   <td className="px-3 py-2.5 text-right">
-                    {e.group?.canonical_entity_id === e.id ? (
+                    {!canWrite ? (
+                      <span className="text-[11px] text-muted-foreground">
+                        Read-only
+                      </span>
+                    ) : e.group?.canonical_entity_id === e.id ? (
                       <div className="flex justify-end gap-1">
                         {e.group.suppressed_member_count < e.group.member_count - 1 ? (
                           <Button
@@ -976,121 +1017,123 @@ function EntitySlideOver({
   const nextStep = chain.find((a) => a.tool && !doneTools.has(a.tool));
   const ipThumbnail = useIpThumbnailPoint(entity, slug);
   return (
-    <>
-      <div className="fixed inset-0 z-40 bg-black/60" onClick={onClose} aria-hidden />
-      <aside className="fixed inset-y-0 right-0 z-50 flex w-full max-w-md flex-col overflow-y-auto border-l border-border bg-popover p-6">
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <div className="text-xs uppercase tracking-wide text-muted-foreground">
-              {typeLabel(entity.type)}
-            </div>
-            <h2 className="mt-1 break-all font-mono text-lg font-semibold leading-tight">
-              {entity.value}
-            </h2>
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="left-auto right-0 top-0 flex h-dvh w-full max-w-lg translate-x-0 translate-y-0 flex-col gap-0 rounded-none border-y-0 border-r-0 p-0 sm:rounded-none">
+        <DialogHeader className="border-b border-border px-6 py-5 pr-12">
+          <div className="text-xs uppercase tracking-wide text-muted-foreground">
+            {typeLabel(entity.type)}
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="text-muted-foreground hover:text-foreground"
-            aria-label="Close"
-          >
-            <X className="h-5 w-5" />
-          </button>
-        </div>
-
-        <div className="mt-3 flex items-center gap-2">
-          <Badge variant="outline" className={SEVERITY_CLASS[entity.severity]}>
-            {entity.severity}
-          </Badge>
-          <span className="text-xs text-muted-foreground">
-            seen in {entity.count} finding{entity.count === 1 ? "" : "s"}
-          </span>
-        </div>
-        <div className="mt-2 flex justify-end">
-          <Link
-            href={`/e/entities?slug=${encodeURIComponent(slug)}&type=${encodeURIComponent(entity.type)}&value=${encodeURIComponent(entity.value)}`}
-            className="text-[11px] text-muted-foreground hover:text-foreground"
-          >
-            Open full entity view →
-          </Link>
-        </div>
-
-        {ipThumbnail && (
-          <div className="mt-4 space-y-2">
-            <div className="text-xs uppercase tracking-wide text-muted-foreground">
-              Geolocation
-            </div>
-            <LeafletMap
-              points={[ipThumbnail.point]}
-              height={180}
-              interactive={false}
-              initialZoom={4}
-            />
-            <p className="text-xs text-muted-foreground">
-              {ipThumbnail.location} · {ipThumbnail.point.lat.toFixed(4)},{" "}
-              {ipThumbnail.point.lon.toFixed(4)}
-            </p>
+          <DialogTitle className="break-all font-mono text-lg leading-tight">
+            {entity.value}
+          </DialogTitle>
+          <DialogDescription>
+            Entity preview with scope status, finding provenance, and available actions.
+          </DialogDescription>
+          <div className="flex flex-wrap items-center gap-2 pt-2">
+            <Badge variant="outline" className={SEVERITY_CLASS[entity.severity]}>
+              {entity.severity}
+            </Badge>
+            <ScopeStatusBadge status={entity.scope_status} />
+            <span className="text-xs text-muted-foreground">
+              {entity.count} finding{entity.count === 1 ? "" : "s"}
+            </span>
           </div>
-        )}
+        </DialogHeader>
 
-        {onQuickAction && chain.length > 0 && (
-          <div className="mt-4 space-y-2">
-            <div className="text-xs uppercase tracking-wide text-muted-foreground">
-              {nextStep ? "Suggested next" : "Recon actions"}
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {chain.map((action) => {
-                const done = action.tool != null && doneTools.has(action.tool);
-                const isNext = action === nextStep;
-                return (
-                  <Button
-                    key={action.label}
-                    size="sm"
-                    variant={isNext ? "default" : "outline"}
-                    className={done && !isNext ? "opacity-70" : ""}
-                    onClick={() => onQuickAction(action.prompt(entity.value))}
-                    title={
-                      done
-                        ? `Already run (${action.tool}) — click to re-run`
-                        : action.label
-                    }
-                  >
-                    {isNext ? (
-                      <Zap className="mr-1.5 h-3.5 w-3.5" />
-                    ) : done ? (
-                      <Check className="mr-1.5 h-3.5 w-3.5" />
-                    ) : null}
-                    {action.label}
-                  </Button>
-                );
-              })}
-            </div>
-            {!nextStep && chain.some((a) => a.tool) && (
+        <div className="flex-1 overflow-y-auto px-6 py-5">
+          {ipThumbnail && (
+            <div className="space-y-2">
+              <div className="text-xs uppercase tracking-wide text-muted-foreground">
+                Geolocation
+              </div>
+              <LeafletMap
+                points={[ipThumbnail.point]}
+                height={180}
+                interactive={false}
+                initialZoom={4}
+              />
               <p className="text-xs text-muted-foreground">
-                All recon steps for this entity have a finding — re-run any
-                above if you want fresh data.
+                {ipThumbnail.location} · {ipThumbnail.point.lat.toFixed(4)},{" "}
+                {ipThumbnail.point.lon.toFixed(4)}
               </p>
-            )}
-          </div>
-        )}
+            </div>
+          )}
 
-        <h3 className="mt-6 text-sm font-medium">Disclosed by</h3>
-        <ul className="mt-2 space-y-2">
-          {entity.findings.map((f) => (
-            <li key={f.id}>
-              <Link
-                href={`/e/findings/${f.id}?slug=${encodeURIComponent(slug)}`}
-                className="block rounded-md border border-border px-3 py-2 text-sm transition-colors hover:border-foreground/30 hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                <div className="font-medium leading-tight">{f.title}</div>
-                <div className="mt-0.5 text-xs text-muted-foreground">
-                  {f.tool ?? "—"} · {f.phase} · {f.severity}
-                </div>
-              </Link>
-            </li>
-          ))}
-        </ul>
-      </aside>
-    </>
+          {onQuickAction && chain.length > 0 && (
+            <div className="mt-5 space-y-2">
+              <div className="text-xs uppercase tracking-wide text-muted-foreground">
+                {nextStep ? "Suggested next" : "Recon actions"}
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {chain.map((action) => {
+                  const done = action.tool != null && doneTools.has(action.tool);
+                  const isNext = action === nextStep;
+                  return (
+                    <Button
+                      key={action.label}
+                      size="sm"
+                      variant={isNext ? "default" : "outline"}
+                      className={done && !isNext ? "opacity-70" : ""}
+                      onClick={() => onQuickAction(action.prompt(entity.value))}
+                      title={
+                        done
+                          ? `Already run (${action.tool}) — click to re-run`
+                          : action.label
+                      }
+                    >
+                      {isNext ? (
+                        <Zap className="mr-1.5 h-3.5 w-3.5" />
+                      ) : done ? (
+                        <Check className="mr-1.5 h-3.5 w-3.5" />
+                      ) : null}
+                      {action.label}
+                    </Button>
+                  );
+                })}
+              </div>
+              {!nextStep && chain.some((action) => action.tool) && (
+                <p className="text-xs text-muted-foreground">
+                  Every recon step has finding evidence. Re-run only when you
+                  need refreshed data.
+                </p>
+              )}
+            </div>
+          )}
+
+          <h3 className="mt-6 text-sm font-medium">Finding provenance</h3>
+          {entity.findings.length === 0 ? (
+            <p className="mt-2 text-sm text-muted-foreground">
+              This entity comes from engagement scope; no finding has referenced it yet.
+            </p>
+          ) : (
+            <ul className="mt-2 space-y-2">
+              {entity.findings.map((finding) => (
+                <li key={finding.id}>
+                  <Link
+                    href={`/e/findings/${finding.id}?slug=${encodeURIComponent(slug)}`}
+                    className="block rounded-md border border-border px-3 py-2 text-sm transition-colors hover:border-foreground/30 hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    <div className="font-medium leading-tight">{finding.title}</div>
+                    <div className="mt-0.5 text-xs text-muted-foreground">
+                      {finding.tool ?? "manual"} · {finding.phase} · {finding.severity}
+                    </div>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        <DialogFooter className="border-t border-border px-6 py-4">
+          <Button asChild>
+            <Link
+              href={`/e/entities?slug=${encodeURIComponent(slug)}&type=${encodeURIComponent(entity.type)}&value=${encodeURIComponent(entity.value)}`}
+            >
+              Open full entity view
+            </Link>
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

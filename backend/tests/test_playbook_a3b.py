@@ -81,6 +81,29 @@ def test_executor_dispatches_by_slug() -> None:
     assert calls == [{"scope": "foo.com", "args": {"domain": "foo.com"}}]
 
 
+def test_executor_builtin_target_cannot_override_validated_scope() -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_whois(scope: str, args: dict[str, Any]) -> StepResult:
+        calls.append({"scope": scope, "args": args})
+        return StepResult(ok=True)
+
+    ex = InternalExecutor(registry={"whois": fake_whois})
+    result = ex.run_step(
+        tool_slug="whois",
+        args_template={"domain": "other.example", "timeout": 5},
+        scope_context="foo.example",
+    )
+
+    assert result.ok is True
+    assert calls == [
+        {
+            "scope": "foo.example",
+            "args": {"domain": "foo.example", "timeout": 5},
+        }
+    ]
+
+
 def test_executor_register_replaces_tool() -> None:
     ex = InternalExecutor(registry={"a": lambda *_: StepResult(ok=False, error="old")})
     ex.register("a", lambda *_: StepResult(ok=True, findings_total=1))

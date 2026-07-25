@@ -927,7 +927,7 @@ export type RunEvent =
       authorization_id: string;
     }
   | {
-      type: "finding.created";
+      type: "finding.created" | "finding.updated";
       thread_id: string;
       tool: string;
       args: Record<string, unknown>;
@@ -1490,6 +1490,7 @@ export interface PlaybookRead {
   applies_to_asset_class: string;
   active: boolean;
   step_count: number;
+  required_executor: PlaybookExecutorKind;
 }
 
 export interface PlaybookDetail extends PlaybookRead {

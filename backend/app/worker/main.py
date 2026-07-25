@@ -218,7 +218,10 @@ def main() -> None:
     # without stepping on each other. Same daemon-thread shape as the other
     # background loops; the analyst-facing HTTP endpoint returns 202 and this
     # thread does the actual work.
-    playbook_worker = PlaybookWorkerThread(session_factory=SessionLocal)
+    playbook_worker = PlaybookWorkerThread(
+        session_factory=SessionLocal,
+        redis_client=redis_client,
+    )
     playbook_thread = threading.Thread(
         target=playbook_worker.run_forever,
         args=(stop_event,),

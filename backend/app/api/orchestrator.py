@@ -29,6 +29,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Annotated, Any, Literal
 
+import redis as redis_lib
 from fastapi import APIRouter, HTTPException, Query, Response
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
@@ -465,6 +466,9 @@ def ask_finding_chat(
     except NoProviderKeyError as exc:
         session.rollback()
         raise _missing_provider_key_error(exc) from exc
+    except redis_lib.RedisError:
+        session.rollback()
+        raise
     except Exception as exc:
         session.rollback()
         raise HTTPException(status_code=502, detail=f"chat failed: {exc}") from exc
@@ -668,6 +672,9 @@ def triage_finding(
     except NoProviderKeyError as exc:
         session.rollback()
         raise _missing_provider_key_error(exc) from exc
+    except redis_lib.RedisError:
+        session.rollback()
+        raise
     except Exception as exc:
         # The service marked the AgentExecution row failed before re-raising,
         # so a row exists for the Costs tab to surface the failed call. Commit
@@ -741,6 +748,9 @@ def rewrite_finding_summary_endpoint(
     except NoProviderKeyError as exc:
         session.rollback()
         raise _missing_provider_key_error(exc) from exc
+    except redis_lib.RedisError:
+        session.rollback()
+        raise
     except Exception as exc:
         session.commit()
         raise HTTPException(status_code=502, detail=f"rewrite failed: {exc}") from exc

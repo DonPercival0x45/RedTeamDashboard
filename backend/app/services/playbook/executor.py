@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -81,6 +81,59 @@ class PlaybookExecutor(Protocol):
 
 ToolCallable = Callable[[str, dict[str, Any]], StepResult]
 
+# Scope-bearing arguments for built-in playbook tools. The run's validated
+# scope item is authoritative; a custom playbook cannot redirect execution by
+# hard-coding a different target in its step template.
+_SCOPE_TARGET_ARG: dict[str, str] = {
+    "whois": "domain",
+    "dns-inventory": "domain",
+    "dns_inventory": "domain",
+    "subfinder": "domain",
+    "crtsh": "domain",
+    "breach-lookup": "domain",
+    "freeipapi": "ip",
+    "ipinfo": "ip",
+}
+_PLAYBOOK_TOOL_EXECUTOR: dict[str, str] = {
+    "dns-inventory": "internal",
+    "whois": "internal",
+    "subfinder": "internal",
+    "crtsh": "internal",
+    "breach-lookup": "internal",
+    "freeipapi": "mcp",
+    "ipinfo": "mcp",
+}
+
+
+def required_executor_for_tools(tool_slugs: Iterable[str]) -> str:
+    """Return the one safe executor shared by every catalog step.
+
+    Unknown tools and mixed-transport playbooks fail closed. In particular,
+    arbitrary MCP methods must never become runnable merely because an analyst
+    typed their slug into the catalog editor.
+    """
+    slugs = {str(slug) for slug in tool_slugs}
+    unknown = sorted(slugs - _PLAYBOOK_TOOL_EXECUTOR.keys())
+    if unknown:
+        raise ValueError(f"unsupported playbook tools: {', '.join(unknown)}")
+    executors = {_PLAYBOOK_TOOL_EXECUTOR[slug] for slug in slugs}
+    if len(executors) > 1:
+        raise ValueError("playbook steps require incompatible executors")
+    return next(iter(executors), "internal")
+
+
+def resolve_step_args(
+    tool_slug: str,
+    args_template: Mapping[str, Any],
+    scope_context: str,
+) -> dict[str, Any]:
+    """Expand a step template and bind built-in target args to validated scope."""
+    args = substitute_scope(args_template, scope_context)
+    target_arg = _SCOPE_TARGET_ARG.get(tool_slug)
+    if target_arg is not None:
+        args[target_arg] = scope_context
+    return args
+
 
 def _default_registry() -> dict[str, ToolCallable]:
     """The A3b tool dispatch table.
@@ -135,7 +188,7 @@ class InternalExecutor:
                 ok=False,
                 error=f"unknown tool: {tool_slug!r}",
             )
-        args = substitute_scope(args_template, scope_context)
+        args = resolve_step_args(tool_slug, args_template, scope_context)
         return fn(scope_context, args)
 
 
@@ -192,10 +245,14 @@ class MCPExecutor:
         base_url: str,
         api_key: str,
         lease_token: str | None = None,
+        engagement_slug: str | None = None,
+        tool_secrets: Mapping[str, str] | None = None,
     ) -> None:
         self._base_url = base_url
         self._api_key = api_key
         self._lease_token = lease_token
+        self._engagement_slug = engagement_slug
+        self._tool_secrets = dict(tool_secrets or {})
         self._client: Any | None = None
         self._tool_cache: dict[str, Any] = {}
 
@@ -239,7 +296,12 @@ class MCPExecutor:
         args_template: Mapping[str, Any],
         scope_context: str,
     ) -> StepResult:
-        args = substitute_scope(args_template, scope_context)
+        args = resolve_step_args(tool_slug, args_template, scope_context)
+        if self._engagement_slug:
+            args["engagement_slug"] = self._engagement_slug
+        secret = self._tool_secrets.get(tool_slug)
+        if secret:
+            args["api_key"] = secret
         try:
             raw = asyncio.run(self._ainvoke(tool_slug, args))
         except KeyError:

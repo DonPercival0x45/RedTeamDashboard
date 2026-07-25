@@ -1519,6 +1519,9 @@ def retry_agent_execution(
                 "Add one under /settings/keys."
             ),
         ) from exc
+    except redis_lib.RedisError:
+        session.rollback()
+        raise
     except Exception as exc:
         session.commit()
         eng = session.get(Engagement, finding.engagement_id)

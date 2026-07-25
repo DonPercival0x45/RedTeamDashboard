@@ -349,9 +349,14 @@ def resolve_for_user_with_fallback(
         if e.get("kind") == "model_provider"
         and (e.get("api_key") or e.get("is_local"))
         and (
-            (isinstance(e.get("models"), list) and bool(e.get("models")))
-            or str(e.get("provider") or "").strip().lower()
+            str(e.get("provider") or "").strip().lower()
             in _FALLBACK_MODELS
+            or (
+                str(e.get("provider") or "").strip().lower() == "custom"
+                and isinstance(e.get("models"), list)
+                and bool(e.get("models"))
+                and bool(e.get("endpoint"))
+            )
         )
     ]
     if not candidates:
