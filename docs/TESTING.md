@@ -19,20 +19,29 @@ release.
 ## Backend (`backend/`)
 
 Postgres + Redis must be reachable (the suite uses **real** services, not
-mocks). Locally they come from compose:
+mocks). The safe local entry point is:
 
 ```bash
-docker compose -f infra/docker-compose.yml up -d postgres redis
+docker compose -f infra/docker-compose.yml up -d postgres redis backend
+# Recommended: `make test` performs the reset, migration, and pytest run.
+# For a direct host run, recreate the disposable database first:
+docker compose -f infra/docker-compose.yml exec -T postgres psql -U rtd -d postgres \
+  -c 'DROP DATABASE IF EXISTS rtd_test WITH (FORCE);'
+docker compose -f infra/docker-compose.yml exec -T postgres psql -U rtd -d postgres \
+  -c 'CREATE DATABASE rtd_test OWNER rtd;'
 cd backend
-export DATABASE_URL="postgresql+psycopg://rtd:rtd@localhost:5432/rtd"
-export REDIS_URL="redis://localhost:6379/0"
+export DATABASE_URL="postgresql+psycopg://rtd:rtd@localhost:5432/rtd_test"
+export REDIS_URL="redis://localhost:6379/15"
 export RTD_MASTER_KEY="$(python -c 'import base64;print(base64.urlsafe_b64encode(b"0"*32).decode())')"
 python -m alembic upgrade head     # once after migrations change
 python -m pytest -p no:cacheprovider -q
 ```
 
-`make test` stops the compose worker (so its real-LLM consumer doesn't race
-the test workers), runs pytest, and restarts it.
+`make test` recreates the dedicated `rtd_test` database and Redis DB 15, so
+committed test fixtures never enter the operator-facing database. Direct local
+pytest runs must likewise target a disposable database such as `rtd_test`;
+`tests/conftest.py` refuses the live `rtd` target outside CI unless
+`RTD_ALLOW_LIVE_TEST_DB=1` is deliberately set.
 
 **Known host-only failures** (pass in CI/Ubuntu): 3 `test_events_api.py` SSE
 tests (need a real uvicorn on :8000) and 1 WeasyPrint test (needs GTK).

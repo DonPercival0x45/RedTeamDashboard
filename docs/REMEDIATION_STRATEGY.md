@@ -9,12 +9,13 @@
 
 ## 1. Current state
 
-`fix/v3-playbook-run-ui` is **ahead of `origin/main` by 18 committed
-rollback points**, with the current Entities/executor wave still uncommitted.
-The most recent completed slices are:
+`fix/v3-playbook-run-ui` is **ahead of `origin/main` by 20 committed
+rollback points**. The most recent completed slices are:
 
 | commit | what | status |
 |--------|------|--------|
+| `398554a` | Compose refreshes the persistent frontend dependency volume when the lockfile changes | ✅ fixed |
+| `ae07532` | playbook discoveries, executor affinity, and the Entity workbench converge on canonical contracts | ✅ fixed |
 | `53ba6e2` | soft provider preferences route to a live MRU key while explicit identities remain strict | ✅ fixed |
 | `737bbd5` | Analytics distinguishes load failure, stale data, and honest empty state | ✅ fixed |
 | `3df18b4` | reconciles v3.0.3 with the canonical playbook finding bridge | ✅ fixed |
@@ -26,8 +27,10 @@ The most recent completed slices are:
   full suite **1010 passed / 4 documented Windows-host failures / 2 skipped**
 - frontend: `tsc --noEmit` and `next build` clean; **49 Vitest tests pass**
 - CLI: **35 passed / 1 skipped** (documented Windows permissions limitation)
-- Compose: Postgres, Redis, backend, and frontend are running; backend is
-  healthy and the live frontend is published on `http://localhost:3001`
+- local backend tests reset an isolated `rtd_test` database and Redis DB 15;
+  pytest refuses the operator-facing `rtd` database outside disposable CI
+- Compose: Postgres, Redis, backend, worker, and frontend are running; backend
+  is healthy and the live frontend is published on `http://localhost:3001`
 
 The previous Docker blocker is resolved. Four known Windows-host limitations
 remain documented separately (three SSE tail tests and the report renderer's

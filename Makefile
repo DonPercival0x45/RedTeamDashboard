@@ -5,11 +5,19 @@
 
 COMPOSE := docker compose -f infra/docker-compose.yml -f infra/docker-compose.override.yml
 BACKEND := $(COMPOSE) exec -T backend
+TEST_DATABASE := rtd_test
+TEST_DATABASE_URL := postgresql+psycopg://rtd:rtd@postgres:5432/$(TEST_DATABASE)
+TEST_REDIS_URL := redis://redis:6379/15
+TEST_BACKEND := $(COMPOSE) exec -T \
+	-e ENV=test \
+	-e DATABASE_URL=$(TEST_DATABASE_URL) \
+	-e REDIS_URL=$(TEST_REDIS_URL) \
+	backend
 
 .DEFAULT_GOAL := help
 .PHONY: help up down rebuild doctor logs logs-backend logs-worker logs-frontend \
-        test test-fast lint typecheck check shell-backend shell-redis psql \
-        redis-flush worker-stop worker-start
+        test test-fast test-db-reset lint typecheck check shell-backend shell-redis \
+        psql redis-flush worker-stop worker-start
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -59,18 +67,22 @@ logs-frontend: ## Tail frontend dev-server logs
 # Tests + lint
 # ---------------------------------------------------------------------------
 
-# `make test` is the safe-to-run target: stops the compose worker so its
-# real-LLM consumer doesn't race with the test-thread workers, runs the
-# suite, then restarts it. Exit code propagates from pytest so CI catches
-# real failures and not the trailing `worker-start`.
-test: ## Stop worker, run full pytest suite, restart worker
-	@$(COMPOSE) stop worker >/dev/null 2>&1 || true
-	@status=0; $(BACKEND) pytest -q || status=$$?; \
-		$(COMPOSE) start worker >/dev/null 2>&1 || true; \
-		exit $$status
+# Tests must never inherit the backend container's live `rtd` database or
+# Redis DB 0. Reset a dedicated database and Redis namespace on every run so
+# committed API fixtures cannot appear in the operator's engagement list.
+test-db-reset: ## Recreate the isolated local test database and Redis namespace
+	$(COMPOSE) exec -T postgres psql -v ON_ERROR_STOP=1 -U rtd -d postgres \
+		-c 'DROP DATABASE IF EXISTS $(TEST_DATABASE) WITH (FORCE);'
+	$(COMPOSE) exec -T postgres psql -v ON_ERROR_STOP=1 -U rtd -d postgres \
+		-c 'CREATE DATABASE $(TEST_DATABASE) OWNER rtd;'
+	$(COMPOSE) exec -T redis redis-cli -n 15 FLUSHDB >/dev/null
+	$(TEST_BACKEND) alembic upgrade head
 
-test-fast: ## Run pytest assuming the worker is already stopped
-	$(BACKEND) pytest -q
+test: test-db-reset ## Reset isolated services and run the full backend suite
+	$(TEST_BACKEND) pytest -q
+
+test-fast: test-db-reset ## Reset isolated services and run pytest without Make orchestration
+	$(TEST_BACKEND) pytest -q
 
 lint: ## Ruff lint over backend
 	$(BACKEND) ruff check app tests
