@@ -202,6 +202,85 @@ def test_claim_returns_none_when_queue_empty(db: Session) -> None:
     assert claim_next_pending(db) is None
 
 
+def test_claim_respects_global_concurrency_cap(
+    db: Session, engagement: Engagement, playbook
+) -> None:
+    enqueue_run(db, engagement=engagement, playbook=playbook, scope_subset=["a.com"])
+    enqueue_run(db, engagement=engagement, playbook=playbook, scope_subset=["b.com"])
+    db.commit()
+
+    first = claim_next_pending(
+        db,
+        worker_id="lane-1",
+        global_concurrency=1,
+        per_engagement_concurrency=2,
+    )
+    db.commit()
+    assert first is not None
+    assert (
+        claim_next_pending(
+            db,
+            worker_id="lane-2",
+            global_concurrency=1,
+            per_engagement_concurrency=2,
+        )
+        is None
+    )
+
+
+def test_claim_skips_engagement_at_concurrency_cap(
+    db: Session, engagement: Engagement, playbook
+) -> None:
+    other = Engagement(
+        name="Other A3c Test",
+        slug=f"a3c-other-{uuid.uuid4().hex[:8]}",
+        status=EngagementStatus.active,
+        work_state=EngagementWorkState.active,
+        intelligence_architecture=EngagementArchitecture.v3,
+    )
+    db.add(other)
+    db.flush()
+    first = enqueue_run(
+        db,
+        engagement=engagement,
+        playbook=playbook,
+        scope_subset=["a.com"],
+        now=datetime(2026, 7, 23, 9, 0, tzinfo=UTC),
+    )
+    enqueue_run(
+        db,
+        engagement=engagement,
+        playbook=playbook,
+        scope_subset=["b.com"],
+        now=datetime(2026, 7, 23, 10, 0, tzinfo=UTC),
+    )
+    other_run = enqueue_run(
+        db,
+        engagement=other,
+        playbook=playbook,
+        scope_subset=["c.com"],
+        now=datetime(2026, 7, 23, 11, 0, tzinfo=UTC),
+    )
+    db.commit()
+
+    claimed = claim_next_pending(
+        db,
+        worker_id="lane-1",
+        global_concurrency=2,
+        per_engagement_concurrency=1,
+    )
+    db.commit()
+    assert claimed is not None and claimed.id == first.id
+    next_claim = claim_next_pending(
+        db,
+        worker_id="lane-2",
+        global_concurrency=2,
+        per_engagement_concurrency=1,
+    )
+    db.commit()
+    assert next_claim is not None and next_claim.id == other_run.id
+
+
 def test_claim_returns_oldest_first(
     db: Session, engagement: Engagement, playbook
 ) -> None:

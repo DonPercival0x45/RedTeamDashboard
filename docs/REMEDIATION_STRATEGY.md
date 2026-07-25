@@ -548,6 +548,17 @@ supported the resulting Finding.
   semantics. The client submits the plan digest; a changed plan is rejected for
   review instead of being silently queued. The immutable plan snapshot remains
   visible beside later approval decisions.
+- Playbook execution now has a dedicated, supervised worker pool with two
+  lanes in local Compose and a separate sibling worker process in the Azure
+  Container App pod. PostgreSQL advisory scheduling enforces global and per-engagement
+  concurrency caps without weakening per-run ownership fencing or replaying an
+  uncertain external call. The general worker no longer duplicates playbook
+  execution when the dedicated service is enabled.
+- Worker processes, components, idle/busy lane heartbeats, current runs, and
+  redacted operational incidents are durable. Docker health checks fail when a
+  process heartbeat expires, critical component death exits for container
+  restart, and the Runs view shows truthful animated worker activity, progress,
+  queue depth/age, offline/degraded state, and recent incidents.
 
 This is additive: `CoverageRecord` remains methodology coverage,
 `Observation` remains the analyst notebook, and `Finding` remains an

@@ -120,6 +120,11 @@ from app.models.tool import (
     ToolTaskKind,
 )
 from app.models.user import User, UserRole
+from app.models.worker_observability import (
+    WorkerComponent,
+    WorkerInstance,
+    WorkerOperationalEvent,
+)
 
 __all__ = [
     "APIKey",
@@ -233,6 +238,9 @@ __all__ = [
     "WorkItemResult",
     "WorkItemResultState",
     "WorkItemStatus",
+    "WorkerComponent",
+    "WorkerInstance",
+    "WorkerOperationalEvent",
     "scope_satisfies",
     "snapshot_payload",
 ]

@@ -87,8 +87,11 @@ services:
     build:
       context: ../backend
     command: ["python", "-m", "app.worker.main"]
+    restart: unless-stopped
     environment:
       ENV: local
+      PLAYBOOK_WORKER_ENABLED: "false"
+      RTD_WORKER_ROLE: core
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-rtd}:${POSTGRES_PASSWORD:-rtd}@postgres:5432/${POSTGRES_DB:-rtd}
       REDIS_URL: redis://redis:6379/0
       LLM_PROVIDER: ${LLM_PROVIDER:-anthropic}
@@ -112,10 +115,41 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
-      postgres:
+      backend:
         condition: service_healthy
-      redis:
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.worker.healthcheck"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 20s
+
+  playbook-worker:
+    build:
+      context: ../backend
+    command: ["python", "-m", "app.worker.playbook_main"]
+    restart: unless-stopped
+    environment:
+      ENV: local
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-rtd}:${POSTGRES_PASSWORD:-rtd}@postgres:5432/${POSTGRES_DB:-rtd}
+      REDIS_URL: redis://redis:6379/0
+      WORKER_MCP_API_KEY: ${WORKER_MCP_API_KEY:-}
+      PLAYBOOK_MCP_URL: ${PLAYBOOK_MCP_URL:-http://backend:8000/mcp}
+      PLAYBOOK_WORKER_CONCURRENCY: ${PLAYBOOK_WORKER_CONCURRENCY:-2}
+      PLAYBOOK_GLOBAL_CONCURRENCY: ${PLAYBOOK_GLOBAL_CONCURRENCY:-2}
+      PLAYBOOK_PER_ENGAGEMENT_CONCURRENCY: ${PLAYBOOK_PER_ENGAGEMENT_CONCURRENCY:-2}
+      RTD_WORKER_ROLE: playbook
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      backend:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.worker.healthcheck"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 20s
 
   frontend:
     build:

@@ -34,18 +34,18 @@ down: ## Stop the stack (preserves volumes)
 	$(COMPOSE) down
 
 rebuild: ## Rebuild backend + worker images and recreate containers
-	$(COMPOSE) up -d --build backend worker
+	$(COMPOSE) up -d --build backend worker playbook-worker
 
 doctor: ## Show branch, container health, and DB migration revision
 	@git branch --show-current | sed 's/^/branch: /'
 	@$(COMPOSE) ps --format 'table {{.Service}}\t{{.State}}\t{{.Health}}'
 	@$(COMPOSE) exec -T postgres psql -U rtd -d rtd -tAc 'select version_num from alembic_version;' | sed 's/^/db revision: /'
 
-worker-stop: ## Stop only the worker (used by `make test`)
-	$(COMPOSE) stop worker
+worker-stop: ## Stop worker processes (used by `make test`)
+	$(COMPOSE) stop worker playbook-worker
 
-worker-start: ## Start the worker
-	$(COMPOSE) start worker
+worker-start: ## Start worker processes
+	$(COMPOSE) start worker playbook-worker
 
 # ---------------------------------------------------------------------------
 # Logs
@@ -57,8 +57,8 @@ logs: ## Tail logs from all services
 logs-backend: ## Tail backend logs
 	$(COMPOSE) logs -f backend
 
-logs-worker: ## Tail worker logs
-	$(COMPOSE) logs -f worker
+logs-worker: ## Tail core and playbook worker logs
+	$(COMPOSE) logs -f worker playbook-worker
 
 logs-frontend: ## Tail frontend dev-server logs
 	$(COMPOSE) logs -f frontend

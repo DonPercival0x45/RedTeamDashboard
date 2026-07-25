@@ -39,6 +39,7 @@ import { Button } from "@/components/ui/button";
 import { CopyJsonButton } from "@/components/copy-json-button";
 import { QueryState } from "@/components/query-state";
 import { RunDetailPanel } from "@/components/playbooks/run-detail-modal";
+import { WorkerPoolPanel } from "@/components/playbooks/worker-pool-status";
 import {
   useCancelAgentExecutionMutation,
   useCancelTaskMutation,
@@ -470,6 +471,15 @@ export function StatusView({
 
   return (
     <div className="space-y-6">
+      {data?.worker_pool ? (
+        <WorkerPoolPanel
+          pool={data.worker_pool}
+          engagementSlug={slug}
+          onOpenRun={setSelectedPlaybookRunId}
+          stale={Boolean(queryError)}
+        />
+      ) : null}
+
       {/* Top metrics row — also doubles as click-to-filter chips */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         {(["active", "pending", "completed", "failed"] as const).map((c) => (

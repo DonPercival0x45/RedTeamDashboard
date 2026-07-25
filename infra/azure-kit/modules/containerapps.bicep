@@ -1,4 +1,5 @@
-// Single Container App with three colocated containers: backend, worker, redis.
+// Single Container App with four colocated containers: backend, core worker,
+// dedicated playbook worker, and redis.
 //
 // Why one app, not three:
 //   Internal TCP routing on non-HTTP ports doesn't work in Consumption-profile
@@ -12,7 +13,7 @@
 //   Trade-offs: single replica (minReplicas = maxReplicas = 1), no KEDA
 //   autoscaling on Redis Stream depth. Fine for one operator.
 //
-// Image: backend and worker share the same image; only the entrypoint
+// Image: backend and both workers share the same image; only the entrypoint
 // differs. Redis is `redis:7-alpine` with persistence off.
 
 targetScope = 'resourceGroup'
@@ -29,6 +30,18 @@ param keyVaultId string
 // Full image refs, e.g. `ghcr.io/donpercival0x45/rtd-backend:0.1.0`.
 param backendImage string
 param workerImage string
+
+@minValue(1)
+@description('Concurrent execution lanes in the dedicated playbook worker process.')
+param playbookWorkerConcurrency int = 2
+
+@minValue(1)
+@description('Database-enforced maximum number of running playbooks across engagements.')
+param playbookWorkerGlobalConcurrency int = 2
+
+@minValue(1)
+@description('Database-enforced maximum number of running playbooks for one engagement.')
+param playbookWorkerPerEngagementConcurrency int = 2
 
 param anthropicModel string = 'claude-opus-4-7'
 @allowed([ 'anthropic', 'openai', 'azure' ])
@@ -166,6 +179,13 @@ var appEnv = [
   { name: 'ACA_MCP_URL', value: acaMcpUrl }
   { name: 'ACA_MCP_APP_ENABLED', value: string(acaMcpAppEnabled) }
   { name: 'WORKER_MCP_API_KEY', secretRef: 'worker-mcp-api-key' }
+  // The core worker owns strategic/intelligence/outbox roles only. Playbook
+  // execution lives in its own supervised process so adding lanes cannot
+  // duplicate those singleton-ish roles.
+  { name: 'PLAYBOOK_WORKER_ENABLED', value: 'false' }
+  { name: 'PLAYBOOK_WORKER_CONCURRENCY', value: string(playbookWorkerConcurrency) }
+  { name: 'PLAYBOOK_WORKER_GLOBAL_CONCURRENCY', value: string(playbookWorkerGlobalConcurrency) }
+  { name: 'PLAYBOOK_WORKER_PER_ENGAGEMENT_CONCURRENCY', value: string(playbookWorkerPerEngagementConcurrency) }
   // v0.12.0: Tools tab sandbox runner selection. In prod we always use
   // Azure Container Instances; local dev uses docker.sock. The backend
   // Settings class reads bare field names (no RTD_ prefix), so this must
@@ -179,7 +199,7 @@ var appEnv = [
 ]
 
 // ---------------------------------------------------------------------------
-// The one app — backend exposes external HTTPS; worker + redis are siblings
+// The one app — backend exposes external HTTPS; workers + redis are siblings
 // ---------------------------------------------------------------------------
 
 resource app 'Microsoft.App/containerApps@2024-03-01' = {
@@ -238,6 +258,13 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
           env: appEnv
         }
         {
+          name: 'playbook-worker'
+          image: workerImage
+          command: [ 'python', '-m', 'app.worker.playbook_main' ]
+          resources: { cpu: json('0.5'), memory: '1Gi' }
+          env: appEnv
+        }
+        {
           name: 'redis'
           image: 'redis:7-alpine'
           // No persistence — queue + checkpoints are ephemeral by design.
@@ -246,7 +273,7 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
         }
       ]
       // Pinned to one replica: localhost sharing only works when backend +
-      // worker + redis all live in the SAME pod. Multiple replicas each get
+      // workers + redis all live in the SAME pod. Multiple replicas each get
       // their own Redis and the queue fractures.
       scale: { minReplicas: 1, maxReplicas: 1 }
     }

@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
@@ -53,6 +53,14 @@ class Settings(BaseSettings):
     # that route MCP to the secondary Container App override this to that
     # app's URL + ``/mcp``.
     playbook_mcp_url: str = "http://backend:8000/mcp"
+    # The all-in-one worker keeps its historical embedded playbook lane unless
+    # a deployment explicitly enables the dedicated playbook-worker service.
+    playbook_worker_enabled: bool = True
+    playbook_worker_concurrency: int = Field(default=2, ge=1, le=8)
+    playbook_global_concurrency: int = Field(default=2, ge=1, le=64)
+    playbook_per_engagement_concurrency: int = Field(default=1, ge=1, le=16)
+    worker_heartbeat_interval: int = Field(default=10, ge=2, le=60)
+    worker_stale_after: int = Field(default=45, ge=10, le=600)
 
     # CORS allow-origins for the browser viewer. Defaults cover local dev.
     # Kit deploys override this with the central viewer's origin (Phase 6)

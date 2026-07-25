@@ -340,11 +340,53 @@ export interface StatusEntity {
   synopsis: string | null;
 }
 
+export interface WorkerRunProgress {
+  id: string;
+  playbook_name: string;
+  engagement_slug: string;
+  steps_total: number;
+  steps_completed: number;
+}
+
+export interface WorkerSlotStatus {
+  id: string;
+  slot: number;
+  state: "idle" | "busy" | "offline" | "failed" | "starting" | "untracked";
+  heartbeat_at: string | null;
+  heartbeat_age_seconds: number | null;
+  current_run: WorkerRunProgress | null;
+  last_error: string | null;
+}
+
+export interface WorkerFailureRead {
+  id: string;
+  occurred_at: string;
+  severity: string;
+  event_type: string;
+  component: string | null;
+  message: string;
+  playbook_run_id: string | null;
+}
+
+export interface WorkerPoolStatus {
+  health: "healthy" | "degraded" | "unavailable";
+  capacity: number;
+  online: number;
+  busy: number;
+  idle: number;
+  pending_depth: number;
+  oldest_pending_at: string | null;
+  oldest_pending_age_seconds: number | null;
+  slots: WorkerSlotStatus[];
+  recent_failures: WorkerFailureRead[];
+}
+
 export interface EngagementStatusResponse {
   agents: StatusEntity[];
   tasks: StatusEntity[];
   approvals: StatusEntity[];
   playbook_runs: StatusEntity[];
+  worker_pool?: WorkerPoolStatus | null;
 }
 
 // v1.2.0: one line in the per-entity step log. Newest last.

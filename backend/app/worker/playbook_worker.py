@@ -53,6 +53,7 @@ from app.services.playbook.executor import (
     executor_for_tool_slug,
     executor_kinds_for_tools,
 )
+from app.services.worker_observability import WorkerRuntime
 
 logger = structlog.get_logger(__name__)
 
@@ -71,11 +72,16 @@ class PlaybookWorkerThread:
         heartbeat_interval_seconds: float = 15.0,
         stale_after_seconds: float = 300.0,
         recovery_interval_seconds: float = 60.0,
+        worker_id: str | None = None,
+        runtime: WorkerRuntime | None = None,
+        slot: int = 0,
     ) -> None:
         self._session_factory = session_factory
         self._poll = poll_interval_seconds
         self._redis = redis_client
-        self._worker_id = str(uuid.uuid4())
+        self._worker_id = worker_id or str(uuid.uuid4())
+        self._runtime = runtime
+        self._slot = slot
         self._heartbeat_interval = heartbeat_interval_seconds
         self._stale_after = stale_after_seconds
         self._recovery_interval = recovery_interval_seconds
@@ -120,7 +126,12 @@ class PlaybookWorkerThread:
             logger.exception("playbook_worker.claim_session_unavailable")
             return None
         try:
-            run = claim_next_pending(session, worker_id=self._worker_id)
+            run = claim_next_pending(
+                session,
+                worker_id=self._worker_id,
+                global_concurrency=settings.playbook_global_concurrency,
+                per_engagement_concurrency=settings.playbook_per_engagement_concurrency,
+            )
             if run is None:
                 session.commit()
                 return None
@@ -159,6 +170,13 @@ class PlaybookWorkerThread:
                 .values(worker_heartbeat_at=datetime.now(tz=UTC))
             )
             session.commit()
+            if self._runtime is not None:
+                self._runtime.component_heartbeat(
+                    "playbook-lane",
+                    slot=self._slot,
+                    state="busy",
+                    current_run_id=run_id,
+                )
         except Exception:
             session.rollback()
             logger.exception("playbook_worker.heartbeat_failed", run_id=str(run_id))
@@ -373,9 +391,17 @@ class PlaybookWorkerThread:
                     reason="playbook run completed",
                 )
             session.commit()
-        except Exception:
+        except Exception as exc:
             session.rollback()
             logger.exception("playbook_worker.execute_failed", run_id=run_id_str)
+            if self._runtime is not None:
+                self._runtime.record_event(
+                    event_type="run.execute_failed",
+                    message=exc,
+                    component="playbook-lane",
+                    slot=self._slot,
+                    playbook_run_id=uuid.UUID(run_id_str),
+                )
             # Best-effort mark the run as failed so it doesn't dangle in
             # ``running``. Uses a fresh session so we don't inherit the
             # aborted transaction.
@@ -441,18 +467,56 @@ class PlaybookWorkerThread:
         if claim is None:
             return False
         run_id, kind = claim
+        run_uuid = uuid.UUID(run_id)
+        if self._runtime is not None:
+            self._runtime.component_heartbeat(
+                "playbook-lane",
+                slot=self._slot,
+                state="busy",
+                current_run_id=run_uuid,
+            )
         logger.info("playbook_worker.execute_start", run_id=run_id, executor=kind.value)
-        self._execute(run_id, kind)
-        logger.info("playbook_worker.execute_done", run_id=run_id)
+        try:
+            self._execute(run_id, kind)
+            logger.info("playbook_worker.execute_done", run_id=run_id)
+        finally:
+            if self._runtime is not None:
+                self._runtime.component_heartbeat(
+                    "playbook-lane",
+                    slot=self._slot,
+                    state="idle",
+                    clear_current_run=True,
+                )
         return True
 
     def run_forever(self, stop_event: threading.Event) -> None:
         """Poll loop. Idle → ``stop_event.wait(poll_interval)`` so SIGTERM
         breaks out promptly; busy → immediate next iteration so a backlog
         drains without idle delay."""
-        logger.info("playbook_worker.start", interval_seconds=self._poll)
-        while not stop_event.is_set():
-            did_work = self.run_once()
-            if not did_work:
-                stop_event.wait(self._poll)
-        logger.info("playbook_worker.stop")
+        logger.info(
+            "playbook_worker.start",
+            interval_seconds=self._poll,
+            slot=self._slot,
+        )
+        if self._runtime is not None:
+            self._runtime.component_started(
+                "playbook-lane",
+                slot=self._slot,
+                owner_token=self._worker_id,
+            )
+        try:
+            while not stop_event.is_set():
+                did_work = self.run_once()
+                if not did_work:
+                    if self._runtime is not None:
+                        self._runtime.component_heartbeat(
+                            "playbook-lane",
+                            slot=self._slot,
+                            state="idle",
+                            clear_current_run=True,
+                        )
+                    stop_event.wait(self._poll)
+        finally:
+            if self._runtime is not None:
+                self._runtime.component_stopped("playbook-lane", slot=self._slot)
+        logger.info("playbook_worker.stop", slot=self._slot)

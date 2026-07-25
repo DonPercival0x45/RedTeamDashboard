@@ -311,6 +311,8 @@ def claim_next_pending(
     session: Session,
     *,
     worker_id: str | None = None,
+    global_concurrency: int | None = None,
+    per_engagement_concurrency: int | None = None,
 ) -> PlaybookRun | None:
     """Try to claim the oldest pending run for this worker.
 
@@ -330,16 +332,47 @@ def claim_next_pending(
     """
     from sqlalchemy import text
 
+    if global_concurrency is not None or per_engagement_concurrency is not None:
+        # Serialize only the tiny capacity-check + claim transaction. Without
+        # this lock two replicas can both observe one remaining slot before
+        # either pending→running transition commits.
+        session.execute(
+            text("SELECT pg_advisory_xact_lock(:key)"),
+            {"key": 5_246_544_987_331_001_219},
+        )
+
+    if global_concurrency is not None:
+        running = session.execute(
+            text("SELECT count(*) FROM playbook_runs WHERE status = 'running'")
+        ).scalar_one()
+        if running >= global_concurrency:
+            return None
+
+    if per_engagement_concurrency is None:
+        eligibility = ""
+        parameters: dict[str, int] = {}
+    else:
+        eligibility = """
+            AND (
+                SELECT count(*) FROM playbook_runs active
+                WHERE active.engagement_id = queued.engagement_id
+                  AND active.status = 'running'
+            ) < :per_engagement
+        """
+        parameters = {"per_engagement": per_engagement_concurrency}
+
     row_id_row = session.execute(
         text(
-            """
-            SELECT id FROM playbook_runs
-            WHERE status = 'pending'
-            ORDER BY created_at, id
+            f"""
+            SELECT queued.id FROM playbook_runs queued
+            WHERE queued.status = 'pending'
+            {eligibility}
+            ORDER BY queued.created_at, queued.id
             LIMIT 1
             FOR UPDATE SKIP LOCKED
             """
-        )
+        ),
+        parameters,
     ).scalar_one_or_none()
     if row_id_row is None:
         return None

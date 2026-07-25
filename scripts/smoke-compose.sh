@@ -17,7 +17,7 @@
 # Exits non-zero on any failed assertion. Safe to re-run.
 set -euo pipefail
 
-COMPOSE="docker compose -f infra/docker-compose.yml -f infra/docker-compose.override.yml"
+COMPOSE=(docker compose -f infra/docker-compose.yml -f infra/docker-compose.override.yml)
 NO_UP=0
 [[ "${1:-}" == "--no-up" ]] && NO_UP=1
 
@@ -29,7 +29,7 @@ fail() { c_fail "$*"; exit 1; }
 
 if [[ "$NO_UP" -eq 0 ]]; then
   c_info "bringing stack up (this also applies migrations on backend boot)…"
-  "$COMPOSE" up -d --quiet-pull >/dev/null
+  "${COMPOSE[@]}" up -d --quiet-pull >/dev/null
 fi
 
 # Wait for backend health (it runs `alembic upgrade head` before uvicorn).
@@ -43,28 +43,31 @@ done
 if curl -sf http://localhost:8001/health >/dev/null 2>&1; then
   c_ok "backend /health responds"
 else
-  fail "backend /health did not respond (check: $COMPOSE logs backend)"
+  fail "backend /health did not respond (check: ${COMPOSE[*]} logs backend)"
 fi
 
 # 2. Migration head matches the codebase chain.
-EXPECTED_HEAD="0064"
-ACTUAL_HEAD="$("$COMPOSE" exec -T postgres psql -U rtd -d rtd -tAc 'select version_num from alembic_version;' 2>/dev/null | tr -d '[:space:]')"
+EXPECTED_HEAD="0069"
+ACTUAL_HEAD="$("${COMPOSE[@]}" exec -T postgres psql -U rtd -d rtd -tAc 'select version_num from alembic_version;' 2>/dev/null | tr -d '[:space:]')"
 if [[ "$ACTUAL_HEAD" == "$EXPECTED_HEAD" ]]; then
   c_ok "db at migration head $ACTUAL_HEAD"
 else
   fail "db migration head mismatch: expected $EXPECTED_HEAD, got '$ACTUAL_HEAD'"
 fi
 
-# 3. Worker container is running (not crash-looping).
-WORKER_STATE="$("$COMPOSE" ps worker --format '{{.State}}' 2>/dev/null | tr -d '[:space:]')"
-if [[ "$WORKER_STATE" == "running" ]]; then
-  c_ok "worker is running"
-else
-  fail "worker not running (state='$WORKER_STATE'; check: $COMPOSE logs worker)"
-fi
+# 3. Core and dedicated playbook workers are running and healthy.
+for service in worker playbook-worker; do
+  WORKER_STATE="$("${COMPOSE[@]}" ps "$service" --format '{{.State}}' 2>/dev/null | tr -d '[:space:]')"
+  WORKER_HEALTH="$("${COMPOSE[@]}" ps "$service" --format '{{.Health}}' 2>/dev/null | tr -d '[:space:]')"
+  if [[ "$WORKER_STATE" == "running" && "$WORKER_HEALTH" == "healthy" ]]; then
+    c_ok "$service is running and healthy"
+  else
+    fail "$service unhealthy (state='$WORKER_STATE', health='$WORKER_HEALTH'; check logs)"
+  fi
+done
 
 # 4. Frontend serves (the SPA shell, before auth redirect).
-FE_STATUS="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/ 2>/dev/null || true)"
+FE_STATUS="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3001/ 2>/dev/null || true)"
 if [[ "$FE_STATUS" -lt 500 ]]; then
   c_ok "frontend responds (HTTP $FE_STATUS)"
 else
@@ -73,18 +76,22 @@ fi
 
 # 5. The MCP URL the playbook worker resolves to is reachable inside the net.
 #    Catches the dead-port regression (backend:8001 vs container 8000).
-MCP_PROBE="$("$COMPOSE" exec -T worker python -c '
+MCP_PROBE="$("${COMPOSE[@]}" exec -T playbook-worker python -c '
 from app.core.config import settings
 import urllib.request, sys
 url = settings.playbook_mcp_url.rstrip("/")
+request = urllib.request.Request(
+    url,
+    headers={"X-API-Key": settings.worker_mcp_api_key or ""},
+)
 try:
-    urllib.request.urlopen(url, timeout=3)
+    urllib.request.urlopen(request, timeout=3)
     print("ok")
 except Exception as e:
     print("fail:" + str(e)[:120])
 ' 2>/dev/null | tr -d '[:space:]')"
 if [[ "$MCP_PROBE" == "ok" ]] || [[ "$MCP_PROBE" == fail*405* ]] || [[ "$MCP_PROBE" == fail*404* ]]; then
-  c_ok "playbook MCP URL reachable inside compose net"
+  c_ok "playbook MCP URL reachable and worker key accepted"
 else
   fail "playbook MCP URL unreachable: $MCP_PROBE"
 fi

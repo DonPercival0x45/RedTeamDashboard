@@ -26,11 +26,12 @@ from typing import Any
 
 import redis as redis_lib
 from fastapi import APIRouter, HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.agents import TacticalAgent, TacticalAlreadyScanned, TacticalSkippedV3
 from app.api.deps import CurrentNonGuestUser, CurrentUser, DbSession, RedisClient
+from app.core.config import settings
 from app.models import (
     ActorType,
     AgentExecution,
@@ -54,6 +55,9 @@ from app.models import (
     Task,
     TaskKind,
     TaskStatus,
+    WorkerComponent,
+    WorkerInstance,
+    WorkerOperationalEvent,
 )
 from app.runs.events import decode_envelope
 from app.runs.streams import inbound_stream, outbound_stream
@@ -65,6 +69,10 @@ from app.schemas.status import (
     StatusTransition,
     StepEntry,
     StepLogResponse,
+    WorkerFailureRead,
+    WorkerPoolStatus,
+    WorkerRunProgress,
+    WorkerSlotStatus,
 )
 from app.services.ephemeral_provider_key import NoProviderKeyError
 
@@ -895,6 +903,218 @@ def _reconcile_running_runs(
             )
 
 
+def _worker_pool_status(session: Session, engagement: Engagement) -> WorkerPoolStatus:
+    now = datetime.now(tz=UTC)
+    cutoff = now - timedelta(seconds=settings.worker_stale_after)
+    component_rows = list(
+        session.execute(
+            select(WorkerComponent, WorkerInstance)
+            .join(
+                WorkerInstance,
+                WorkerInstance.id == WorkerComponent.worker_instance_id,
+            )
+            .where(
+                WorkerComponent.name == "playbook-lane",
+                WorkerInstance.stopped_at.is_(None),
+                WorkerInstance.heartbeat_at >= cutoff,
+            )
+            .order_by(WorkerInstance.started_at, WorkerComponent.slot)
+        ).all()
+    )
+
+    # Preserve an explicit offline signal when no fresh process is available.
+    if not component_rows:
+        latest_instance_id = session.execute(
+            select(WorkerInstance.id)
+            .join(
+                WorkerComponent,
+                WorkerComponent.worker_instance_id == WorkerInstance.id,
+            )
+            .where(WorkerComponent.name == "playbook-lane")
+            .order_by(WorkerInstance.started_at.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        if latest_instance_id is not None:
+            component_rows = list(
+                session.execute(
+                    select(WorkerComponent, WorkerInstance)
+                    .join(
+                        WorkerInstance,
+                        WorkerInstance.id == WorkerComponent.worker_instance_id,
+                    )
+                    .where(
+                        WorkerComponent.name == "playbook-lane",
+                        WorkerInstance.id == latest_instance_id,
+                    )
+                    .order_by(WorkerComponent.slot)
+                ).all()
+            )
+
+    slots: list[WorkerSlotStatus] = []
+    for component, instance in component_rows:
+        heartbeat = component.heartbeat_at or instance.heartbeat_at
+        age = max(0, int((now - heartbeat).total_seconds())) if heartbeat else None
+        fresh = (
+            instance.stopped_at is None
+            and instance.heartbeat_at >= cutoff
+            and heartbeat is not None
+            and heartbeat >= cutoff
+        )
+        if not fresh:
+            state = "offline"
+        elif component.state == "failed":
+            state = "failed"
+        elif component.current_run_id is not None and component.state == "busy":
+            state = "busy"
+        elif component.state in {"starting", "running"}:
+            state = "starting"
+        else:
+            state = "idle"
+
+        progress = None
+        if component.current_run_id is not None:
+            current = session.execute(
+                select(PlaybookRun, Playbook, Engagement)
+                .join(Playbook, Playbook.id == PlaybookRun.playbook_id)
+                .join(Engagement, Engagement.id == PlaybookRun.engagement_id)
+                .where(PlaybookRun.id == component.current_run_id)
+            ).one_or_none()
+            if current is not None:
+                run, playbook, run_engagement = current
+                if run_engagement.id == engagement.id:
+                    progress = WorkerRunProgress(
+                        id=run.id,
+                        playbook_name=playbook.name,
+                        engagement_slug=run_engagement.slug,
+                        steps_total=run.steps_total,
+                        steps_completed=run.steps_succeeded + run.steps_failed,
+                    )
+        slots.append(
+            WorkerSlotStatus(
+                id=component.id,
+                slot=component.slot,
+                state=state,
+                heartbeat_at=heartbeat,
+                heartbeat_age_seconds=age,
+                current_run=progress,
+                # Component errors may belong to a different engagement. The
+                # run-linked incident feed below is the scoped error surface.
+                last_error=None,
+            )
+        )
+
+    owner_tokens = [
+        component.owner_token
+        for component, _instance in component_rows
+        if component.owner_token
+    ]
+    untracked_runs = list(
+        session.execute(
+            select(PlaybookRun, Playbook, Engagement)
+            .join(Playbook, Playbook.id == PlaybookRun.playbook_id)
+            .join(Engagement, Engagement.id == PlaybookRun.engagement_id)
+            .where(
+                PlaybookRun.status == PlaybookRunStatus.running,
+                or_(
+                    PlaybookRun.worker_id.is_(None),
+                    PlaybookRun.worker_id.not_in(owner_tokens),
+                ),
+            )
+            .order_by(PlaybookRun.started_at)
+            .limit(8)
+        ).all()
+    )
+    for run, playbook, run_engagement in untracked_runs:
+        heartbeat = run.worker_heartbeat_at or run.started_at
+        age = max(0, int((now - heartbeat).total_seconds())) if heartbeat else None
+        fresh = heartbeat is not None and heartbeat >= cutoff
+        progress = None
+        if run_engagement.id == engagement.id:
+            progress = WorkerRunProgress(
+                id=run.id,
+                playbook_name=playbook.name,
+                engagement_slug=run_engagement.slug,
+                steps_total=run.steps_total,
+                steps_completed=run.steps_succeeded + run.steps_failed,
+            )
+        slots.append(
+            WorkerSlotStatus(
+                id=run.id,
+                slot=len(slots),
+                state="untracked" if fresh else "offline",
+                heartbeat_at=heartbeat,
+                heartbeat_age_seconds=age,
+                current_run=progress,
+                last_error=None,
+            )
+        )
+
+    pending_depth, oldest_pending_at = session.execute(
+        select(func.count(PlaybookRun.id), func.min(PlaybookRun.created_at)).where(
+            PlaybookRun.engagement_id == engagement.id,
+            PlaybookRun.status == PlaybookRunStatus.pending,
+        )
+    ).one()
+    oldest_age = (
+        max(0, int((now - oldest_pending_at).total_seconds()))
+        if oldest_pending_at is not None
+        else None
+    )
+    failures = list(
+        session.execute(
+            select(WorkerOperationalEvent)
+            .where(
+                or_(
+                    WorkerOperationalEvent.engagement_id == engagement.id,
+                    WorkerOperationalEvent.playbook_run_id.in_(
+                        select(PlaybookRun.id).where(
+                            PlaybookRun.engagement_id == engagement.id
+                        )
+                    ),
+                    (
+                        WorkerOperationalEvent.engagement_id.is_(None)
+                        & WorkerOperationalEvent.playbook_run_id.is_(None)
+                    ),
+                )
+            )
+            .order_by(WorkerOperationalEvent.occurred_at.desc())
+            .limit(5)
+        ).scalars()
+    )
+    online = sum(slot.state not in {"offline", "failed"} for slot in slots)
+    busy = sum(slot.state in {"busy", "untracked"} for slot in slots)
+    idle = sum(slot.state == "idle" for slot in slots)
+    if online == 0:
+        health = "unavailable"
+    elif any(slot.state in {"offline", "failed", "untracked"} for slot in slots):
+        health = "degraded"
+    else:
+        health = "healthy"
+    return WorkerPoolStatus(
+        health=health,
+        capacity=len(slots),
+        online=online,
+        busy=busy,
+        idle=idle,
+        pending_depth=int(pending_depth),
+        oldest_pending_at=oldest_pending_at,
+        oldest_pending_age_seconds=oldest_age,
+        slots=slots,
+        recent_failures=[
+            WorkerFailureRead(
+                id=row.id,
+                occurred_at=row.occurred_at,
+                severity=row.severity,
+                event_type=row.event_type,
+                component=row.component,
+                message=row.message,
+                playbook_run_id=row.playbook_run_id,
+            )
+            for row in failures
+        ],
+    )
+
+
 @router.get(
     "/engagements/{slug}/status",
     response_model=EngagementStatusResponse,
@@ -966,6 +1186,7 @@ def get_engagement_status(
         tasks=[_task_to_entity(t) for t in tasks],
         approvals=[_approval_to_entity(a) for a in approvals],
         playbook_runs=[_playbook_to_entity(run, playbook) for run, playbook in playbook_runs],
+        worker_pool=_worker_pool_status(session, eng),
     )
 
 
