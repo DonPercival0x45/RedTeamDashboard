@@ -16,6 +16,7 @@ import {
   Upload,
   Zap,
 } from "lucide-react";
+import { ConfirmDialog } from "@/components/confirm-dialog";
 import { QueryState } from "@/components/query-state";
 import type { MapPoint } from "@/components/leaflet-map";
 
@@ -286,6 +287,7 @@ export function EntitiesView({
   const [scopeSaving, setScopeSaving] = useState(false);
   const [scopeMessage, setScopeMessage] = useState<string | null>(null);
   const [scopeError, setScopeError] = useState<string | null>(null);
+  const [pendingScopeRemoval, setPendingScopeRemoval] = useState<ScopeItem[]>([]);
   const detailTriggerRef = useRef<HTMLButtonElement | null>(null);
 
   if (entities === undefined)
@@ -396,6 +398,7 @@ export function EntitiesView({
       setScopeMessage(
         `${items.length} exact scope ${items.length === 1 ? "rule" : "rules"} removed.`,
       );
+      setPendingScopeRemoval([]);
     } catch (err) {
       setScopeError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -673,7 +676,7 @@ export function EntitiesView({
           scopeMessage={scopeMessage}
           scopeError={scopeError}
           onAssignScope={(disposition) => void assignScope([selected], disposition)}
-          onRemoveScopeRules={(items) => void removeScopeRules(items)}
+          onRemoveScopeRules={setPendingScopeRemoval}
           doneTools={
             new Set(
               selected.findings
@@ -683,6 +686,29 @@ export function EntitiesView({
           }
         />
       )}
+
+      <ConfirmDialog
+        open={pendingScopeRemoval.length > 0}
+        title={`Remove exact scope ${pendingScopeRemoval.length === 1 ? "rule" : "rules"}?`}
+        description={
+          pendingScopeRemoval.some((item) => item.is_exclusion) ? (
+            <>
+              Removing an exclusion may authorize this target through a broader
+              scope rule. The entity and its evidence will remain available.
+            </>
+          ) : (
+            <>
+              This target will no longer be eligible for new playbook runs unless
+              another scope rule still includes it. The entity and its evidence
+              will remain available.
+            </>
+          )
+        }
+        confirmLabel="Remove rule"
+        busy={scopeSaving}
+        onConfirm={() => removeScopeRules(pendingScopeRemoval)}
+        onOpenChange={(open) => !open && setPendingScopeRemoval([])}
+      />
     </div>
   );
 }

@@ -585,6 +585,31 @@ def test_create_and_list_scope_items(
     assert values == {"acme.com", "10.0.0.0/24"}
     # v1.4.13: items created without a source default to "defined".
     assert {r["source"] for r in rows} == {"defined"}
+    assert all(r["is_effectively_in_scope"] for r in rows)
+
+
+def test_scope_listing_marks_includes_overridden_by_exclusions(
+    client: TestClient, cleanup_slugs: list[str]
+) -> None:
+    eng = _create(client, "Effective scope holder")
+    cleanup_slugs.append(eng["slug"])
+    for body in (
+        {"kind": "domain", "value": "app.acme.com"},
+        {"kind": "domain", "value": "acme.com", "is_exclusion": True},
+    ):
+        response = client.post(
+            f"/engagements/{eng['slug']}/scope",
+            json=body,
+            headers=_headers(),
+        )
+        assert response.status_code == 201, response.text
+
+    rows = client.get(
+        f"/engagements/{eng['slug']}/scope", headers=_headers()
+    ).json()
+    by_value = {row["value"]: row for row in rows}
+    assert by_value["app.acme.com"]["is_effectively_in_scope"] is False
+    assert by_value["acme.com"]["is_effectively_in_scope"] is False
 
 
 def test_scope_item_source_found_round_trips(

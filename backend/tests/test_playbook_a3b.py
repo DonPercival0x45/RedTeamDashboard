@@ -570,6 +570,34 @@ def test_create_playbook_run_rejects_excluded_target(
     assert "secret.foo.example" in resp.text
 
 
+def test_deleted_scope_item_is_not_a_new_playbook_target(
+    db: Session, client: TestClient, user: User, engagement: Engagement
+) -> None:
+    load_seed_playbooks(db)
+    scope_item = db.execute(
+        select(ScopeItem).where(
+            ScopeItem.engagement_id == engagement.id,
+            ScopeItem.value == "foo.example",
+        )
+    ).scalar_one()
+    deleted = client.delete(
+        f"/engagements/{engagement.slug}/scope/{scope_item.id}",
+        headers=_headers(user),
+    )
+    assert deleted.status_code == 204, deleted.text
+
+    response = client.post(
+        f"/engagements/{engagement.slug}/playbook-runs",
+        headers=_headers(user),
+        json={
+            "playbook_slug": "osint-passive-domain",
+            "scope_subset": ["foo.example"],
+        },
+    )
+    assert response.status_code == 422
+    assert "foo.example" in response.text
+
+
 def test_create_playbook_run_rejects_empty_scope_subset(
     db: Session, client: TestClient, user: User, engagement: Engagement
 ) -> None:

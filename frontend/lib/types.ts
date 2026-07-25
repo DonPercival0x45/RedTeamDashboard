@@ -123,6 +123,7 @@ export interface ScopeItem {
   // v1.4.13: provenance (roadmap #5). "defined" = client-provided,
   // "found" = added from findings.
   source?: string;
+  is_effectively_in_scope?: boolean | null;
   created_at: string;
   updated_at: string;
 }

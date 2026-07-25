@@ -38,7 +38,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CopyJsonButton } from "@/components/copy-json-button";
 import { QueryState } from "@/components/query-state";
-import { RunDetailModal } from "@/components/playbooks/run-detail-modal";
+import { RunDetailPanel } from "@/components/playbooks/run-detail-modal";
 import {
   useCancelAgentExecutionMutation,
   useCancelTaskMutation,
@@ -260,8 +260,10 @@ export function StatusView({
   }, [stripRunParam]);
   const openEntity = useCallback((entity: StatusEntity) => {
     if (entity.kind === "playbook") {
+      setExpanded(null);
       setSelectedPlaybookRunId(entity.id);
     } else {
+      setSelectedPlaybookRunId(null);
       setExpanded(entity);
     }
   }, []);
@@ -638,7 +640,14 @@ export function StatusView({
         </p>
       )}
 
-      {/* Box grid */}
+      {/* Runs stay visible while a playbook is managed alongside them. */}
+      <div
+        className={cn(
+          "gap-4",
+          selectedPlaybookRunId && "lg:grid lg:grid-cols-[minmax(0,1fr)_minmax(22rem,0.7fr)]",
+        )}
+      >
+      <div className="min-w-0">
       {data == null ? null : visible.length === 0 ? (
         <p className="text-sm text-muted-foreground">
           Nothing to show. {filter !== "all" || colorFilter !== "all" || outcomeFilter !== "all" || agentFilter !== "all"
@@ -673,6 +682,10 @@ export function StatusView({
                         cancelling={cancellingId === entity.id}
                         allowRetry={allowLegacyRetry && canWrite}
                         allowMutations={canWrite}
+                        selected={
+                          entity.kind === "playbook" &&
+                          selectedPlaybookRunId === entity.id
+                        }
                       />
                     ))}
                   </div>
@@ -701,7 +714,16 @@ export function StatusView({
                         <tr
                           key={`${entity.kind}-${entity.id}`}
                           onClick={() => openEntity(entity)}
-                          className="cursor-pointer border-b border-border/50 last:border-0 hover:bg-muted/30"
+                          aria-selected={
+                            entity.kind === "playbook" &&
+                            selectedPlaybookRunId === entity.id
+                          }
+                          className={cn(
+                            "cursor-pointer border-b border-border/50 last:border-0 hover:bg-muted/30",
+                            entity.kind === "playbook" &&
+                              selectedPlaybookRunId === entity.id &&
+                              "bg-muted/60",
+                          )}
                         >
                           <td className="px-3 py-2">
                             <p className="font-medium">{entity.title}</p>
@@ -729,13 +751,17 @@ export function StatusView({
                               type="button"
                               size="sm"
                               variant="ghost"
-                              aria-label={`${entity.kind === "playbook" ? "Manage" : "Expand"} ${entity.title}`}
+                              aria-label={`${entity.kind === "playbook" ? (entity.raw_status === "awaiting_approval" ? "Review decision" : "Manage") : "Expand"} ${entity.title}`}
                               onClick={(event) => {
                                 event.stopPropagation();
                                 openEntity(entity);
                               }}
                             >
-                              {entity.kind === "playbook" ? "Manage" : "Expand"}
+                              {entity.kind === "playbook"
+                                ? entity.raw_status === "awaiting_approval"
+                                  ? "Review decision"
+                                  : "Manage"
+                                : "Expand"}
                             </Button>
                           </td>
                         </tr>
@@ -764,6 +790,21 @@ export function StatusView({
           );
         })()
       )}
+      </div>
+      {selectedPlaybookRunId ? (
+        <aside
+          className="mt-4 rounded-lg border border-border bg-card/60 p-4 lg:sticky lg:top-4 lg:mt-0 lg:max-h-[calc(100vh-8rem)] lg:overflow-y-auto"
+          aria-label="Manage selected playbook run"
+        >
+          <RunDetailPanel
+            key={selectedPlaybookRunId}
+            runId={selectedPlaybookRunId}
+            onClose={closePlaybook}
+            canWrite={canWrite}
+          />
+        </aside>
+      ) : null}
+      </div>
 
       {/* v2.4.0: attribution — who used what (agent × model × user)
           for this engagement. Lives below the task/approval tables so
@@ -776,13 +817,6 @@ export function StatusView({
           slug={slug}
           entity={expanded}
           onClose={closeExpanded}
-        />
-      )}
-      {selectedPlaybookRunId && (
-        <RunDetailModal
-          runId={selectedPlaybookRunId}
-          onClose={closePlaybook}
-          canWrite={canWrite}
         />
       )}
     </div>
@@ -852,6 +886,7 @@ function StatusBox({
   cancelling,
   allowRetry,
   allowMutations,
+  selected,
 }: {
   entity: StatusEntity;
   onExpand: () => void;
@@ -861,6 +896,7 @@ function StatusBox({
   cancelling: boolean;
   allowRetry: boolean;
   allowMutations: boolean;
+  selected: boolean;
 }) {
   const Icon = COLOR_ICON[entity.color];
   const OutcomeIcon = entity.outcome ? OUTCOME_ICON[entity.outcome] : null;
@@ -874,7 +910,9 @@ function StatusBox({
       className={cn(
         "flex flex-col gap-3 rounded-lg border bg-card/40 p-3 transition-colors",
         COLOR_BORDER[entity.color],
+        selected && "ring-2 ring-foreground/30",
       )}
+      aria-current={selected ? "true" : undefined}
     >
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
@@ -958,8 +996,23 @@ function StatusBox({
                 : "Retry"}
           </Button>
         )}
-        <Button size="sm" variant="ghost" onClick={onExpand}>
-          {entity.kind === "playbook" ? "Manage" : "Expand"}
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={onExpand}
+          aria-label={`${
+            entity.kind === "playbook"
+              ? entity.raw_status === "awaiting_approval"
+                ? "Review decision"
+                : "Manage"
+              : "Expand"
+          } ${entity.title}`}
+        >
+          {entity.kind === "playbook"
+            ? entity.raw_status === "awaiting_approval"
+              ? "Review decision"
+              : "Manage"
+            : "Expand"}
         </Button>
       </div>
     </div>

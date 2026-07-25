@@ -633,11 +633,15 @@ export function useDeleteScopeItemMutation(slug: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => deleteScopeItem(slug, id),
-    onSuccess: (_res, id) => {
-      qc.setQueryData<ScopeItem[]>(qk.scope(slug), (prev) =>
-        prev ? prev.filter((s) => s.id !== id) : [],
+    onSuccess: (_response, id) => {
+      // Remove the deleted target immediately, then refetch the full set:
+      // deleting an include or exclusion can change every remaining row's
+      // effective-scope state.
+      qc.setQueryData<ScopeItem[]>(qk.scope(slug), (previous) =>
+        previous?.filter((item) => item.id !== id) ?? [],
       );
       void Promise.all([
+        qc.invalidateQueries({ queryKey: qk.scope(slug) }),
         qc.invalidateQueries({ queryKey: qk.entities(slug) }),
         qc.invalidateQueries({ queryKey: ["stored-entities", slug] }),
         qc.invalidateQueries({ queryKey: qk.engagements() }),

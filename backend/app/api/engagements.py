@@ -149,7 +149,7 @@ from app.services.findings import (
     lock_active_finding_or_404,
 )
 from app.services.scope_import import parse_scope_text
-from app.services.scope_matcher import normalize_email
+from app.services.scope_matcher import evaluate_scope, normalize_email
 
 router = APIRouter()
 
@@ -1261,12 +1261,26 @@ def import_scope(
     "/engagements/{slug}/scope",
     response_model=list[ScopeItemRead],
 )
-def list_scope(slug: str, session: DbSession, _user: CurrentUser) -> list[ScopeItem]:
+def list_scope(slug: str, session: DbSession, _user: CurrentUser) -> list[ScopeItemRead]:
     eng = _get_engagement_or_404(session, slug)
-    rows = session.execute(
-        select(ScopeItem).where(ScopeItem.engagement_id == eng.id).order_by(ScopeItem.created_at)
-    ).scalars()
-    return list(rows)
+    rows = list(
+        session.execute(
+            select(ScopeItem)
+            .where(ScopeItem.engagement_id == eng.id)
+            .order_by(ScopeItem.created_at)
+        ).scalars()
+    )
+    return [
+        ScopeItemRead.model_validate(item).model_copy(
+            update={
+                "is_effectively_in_scope": (
+                    not item.is_exclusion
+                    and evaluate_scope(item.value, item.kind, rows).allowed
+                )
+            }
+        )
+        for item in rows
+    ]
 
 
 @router.patch(

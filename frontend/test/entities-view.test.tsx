@@ -270,6 +270,39 @@ describe("EntitiesView", () => {
     );
   });
 
+  it("confirms exact rule removal in an in-app window", async () => {
+    vi.mocked(useScope).mockReturnValue(
+      query([
+        {
+          id: "scope-include",
+          engagement_id: "engagement-id",
+          kind: "domain",
+          value: "scope.example",
+          is_exclusion: false,
+          note: null,
+          source: "defined",
+          created_at: "2026-07-24T00:00:00Z",
+          updated_at: "2026-07-24T00:00:00Z",
+        },
+      ]) as never,
+    );
+    renderView(true);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Manage scope for scope.example" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    expect(
+      screen.getByRole("dialog", { name: /remove exact scope rule/i }),
+    ).toBeInTheDocument();
+    expect(deleteScopeItem).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove rule" }));
+    await waitFor(() =>
+      expect(deleteScopeItem).toHaveBeenCalledWith("acme", "scope-include"),
+    );
+  });
+
   it("does not expose bulk or dialog scope mutations to guests", () => {
     renderView(false);
     expect(screen.queryByRole("checkbox", { name: /Select scope\.example/ })).not.toBeInTheDocument();

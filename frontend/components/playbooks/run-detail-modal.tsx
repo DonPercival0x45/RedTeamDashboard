@@ -12,7 +12,6 @@ import { useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import {
   Dialog,
-  DialogClose,
   DialogContent,
   DialogDescription,
   DialogFooter,
@@ -61,20 +60,17 @@ function fieldRow(label: string, value: React.ReactNode) {
   );
 }
 
-export function RunDetailModal({
+export function RunDetailPanel({
   runId,
   onClose,
-  returnFocus,
   canWrite = true,
+  className,
 }: {
   runId: string;
   onClose: () => void;
-  returnFocus?: () => void;
   canWrite?: boolean;
+  className?: string;
 }) {
-  const openerRef = useRef<HTMLElement | null>(
-    typeof document === "undefined" ? null : (document.activeElement as HTMLElement | null),
-  );
   const query = usePlaybookRun(runId);
   const approve = useApprovePlaybookRunMutation();
   const reject = useRejectPlaybookRunMutation();
@@ -130,21 +126,13 @@ export function RunDetailModal({
   };
 
   return (
-    <Dialog open onOpenChange={(open) => !open && onClose()}>
-      <DialogContent
-        className="max-w-xl"
-        onCloseAutoFocus={(event) => {
-          event.preventDefault();
-          if (returnFocus) returnFocus();
-          else openerRef.current?.focus();
-        }}
-      >
-        <DialogHeader>
-          <DialogTitle>Playbook run</DialogTitle>
-          <DialogDescription>
-            Review lifecycle, findings, targets, and any required decision.
-          </DialogDescription>
-        </DialogHeader>
+    <div className={cn("space-y-4", className)}>
+      <div>
+        <h2 className="text-lg font-semibold leading-none tracking-tight">Manage run</h2>
+        <p className="mt-1.5 text-sm text-muted-foreground">
+          Review lifecycle, findings, targets, and any required decision.
+        </p>
+      </div>
         {!run ? (
           <QueryState
             isLoading={query.isLoading}
@@ -304,11 +292,9 @@ export function RunDetailModal({
               </>
             ) : (
               <>
-                <DialogClose asChild>
-                  <Button variant="outline" size="sm">
-                    Close
-                  </Button>
-                </DialogClose>
+                <Button variant="outline" size="sm" onClick={onClose}>
+                  Close
+                </Button>
                 <Button
                   variant="destructive"
                   size="sm"
@@ -361,11 +347,9 @@ export function RunDetailModal({
               </>
             ) : (
               <>
-                <DialogClose asChild>
-                  <Button variant="outline" size="sm">
-                    Close
-                  </Button>
-                </DialogClose>
+                <Button variant="outline" size="sm" onClick={onClose}>
+                  Close
+                </Button>
                 <Button
                   variant="destructive"
                   size="sm"
@@ -379,11 +363,47 @@ export function RunDetailModal({
               </>
             )
           ) : (
-            <DialogClose asChild>
-              <Button size="sm">Close</Button>
-            </DialogClose>
+            <Button size="sm" onClick={onClose}>Close</Button>
           )}
         </DialogFooter>
+    </div>
+  );
+}
+
+export function RunDetailModal({
+  runId,
+  onClose,
+  returnFocus,
+  canWrite = true,
+}: {
+  runId: string;
+  onClose: () => void;
+  returnFocus?: () => void;
+  canWrite?: boolean;
+}) {
+  const openerRef = useRef<HTMLElement | null>(
+    typeof document === "undefined"
+      ? null
+      : (document.activeElement as HTMLElement | null),
+  );
+
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent
+        className="max-w-xl"
+        onCloseAutoFocus={(event) => {
+          event.preventDefault();
+          if (returnFocus) returnFocus();
+          else openerRef.current?.focus();
+        }}
+      >
+        <DialogHeader className="sr-only">
+          <DialogTitle>Manage playbook run</DialogTitle>
+          <DialogDescription>
+            Review lifecycle, findings, targets, and any required decision.
+          </DialogDescription>
+        </DialogHeader>
+        <RunDetailPanel runId={runId} onClose={onClose} canWrite={canWrite} />
       </DialogContent>
     </Dialog>
   );

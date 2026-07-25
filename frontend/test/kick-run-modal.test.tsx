@@ -125,6 +125,24 @@ describe("KickRunModal", () => {
     expect(screen.queryByText("excluded.example")).not.toBeInTheDocument();
   });
 
+  it("removes includes overridden by current exclusions", () => {
+    mockScopeData = scopeItems.map((item) =>
+      item.id === "s1"
+        ? { ...item, is_effectively_in_scope: false }
+        : { ...item, is_effectively_in_scope: !item.is_exclusion },
+    );
+    render(
+      <KickRunModal
+        engagementSlug="acme"
+        playbook={playbook}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByText("foo.example")).not.toBeInTheDocument();
+    expect(screen.getByText("bar.example")).toBeInTheDocument();
+  });
+
   it("offers scoped mailboxes to email playbooks only", () => {
     render(
       <KickRunModal
@@ -168,6 +186,29 @@ describe("KickRunModal", () => {
       executor: "mcp",
     });
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it("clears a selected target when scope changes while open", async () => {
+    const user = userEvent.setup();
+    const props = {
+      engagementSlug: "acme",
+      playbook,
+      onClose: vi.fn(),
+    };
+    const { rerender } = render(<KickRunModal {...props} />);
+    await user.click(screen.getByText("foo.example"));
+    expect(screen.getByText(/1 selected/i)).toBeInTheDocument();
+
+    mockScopeData = scopeItems.map((item) =>
+      item.id === "s1"
+        ? { ...item, is_effectively_in_scope: false }
+        : item,
+    );
+    rerender(<KickRunModal {...props} />);
+
+    await waitFor(() => expect(screen.getByText(/0 selected/i)).toBeInTheDocument());
+    expect(screen.queryByText("foo.example")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /kick run/i })).toBeDisabled();
   });
 
   it("shows the catalog-selected execution path without an incompatible choice", () => {

@@ -219,6 +219,7 @@ class ScopeItemRead(BaseModel):
     is_exclusion: bool
     note: str | None
     source: str = "defined"
+    is_effectively_in_scope: bool | None = None
     created_at: datetime
     updated_at: datetime
 

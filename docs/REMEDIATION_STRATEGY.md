@@ -9,11 +9,14 @@
 
 ## 1. Current state
 
-`fix/v3-playbook-run-ui` is **ahead of `origin/main` by 22 committed
+`fix/v3-playbook-run-ui` is **ahead of `origin/main` by 23 committed
 rollback points**. The most recent completed slices are:
 
 | commit | what | status |
 |--------|------|--------|
+| current slice | Runs keeps playbook decisions beside history; effective scope drives targets and destructive scope changes use in-app confirmation | ✅ fixed |
+| `206744e` | exact email targets become first-class scope with an applicable governed playbook | ✅ fixed |
+| `723fcb2` | analysts bulk-manage discovered Entity scope without duplicate entry | ✅ fixed |
 | `398554a` | Compose refreshes the persistent frontend dependency volume when the lockfile changes | ✅ fixed |
 | `ae07532` | playbook discoveries, executor affinity, and the Entity workbench converge on canonical contracts | ✅ fixed |
 | `53ba6e2` | soft provider preferences route to a live MRU key while explicit identities remain strict | ✅ fixed |
@@ -24,8 +27,8 @@ rollback points**. The most recent completed slices are:
 
 **Current validation evidence:**
 - backend: Ruff clean; **204 focused playbook/entity/provider tests pass**;
-  full suite **1021 passed / 4 documented Windows-host failures / 2 skipped**
-- frontend: `tsc --noEmit` and `next build` clean; **55 Vitest tests pass**
+  full suite **1023 passed / 4 documented Windows-host failures / 2 skipped**
+- frontend: `tsc --noEmit` and `next build` clean; **63 Vitest tests pass**
 - CLI: **35 passed / 1 skipped** (documented Windows permissions limitation)
 - local backend tests reset an isolated `rtd_test` database and Redis DB 15;
   pytest refuses the operator-facing `rtd` database outside disposable CI
@@ -60,8 +63,10 @@ new resolver tests. No further action.
 
 ### ✅ Complaint 1 — "Playbooks are referenced in engagements but buried in an entirely different screen"
 **Status: FIXED.** Playbooks now have a first-class engagement view. Their
-running/terminal lifecycle is visible in Status and running jobs, and awaiting
-playbook runs share the unified decision inbox with tool approvals. The Scope
+running/terminal lifecycle is visible in Status and running jobs. Awaiting
+playbook runs can be approved or rejected from a persistent side-by-side Manage
+pane in Runs while the run list stays usable, and they also share the unified
+decision inbox with tool approvals. The Scope
 tab remains the authoritative place to define targets; it is no longer used as
 a substitute Playbooks screen.
 
@@ -96,8 +101,10 @@ one coherent pass (not scattered one-offs).
   misleading scope attribution.
 - A rerun retires legacy `whois:{{scope_item}}` / literal-target rows and writes
   a trustworthy resolved group.
-- Kickoff selects existing non-exclusion scope items. The API revalidates scope
-  membership and asset class before queueing.
+- Kickoff selects only currently effective included scope items. Deleted rows
+  and targets overridden by exclusions disappear from the picker, including
+  while it is open; the API still revalidates scope membership and asset class
+  before queueing.
 - Scope targets and structured playbook discoveries appear in the derived
   Entities inventory without being duplicated into the separate imported
   Entity store.

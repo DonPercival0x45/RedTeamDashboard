@@ -11,7 +11,7 @@
 // the mutation's onSuccess invalidation.
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Loader2 } from "lucide-react";
 import {
   Dialog,
@@ -46,17 +46,29 @@ export function KickRunModal({
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
 
-  // Only included targets compatible with the playbook's asset class are
-  // offered. The backend independently enforces the same compatibility.
+  // Only currently effective includes compatible with the playbook asset
+  // class are offered. The backend computes effective scope with the same
+  // matcher used at execution time, so exclusions disappear immediately.
   const scopeItems = useMemo(
     () =>
       (scopeQuery.data ?? []).filter(
         (item) =>
           !item.is_exclusion &&
+          item.is_effectively_in_scope !== false &&
           item.kind === playbook.applies_to_asset_class,
       ),
     [playbook.applies_to_asset_class, scopeQuery.data],
   );
+
+  // A scope row may be deleted or become excluded while this dialog is open.
+  // Do not retain an invisible stale selection or submit an empty subset.
+  useEffect(() => {
+    const eligible = new Set(scopeItems.map((item) => item.value));
+    setSelected((previous) => {
+      const next = new Set([...previous].filter((value) => eligible.has(value)));
+      return next.size === previous.size ? previous : next;
+    });
+  }, [scopeItems]);
   const loading = scopeQuery.isLoading;
   const loadError = scopeQuery.error;
 
