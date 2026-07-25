@@ -26,6 +26,7 @@ from app.worker.authz import make_db_authorizer
 from app.worker.checkpoint import build_postgres_checkpointer
 from app.worker.consumer import StreamConsumer
 from app.worker.discord_bot import DiscordBotThread
+from app.worker.intelligence_worker import IntelligenceWorkerThread
 from app.worker.lease_sweeper import LeaseSweeperThread
 from app.worker.outbox_relay import CommandOutboxRelay
 from app.worker.playbook_worker import PlaybookWorkerThread
@@ -230,12 +231,27 @@ def main() -> None:
     )
     playbook_thread.start()
 
+    # Analyst-triggered v3 intelligence is persisted before execution so a
+    # slow provider call is not tied to the browser request lifecycle.
+    intelligence_worker = IntelligenceWorkerThread(
+        session_factory=SessionLocal,
+        redis_client=redis_client,
+    )
+    intelligence_thread = threading.Thread(
+        target=intelligence_worker.run_forever,
+        args=(stop_event,),
+        name="intelligence-worker",
+        daemon=True,
+    )
+    intelligence_thread.start()
+
     consumer.run_forever(stop_event)
     outbox_thread.join(timeout=5.0)
     strategic_thread.join(timeout=5.0)
     sweeper_thread.join(timeout=5.0)
     discord_thread.join(timeout=5.0)
     playbook_thread.join(timeout=5.0)
+    intelligence_thread.join(timeout=5.0)
     sys.exit(0)
 
 

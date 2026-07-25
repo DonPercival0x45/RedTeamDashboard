@@ -202,6 +202,27 @@ export function KickRunModal({
             </p>
           </div>
 
+          {(playbook.required_credentials?.length ?? 0) > 0 ? (
+            <div className="space-y-2">
+              <Label>Required credentials</Label>
+              <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs">
+                <p>
+                  This run needs requester-owned credentials for{" "}
+                  <span className="font-medium">
+                    {playbook.required_credentials?.join(", ")}
+                  </span>
+                  .
+                </p>
+                <Link
+                  href="/settings/keys"
+                  className="mt-1 inline-block font-medium underline underline-offset-2"
+                >
+                  Review keys
+                </Link>
+              </div>
+            </div>
+          ) : null}
+
           <div className="space-y-2">
             <Label>Execution path</Label>
             <div className="rounded-md border border-border bg-muted/30 px-3 py-2 text-xs">

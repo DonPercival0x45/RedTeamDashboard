@@ -172,6 +172,14 @@ def compute_group_key(
             return None
         return f"whois:{_apex_of(domain)}"
 
+    if tool == "dehashed":
+        email = str(data.get("email") or args.get("email") or "").strip()
+        domain = str(data.get("domain") or args.get("domain") or "").strip().lower()
+        target = email or domain
+        if not target:
+            return None
+        return f"dehashed:{target}"
+
     if tool == "reverse_dns":
         ip = str(data.get("ip") or args.get("ip") or "").strip()
         if not ip:
@@ -227,14 +235,13 @@ def compute_group_key(
         return f"portscan:{host}"
 
     if tool == "subnet_sweep":
-        # subnet_sweep fans out per-host findings that structurally
-        # mirror portscan's, so they SHARE the portscan group key.
-        # A per-host CIDR run then a follow-up portscan on the same
-        # host lands in one row.
+        # Per-host calls share portscan groups. A playbook sweep arrives as
+        # one aggregate candidate list and uses the CIDR as its stable group.
         host = str(data.get("host") or data.get("target") or "").strip()
-        if not host:
-            return None
-        return f"portscan:{host}"
+        if host:
+            return f"portscan:{host}"
+        cidr = str(data.get("cidr") or args.get("cidr") or "").strip()
+        return f"subnet_sweep:{cidr}" if cidr else None
 
     if tool == "service_detect":
         host = str(data.get("host") or data.get("target") or "").strip()
@@ -360,6 +367,10 @@ def extract_items(
                     )
         return items
 
+    if tool == "dehashed":
+        records = data.get("records") or []
+        return [dict(record) for record in records if isinstance(record, dict)]
+
     if tool == "reverse_dns":
         return [
             {"hostname": h} for h in data.get("hostnames") or [] if isinstance(h, str) and h.strip()
@@ -399,8 +410,11 @@ def extract_items(
         ]
 
     if tool in ("portscan", "subnet_sweep"):
-        # These fan out to N per-(host, port) findings upstream — each
-        # arriving finding already carries a single port.
+        # Direct calls arrive one port at a time; playbook MCP calls preserve
+        # the full leased finding candidate list for one canonical upsert.
+        findings = data.get("findings")
+        if isinstance(findings, list):
+            return [dict(item) for item in findings if isinstance(item, dict)]
         return [
             {
                 "port": data.get("port"),
@@ -410,6 +424,9 @@ def extract_items(
         ]
 
     if tool == "service_detect":
+        findings = data.get("findings")
+        if isinstance(findings, list):
+            return [dict(item) for item in findings if isinstance(item, dict)]
         return [dict(data)]
 
     if tool == "whois_lookup":
@@ -492,6 +509,12 @@ def item_dedup_key(tool: str | None, item: Mapping[str, Any]) -> str:
         return str(item.get("subdomain") or "").lower()
     if tool == "dns_lookup":
         return f"{item.get('type')}={item.get('value')}"
+    if tool == "dehashed":
+        return str(
+            item.get("id")
+            or item.get("entity_id")
+            or f"{item.get('email')}@{item.get('database_name')}"
+        ).lower()
     if tool == "reverse_dns":
         return str(item.get("hostname") or "").lower()
     if tool == "freeipapi":
@@ -552,6 +575,9 @@ def group_title(tool: str | None, group_key: str, data: Mapping[str, Any] | None
     if tool == "whois_lookup":
         apex = group_key.split(":", 1)[-1]
         return f"WHOIS record — {apex}"
+    if tool == "dehashed":
+        target = group_key.split(":", 1)[-1]
+        return f"DeHashed exposure records — {target}"
     if tool == "reverse_dns":
         ip = group_key.split(":", 1)[-1]
         return f"Reverse DNS — {ip}"
@@ -573,8 +599,12 @@ def group_title(tool: str | None, group_key: str, data: Mapping[str, Any] | None
         bucket = parts[2] if len(parts) > 2 else "?"
         return f"HTTP surface ({bucket}) — {apex}"
     if tool in ("portscan", "subnet_sweep"):
-        host = group_key.split(":", 1)[-1]
-        return f"Open ports — {host}"
+        target = group_key.split(":", 1)[-1]
+        return (
+            f"CIDR exposure survey — {target}"
+            if group_key.startswith("subnet_sweep:")
+            else f"Open ports — {target}"
+        )
     if tool == "service_detect":
         host = group_key.split(":", 1)[-1]
         return f"Service fingerprints — {host}"

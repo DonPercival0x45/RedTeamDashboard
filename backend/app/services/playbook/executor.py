@@ -90,8 +90,23 @@ _SCOPE_TARGET_ARG: dict[str, str] = {
     "dns_inventory": "domain",
     "subfinder": "domain",
     "crtsh": "domain",
+    "crt_sh": "domain",
+    "dns_lookup": "domain",
+    "httpx_probe": "url",
+    "reverse_dns": "ip",
     "freeipapi": "ip",
     "ipinfo": "ip",
+    "port_scan": "target",
+    "service_detect": "target",
+    "subnet_sweep": "cidr",
+    "mcp_subfinder": "domain",
+    "mcp_crt_sh": "domain",
+    "mcp_dns_lookup": "domain",
+    "mcp_httpx_probe": "url",
+    "mcp_reverse_dns": "ip",
+    "mcp_port_scan": "target",
+    "mcp_service_detect": "target",
+    "mcp_subnet_sweep": "cidr",
 }
 _PLAYBOOK_TOOL_EXECUTOR: dict[str, str] = {
     "dns-inventory": "internal",
@@ -99,8 +114,23 @@ _PLAYBOOK_TOOL_EXECUTOR: dict[str, str] = {
     "subfinder": "internal",
     "crtsh": "internal",
     "breach-lookup": "internal",
+    "crt_sh": "mcp",
+    "dns_lookup": "mcp",
+    "httpx_probe": "mcp",
+    "reverse_dns": "mcp",
     "freeipapi": "mcp",
     "ipinfo": "mcp",
+    "port_scan": "mcp",
+    "service_detect": "mcp",
+    "subnet_sweep": "mcp",
+    "mcp_subfinder": "mcp",
+    "mcp_crt_sh": "mcp",
+    "mcp_dns_lookup": "mcp",
+    "mcp_httpx_probe": "mcp",
+    "mcp_reverse_dns": "mcp",
+    "mcp_port_scan": "mcp",
+    "mcp_service_detect": "mcp",
+    "mcp_subnet_sweep": "mcp",
 }
 
 
@@ -305,11 +335,12 @@ class MCPExecutor:
         args = resolve_step_args(tool_slug, args_template, scope_context)
         if self._engagement_slug:
             args["engagement_slug"] = self._engagement_slug
-        secret = self._tool_secrets.get(tool_slug)
+        method_name = tool_slug.removeprefix("mcp_")
+        secret = self._tool_secrets.get(method_name)
         if secret:
             args["api_key"] = secret
         try:
-            raw = asyncio.run(self._ainvoke(tool_slug, args))
+            raw = asyncio.run(self._ainvoke(method_name, args))
         except KeyError:
             return StepResult(
                 ok=False,
@@ -319,7 +350,7 @@ class MCPExecutor:
             detail = _unwrap_exception_detail(exc)
             logger.exception(
                 "playbook.mcp_executor_failed",
-                tool=tool_slug,
+                tool=method_name,
                 error=detail,
             )
             return StepResult(
@@ -356,6 +387,12 @@ def _coerce_response(raw: Any) -> StepResult:
     findings = raw.get("_lease_findings")
     findings_total = len(findings) if isinstance(findings, list) else 0
     data = {k: v for k, v in raw.items() if k != "_lease_findings"}
+    if isinstance(findings, list) and findings:
+        # PlaybookWorker does not use the legacy graph's finding writer. Keep
+        # leased finding candidates available to the canonical playbook bridge.
+        data["lease_findings"] = [
+            dict(item) for item in findings if isinstance(item, Mapping)
+        ]
     return StepResult(
         ok=True,
         findings_new=findings_total,

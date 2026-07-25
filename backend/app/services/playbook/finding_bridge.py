@@ -38,6 +38,7 @@ TOOL_ALIASES: dict[str, str] = {
     "crtsh": "crt_sh",
     "freeipapi": "freeipapi",
     "ipinfo": "ipinfo",
+    "breach-lookup": "dehashed",
 }
 
 _MAX_ITEMS_PER_STEP = 5000
@@ -73,7 +74,7 @@ def _translate(
     """Return canonical grouping tool/data, or ``(None, None)`` for no output."""
     data = dict(data or {})
     domain = str(args.get("domain") or data.get("domain") or "").strip()
-    normalized = playbook_tool.replace("-", "_")
+    normalized = playbook_tool.replace("-", "_").removeprefix("mcp_")
 
     if normalized == "whois":
         record = data.get("record") or {}
@@ -81,8 +82,15 @@ def _translate(
             return None, None
         return "whois_lookup", {**record, "domain": domain}
 
-    if normalized == "dns_inventory":
-        records = data.get("records") or {}
+    if normalized in {"dns_inventory", "dns_lookup"}:
+        records = data.get("records") or {
+            "A": data.get("a") or [],
+            "AAAA": data.get("aaaa") or [],
+            "CNAME": data.get("cname") or [],
+            "MX": data.get("mx") or [],
+            "TXT": data.get("txt") or [],
+            "NS": data.get("ns") or [],
+        }
         if not isinstance(records, dict) or not domain:
             return None, None
         remaining = _MAX_ITEMS_PER_STEP
@@ -123,7 +131,7 @@ def _translate(
             return None, None
         return "dns_lookup", {**projected, "domain": domain}
 
-    if normalized in {"subfinder", "crtsh"}:
+    if normalized in {"subfinder", "crtsh", "crt_sh"}:
         subdomains = _bounded_strings(data.get("subdomains"), _MAX_ITEMS_PER_STEP)
         if not subdomains or not domain:
             return None, None
@@ -138,6 +146,63 @@ def _translate(
         if not ip or not data:
             return None, None
         return normalized, {**data, "ip": ip}
+
+    if normalized == "reverse_dns":
+        ip = str(args.get("ip") or data.get("ip") or "").strip()
+        hostnames = data.get("hostnames") or []
+        if not ip or not isinstance(hostnames, list) or not hostnames:
+            return None, None
+        return "reverse_dns", {"ip": ip, "hostnames": hostnames}
+
+    if normalized == "httpx_probe":
+        url = str(args.get("url") or data.get("url") or "").strip()
+        if not url or not data:
+            return None, None
+        return "httpx_probe", {**data, "url": url}
+
+    if normalized in {"port_scan", "service_detect", "subnet_sweep"}:
+        grouping_tool = "portscan" if normalized == "port_scan" else normalized
+        candidates = data.get("lease_findings") or []
+        if not isinstance(candidates, list) or not candidates:
+            return None, None
+        target_key = "cidr" if normalized == "subnet_sweep" else "target"
+        target = str(args.get(target_key) or "").strip()
+        flattened: list[dict[str, Any]] = []
+        for item in candidates:
+            if not isinstance(item, dict):
+                continue
+            item_data = item.get("data") if isinstance(item.get("data"), dict) else {}
+            flattened.append(
+                {
+                    **item_data,
+                    "host": item_data.get("host") or item.get("target"),
+                    "target": item.get("target"),
+                    "title": item.get("title"),
+                    "severity": item.get("severity"),
+                }
+            )
+        return grouping_tool, {
+            **data,
+            target_key: target,
+            "host": target if normalized != "subnet_sweep" else None,
+            "findings": flattened,
+        }
+
+    if normalized == "breach_lookup":
+        records = data.get("records")
+        email = str(args.get("email") or data.get("email") or "").strip()
+        target_domain = str(
+            args.get("domain") or data.get("domain") or ""
+        ).strip()
+        if not isinstance(records, list) or not records or not (email or target_domain):
+            return None, None
+        return "dehashed", {
+            "email": email or None,
+            "domain": target_domain or None,
+            "provider": data.get("provider") or "dehashed_import",
+            "records": [record for record in records if isinstance(record, dict)],
+            "truncated": bool(data.get("truncated")),
+        }
 
     return None, None
 

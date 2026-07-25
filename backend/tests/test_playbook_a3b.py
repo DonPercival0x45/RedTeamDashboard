@@ -26,6 +26,7 @@ from app.models import (
     EngagementArchitecture,
     EngagementStatus,
     EngagementWorkState,
+    Entity,
     PlaybookRun,
     PlaybookRunStatus,
     ScopeItem,
@@ -169,6 +170,50 @@ def test_stub_tools_return_success_with_note(tool_module) -> None:
     # A note explaining the stub is present so the coverage record's audit
     # trail carries provenance without falsely satisfying baseline.
     assert "stub" in (result.data.get("note") or "").lower()
+
+
+def test_dehashed_imported_evidence_drives_exact_email_lookup(
+    db: Session, engagement: Engagement
+) -> None:
+    db.add_all(
+        [
+            Entity(
+                engagement_id=engagement.id,
+                type="breach_record",
+                value="Analyst@example.com@Example breach",
+                properties={
+                    "email": "Analyst@example.com",
+                    "database_name": "Example breach",
+                },
+                source_tool="darkweb_import",
+                source_attribution="dehashed.json",
+            ),
+            Entity(
+                engagement_id=engagement.id,
+                type="breach_record",
+                value="other@example.com@Other breach",
+                properties={
+                    "email": "other@example.com",
+                    "database_name": "Other breach",
+                },
+                source_tool="darkweb_import",
+                source_attribution="dehashed.json",
+            ),
+        ]
+    )
+    db.commit()
+
+    result = breach_lookup.run_from_store(
+        db,
+        engagement_id=engagement.id,
+        scope_context="Analyst@example.com",
+        args={"email": "Analyst@example.com"},
+    )
+
+    assert result.ok is True
+    assert result.stub is False
+    assert result.findings_total == 1
+    assert result.data["records"][0]["database_name"] == "Example breach"
 
 
 # ---------------------------------------------------------------------------
@@ -359,7 +404,30 @@ def test_list_playbooks_installs_seeds_on_first_call(
         "osint-passive-domain",
         "ptes-passive-recon",
         "email-exposure-triage",
+        "domain-web-surface",
+        "host-service-validation",
+        "cidr-exposure-survey",
+        "mail-dns-posture",
     } <= slugs
+
+
+def test_new_operational_playbooks_declare_safe_execution_paths(
+    client: TestClient, user: User
+) -> None:
+    response = client.get("/playbooks", headers=_headers(user))
+    assert response.status_code == 200, response.text
+    by_slug = {item["slug"]: item for item in response.json()}
+
+    assert by_slug["domain-web-surface"]["required_executor"] == "mcp"
+    assert by_slug["domain-web-surface"]["active"] is False
+    assert by_slug["host-service-validation"]["required_executor"] == "mcp"
+    assert by_slug["host-service-validation"]["active"] is True
+    assert by_slug["cidr-exposure-survey"]["active"] is True
+    assert by_slug["osint-enrichment"]["version"] == 2
+    assert by_slug["osint-enrichment"]["required_credentials"] == [
+        "freeipapi",
+        "ipinfo",
+    ]
 
 
 def test_get_playbook_detail_returns_steps(

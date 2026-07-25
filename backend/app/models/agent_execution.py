@@ -29,6 +29,7 @@ class AgentTrigger(enum.StrEnum):
 
 
 class AgentExecutionStatus(enum.StrEnum):
+    pending = "pending"
     running = "running"
     completed = "completed"
     failed = "failed"

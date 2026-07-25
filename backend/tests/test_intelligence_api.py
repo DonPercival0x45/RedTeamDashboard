@@ -25,6 +25,7 @@ from app.models import (
 )
 from app.schemas.intelligence import AnalysisOutput, ProposedFact
 from app.services import methodology as methodology_service
+from app.worker.intelligence_worker import IntelligenceWorkerThread
 
 
 @pytest.fixture()
@@ -215,20 +216,26 @@ def test_on_demand_analysis_uses_manual_trigger_and_persists_output(
         resolver_kwargs.update(kwargs)
         return llm, "test-provider", "test-model"
 
-    monkeypatch.setattr("app.api.intelligence.resolve_llm_for_mode", resolve)
+    monkeypatch.setattr(
+        "app.worker.intelligence_worker.resolve_llm_for_mode", resolve
+    )
     response = client.post(
         f"/engagements/{row['slug']}/intelligence/runs",
         json={"mode": "analysis"},
         headers=_headers(),
     )
-    assert response.status_code == 200, response.text
+    assert response.status_code == 202, response.text
     payload = response.json()
     assert payload["mode"] == "analysis"
-    assert payload["status"] == "completed"
-    assert payload["parsed"]["proposed_facts"][0]["summary"] == (
-        "Analyst-requested correlation"
-    )
+    assert payload["status"] == "pending"
+    assert payload["parsed"] is None
 
+    worker = IntelligenceWorkerThread(
+        session_factory=lambda: db,
+        redis_client=object(),
+    )
+    assert worker.run_once() is True
+    db.expire_all()
     execution = db.get(AgentExecution, uuid.UUID(payload["execution_id"]))
     assert execution is not None
     assert execution.status is AgentExecutionStatus.completed
@@ -245,7 +252,7 @@ def test_on_demand_analysis_uses_manual_trigger_and_persists_output(
     audit = db.scalar(
         select(AuditLog).where(
             AuditLog.engagement_id == execution.engagement_id,
-            AuditLog.event_type == "intelligence.invoked",
+            AuditLog.event_type == "intelligence.completed",
         )
     )
     assert audit is not None
@@ -264,25 +271,43 @@ def test_on_demand_model_failure_is_recorded_without_partial_memory(
     def resolve(*_args: Any, **_kwargs: Any) -> tuple[Any, str, str]:
         return RaisingLLM(), "test-provider", "test-model"
 
-    monkeypatch.setattr("app.api.intelligence.resolve_llm_for_mode", resolve)
+    monkeypatch.setattr(
+        "app.worker.intelligence_worker.resolve_llm_for_mode", resolve
+    )
     response = client.post(
         f"/engagements/{row['slug']}/intelligence/runs",
         json={"mode": "analysis"},
         headers=_headers(),
     )
-    assert response.status_code == 200, response.text
+    assert response.status_code == 202, response.text
     payload = response.json()
-    assert payload["status"] == "failed"
-    assert "injected model failure" in payload["error"]
+    assert payload["status"] == "pending"
 
+    worker = IntelligenceWorkerThread(
+        session_factory=lambda: db,
+        redis_client=object(),
+    )
+    assert worker.run_once() is True
+    db.expire_all()
     execution = db.get(AgentExecution, uuid.UUID(payload["execution_id"]))
     assert execution is not None
     assert execution.status is AgentExecutionStatus.failed
+    assert "injected model failure" in (execution.error or "")
     assert db.scalar(
         select(func.count(MemoryElement.id)).where(
             MemoryElement.engagement_id == execution.engagement_id
         )
     ) == 0
+
+    retry = client.post(
+        f"/agent-executions/{execution.id}/retry",
+        headers=_headers(),
+    )
+    assert retry.status_code == 200, retry.text
+    assert retry.json()["raw_status"] == "pending"
+    retried = db.get(AgentExecution, uuid.UUID(retry.json()["id"]))
+    assert retried is not None
+    assert retried.input["retry_of_execution_id"] == str(execution.id)
 
 
 def test_on_demand_intelligence_rejects_legacy_engagement(

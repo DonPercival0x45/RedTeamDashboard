@@ -1492,6 +1492,7 @@ export interface PlaybookRead {
   active: boolean;
   step_count: number;
   required_executor: PlaybookExecutorKind;
+  required_credentials?: string[];
 }
 
 export interface PlaybookDetail extends PlaybookRead {

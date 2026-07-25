@@ -134,17 +134,22 @@ class PlaybookWorkerThread:
             run_id = _uuid.UUID(run_id_str)
             lease_id = None
             executor: PlaybookExecutor
+            run = session.get(PlaybookRun, run_id)
+            if run is None:
+                raise RuntimeError(f"playbook run {run_id} not found")
+            engagement = session.get(Engagement, run.engagement_id)
+            if engagement is None:
+                raise RuntimeError("playbook engagement not found")
             if kind is PlaybookExecutorKind.mcp:
                 from app.services.mcp_lease import mint_for_engagement, release
                 from app.worker.runner import _resolve_tool_secrets
 
-                run = session.get(PlaybookRun, run_id)
-                if run is None:
-                    raise RuntimeError(f"playbook run {run_id} not found")
-                engagement = session.get(Engagement, run.engagement_id)
-                if engagement is None:
-                    raise RuntimeError("playbook engagement not found")
-                tool_slugs = [step.tool_slug for step in run.playbook.steps]
+                tool_slugs = []
+                for step in run.playbook.steps:
+                    tool_name = step.tool_slug.removeprefix("mcp_")
+                    if tool_name == "port_scan":
+                        tool_name = "portscan"
+                    tool_slugs.append(tool_name)
                 lease = mint_for_engagement(
                     session,
                     engagement_id=engagement.id,
@@ -154,6 +159,13 @@ class PlaybookWorkerThread:
                         "engagement": {"slug": engagement.slug},
                         "acting_user_id": (
                             str(run.requested_by) if run.requested_by else None
+                        ),
+                        "playbook_run_id": str(run.id),
+                        "playbook_approved_by": (
+                            str(run.approved_by) if run.approved_by else None
+                        ),
+                        "playbook_approved_at": (
+                            run.approved_at.isoformat() if run.approved_at else None
                         ),
                     },
                     prompt_keys=[],
@@ -174,7 +186,19 @@ class PlaybookWorkerThread:
                     tool_secrets=secrets,
                 )
             else:
-                executor = self._build_executor(kind)
+                from app.services.playbook.tools.breach_lookup import run_from_store
+
+                internal = InternalExecutor()
+                internal.register(
+                    "breach-lookup",
+                    lambda scope, args: run_from_store(
+                        session,
+                        engagement_id=engagement.id,
+                        scope_context=scope,
+                        args=args,
+                    ),
+                )
+                executor = internal
 
             execute_pending_run(session, run_id=run_id, executor=executor)
             if lease_id is not None:

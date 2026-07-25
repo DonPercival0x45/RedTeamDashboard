@@ -157,11 +157,10 @@ EMAIL_EXPOSURE_TRIAGE_V1: dict[str, Any] = {
     "version": 1,
     "name": "Email exposure triage",
     "description": (
-        "Checks an explicitly scoped mailbox against the configured breach-"
-        "corpus connector. Exact email scope is required; authorizing a domain "
-        "does not authorize every mailbox at that domain. Until a deployment "
-        "configures a corpus provider, the step reports stub coverage rather "
-        "than claiming a successful exposure check."
+        "Checks an explicitly scoped mailbox against DeHashed records already "
+        "imported into this engagement. Exact email scope is required; "
+        "authorizing a domain does not authorize every mailbox at that domain. "
+        "No breach evidence leaves the deployment during this lookup."
     ),
     "applies_to_asset_class": "email",
     "active": False,
@@ -171,7 +170,184 @@ EMAIL_EXPOSURE_TRIAGE_V1: dict[str, Any] = {
             "tool_slug": "breach-lookup",
             "args_template": {"email": "{{scope_item}}"},
             "satisfies_node_ids": [],
-            "description": "Breach-corpus lookup for the exact mailbox.",
+            "description": "Match the exact mailbox against imported DeHashed evidence.",
+        },
+    ],
+}
+
+
+EMAIL_EXPOSURE_TRIAGE_V2: dict[str, Any] = {
+    **EMAIL_EXPOSURE_TRIAGE_V1,
+    "version": 2,
+}
+
+
+DOMAIN_WEB_SURFACE_V1: dict[str, Any] = {
+    "slug": "domain-web-surface",
+    "version": 1,
+    "name": "Domain and web-surface discovery",
+    "description": (
+        "Runs real passive collection through the MCP tool plane: subdomain "
+        "enumeration, certificate transparency, DNS resolution, and an HTTP "
+        "technology probe for each selected domain."
+    ),
+    "applies_to_asset_class": "domain",
+    "active": False,
+    "steps": [
+        {
+            "sort_order": 10,
+            "tool_slug": "mcp_subfinder",
+            "args_template": {"domain": "{{scope_item}}"},
+            "satisfies_node_ids": ["osint.domain.enum"],
+            "description": "Real passive subdomain enumeration.",
+        },
+        {
+            "sort_order": 20,
+            "tool_slug": "mcp_crt_sh",
+            "args_template": {"domain": "{{scope_item}}"},
+            "satisfies_node_ids": ["osint.domain.cert"],
+            "description": "Certificate-transparency discovery.",
+        },
+        {
+            "sort_order": 30,
+            "tool_slug": "mcp_dns_lookup",
+            "args_template": {"domain": "{{scope_item}}"},
+            "satisfies_node_ids": ["osint.domain.dns"],
+            "description": "Resolve current A, AAAA, and CNAME records.",
+        },
+        {
+            "sort_order": 40,
+            "tool_slug": "mcp_httpx_probe",
+            "args_template": {"url": "{{scope_item}}"},
+            "satisfies_node_ids": [],
+            "description": "Identify reachable web services and technology signals.",
+        },
+    ],
+}
+
+
+OSINT_ENRICHMENT_V2: dict[str, Any] = {
+    **OSINT_ENRICHMENT_V1,
+    "version": 2,
+    "name": "IP intelligence and ownership",
+    "description": (
+        "Passive IP triage: reverse DNS, geolocation/ISP context, and "
+        "ASN/hosting/VPN/proxy/Tor intelligence. FreeIPAPI and IPinfo require "
+        "requester-owned credentials; reverse DNS is keyless."
+    ),
+    "steps": [
+        {
+            "sort_order": 10,
+            "tool_slug": "mcp_reverse_dns",
+            "args_template": {"ip": "{{scope_item}}"},
+            "satisfies_node_ids": [],
+            "description": "Resolve the IP's PTR hostname.",
+        },
+        {
+            "sort_order": 20,
+            "tool_slug": "freeipapi",
+            "args_template": {"ip": "{{scope_item}}"},
+            "satisfies_node_ids": [],
+            "description": "Geo and ISP context via FreeIPAPI.",
+        },
+        {
+            "sort_order": 30,
+            "tool_slug": "ipinfo",
+            "args_template": {"ip": "{{scope_item}}"},
+            "satisfies_node_ids": [],
+            "description": "ASN, ownership, and hosting/privacy signals via IPinfo.",
+        },
+    ],
+}
+
+
+HOST_SERVICE_VALIDATION_V1: dict[str, Any] = {
+    "slug": "host-service-validation",
+    "version": 1,
+    "name": "Host service validation",
+    "description": (
+        "Actively validates a bounded set of common exposure ports, then "
+        "fingerprints services on the same ports. Requires analyst approval "
+        "before any target connection is made."
+    ),
+    "applies_to_asset_class": "ip",
+    "active": True,
+    "steps": [
+        {
+            "sort_order": 10,
+            "tool_slug": "mcp_port_scan",
+            "args_template": {
+                "target": "{{scope_item}}",
+                "ports": "21,22,25,53,80,110,143,443,445,3389,5432,6379,8080,8443",
+            },
+            "satisfies_node_ids": [],
+            "description": "TCP-connect scan of a bounded common-port set.",
+        },
+        {
+            "sort_order": 20,
+            "tool_slug": "mcp_service_detect",
+            "args_template": {
+                "target": "{{scope_item}}",
+                "ports": "21,22,25,53,80,110,143,443,445,3389,5432,6379,8080,8443",
+            },
+            "satisfies_node_ids": [],
+            "description": "Banner, HTTP, and TLS fingerprinting on the approved ports.",
+        },
+    ],
+}
+
+
+CIDR_EXPOSURE_SURVEY_V1: dict[str, Any] = {
+    "slug": "cidr-exposure-survey",
+    "version": 1,
+    "name": "CIDR exposure survey",
+    "description": (
+        "Actively surveys an authorized CIDR (maximum /24) for a bounded set "
+        "of common exposure ports. Explicit host exclusions are enforced by "
+        "the tool and analyst approval is required before execution."
+    ),
+    "applies_to_asset_class": "cidr",
+    "active": True,
+    "steps": [
+        {
+            "sort_order": 10,
+            "tool_slug": "mcp_subnet_sweep",
+            "args_template": {
+                "cidr": "{{scope_item}}",
+                "ports": "22,80,443,445,3389,8080,8443",
+            },
+            "satisfies_node_ids": [],
+            "description": "Bounded TCP sweep with per-host scope exclusions.",
+        }
+    ],
+}
+
+
+MAIL_DNS_POSTURE_V1: dict[str, Any] = {
+    "slug": "mail-dns-posture",
+    "version": 1,
+    "name": "Mail and DNS posture collection",
+    "description": (
+        "Collects authoritative DNS and certificate-transparency evidence for "
+        "mail and domain posture review, including MX/TXT evidence persisted "
+        "through the canonical DNS finding group."
+    ),
+    "applies_to_asset_class": "domain",
+    "active": False,
+    "steps": [
+        {
+            "sort_order": 10,
+            "tool_slug": "mcp_dns_lookup",
+            "args_template": {"domain": "{{scope_item}}"},
+            "satisfies_node_ids": ["osint.domain.dns"],
+            "description": "Collect DNS evidence used for mail posture analysis.",
+        },
+        {
+            "sort_order": 20,
+            "tool_slug": "mcp_crt_sh",
+            "args_template": {"domain": "{{scope_item}}"},
+            "satisfies_node_ids": ["osint.domain.cert"],
+            "description": "Collect certificate names related to the domain.",
         },
     ],
 }
@@ -181,5 +357,11 @@ SEED_PLAYBOOKS: list[dict[str, Any]] = [
     OSINT_PASSIVE_DOMAIN_V1,
     PTES_PASSIVE_RECON_V1,
     OSINT_ENRICHMENT_V1,
+    OSINT_ENRICHMENT_V2,
     EMAIL_EXPOSURE_TRIAGE_V1,
+    EMAIL_EXPOSURE_TRIAGE_V2,
+    DOMAIN_WEB_SURFACE_V1,
+    HOST_SERVICE_VALIDATION_V1,
+    CIDR_EXPOSURE_SURVEY_V1,
+    MAIL_DNS_POSTURE_V1,
 ]

@@ -384,41 +384,49 @@ def _run_osint(
                 "scope_check": decision.scope.to_jsonable(),
             }
 
-        # Active/destructive tools require analyst confirmation per the MCP
-        # server instructions. By the time the model calls this tool it has
-        # already confirmed with the analyst in the conversation. Write an
-        # Approval row so the audit trail matches the LangGraph path.
+        # Active/destructive tools need a durable RTD decision. A playbook
+        # lease may reuse the already-approved run decision; an external MCP
+        # conversation cannot self-approve merely because the model says the
+        # analyst confirmed in chat.
         if decision.action is Action.interrupt:
-            approval = Approval(
-                engagement_id=eng.id,
-                thread_id=f"mcp-{uuid.uuid4()}",
-                node="mcp_tool",
-                tool_name=tool_name,
-                tool_args=args,
-                risk=decision.risk,
-                scope_check=decision.scope.to_jsonable(),
-                status=ApprovalStatus.approved,
-                decided_by=user.id,
-                decided_at=datetime.now(tz=UTC),
-            )
-            session.add(approval)
-            session.flush()
-            session.add(
-                AuditLog(
+            lease_context = (lease.context or {}) if lease is not None else {}
+            approved_run_id = lease_context.get("playbook_run_id")
+            approved_by = lease_context.get("playbook_approved_by")
+            approved_at = lease_context.get("playbook_approved_at")
+            if not (approved_run_id and approved_by and approved_at):
+                approval = Approval(
                     engagement_id=eng.id,
-                    actor_type=ActorType.user,
-                    actor_id=str(user.id),
-                    event_type="approval.decided",
-                    payload={
-                        "approval_id": str(approval.id),
-                        "thread_id": approval.thread_id,
-                        "tool": tool_name,
-                        "status": ApprovalStatus.approved.value,
-                        "approved": True,
-                        "via": "mcp",
-                    },
+                    thread_id=f"mcp-{uuid.uuid4()}",
+                    node="mcp_tool",
+                    tool_name=tool_name,
+                    tool_args=args,
+                    risk=decision.risk,
+                    scope_check=decision.scope.to_jsonable(),
+                    status=ApprovalStatus.pending,
                 )
-            )
+                session.add(approval)
+                session.flush()
+                session.add(
+                    AuditLog(
+                        engagement_id=eng.id,
+                        actor_type=ActorType.user,
+                        actor_id=str(user.id),
+                        event_type="approval.requested",
+                        payload={
+                            "approval_id": str(approval.id),
+                            "thread_id": approval.thread_id,
+                            "tool": tool_name,
+                            "status": ApprovalStatus.pending.value,
+                            "via": "mcp",
+                        },
+                    )
+                )
+                session.commit()
+                return {
+                    "error": "durable analyst approval is required before this active tool can run",
+                    "approval_id": str(approval.id),
+                    "status": ApprovalStatus.pending.value,
+                }
 
         operation_id = uuid.uuid4()
         result = run_tool(tool_name, args)

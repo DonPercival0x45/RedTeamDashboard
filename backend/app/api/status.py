@@ -145,7 +145,10 @@ def _run_slug(source: str | uuid.UUID) -> str:
 
 
 def _agent_outcome(row: AgentExecution) -> StatusOutcome | None:
-    if row.status == AgentExecutionStatus.running:
+    if row.status in {
+        AgentExecutionStatus.pending,
+        AgentExecutionStatus.running,
+    }:
         return None
     if row.status in (AgentExecutionStatus.failed, AgentExecutionStatus.cancelled) or row.error:
         return "errored"
@@ -225,6 +228,9 @@ def _agent_synopsis(row: AgentExecution, outcome: StatusOutcome | None) -> str:
     output = row.output or {}
     agent = row.agent.value
     if outcome is None:
+        if row.status is AgentExecutionStatus.pending:
+            mode = str((row.input or {}).get("mode") or agent).replace("_", " ")
+            return f"{mode.capitalize()} queued for durable execution."
         return f"{agent.capitalize()} agent running…"
     if outcome == "empty":
         return f"{agent.capitalize()} agent completed — no output."
@@ -314,6 +320,8 @@ def _playbook_synopsis(row: PlaybookRun, playbook: Playbook) -> str:
 
 
 def _agent_color(s: AgentExecutionStatus) -> StatusColor:
+    if s == AgentExecutionStatus.pending:
+        return "pending"
     if s == AgentExecutionStatus.running:
         return "active"
     if s == AgentExecutionStatus.completed:
@@ -357,10 +365,19 @@ def _agent_history(row: AgentExecution) -> list[StatusTransition]:
     the entity reached its terminal colour at that time."""
     history: list[StatusTransition] = []
     if row.started_at:
+        initial_status: StatusColor = (
+            "pending"
+            if row.status is AgentExecutionStatus.pending
+            else "active"
+        )
         history.append(
             StatusTransition(
-                status="active",
-                raw_status=AgentExecutionStatus.running.value,
+                status=initial_status,
+                raw_status=(
+                    AgentExecutionStatus.pending.value
+                    if row.status is AgentExecutionStatus.pending
+                    else AgentExecutionStatus.running.value
+                ),
                 at=row.started_at,
             )
         )
@@ -1442,6 +1459,41 @@ def retry_agent_execution(
             status_code=400,
             detail="only failed agent executions can be retried",
         )
+    if row.agent == AgentName.engagement_strategist and (row.input or {}).get(
+        "durable_job"
+    ):
+        retry_input = {
+            **(row.input or {}),
+            "acting_user_id": str(user.id),
+            "retry_of_execution_id": str(row.id),
+        }
+        retry = AgentExecution(
+            engagement_id=row.engagement_id,
+            agent=AgentName.engagement_strategist,
+            trigger=AgentTrigger.manual,
+            input=retry_input,
+            status=AgentExecutionStatus.pending,
+            started_at=datetime.now(tz=UTC),
+        )
+        session.add(retry)
+        session.flush()
+        session.add(
+            AuditLog(
+                engagement_id=row.engagement_id,
+                actor_type=ActorType.user,
+                actor_id=str(user.id),
+                event_type="intelligence.retried",
+                payload={
+                    "execution_id": str(retry.id),
+                    "retry_of_execution_id": str(row.id),
+                    "mode": retry_input.get("mode"),
+                },
+            )
+        )
+        session.commit()
+        session.refresh(retry)
+        return _agent_to_entity(retry)
+
     if row.agent == AgentName.tactical:
         # A Tactical run dispatched from a task: re-dispatch the source task
         # (TacticalAgent.dispatch re-derives the prompt; the run's own prompt
@@ -1622,7 +1674,7 @@ def cancel_agent_execution(
     redis_client: RedisClient,
     user: CurrentNonGuestUser,
 ) -> StatusEntity:
-    """Cancel a running AgentExecution row.
+    """Cancel a pending or running AgentExecution row.
 
     For stream-backed executions with ``input.thread_id`` and an engagement,
     this also removes a queued run.start command if it has not been consumed
@@ -1638,10 +1690,13 @@ def cancel_agent_execution(
     ).scalar_one_or_none()
     if row is None:
         raise HTTPException(status_code=404, detail="agent execution not found")
-    if row.status != AgentExecutionStatus.running:
+    if row.status not in {
+        AgentExecutionStatus.pending,
+        AgentExecutionStatus.running,
+    }:
         raise HTTPException(
             status_code=400,
-            detail="only running agent executions can be cancelled",
+            detail="only pending or running agent executions can be cancelled",
         )
 
     input_payload = row.input or {}

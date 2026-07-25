@@ -34,6 +34,7 @@ from app.services import methodology as meth
 from app.services.entities import extract_entities, include_scope_entities
 from app.services.playbook import InternalExecutor, catalog, load_seed_playbooks
 from app.services.playbook.executor import MCPExecutor, StepResult
+from app.services.playbook.finding_bridge import bridge_step_to_finding
 from app.services.playbook.runner import start_run
 
 
@@ -582,6 +583,54 @@ def test_bridge_failure_does_not_poison_playbook_transaction(
     assert run.findings_new == 0
     assert run.findings_total == 0
     assert run.last_error == "could not persist canonical dns_lookup finding"
+
+
+def test_dehashed_lookup_persists_canonical_finding_and_deduplicates(
+    db: Session, engagement: Engagement
+) -> None:
+    thread_id = uuid.uuid4()
+    record_id = str(uuid.uuid4())
+    payload = {
+        "provider": "dehashed_import",
+        "email": "Analyst@example.com",
+        "records": [
+            {
+                "email": "Analyst@example.com",
+                "database_name": "Example breach",
+                "entity_id": record_id,
+            }
+        ],
+    }
+
+    first = bridge_step_to_finding(
+        db,
+        engagement_id=engagement.id,
+        playbook_tool="breach-lookup",
+        scope_item="Analyst@example.com",
+        args_template={"email": "{{scope_item}}"},
+        data=payload,
+        thread_id=thread_id,
+    )
+    second = bridge_step_to_finding(
+        db,
+        engagement_id=engagement.id,
+        playbook_tool="breach-lookup",
+        scope_item="Analyst@example.com",
+        args_template={"email": "{{scope_item}}"},
+        data=payload,
+        thread_id=thread_id,
+    )
+    db.commit()
+
+    assert first is not None and first.created is True
+    assert second is not None and second.items_added == 0
+    row = db.execute(
+        select(Finding).where(
+            Finding.engagement_id == engagement.id,
+            Finding.group_key == "dehashed:Analyst@example.com",
+        )
+    ).scalar_one()
+    assert len(row.details["items"]) == 1
 
 
 def test_stub_steps_persist_nothing(

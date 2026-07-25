@@ -95,6 +95,7 @@ const playbook: PlaybookRead = {
   active: false,
   step_count: 5,
   required_executor: "mcp",
+  required_credentials: ["freeipapi", "ipinfo"],
 };
 
 beforeEach(() => {
@@ -225,6 +226,22 @@ describe("KickRunModal", () => {
       screen.getByText("This playbook uses connected collection services."),
     ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^internal/i })).not.toBeInTheDocument();
+  });
+
+  it("previews required requester-owned credentials", () => {
+    render(
+      <KickRunModal
+        engagementSlug="acme"
+        playbook={playbook}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("freeipapi, ipinfo")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /review keys/i })).toHaveAttribute(
+      "href",
+      "/settings/keys",
+    );
   });
 
   it("select-all picks every non-exclusion target", async () => {

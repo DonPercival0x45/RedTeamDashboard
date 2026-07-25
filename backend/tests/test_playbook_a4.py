@@ -166,6 +166,24 @@ def test_mcp_executor_binds_validated_scope_and_returns_result() -> None:
     assert tool.calls == [{"ip": "1.2.3.4"}]
 
 
+def test_mcp_executor_maps_catalog_alias_and_binds_scope() -> None:
+    tool = _FakeMCPTool(
+        "port_scan",
+        [{"type": "text", "text": json.dumps({"open_ports": [443]})}],
+    )
+    ex = MCPExecutor(base_url="http://x/mcp/sse", api_key="tk")
+    _prime_executor(ex, [tool])
+
+    result = ex.run_step(
+        tool_slug="mcp_port_scan",
+        args_template={"target": "198.51.100.9", "ports": "80,443"},
+        scope_context="203.0.113.7",
+    )
+
+    assert result.ok is True
+    assert tool.calls == [{"target": "203.0.113.7", "ports": "80,443"}]
+
+
 def test_mcp_executor_unknown_tool_yields_failure() -> None:
     """A tool_slug the server doesn't expose becomes a step failure. Prime
     the cache with any other tool so ``_load_tools`` doesn't try the real
@@ -342,6 +360,7 @@ def test_catalog_declares_server_owned_executor_affinity(
         item for item in response.json() if item["slug"] == "osint-enrichment"
     )
     assert enrichment["required_executor"] == "mcp"
+    assert enrichment["required_credentials"] == ["freeipapi", "ipinfo"]
 
 
 def test_post_accepts_executor_mcp_and_persists_it(
@@ -442,7 +461,7 @@ def test_osint_enrichment_targets_ip_asset_class(
 ) -> None:
     assert enrichment_playbook.applies_to_asset_class == "ip"
     tools = {s.tool_slug for s in enrichment_playbook.steps}
-    assert tools == {"freeipapi", "ipinfo"}
+    assert tools == {"mcp_reverse_dns", "freeipapi", "ipinfo"}
 
 
 def test_step_result_is_frozen() -> None:

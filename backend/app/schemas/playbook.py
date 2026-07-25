@@ -31,6 +31,7 @@ class PlaybookRead(BaseModel):
     active: bool
     step_count: int = 0
     required_executor: str = "internal"
+    required_credentials: list[str] = Field(default_factory=list)
 
 
 class PlaybookDetail(PlaybookRead):

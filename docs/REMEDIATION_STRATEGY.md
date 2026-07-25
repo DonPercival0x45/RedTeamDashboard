@@ -9,12 +9,13 @@
 
 ## 1. Current state
 
-`fix/v3-playbook-run-ui` is **ahead of `origin/main` by 24 committed
+`fix/v3-playbook-run-ui` is **ahead of `origin/main` by 25 committed
 rollback points**. The most recent completed slices are:
 
 | commit | what | status |
 |--------|------|--------|
-| current slice | Runs keeps playbook decisions beside history; effective scope drives targets and destructive scope changes use in-app confirmation | ✅ fixed |
+| current slice | durable Intelligence jobs, operational MCP playbooks, DeHashed evidence lookup, and durable active-tool approval | ✅ fixed |
+| `6c9b2d2` | Runs keeps playbook decisions beside history; effective scope drives targets and destructive scope changes use in-app confirmation | ✅ fixed |
 | `206744e` | exact email targets become first-class scope with an applicable governed playbook | ✅ fixed |
 | `723fcb2` | analysts bulk-manage discovered Entity scope without duplicate entry | ✅ fixed |
 | `398554a` | Compose refreshes the persistent frontend dependency volume when the lockfile changes | ✅ fixed |
@@ -27,13 +28,20 @@ rollback points**. The most recent completed slices are:
 
 **Current validation evidence:**
 - backend: Ruff clean; **204 focused playbook/entity/provider tests pass**;
-  full suite **1023 passed / 4 documented Windows-host failures / 2 skipped**
-- frontend: `tsc --noEmit` and `next build` clean; **64 Vitest tests pass**
+  full suite **1030 passed / 4 documented Windows-host failures / 2 skipped**
+- frontend: `tsc --noEmit` and `next build` clean; **65 Vitest tests pass**
 - CLI: **35 passed / 1 skipped** (documented Windows permissions limitation)
 - local backend tests reset an isolated `rtd_test` database and Redis DB 15;
   pytest refuses the operator-facing `rtd` database outside disposable CI
 - Compose: Postgres, Redis, backend, worker, and frontend are running; backend
   is healthy and the live frontend is published on `http://localhost:3001`
+
+Analyst-triggered Strategy, Analysis, Ideation, and Coverage Review now queue as
+durable worker jobs and return HTTP 202 instead of holding a fragile browser
+request open for the full LLM call. The catalog also includes real MCP-backed
+domain/web discovery, IP intelligence, approved host validation, approved CIDR
+survey, and mail/DNS collection. Email exposure triage uses imported DeHashed
+evidence and persists canonical, deduplicated Findings.
 
 The previous Docker blocker is resolved. Four known Windows-host limitations
 remain documented separately (three SSE tail tests and the report renderer's

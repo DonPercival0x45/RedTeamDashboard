@@ -87,6 +87,17 @@ def _required_executor(playbook: Playbook) -> PlaybookExecutorKind:
     )
 
 
+def _required_credentials(playbook: Playbook) -> list[str]:
+    credential_tools = {"freeipapi", "ipinfo", "dehashed"}
+    return sorted(
+        {
+            step.tool_slug.removeprefix("mcp_")
+            for step in playbook.steps
+            if step.tool_slug.removeprefix("mcp_") in credential_tools
+        }
+    )
+
+
 def _ensure_recipe_mutable(session: Session, playbook: Playbook) -> None:
     has_run = session.execute(
         select(PlaybookRun.id)
@@ -223,9 +234,21 @@ def list_playbooks(
         ).group_by(PlaybookStep.playbook_id)
     )
     counts = {row[0]: row[1] for row in session.execute(counts_stmt).all()}
-    playbooks = session.execute(
-        select(Playbook).order_by(Playbook.slug, Playbook.version.desc())
-    ).scalars()
+    catalog_rows = list(
+        session.execute(
+            select(Playbook).order_by(Playbook.slug, Playbook.version.desc())
+        ).scalars()
+    )
+    # The catalog is an action surface, not version history. Show only the
+    # newest recipe per slug; pinned historical versions remain readable via
+    # GET /playbooks/{slug}?version=N and existing runs retain their version.
+    seen_slugs: set[str] = set()
+    playbooks: list[Playbook] = []
+    for playbook in catalog_rows:
+        if playbook.slug in seen_slugs:
+            continue
+        seen_slugs.add(playbook.slug)
+        playbooks.append(playbook)
     return [
         PlaybookRead(
             id=p.id,
@@ -237,6 +260,7 @@ def list_playbooks(
             active=p.active,
             step_count=counts.get(p.id, 0),
             required_executor=_required_executor(p).value,
+            required_credentials=_required_credentials(p),
         )
         for p in playbooks
     ]
@@ -278,6 +302,7 @@ def create_playbook_endpoint(
         active=pb.active,
         step_count=0,
         required_executor=_required_executor(pb).value,
+        required_credentials=_required_credentials(pb),
         steps=[],
     )
 
@@ -314,6 +339,7 @@ def update_playbook_endpoint(
         active=playbook.active,
         step_count=len(playbook.steps),
         required_executor=_required_executor(playbook).value,
+        required_credentials=_required_credentials(playbook),
         steps=[PlaybookStepRead.model_validate(s) for s in playbook.steps],
     )
 
@@ -466,6 +492,7 @@ def get_playbook(
         active=playbook.active,
         step_count=len(playbook.steps),
         required_executor=_required_executor(playbook).value,
+        required_credentials=_required_credentials(playbook),
         steps=[PlaybookStepRead.model_validate(s) for s in playbook.steps],
     )
 
