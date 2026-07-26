@@ -428,3 +428,6 @@ class EntityRead(BaseModel):
     # may collapse conservative third-party patterns while keeping them reviewable.
     relevance: str = "review"
     relevance_reason: str | None = None
+    review_disposition: str | None = None
+    review_reason: str | None = None
+    reviewed_at: datetime | None = None

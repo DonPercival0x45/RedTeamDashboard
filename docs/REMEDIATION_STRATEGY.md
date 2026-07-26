@@ -31,9 +31,9 @@ rollback points**. The most recent completed slices are:
 | `3e6470a` | playbook results persist through the canonical Findings contract | ✅ fixed |
 
 **Current validation evidence:**
-- backend: Ruff clean; **204 focused playbook/entity/provider tests pass**;
-  full suite **1042 passed / 4 documented Windows-host failures / 2 skipped**
-- frontend: `tsc --noEmit` and `next build` clean; **72 Vitest tests pass**
+- backend: Ruff clean; **42 focused entity/scope tests pass**;
+  full isolated suite **1070 passed / 3 documented SSE networking failures**
+- frontend: `tsc --noEmit` and `next build` clean; **95 Vitest tests pass**
 - CLI: **35 passed / 1 skipped** (documented Windows permissions limitation)
 - local backend tests reset an isolated `rtd_test` database and Redis DB 15;
   pytest refuses the operator-facing `rtd` database outside disposable CI
@@ -580,6 +580,18 @@ supported the resulting Finding.
   invalidated-only sources as disputed, caps broad path enumeration, and links
   nodes back to the exact Entity workspace. It never infers authorization,
   ownership, or exploitability.
+- Migration `0071` adds durable canonical Entity review dispositions plus
+  reversible ownership receipts for exact exclusions and Finding reportability
+  changes. Dossier supports searched bulk Keep/Exclude review for up to 1,000
+  selected roots, with an optional three-level/500-discovery cascade, complete
+  Entity/Finding preview, stale-plan digest rejection, rationale, and immutable
+  audit identities. Explicit exclusions and kept decisions stay out of the
+  Entity validation queue after rediscovery, while their Findings remain in the
+  Findings workspace. Cascade follows only Findings directly targeted at each
+  affected entity, preserves `outside_roe`, and Keep releases only scope and
+  Finding changes owned by entity review. Existing exact includes remain as
+  dormant history beneath a higher-precedence exclusion, so reversal restores
+  them without reconstruction; independently created exclusions stay authoritative.
 - Migration `0070` adds append-only client remediation updates and analyst
   retest results as dimensions orthogonal to Finding validation. The finding
   workbench shows current state and full history; recording a retest never runs

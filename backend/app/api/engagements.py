@@ -91,6 +91,7 @@ from app.models import (
     FindingRetest,
     FindingStatus,
     FindingSummary,
+    EntityReview,
     Observation,
     ObservationFindingLink,
     ScopeItem,
@@ -148,6 +149,7 @@ from app.schemas.finding_followup import (
 from app.schemas.observation import ObservationCreate, ObservationRead
 from app.services import methodology as methodology_service
 from app.services.command_outbox import enqueue_command, publish_entry
+from app.services.entity_identity import entity_identity_key
 from app.services.entities import (
     annotate_scope_status,
     extract_entities,
@@ -1496,15 +1498,18 @@ def list_entities(
     scope_items = list(
         session.execute(select(ScopeItem).where(ScopeItem.engagement_id == eng.id)).scalars()
     )
+    deleted_scope_events = session.execute(
+        select(AuditLog.payload).where(
+            AuditLog.engagement_id == eng.id,
+            AuditLog.event_type == "scope.item.deleted",
+        )
+    ).scalars()
     retired_values = {
-        v.strip().lower()
-        for v in session.execute(
-            select(AuditLog.payload["value"].astext).where(
-                AuditLog.engagement_id == eng.id,
-                AuditLog.event_type == "scope.item.deleted",
-            )
-        ).scalars()
-        if v
+        str(payload.get("value") or "").strip().lower()
+        for payload in deleted_scope_events
+        if isinstance(payload, dict)
+        and payload.get("value")
+        and not bool(payload.get("is_exclusion", False))
     }
     entities_with_scope = include_scope_entities(list(full), scope_items)
     result = annotate_scope_status(
@@ -1512,6 +1517,17 @@ def list_entities(
         current_scope_items=scope_items,
         retired_scope_values=retired_values,
     )
+    reviews = {
+        (row.entity_type, row.normalized_value): row
+        for row in session.execute(
+            select(EntityReview).where(EntityReview.engagement_id == eng.id)
+        ).scalars()
+    }
+    for entity in result:
+        review = reviews.get(entity_identity_key(entity.get("type"), entity.get("value")))
+        entity["review_disposition"] = review.disposition.value if review else None
+        entity["review_reason"] = review.reason if review else None
+        entity["reviewed_at"] = review.updated_at if review else None
     if type:
         result = [e for e in result if e.get("type") == type]
     if q:

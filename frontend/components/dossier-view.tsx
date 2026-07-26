@@ -36,6 +36,7 @@ import {
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
+import { EntityReviewDialog } from "@/components/entity-review-dialog";
 import {
   Tabs,
   TabsContent,
@@ -382,6 +383,8 @@ export function DossierView({ slug }: { slug: string }) {
   const [entityFilter, setEntityFilter] = useState<"validation" | "all">("validation");
   const [relationshipQuery, setRelationshipQuery] = useState("");
   const [timelineQuery, setTimelineQuery] = useState("");
+  const [selectedEntityKeys, setSelectedEntityKeys] = useState<Set<string>>(new Set());
+  const [reviewAction, setReviewAction] = useState<"keep" | "exclude" | null>(null);
 
   const entries = useMemo(() => {
     const map = new Map<string, DossierEntry>();
@@ -435,10 +438,15 @@ export function DossierView({ slug }: { slug: string }) {
           const status = findingStatusById.get(finding.id);
           return status === "pending_validation" || status === "needs_review";
         }).length;
+        const dispositionResolved =
+          entity.scope_status === "excluded" ||
+          entity.review_disposition === "excluded" ||
+          entity.review_disposition === "kept";
         const needsValidation =
-          pendingFindingCount > 0 ||
-          entity.relevance === "review" ||
-          entity.scope_status === "legacy";
+          !dispositionResolved &&
+          (pendingFindingCount > 0 ||
+            entity.relevance === "review" ||
+            entity.scope_status === "legacy");
         const validationPriority =
           pendingFindingCount * 100 +
           (entity.relevance === "review" ? 50 : 0) +
@@ -460,6 +468,15 @@ export function DossierView({ slug }: { slug: string }) {
       );
   }, [entities, findingStatusById]);
   const reviewEntities = rankedEntities.filter((row) => row.needsValidation);
+  const entityReviewTargets = useMemo(
+    () =>
+      rankedEntities
+        .filter((row) =>
+          selectedEntityKeys.has(`${row.entity.type}\u0000${row.entity.value}`),
+        )
+        .map((row) => ({ type: row.entity.type, value: row.entity.value })),
+    [rankedEntities, selectedEntityKeys],
+  );
   const normalizedEntityQuery = entityQuery.trim().toLowerCase();
   const visibleEntities = rankedEntities.filter(
     (row) =>
@@ -746,14 +763,78 @@ export function DossierView({ slug }: { slug: string }) {
                 </button>
               </div>
             </div>
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-muted/20 px-3 py-2">
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setSelectedEntityKeys(
+                      new Set(
+                        visibleEntities.map(
+                          (row) => `${row.entity.type}\u0000${row.entity.value}`,
+                        ),
+                      ),
+                    )
+                  }
+                  className="rounded border border-border px-2 py-1 hover:text-foreground"
+                >
+                  Select all matching ({visibleEntities.length})
+                </button>
+                {selectedEntityKeys.size > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setSelectedEntityKeys(new Set())}
+                    className="hover:text-foreground hover:underline"
+                  >
+                    Clear
+                  </button>
+                )}
+                <span>{entityReviewTargets.length} selected</span>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  disabled={entityReviewTargets.length === 0}
+                  onClick={() => setReviewAction("keep")}
+                  className="rounded-md border border-border px-3 py-1.5 text-xs font-medium hover:bg-muted disabled:opacity-50"
+                >
+                  Keep reviewed
+                </button>
+                <button
+                  type="button"
+                  disabled={entityReviewTargets.length === 0}
+                  onClick={() => setReviewAction("exclude")}
+                  className="rounded-md border border-amber-500/50 px-3 py-1.5 text-xs font-medium text-amber-800 hover:bg-amber-500/10 disabled:opacity-50 dark:text-amber-200"
+                >
+                  Exclude…
+                </button>
+              </div>
+            </div>
           </CardHeader>
           <CardContent className="grid max-h-[60vh] gap-2 overflow-y-auto md:grid-cols-2 xl:grid-cols-3">
-            {visibleEntities.map(({ entity, pendingFindingCount, needsValidation }) => (
-              <Link
+            {visibleEntities.map(({ entity, pendingFindingCount, needsValidation }) => {
+              const selectionKey = `${entity.type}\u0000${entity.value}`;
+              return (
+              <div
                 key={`${entity.type}:${entity.value}`}
-                href={engagementEntityHref(slug, entity)}
-                className="rounded-lg border border-border p-3 transition-colors hover:bg-muted/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="relative rounded-lg border border-border transition-colors hover:bg-muted/35"
               >
+                <input
+                  type="checkbox"
+                  aria-label={`Select ${entity.type} ${entity.value}`}
+                  checked={selectedEntityKeys.has(selectionKey)}
+                  onChange={(event) => {
+                    const next = new Set(selectedEntityKeys);
+                    if (event.target.checked) next.add(selectionKey);
+                    else next.delete(selectionKey);
+                    setSelectedEntityKeys(next);
+                  }}
+                  className="absolute left-3 top-3 z-[1]"
+                />
+                <Link
+                  href={engagementEntityHref(slug, entity)}
+                  className="block p-3 pl-9 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
                     <p className="truncate font-mono text-xs font-medium">{entity.value}</p>
@@ -779,6 +860,11 @@ export function DossierView({ slug }: { slug: string }) {
                   <Badge variant="outline" className="text-[10px] text-muted-foreground">
                     {entity.scope_status === "live" ? "in scope" : entity.scope_status}
                   </Badge>
+                  {entity.review_disposition && (
+                    <Badge variant="outline" className="text-[10px] text-muted-foreground">
+                      reviewed · {entity.review_disposition}
+                    </Badge>
+                  )}
                   {entity.relevance && (
                     <Badge variant="outline" className="text-[10px] text-muted-foreground">
                       {entity.relevance.replaceAll("_", " ")}
@@ -797,8 +883,10 @@ export function DossierView({ slug }: { slug: string }) {
                 <p className="mt-2 text-[10px] text-muted-foreground">
                   First seen {formatDateTime(entity.first_seen)} · Last seen {formatDateTime(entity.last_seen)}
                 </p>
-              </Link>
-            ))}
+                </Link>
+              </div>
+              );
+            })}
             {visibleEntities.length === 0 && (
               <p className="text-sm text-muted-foreground">
                 {entityFilter === "validation"
@@ -1121,6 +1209,18 @@ export function DossierView({ slug }: { slug: string }) {
       )}
       </TabsContent>
         </Tabs>
+      )}
+      {reviewAction && (
+        <EntityReviewDialog
+          slug={slug}
+          targets={entityReviewTargets}
+          action={reviewAction}
+          open
+          onOpenChange={(open) => {
+            if (!open) setReviewAction(null);
+          }}
+          onApplied={() => setSelectedEntityKeys(new Set())}
+        />
       )}
     </div>
   );

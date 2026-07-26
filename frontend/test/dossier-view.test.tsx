@@ -15,6 +15,22 @@ vi.mock("@/lib/hooks", () => ({
   useFindings: () => ({
     data: [
       {
+        id: "pending-excluded",
+        thread_id: null,
+        tool: "dns_lookup",
+        target: "excluded.example",
+        args: {},
+        data: {},
+        severity: "critical",
+        title: "Excluded evidence",
+        phase: "vuln_scan",
+        status: "pending_validation",
+        validated_at: null,
+        observed_at: null,
+        burp_serial_number: null,
+        created_at: "2026-07-25T02:15:00.000Z",
+      },
+      {
         id: "finding-1",
         thread_id: null,
         tool: "dns_lookup",
@@ -54,6 +70,18 @@ vi.mock("@/lib/hooks", () => ({
         findings: [],
         scope_status: "oos",
         relevance: "review",
+      },
+      {
+        type: "domain",
+        value: "excluded.example",
+        count: 12,
+        severity: "critical",
+        first_seen: "2026-07-25T00:00:00.000Z",
+        last_seen: "2026-07-25T20:00:00.000Z",
+        findings: [{ id: "pending-excluded", title: "Excluded evidence", tool: "dns_lookup", severity: "critical", phase: "osint" }],
+        scope_status: "excluded",
+        relevance: "excluded",
+        review_disposition: "excluded",
       },
       {
         type: "domain",
@@ -103,12 +131,19 @@ describe("DossierView narrative", () => {
     expect(screen.getAllByText("Needs validation").length).toBeGreaterThan(0);
     expect(screen.getByText("2.16.40.67")).toBeInTheDocument();
     expect(screen.queryByText("validated.example")).not.toBeInTheDocument();
+    expect(screen.queryByText("excluded.example")).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "All (2)" }));
+    await user.click(screen.getByRole("button", { name: "All (3)" }));
     const entityValues = screen
-      .getAllByText(/2\.16\.40\.67|validated\.example/)
+      .getAllByText(/2\.16\.40\.67|validated\.example|excluded\.example/)
       .map((node) => node.textContent);
-    expect(entityValues).toEqual(["2.16.40.67", "validated.example"]);
+    expect(entityValues).toEqual([
+      "2.16.40.67",
+      "excluded.example",
+      "validated.example",
+    ]);
+    await user.click(screen.getByRole("button", { name: "Select all matching (3)" }));
+    expect(screen.getByText("3 selected")).toBeInTheDocument();
 
     await user.click(screen.getByRole("tab", { name: "Timeline" }));
     expect(screen.getByText("Engagement timeline")).toBeInTheDocument();

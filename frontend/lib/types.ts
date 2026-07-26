@@ -757,7 +757,7 @@ export interface EntityFindingRef {
 // scope, "legacy" = matched a scope item that was deleted after v2.19
 // shipped (older hard-deletes left no trace, so those show as "oos"),
 // "oos" = never a scope target.
-export type EntityScopeStatus = "live" | "legacy" | "oos";
+export type EntityScopeStatus = "live" | "excluded" | "legacy" | "oos";
 
 // Correlated entity derived from findings (GET /engagements/{slug}/entities).
 export interface Entity {
@@ -769,8 +769,61 @@ export interface Entity {
   last_seen: string;
   findings: EntityFindingRef[];
   scope_status: EntityScopeStatus;
-  relevance?: "in_scope" | "review" | "likely_third_party";
+  relevance?: "in_scope" | "excluded" | "review" | "likely_third_party";
   relevance_reason?: string | null;
+  review_disposition?: "kept" | "excluded" | null;
+  review_reason?: string | null;
+  reviewed_at?: string | null;
+}
+
+export interface EntityReviewTarget {
+  type: string;
+  value: string;
+}
+
+export interface EntityReviewImpactItem extends EntityReviewTarget {
+  depth: number;
+  reason: string;
+  scope_kind: ScopeKind | null;
+  exact_include_ids: string[];
+  exact_exclusion_ids: string[];
+  managed_exclusion_ids: string[];
+}
+
+export interface EntityReviewFindingImpactItem {
+  id: string;
+  title: string;
+  target: string | null;
+  source_tool: string | null;
+  current_exclusion: "out_of_scope" | "outside_roe" | null;
+  parent_type: string;
+  parent_value: string;
+  depth: number;
+}
+
+export interface EntityReviewPreview {
+  action: "keep" | "exclude";
+  cascade: boolean;
+  preview_sha256: string;
+  entities: EntityReviewImpactItem[];
+  findings: EntityReviewFindingImpactItem[];
+  finding_ids: string[];
+  exact_include_conflicts: number;
+  exclusions_to_create: number;
+  managed_exclusions_to_remove: number;
+  findings_to_mark_out_of_scope: number;
+  findings_to_restore: number;
+  truncated: boolean;
+}
+
+export interface EntityReviewApplyResult {
+  reviewed: number;
+  exclusions_created: number;
+  exact_includes_removed: number;
+  managed_exclusions_removed: number;
+  findings_marked_out_of_scope: number;
+  findings_restored: number;
+  preview_sha256: string;
 }
 
 export interface Observation {

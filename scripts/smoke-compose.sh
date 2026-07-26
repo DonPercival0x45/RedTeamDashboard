@@ -47,7 +47,7 @@ else
 fi
 
 # 2. Migration head matches the codebase chain.
-EXPECTED_HEAD="0070"
+EXPECTED_HEAD="0071"
 ACTUAL_HEAD="$("${COMPOSE[@]}" exec -T postgres psql -U rtd -d rtd -tAc 'select version_num from alembic_version;' 2>/dev/null | tr -d '[:space:]')"
 if [[ "$ACTUAL_HEAD" == "$EXPECTED_HEAD" ]]; then
   c_ok "db at migration head $ACTUAL_HEAD"

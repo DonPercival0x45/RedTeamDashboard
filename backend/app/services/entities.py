@@ -10,6 +10,7 @@ The extractor is deliberately conservative: it pulls from each finding's
 keys (subdomains/domains/hosts). It does not guess domains from arbitrary text,
 to avoid noise.
 """
+
 from __future__ import annotations
 
 import re
@@ -42,7 +43,7 @@ def classify_entity_scope_status(
     current_scope_items: Iterable[scope_matcher.ScopeItemLike],
     retired_scope_values: set[str],
 ) -> str:
-    """Return "live" | "legacy" | "oos" for one entity.
+    """Return "live" | "excluded" | "legacy" | "oos" for one entity.
 
     - live: value matches at least one CURRENT ScopeItem via ScopeMatcher.
     - legacy: not currently in scope, but a scope.item.deleted audit event
@@ -62,6 +63,8 @@ def classify_entity_scope_status(
     )
     if decision.allowed:
         return "live"
+    if decision.matched_exclusion_id is not None:
+        return "excluded"
     if entity_value.strip().lower() in retired_scope_values:
         return "legacy"
     return "oos"
@@ -90,9 +93,7 @@ def include_scope_entities(
             continue
         kind = getattr(item, "kind", "")
         entity_type = normalize_entity_type(getattr(kind, "value", kind))
-        value = normalize_entity_value(
-            entity_type, getattr(item, "value", "")
-        )
+        value = normalize_entity_value(entity_type, getattr(item, "value", ""))
         if not entity_type or not value or (entity_type, value) in seen:
             continue
         created_at = getattr(item, "created_at", None)
@@ -136,6 +137,8 @@ def classify_entity_relevance(
     """
     if scope_status == "live":
         return "in_scope", None
+    if scope_status == "excluded":
+        return "excluded", "Explicitly excluded by engagement scope"
     if entity_type == "email" and "@" in entity_value:
         local_part = entity_value.rsplit("@", 1)[0].lower()
         if local_part in _VENDOR_ROLE_MAILBOXES:
@@ -172,6 +175,7 @@ def annotate_scope_status(
         entity["relevance"] = relevance
         entity["relevance_reason"] = reason
     return entities
+
 
 _EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 _IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
@@ -211,6 +215,8 @@ def _classify_target(target: str) -> tuple[EntityType, str] | None:
     t = target.strip()
     if not t:
         return None
+    if _EMAIL_RE.fullmatch(t):
+        return ("email", t.lower())
     if t.startswith(("http://", "https://")):
         return ("url", t)
     if _CIDR_RE.match(t):

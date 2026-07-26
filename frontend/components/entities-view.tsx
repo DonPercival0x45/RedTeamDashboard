@@ -242,15 +242,19 @@ function ScopeStatusBadge({ status }: { status: string }) {
   const label =
     status === "live"
       ? "Live"
-      : status === "legacy"
-        ? "Legacy"
-        : "Out of scope";
+      : status === "excluded"
+        ? "Excluded"
+        : status === "legacy"
+          ? "Legacy"
+          : "Out of scope";
   const className =
     status === "live"
       ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200"
-      : status === "legacy"
-        ? "border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-200"
-        : "border-border text-muted-foreground";
+      : status === "excluded"
+        ? "border-rose-500/50 bg-rose-500/10 text-rose-700 dark:text-rose-200"
+        : status === "legacy"
+          ? "border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-200"
+          : "border-border text-muted-foreground";
   return (
     <Badge variant="outline" className={className}>
       {label}
@@ -287,7 +291,7 @@ export function EntitiesView({
   // v2.19.0: scope-status filter runs alongside type. "all" shows everything,
   // "live" / "legacy" / "oos" narrow to entities with that classification.
   const [scopeStatus, setScopeStatus] = useState<
-    "all" | "live" | "legacy" | "oos"
+    "all" | "live" | "excluded" | "legacy" | "oos"
   >("all");
   const [hideLikelyThirdParty, setHideLikelyThirdParty] = useState(true);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
@@ -508,7 +512,7 @@ export function EntitiesView({
       </div>
 
       <div className="flex flex-wrap gap-1">
-        {(["all", "live", "legacy", "oos"] as const).map((s) => (
+        {(["all", "live", "excluded", "legacy", "oos"] as const).map((s) => (
           <button
             key={s}
             type="button"
@@ -524,9 +528,11 @@ export function EntitiesView({
               ? "All scope"
               : s === "live"
                 ? "Live"
-                : s === "legacy"
-                  ? "Legacy"
-                  : "Out of scope"}
+                : s === "excluded"
+                  ? "Excluded"
+                  : s === "legacy"
+                    ? "Legacy"
+                    : "Out of scope"}
           </button>
         ))}
       </div>

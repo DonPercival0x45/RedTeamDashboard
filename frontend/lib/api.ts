@@ -32,6 +32,9 @@ import type {
   IntelligenceRunResponse,
   MethodologyRead,
   Entity,
+  EntityReviewApplyResult,
+  EntityReviewPreview,
+  EntityReviewTarget,
   Finding,
   AdminUser,
   BurpImportResult,
@@ -500,6 +503,37 @@ export async function importFindingsFromBurp(
     throw new Error(`${response.status} ${response.statusText}: ${text}`);
   }
   return response.json() as Promise<BurpImportResult>;
+}
+
+export function previewEntityReview(
+  slug: string,
+  body: {
+    targets: EntityReviewTarget[];
+    action: "keep" | "exclude";
+    cascade: boolean;
+  },
+): Promise<EntityReviewPreview> {
+  return request<EntityReviewPreview>(`/engagements/${slug}/entity-reviews/preview`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function applyEntityReview(
+  slug: string,
+  body: {
+    targets: EntityReviewTarget[];
+    action: "keep" | "exclude";
+    cascade: boolean;
+    reason: string;
+    preview_sha256: string;
+    remove_conflicting_exact_includes: boolean;
+  },
+): Promise<EntityReviewApplyResult> {
+  return request<EntityReviewApplyResult>(`/engagements/${slug}/entity-reviews/apply`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
 }
 
 export function listEntities(
