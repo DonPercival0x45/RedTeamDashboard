@@ -261,6 +261,18 @@ DOMAIN_WEB_SURFACE_V3: dict[str, Any] = {
 }
 
 
+DOMAIN_WEB_SURFACE_V4: dict[str, Any] = {
+    **DOMAIN_WEB_SURFACE_V3,
+    "version": 4,
+    "active": True,
+    "description": (
+        "Combines registration and passive discovery, then makes bounded HTTP probes "
+        "against authorized names. Every discovered target is rechecked against current "
+        "exclusions, and analyst approval is required before direct target contact."
+    ),
+}
+
+
 OSINT_ENRICHMENT_V2: dict[str, Any] = {
     **OSINT_ENRICHMENT_V1,
     "version": 2,
@@ -525,6 +537,18 @@ WEB_SECURITY_BASELINE_V1: dict[str, Any] = {
 }
 
 
+WEB_SECURITY_BASELINE_V2: dict[str, Any] = {
+    **WEB_SECURITY_BASELINE_V1,
+    "version": 2,
+    "active": True,
+    "description": (
+        "Makes one bounded HTTPS request per authorized domain, without redirects or "
+        "crawling, and reviews common response headers and cookie flags. Analyst approval "
+        "is required before direct target contact."
+    ),
+}
+
+
 CLOUD_EDGE_BOUNDARY_V1: dict[str, Any] = {
     "slug": "cloud-edge-boundary",
     "version": 1,
@@ -548,6 +572,221 @@ CLOUD_EDGE_BOUNDARY_V1: dict[str, Any] = {
 }
 
 
+CLOUD_EDGE_BOUNDARY_V2: dict[str, Any] = {
+    **CLOUD_EDGE_BOUNDARY_V1,
+    "version": 2,
+    "active": True,
+    "description": (
+        "Correlates CNAME, address, and one bounded HTTP header snapshot for common "
+        "delivery providers. It does not probe hidden origins or equate an edge address "
+        "with client ownership. Analyst approval is required before target contact."
+    ),
+}
+
+
+EXTERNAL_ATTACK_SURFACE_BASELINE_V1: dict[str, Any] = {
+    "slug": "external-attack-surface-baseline",
+    "version": 1,
+    "name": "External attack surface baseline",
+    "description": (
+        "Builds a broad, evidence-backed baseline for an authorized domain: registration, "
+        "passive hostname discovery, certificate and DNS inventory, ownership boundaries, "
+        "cloud/CDN signals, mail authentication, dangling-DNS candidates, and bounded web "
+        "posture. Newly discovered authorized names are revalidated against current scope "
+        "and exclusions before the final posture checks."
+    ),
+    "applies_to_asset_class": "domain",
+    "applicable_entity_types": ["domain"],
+    "active": True,
+    "steps": [
+        {
+            "sort_order": 10,
+            "tool_slug": "whois",
+            "args_template": {"domain": "{{scope_item}}"},
+            "satisfies_node_ids": ["osint.domain.whois"],
+            "description": "Collect registration, registrar, and nameserver context.",
+        },
+        {
+            "sort_order": 20,
+            "tool_slug": "mcp_subfinder",
+            "args_template": {"domain": "{{scope_item}}"},
+            "satisfies_node_ids": ["osint.domain.enum"],
+            "description": "Discover hostnames from passive sources.",
+        },
+        {
+            "sort_order": 30,
+            "tool_slug": "mcp_crt_sh",
+            "args_template": {"domain": "{{scope_item}}"},
+            "satisfies_node_ids": ["osint.domain.cert"],
+            "description": "Collect certificate-transparency names and evidence.",
+        },
+        {
+            "sort_order": 40,
+            "tool_slug": "mcp_dns_lookup",
+            "args_template": {"domain": "{{scope_item}}"},
+            "satisfies_node_ids": ["osint.domain.dns"],
+            "description": "Resolve current address, alias, mail, and TXT evidence.",
+        },
+        {
+            "sort_order": 50,
+            "tool_slug": "dns-ownership-boundary",
+            "args_template": {"domain": "{{scope_item}}"},
+            "satisfies_node_ids": ["osint.domain.dns"],
+            "description": "Map authoritative and third-party DNS dependencies.",
+        },
+        {
+            "sort_order": 60,
+            "tool_slug": "cloud-edge-boundary",
+            "args_template": {"domain": "{{scope_item}}"},
+            "satisfies_node_ids": ["osint.domain.dns"],
+            "description": "Identify explicit cloud and delivery-edge signals.",
+        },
+        {
+            "sort_order": 70,
+            "tool_slug": "mail-auth-posture",
+            "args_template": {"domain": "{{scope_item}}"},
+            "satisfies_node_ids": ["osint.domain.dns"],
+            "description": "Review SPF, DMARC, MTA-STS, and SMTP TLS reporting.",
+        },
+        {
+            "sort_order": 80,
+            "tool_slug": "dangling-dns-triage",
+            "args_template": {
+                "domain": "{{scope_item}}",
+                "__target_source": "discovered_domains",
+            },
+            "satisfies_node_ids": [],
+            "description": "Triage authorized discovered names for dangling CNAME evidence.",
+        },
+        {
+            "sort_order": 90,
+            "tool_slug": "web-security-baseline",
+            "args_template": {
+                "url": "{{scope_item}}",
+                "__target_source": "discovered_domains",
+            },
+            "satisfies_node_ids": [],
+            "description": "Collect a bounded HTTPS posture snapshot for authorized names.",
+        },
+    ],
+}
+
+
+IP_EXPOSURE_TRIAGE_V1: dict[str, Any] = {
+    "slug": "ip-exposure-triage",
+    "version": 1,
+    "name": "IP exposure triage",
+    "description": (
+        "Combines passive IP ownership and network context with an approved bounded port "
+        "scan and service fingerprint. Active connections never begin until an analyst "
+        "approves the immutable execution plan. Service detection uses the same bounded "
+        "port profile rather than dynamically consuming scan output."
+    ),
+    "applies_to_asset_class": "ip",
+    "applicable_entity_types": ["ip"],
+    "active": True,
+    "steps": [
+        {
+            "sort_order": 10,
+            "tool_slug": "mcp_reverse_dns",
+            "args_template": {"ip": "{{scope_item}}"},
+            "satisfies_node_ids": [],
+            "description": "Resolve the IP's PTR hostname.",
+        },
+        {
+            "sort_order": 20,
+            "tool_slug": "freeipapi",
+            "args_template": {"ip": "{{scope_item}}"},
+            "satisfies_node_ids": [],
+            "description": "Collect geolocation and ISP context with the requester's key.",
+        },
+        {
+            "sort_order": 30,
+            "tool_slug": "ipinfo",
+            "args_template": {"ip": "{{scope_item}}"},
+            "satisfies_node_ids": [],
+            "description": "Collect ASN, ownership, and hosting/privacy signals.",
+        },
+        {
+            "sort_order": 40,
+            "tool_slug": "mcp_port_scan",
+            "args_template": {
+                "target": "{{scope_item}}",
+                "ports": "21,22,25,53,80,110,143,443,445,3389,5432,6379,8080,8443",
+                "__on_error": "stop",
+            },
+            "satisfies_node_ids": [],
+            "description": "Scan the approved common-exposure port profile.",
+        },
+        {
+            "sort_order": 50,
+            "tool_slug": "mcp_service_detect",
+            "args_template": {
+                "target": "{{scope_item}}",
+                "ports": "21,22,25,53,80,110,143,443,445,3389,5432,6379,8080,8443",
+            },
+            "satisfies_node_ids": [],
+            "description": "Fingerprint services on the approved port profile.",
+        },
+    ],
+}
+
+
+DOMAIN_DECOMMISSION_RISK_REVIEW_V1: dict[str, Any] = {
+    "slug": "domain-decommission-risk-review",
+    "version": 1,
+    "name": "Domain decommission risk review",
+    "description": (
+        "Reviews an authorized domain for certificate-transparency names, external DNS "
+        "and delivery dependencies, and dangling CNAME candidates. Results are evidence "
+        "for analyst review and never claim or modify external resources."
+    ),
+    "applies_to_asset_class": "domain",
+    "applicable_entity_types": ["domain"],
+    "active": True,
+    "steps": [
+        {
+            "sort_order": 10,
+            "tool_slug": "mcp_dns_lookup",
+            "args_template": {"domain": "{{scope_item}}"},
+            "satisfies_node_ids": ["osint.domain.dns"],
+            "description": "Collect current DNS evidence for the selected domain.",
+        },
+        {
+            "sort_order": 20,
+            "tool_slug": "mcp_crt_sh",
+            "args_template": {"domain": "{{scope_item}}"},
+            "satisfies_node_ids": ["osint.domain.cert"],
+            "description": "Collect certificate-transparency names that may outlive services.",
+        },
+        {
+            "sort_order": 30,
+            "tool_slug": "dns-ownership-boundary",
+            "args_template": {"domain": "{{scope_item}}"},
+            "satisfies_node_ids": ["osint.domain.dns"],
+            "description": "Map authoritative, mail, alias, and address dependencies.",
+        },
+        {
+            "sort_order": 40,
+            "tool_slug": "cloud-edge-boundary",
+            "args_template": {"domain": "{{scope_item}}"},
+            "satisfies_node_ids": ["osint.domain.dns"],
+            "description": "Identify cloud and CDN dependencies that require ownership review.",
+        },
+        {
+            "sort_order": 50,
+            "tool_slug": "dangling-dns-triage",
+            "args_template": {
+                "domain": "{{scope_item}}",
+                "__target_source": "discovered_domains",
+            },
+            "satisfies_node_ids": [],
+            "description": "Triage authorized certificate names for dangling CNAME evidence.",
+        },
+    ],
+}
+
+
 SEED_PLAYBOOKS: list[dict[str, Any]] = [
     OSINT_PASSIVE_DOMAIN_V1,
     PTES_PASSIVE_RECON_V1,
@@ -558,6 +797,7 @@ SEED_PLAYBOOKS: list[dict[str, Any]] = [
     DOMAIN_WEB_SURFACE_V1,
     DOMAIN_WEB_SURFACE_V2,
     DOMAIN_WEB_SURFACE_V3,
+    DOMAIN_WEB_SURFACE_V4,
     HOST_SERVICE_VALIDATION_V1,
     HOST_SERVICE_VALIDATION_V2,
     CIDR_EXPOSURE_SURVEY_V1,
@@ -567,5 +807,10 @@ SEED_PLAYBOOKS: list[dict[str, Any]] = [
     DNS_OWNERSHIP_BOUNDARY_V1,
     DANGLING_DNS_TRIAGE_V1,
     WEB_SECURITY_BASELINE_V1,
+    WEB_SECURITY_BASELINE_V2,
     CLOUD_EDGE_BOUNDARY_V1,
+    CLOUD_EDGE_BOUNDARY_V2,
+    EXTERNAL_ATTACK_SURFACE_BASELINE_V1,
+    IP_EXPOSURE_TRIAGE_V1,
+    DOMAIN_DECOMMISSION_RISK_REVIEW_V1,
 ]

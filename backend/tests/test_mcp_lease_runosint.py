@@ -240,6 +240,32 @@ def test_active_mcp_call_creates_pending_decision_without_execution(
     assert approval.status is ApprovalStatus.pending
 
 
+def test_http_probe_requires_durable_approval_before_target_contact(
+    db: Session,
+    engagement: Engagement,
+    cli_user_and_key: tuple[User, APIKey],
+) -> None:
+    user, key = cli_user_and_key
+    tokens = _set_caller_context(user, key, lease=None)
+    try:
+        with patch("app.mcp.server.run_tool") as run_tool_mock:
+            result = _run_osint(
+                "httpx_probe",
+                engagement.slug,
+                {"url": "https://acme.test"},
+            )
+    finally:
+        _reset_caller_context(tokens)
+
+    assert result.get("status") == "pending", result
+    assert "approval" in result["error"]
+    run_tool_mock.assert_not_called()
+    approval = db.get(Approval, uuid.UUID(result["approval_id"]))
+    assert approval is not None
+    assert approval.tool_name == "httpx_probe"
+    assert approval.status is ApprovalStatus.pending
+
+
 def test_active_playbook_lease_persists_concrete_approved_decision(
     db: Session,
     engagement: Engagement,

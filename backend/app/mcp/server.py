@@ -75,11 +75,11 @@ CORE RULES — always follow these without exception:
    The server enforces scope server-side; out-of-scope calls are rejected.
 
 2. RISK LEVELS
-   passive tools (dns_lookup, whois_lookup, crt_sh, httpx_probe, subfinder,
-   reverse_dns): run freely — no connections to target systems.
+   passive tools (dns_lookup, whois_lookup, crt_sh, subfinder, reverse_dns):
+   run freely — no connections to target systems.
 
-   active tools (port_scan, subnet_sweep, service_detect): make real network
-   connections. Before calling these, tell the analyst exactly what you are
+   active tools (httpx_probe, port_scan, subnet_sweep, service_detect): make
+   real network connections. Before calling these, tell the analyst exactly what you are
    about to do and wait for their explicit confirmation. Do not chain multiple
    active tool calls without checking in between.
 
@@ -996,11 +996,12 @@ async def crt_sh(domain: str, engagement_slug: str = "") -> dict:
 
 @mcp.tool()
 async def httpx_probe(url: str, engagement_slug: str = "") -> dict:
-    """[PASSIVE] HTTP/HTTPS probe for status, title, and tech fingerprints.
+    """[ACTIVE — confirm with analyst before calling] HTTP/HTTPS probe.
 
     Sends a HEAD then GET request to the URL. Returns status code, page
     title, server header, and detected technologies (via response headers
-    and body patterns). Use this to quickly assess what a web service is.
+    and body patterns). Because this directly contacts the target, durable
+    analyst approval is required before execution.
 
     Findings are automatically stored in the engagement.
     """
@@ -1384,17 +1385,16 @@ Follow this sequence:
 4. Call dns_lookup('{engagement_slug}', '{target}') — resolve DNS records.
    Then call dns_lookup for any interesting subdomains found in steps 2-3.
 5. Call whois_lookup('{engagement_slug}', '{target}') — check registration.
-6. For each resolved IP or interesting URL discovered, call:
-   - httpx_probe if it looks like a web service
-   - reverse_dns to identify the hostname
+6. For each resolved IP, call reverse_dns to identify the hostname.
 7. After completing all passive steps, summarize:
    - What subdomains / IPs / services were discovered
    - Any interesting findings (unexpected services, interesting certs, etc.)
    - Recommended next steps (which targets warrant active scanning)
    Then ask the analyst how they want to proceed.
 
-Do NOT run port_scan, subnet_sweep, or service_detect without explicit
-analyst confirmation — those are active tools.
+Do NOT run httpx_probe, port_scan, subnet_sweep, or service_detect without
+explicit analyst confirmation — those are active tools. Offer HTTP probing as
+an approved follow-up after the passive summary.
 """
 
 

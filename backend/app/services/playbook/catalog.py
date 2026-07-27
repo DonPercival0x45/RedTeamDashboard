@@ -43,6 +43,9 @@ _SEED_CATEGORY = {
     "dangling-dns-triage": "validation",
     "web-security-baseline": "posture",
     "cloud-edge-boundary": "scope_review",
+    "external-attack-surface-baseline": "enumeration",
+    "ip-exposure-triage": "validation",
+    "domain-decommission-risk-review": "validation",
 }
 
 logger = structlog.get_logger(__name__)
@@ -79,13 +82,16 @@ def load_seed_playbooks(session: Session) -> list[Playbook]:
         if existing is not None:
             installed.append(existing)
             continue
+        applicable_entity_types = normalize_entity_types(
+            seed.get("applicable_entity_types", [seed["applies_to_asset_class"]])
+        )
         playbook = Playbook(
             slug=seed["slug"],
             version=seed["version"],
             name=seed["name"],
             description=seed.get("description"),
-            applies_to_asset_class=seed["applies_to_asset_class"],
-            applicable_entity_types=[seed["applies_to_asset_class"]],
+            applies_to_asset_class=applicable_entity_types[0],
+            applicable_entity_types=applicable_entity_types,
             category=_SEED_CATEGORY.get(seed["slug"], "other"),
             origin="system",
             active=seed.get("active", False),

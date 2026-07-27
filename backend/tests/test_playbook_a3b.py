@@ -436,7 +436,7 @@ def test_new_operational_playbooks_declare_safe_execution_paths(
     by_slug = {item["slug"]: item for item in response.json()}
 
     assert by_slug["domain-web-surface"]["required_executor"] == "mcp"
-    assert by_slug["domain-web-surface"]["active"] is False
+    assert by_slug["domain-web-surface"]["active"] is True
     assert by_slug["host-service-validation"]["required_executor"] == "mcp"
     assert by_slug["host-service-validation"]["active"] is True
     assert by_slug["cidr-exposure-survey"]["active"] is True
