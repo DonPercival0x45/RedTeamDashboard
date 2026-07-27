@@ -85,5 +85,10 @@ GHSA-f88m-g3jw-g9cj
 # component styles. The exploit vector requires attacker-controlled CSS
 # input, which never reaches the build. Revisit when Next.js bumps its
 # pinned postcss (upstream tracking: vercel/next.js).
+# GHSA-r28c-9q8g-f849 (v3.1.0 addition) is the same postcss@8.4.31 pin —
+# a path-traversal on sourceMappingURL auto-loading. Source maps are
+# generated from our own build inputs, never attacker-supplied. Same
+# rationale, same revisit condition.
 # -----------------------------------------------------------------------------
 CVE-2026-45623
+GHSA-r28c-9q8g-f849
