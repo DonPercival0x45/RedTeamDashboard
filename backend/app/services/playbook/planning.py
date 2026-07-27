@@ -8,20 +8,16 @@ from typing import Any
 
 from app.models import Playbook
 from app.services.playbook.executor import executor_for_tool_slug
-from app.services.playbook.policy import MAX_PLAYBOOK_CALLS, recipe_requires_approval
+from app.services.playbook.policy import (
+    MAX_PLAYBOOK_CALLS,
+    recipe_requires_approval,
+    tool_spec,
+)
 
 _CREDENTIAL_TOOL = {
     "freeipapi": "freeipapi",
     "ipinfo": "ipinfo",
     "dehashed": "dehashed",
-}
-_ACTIVE_TOOLS = {
-    "port_scan",
-    "service_detect",
-    "subnet_sweep",
-    "mcp_port_scan",
-    "mcp_service_detect",
-    "mcp_subnet_sweep",
 }
 _PATH_LABEL = {"internal": "Built-in", "mcp": "Connected service"}
 
@@ -68,7 +64,7 @@ def build_execution_plan(
                 "tool_slug": step.tool_slug,
                 "description": step.description,
                 "transport": transport,
-                "risk": "active" if step.tool_slug in _ACTIVE_TOOLS else "passive",
+                "risk": tool_spec(step.tool_slug).risk,
                 "credential": credential,
                 "arguments_sha256": hashlib.sha256(args_canonical).hexdigest(),
                 "coverage_node_ids": sorted(step.satisfies_node_ids or []),

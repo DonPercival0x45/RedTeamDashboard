@@ -112,9 +112,10 @@ _TOOL_SPECS: tuple[PlaybookToolSpec, ...] = (
     PlaybookToolSpec(
         "web-security-baseline",
         "Web security baseline",
-        "Check deterministic web posture signals.",
+        "Make a bounded target request and check deterministic web posture signals.",
         ("domain",),
         "internal",
+        risk="active",
     ),
     PlaybookToolSpec(
         "mail-auth-posture",
@@ -126,9 +127,10 @@ _TOOL_SPECS: tuple[PlaybookToolSpec, ...] = (
     PlaybookToolSpec(
         "cloud-edge-boundary",
         "Cloud and edge boundary",
-        "Identify likely cloud and CDN boundaries.",
+        "Identify likely cloud and CDN boundaries with a bounded target request.",
         ("domain",),
         "internal",
+        risk="active",
     ),
     PlaybookToolSpec(
         "crt_sh",
@@ -166,14 +168,20 @@ _TOOL_SPECS: tuple[PlaybookToolSpec, ...] = (
         "mcp",
     ),
     PlaybookToolSpec(
-        "httpx_probe", "HTTP probe", "Probe an explicitly scoped URL.", ("url",), "mcp"
+        "httpx_probe",
+        "HTTP probe",
+        "Actively probe an explicitly scoped URL.",
+        ("url",),
+        "mcp",
+        risk="active",
     ),
     PlaybookToolSpec(
         "mcp_httpx_probe",
         "Connected HTTP probe",
-        "Probe an explicitly scoped URL through the connected tool service.",
+        "Actively probe an explicitly scoped URL through the connected tool service.",
         ("url",),
         "mcp",
+        risk="active",
     ),
     PlaybookToolSpec(
         "reverse_dns",

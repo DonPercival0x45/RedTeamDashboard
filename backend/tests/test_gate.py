@@ -315,10 +315,14 @@ def test_unknown_tool_denies_via_evaluate() -> None:
 def test_registry_seeded_with_phase_0_tools() -> None:
     # Smoke check — if these disappear, downstream graph code would silently
     # start denying calls instead of dispatching, so it's worth pinning.
-    for name in ("subfinder", "crt_sh", "dns_lookup", "httpx_probe", "reverse_dns"):
+    for name in ("subfinder", "crt_sh", "dns_lookup", "reverse_dns"):
         spec = get_tool(name)
         assert spec is not None, name
         assert spec.risk is RiskLevel.passive
+
+    http_probe = get_tool("httpx_probe")
+    assert http_probe is not None
+    assert http_probe.risk is RiskLevel.active
 
 
 def test_evaluate_accepts_registry_override() -> None:

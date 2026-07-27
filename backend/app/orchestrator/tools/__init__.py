@@ -76,10 +76,13 @@ _PHASE_0_TOOLS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         name="httpx_probe",
-        risk=RiskLevel.passive,
+        risk=RiskLevel.active,
         target_arg="url",
         kind=ScopeKind.url,
-        description="HEAD/GET probe for status, title, and tech fingerprints.",
+        description=(
+            "ACTIVE HEAD/GET probe for status, title, and technology fingerprints. "
+            "Requires operator approval before it contacts the target."
+        ),
     ),
     ToolSpec(
         name="reverse_dns",

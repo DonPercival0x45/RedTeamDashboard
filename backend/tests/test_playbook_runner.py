@@ -167,7 +167,7 @@ def test_discovered_domains_expand_later_steps_with_scope_revalidation(
     )
     load_seed_playbooks(db)
     playbook = catalog.get_by_slug(db, "domain-web-surface")
-    assert playbook is not None and playbook.version == 3
+    assert playbook is not None and playbook.version == 4
     executor = MockExecutor(
         results={
             "mcp_subfinder": StepResult(
@@ -195,6 +195,54 @@ def test_discovered_domains_expand_later_steps_with_scope_revalidation(
     assert all("__target_source" not in call["args"] for call in executor.calls)
     assert run.steps_total == 6
     assert run.steps_succeeded == 6
+
+
+def test_external_baseline_expands_authorized_names_into_posture_steps(
+    db: Session, engagement_with_methodology: Engagement
+) -> None:
+    db.add_all(
+        [
+            ScopeItem(
+                engagement_id=engagement_with_methodology.id,
+                kind=ScopeKind.domain,
+                value="foo.com",
+            ),
+            ScopeItem(
+                engagement_id=engagement_with_methodology.id,
+                kind=ScopeKind.domain,
+                value="blocked.foo.com",
+                is_exclusion=True,
+            ),
+        ]
+    )
+    load_seed_playbooks(db)
+    playbook = catalog.get_by_slug(db, "external-attack-surface-baseline")
+    assert playbook is not None
+    executor = MockExecutor(
+        results={
+            "mcp_subfinder": StepResult(
+                ok=True,
+                data={"subdomains": ["api.foo.com", "blocked.foo.com"]},
+            ),
+        },
+        default=StepResult(ok=True),
+    )
+
+    run = start_run(
+        db,
+        engagement=engagement_with_methodology,
+        playbook=playbook,
+        scope_subset=["foo.com"],
+        executor=executor,
+    )
+
+    for tool_slug in ("dangling-dns-triage", "web-security-baseline"):
+        assert [
+            call["scope_context"] for call in executor.calls if call["tool_slug"] == tool_slug
+        ] == ["api.foo.com", "foo.com"]
+    assert all("__target_source" not in call["args"] for call in executor.calls)
+    assert run.steps_total == 11
+    assert run.steps_succeeded == 11
 
 
 def test_dynamic_expansion_stops_at_the_hard_call_budget(
