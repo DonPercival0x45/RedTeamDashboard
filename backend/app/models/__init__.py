@@ -76,13 +76,13 @@ from app.models.finding import (
     FindingStatus,
     Severity,
 )
-from app.models.finding_summary import FindingSummary
 from app.models.finding_followup import (
     FindingRemediationStatus,
     FindingRemediationUpdate,
     FindingRetest,
     FindingRetestOutcome,
 )
+from app.models.finding_summary import FindingSummary
 from app.models.integration import Integration, IntegrationPurpose, IntegrationType
 from app.models.mcp_lease import MCPLease, MCPLeaseStatus
 from app.models.memory import (
@@ -183,6 +183,8 @@ __all__ = [
     "EntityGroupMember",
     "EntityReview",
     "EntityReviewDisposition",
+    "EntityReviewFindingLink",
+    "EntityReviewScopeLink",
     "Finding",
     "FindingExclusion",
     "FindingOrigin",
