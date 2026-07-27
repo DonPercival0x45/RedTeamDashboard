@@ -85,13 +85,13 @@ from app.models import (
     Engagement,
     EngagementArchitecture,
     EngagementStatus,
+    EntityReview,
     Finding,
     FindingPhase,
     FindingRemediationUpdate,
     FindingRetest,
     FindingStatus,
     FindingSummary,
-    EntityReview,
     Observation,
     ObservationFindingLink,
     ScopeItem,
@@ -147,20 +147,22 @@ from app.schemas.finding_followup import (
     FindingRetestRead,
 )
 from app.schemas.observation import ObservationCreate, ObservationRead
+from app.schemas.scope import EffectiveScopeDecisionRead
 from app.services import methodology as methodology_service
 from app.services.command_outbox import enqueue_command, publish_entry
-from app.services.entity_identity import entity_identity_key
+from app.services.effective_scope import project_scope_item
 from app.services.entities import (
     annotate_scope_status,
     extract_entities,
     include_scope_entities,
 )
+from app.services.entity_identity import entity_identity_key
 from app.services.findings import (
     get_active_finding_or_404,
     lock_active_finding_or_404,
 )
 from app.services.scope_import import parse_scope_text
-from app.services.scope_matcher import evaluate_scope, normalize_email
+from app.services.scope_matcher import normalize_email
 
 router = APIRouter()
 
@@ -767,10 +769,7 @@ def create_engagement(
             )
         except ValueError:
             resolved_architecture = EngagementArchitecture.legacy
-        if (
-            resolved_architecture is EngagementArchitecture.v3
-            and body.methodology_slug is None
-        ):
+        if resolved_architecture is EngagementArchitecture.v3 and body.methodology_slug is None:
             resolved_architecture = EngagementArchitecture.legacy
     eng = Engagement(
         name=body.name,
@@ -840,9 +839,7 @@ def create_engagement(
                 "include_count": include_count,
                 "exclusion_count": exclusion_count,
                 "intelligence_architecture": eng.intelligence_architecture.value,
-                "methodology_id": (
-                    str(eng.methodology_id) if eng.methodology_id else None
-                ),
+                "methodology_id": (str(eng.methodology_id) if eng.methodology_id else None),
                 "initial_scope": [
                     {
                         "kind": item.kind.value,
@@ -1103,6 +1100,19 @@ def flush_engagement(
 # ---------------------------------------------------------------------------
 
 
+def _scope_item_read(
+    item: ScopeItem,
+    scope_items: list[ScopeItem],
+) -> ScopeItemRead:
+    decision = project_scope_item(item, scope_items)
+    return ScopeItemRead.model_validate(item).model_copy(
+        update={
+            "is_effectively_in_scope": (not item.is_exclusion and decision.allowed),
+            "effective_scope": EffectiveScopeDecisionRead.model_validate(decision),
+        }
+    )
+
+
 @router.post(
     "/engagements/{slug}/scope",
     response_model=ScopeItemRead,
@@ -1113,7 +1123,7 @@ def create_scope_item(
     body: ScopeItemCreate,
     session: DbSession,
     user: CurrentNonGuestUser,
-) -> ScopeItem:
+) -> ScopeItemRead:
     eng = _get_engagement_or_404(session, slug)
     _reject_flushed(eng)
     item = ScopeItem(
@@ -1137,7 +1147,10 @@ def create_scope_item(
     )
     session.commit()
     session.refresh(item)
-    return item
+    rows = list(
+        session.execute(select(ScopeItem).where(ScopeItem.engagement_id == eng.id)).scalars()
+    )
+    return _scope_item_read(item, rows)
 
 
 @router.post(
@@ -1261,8 +1274,11 @@ def import_scope(
     for c in created:
         session.refresh(c)
 
+    all_scope_items = list(
+        session.execute(select(ScopeItem).where(ScopeItem.engagement_id == eng.id)).scalars()
+    )
     return ScopeImportResult(
-        created=[ScopeItemRead.model_validate(c) for c in created],
+        created=[_scope_item_read(c, all_scope_items) for c in created],
         errors=error_rows,
         duplicates=duplicates,
     )
@@ -1281,17 +1297,7 @@ def list_scope(slug: str, session: DbSession, _user: CurrentUser) -> list[ScopeI
             .order_by(ScopeItem.created_at)
         ).scalars()
     )
-    return [
-        ScopeItemRead.model_validate(item).model_copy(
-            update={
-                "is_effectively_in_scope": (
-                    not item.is_exclusion
-                    and evaluate_scope(item.value, item.kind, rows).allowed
-                )
-            }
-        )
-        for item in rows
-    ]
+    return [_scope_item_read(item, rows) for item in rows]
 
 
 @router.patch(
@@ -1304,7 +1310,7 @@ def update_scope_item(
     body: ScopeItemUpdate,
     session: DbSession,
     user: CurrentNonGuestUser,
-) -> ScopeItem:
+) -> ScopeItemRead:
     eng = _get_engagement_or_404(session, slug)
     _reject_flushed(eng)
     item = session.get(ScopeItem, scope_id)
@@ -1336,7 +1342,10 @@ def update_scope_item(
         )
     session.commit()
     session.refresh(item)
-    return item
+    rows = list(
+        session.execute(select(ScopeItem).where(ScopeItem.engagement_id == eng.id)).scalars()
+    )
+    return _scope_item_read(item, rows)
 
 
 @router.delete(
@@ -4249,9 +4258,7 @@ def _require_user_provider_key(
     )
 
     try:
-        resolved = resolve_for_user(
-            redis_client, user_id=user_id, provider=provider
-        )
+        resolved = resolve_for_user(redis_client, user_id=user_id, provider=provider)
     except NoProviderKeyError as exc:
         raise HTTPException(
             status_code=400,
@@ -4365,9 +4372,7 @@ def start_run(
     elif body.model is not None:
         # Pin the MRU row selected at enqueue so worker delay/rotation cannot
         # switch credentials behind the analyst's explicit provider choice.
-        chosen_key_id = _require_user_provider_key(
-            redis_client, user_id=user.id, provider=provider
-        )
+        chosen_key_id = _require_user_provider_key(redis_client, user_id=user.id, provider=provider)
     effective_model = RunModel(provider=provider, name=model_name, key_id=chosen_key_id)
 
     thread_id = uuid.uuid4()

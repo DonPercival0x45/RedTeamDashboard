@@ -171,6 +171,12 @@ def test_scope_targets_populate_entities_without_duplicate_entry(
         if entity["type"] == "domain" and entity["value"] == "scope.example"
     )
     assert scope_entity["scope_status"] == "live"
+    assert scope_entity["effective_scope"]["state"] == "included"
+    assert scope_entity["effective_scope"]["matched_include_id"] is not None
+    assert scope_entity["exact_scope_include_ids"] == [
+        scope_entity["effective_scope"]["matched_include_id"]
+    ]
+    assert scope_entity["exact_scope_exclusion_ids"] == []
     assert scope_entity["count"] == 0
     assert scope_entity["findings"] == []
     email_entity = next(
@@ -223,6 +229,12 @@ def test_exclusion_does_not_label_finding_derived_entity_as_live(
         item for item in _entities(client, engagement.slug) if item["value"] == "203.0.113.9"
     )
     assert entity["scope_status"] == "excluded"
+    assert entity["effective_scope"]["state"] == "excluded"
+    assert entity["effective_scope"]["reason_code"] == "excluded_ip"
+    assert entity["effective_scope"]["matched_exclusion_id"] is not None
+    assert entity["exact_scope_exclusion_ids"] == [
+        entity["effective_scope"]["matched_exclusion_id"]
+    ]
     assert entity["relevance"] == "excluded"
 
 

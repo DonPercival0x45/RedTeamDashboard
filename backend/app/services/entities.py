@@ -17,24 +17,17 @@ import re
 from collections.abc import Iterable
 from typing import Any
 
-from app.models import Finding, ScopeKind, Severity
+from app.models import Finding, Severity
 from app.services import scope_matcher
+from app.services.effective_scope import (
+    EffectiveScopeDecision,
+    EffectiveScopeState,
+    exact_scope_rule_ids_for_entity,
+    project_entity,
+)
 from app.services.entity_identity import normalize_entity_type, normalize_entity_value
 
 EntityType = str  # email | ip | cidr | domain | subdomain | url | host
-
-# v2.19.0: entity-type → scope-kind mapping for Live/Legacy/OOS classification.
-# `host` and `url` map to a small set of scope kinds we try in order; the first
-# match wins. Email scope is exact-mailbox only.
-_ENTITY_KIND_LOOKUP: dict[str, tuple[ScopeKind, ...]] = {
-    "ip": (ScopeKind.ip,),
-    "cidr": (ScopeKind.cidr,),
-    "domain": (ScopeKind.domain,),
-    "subdomain": (ScopeKind.domain,),
-    "host": (ScopeKind.ip, ScopeKind.domain),
-    "url": (ScopeKind.url,),
-    "email": (ScopeKind.email,),
-}
 
 
 def classify_entity_scope_status(
@@ -53,17 +46,10 @@ def classify_entity_scope_status(
     Unknown entity types short-circuit to "oos". Email uses conservative
     exact-mailbox matching; a scoped domain never authorizes every mailbox.
     """
-    kinds = _ENTITY_KIND_LOOKUP.get(entity_type)
-    if not kinds:
-        return "oos"
-    items = list(current_scope_items)
-    decision = scope_matcher.evaluate_scope_candidates(
-        [(entity_value, kind) for kind in kinds],
-        items,
-    )
-    if decision.allowed:
+    decision = project_entity(entity_type, entity_value, current_scope_items)
+    if decision.state is EffectiveScopeState.included:
         return "live"
-    if decision.matched_exclusion_id is not None:
+    if decision.state is EffectiveScopeState.excluded:
         return "excluded"
     if entity_value.strip().lower() in retired_scope_values:
         return "legacy"
@@ -160,18 +146,34 @@ def annotate_scope_status(
     for entity in entities:
         entity_type = str(entity.get("type") or "")
         entity_value = str(entity.get("value") or "")
-        scope_status = classify_entity_scope_status(
+        decision: EffectiveScopeDecision = project_entity(
             entity_type,
             entity_value,
             items,
-            retired_scope_values,
+        )
+        scope_status = (
+            "live"
+            if decision.state is EffectiveScopeState.included
+            else "excluded"
+            if decision.state is EffectiveScopeState.excluded
+            else "legacy"
+            if entity_value.strip().lower() in retired_scope_values
+            else "oos"
         )
         relevance, reason = classify_entity_relevance(
             entity_type,
             entity_value,
             scope_status,
         )
+        exact_include_ids, exact_exclusion_ids = exact_scope_rule_ids_for_entity(
+            entity_type,
+            entity_value,
+            items,
+        )
         entity["scope_status"] = scope_status
+        entity["effective_scope"] = decision
+        entity["exact_scope_include_ids"] = exact_include_ids
+        entity["exact_scope_exclusion_ids"] = exact_exclusion_ids
         entity["relevance"] = relevance
         entity["relevance_reason"] = reason
     return entities

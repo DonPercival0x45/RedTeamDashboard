@@ -113,6 +113,23 @@ export interface IntelligenceRunResponse {
   error: string | null;
 }
 
+export type EffectiveScopeState =
+  | "included"
+  | "excluded"
+  | "unmatched"
+  | "unsupported";
+
+export interface EffectiveScopeDecision {
+  state: EffectiveScopeState;
+  allowed: boolean;
+  reason_code: string;
+  reason: string;
+  target: string | null;
+  target_kind: ScopeKind | null;
+  matched_include_id: string | null;
+  matched_exclusion_id: string | null;
+}
+
 export interface ScopeItem {
   id: string;
   engagement_id: string;
@@ -124,6 +141,7 @@ export interface ScopeItem {
   // "found" = added from findings.
   source?: string;
   is_effectively_in_scope?: boolean | null;
+  effective_scope?: EffectiveScopeDecision | null;
   created_at: string;
   updated_at: string;
 }
@@ -769,6 +787,9 @@ export interface Entity {
   last_seen: string;
   findings: EntityFindingRef[];
   scope_status: EntityScopeStatus;
+  effective_scope?: EffectiveScopeDecision | null;
+  exact_scope_include_ids?: string[];
+  exact_scope_exclusion_ids?: string[];
   relevance?: "in_scope" | "excluded" | "review" | "likely_third_party";
   relevance_reason?: string | null;
   review_disposition?: "kept" | "excluded" | null;

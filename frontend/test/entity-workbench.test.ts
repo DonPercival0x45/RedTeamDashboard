@@ -72,6 +72,51 @@ describe("entity workbench identity matching", () => {
     const broader = scopeActionState(entity, []);
     expect(broader.canAdd).toBe(false);
     expect(broader.canExclude).toBe(true);
+
+    const excludedByParent = scopeActionState(
+      {
+        ...entity,
+        scope_status: "excluded",
+        effective_scope: {
+          state: "excluded",
+          allowed: false,
+          reason_code: "excluded_domain",
+          reason: "matched parent exclusion",
+          target: "example.com",
+          target_kind: "domain",
+          matched_include_id: null,
+          matched_exclusion_id: "scope-parent",
+        },
+      },
+      [],
+    );
+    expect(excludedByParent.canAdd).toBe(false);
+    expect(excludedByParent.canExclude).toBe(false);
+    expect(excludedByParent.isExcluded).toBe(true);
+
+    const canonicalServerMatch = scopeActionState(
+      {
+        ...entity,
+        value: "example.com",
+        exact_scope_include_ids: ["scope-wildcard"],
+        exact_scope_exclusion_ids: [],
+      },
+      [{ ...include, id: "scope-wildcard", value: "*.EXAMPLE.com." }],
+    );
+    expect(canonicalServerMatch.exactIncludes).toHaveLength(1);
+    expect(canonicalServerMatch.canAdd).toBe(false);
+    expect(canonicalServerMatch.canExclude).toBe(false);
+
+    const temporarilyMissingRuleRows = scopeActionState(
+      {
+        ...entity,
+        exact_scope_include_ids: ["scope-not-loaded"],
+        exact_scope_exclusion_ids: [],
+      },
+      [],
+    );
+    expect(temporarilyMissingRuleRows.canAdd).toBe(false);
+    expect(temporarilyMissingRuleRows.canExclude).toBe(false);
   });
 
   it("maps supported discovered entities to authoritative scope kinds", () => {

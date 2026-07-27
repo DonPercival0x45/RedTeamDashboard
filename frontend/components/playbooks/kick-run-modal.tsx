@@ -23,6 +23,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { QueryState } from "@/components/query-state";
+import { isScopeItemEffectivelyIncluded } from "@/lib/effective-scope";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import {
@@ -62,8 +63,7 @@ export function KickRunModal({
     () =>
       (scopeQuery.data ?? []).filter(
         (item) =>
-          !item.is_exclusion &&
-          item.is_effectively_in_scope !== false &&
+          isScopeItemEffectivelyIncluded(item) &&
           (playbook.applies_to_asset_class === "scope" ||
             item.kind === playbook.applies_to_asset_class),
       ),

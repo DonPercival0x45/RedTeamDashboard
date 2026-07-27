@@ -59,6 +59,7 @@ import type {
   StoredEntity,
 } from "@/lib/types";
 import type { MapPoint } from "@/components/leaflet-map";
+import { effectiveScopeState } from "@/lib/effective-scope";
 import { engagementEntityHref } from "@/lib/engagement-links";
 import {
   buildDossierTimeline,
@@ -439,7 +440,7 @@ export function DossierView({ slug }: { slug: string }) {
           return status === "pending_validation" || status === "needs_review";
         }).length;
         const dispositionResolved =
-          entity.scope_status === "excluded" ||
+          effectiveScopeState(entity) === "excluded" ||
           entity.review_disposition === "excluded" ||
           entity.review_disposition === "kept";
         const needsValidation =

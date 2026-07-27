@@ -1376,6 +1376,13 @@ function EntitySlideOver({
     canExclude,
     isIncluded,
   } = scopeActionState(entity, scopeItems);
+  const matchedScopeRule = entity.effective_scope
+    ? scopeItems.find(
+        (item) =>
+          item.id === entity.effective_scope?.matched_exclusion_id ||
+          item.id === entity.effective_scope?.matched_include_id,
+      )
+    : undefined;
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="left-auto right-0 top-0 flex h-dvh w-full max-w-lg translate-x-0 translate-y-0 flex-col gap-0 rounded-none border-y-0 border-r-0 p-0 sm:rounded-none">
@@ -1425,6 +1432,16 @@ function EntitySlideOver({
                 Broader domain and CIDR exclusions remain authoritative.
               </p>
             </div>
+            {entity.effective_scope && (
+              <div className="rounded-md border border-border/70 bg-muted/20 px-3 py-2 text-xs">
+                <p>{entity.effective_scope.reason}</p>
+                {matchedScopeRule && (
+                  <p className="mt-1 font-mono text-muted-foreground">
+                    Matched {matchedScopeRule.kind}: {matchedScopeRule.value}
+                  </p>
+                )}
+              </div>
+            )}
             {!scopeTarget ? (
               <p className="text-xs text-muted-foreground">
                 {typeLabel(entity.type)} entities cannot be used as scope targets.
@@ -1497,6 +1514,7 @@ function EntitySlideOver({
 
             {onLaunchPlaybook &&
               canWrite &&
+              entity.effective_scope?.allowed !== false &&
               entity.scope_status === "live" &&
               exactIncludes.length > 0 && (
                 <Button

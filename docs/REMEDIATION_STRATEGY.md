@@ -31,9 +31,9 @@ rollback points**. The most recent completed slices are:
 | `3e6470a` | playbook results persist through the canonical Findings contract | ✅ fixed |
 
 **Current validation evidence:**
-- backend: Ruff clean; **42 focused entity/scope tests pass**;
-  full isolated suite **1070 passed / 3 documented SSE networking failures**
-- frontend: `tsc --noEmit` and `next build` clean; **99 Vitest tests pass**
+- backend: Ruff clean; **97 focused scope/entity/API tests pass**;
+  full isolated suite **1081 passed / 3 documented SSE networking failures**
+- frontend: `tsc --noEmit` and `next build` clean; **102 Vitest tests pass**
 - CLI: **35 passed / 1 skipped** (documented Windows permissions limitation)
 - local backend tests reset an isolated `rtd_test` database and Redis DB 15;
   pytest refuses the operator-facing `rtd` database outside disposable CI
@@ -584,6 +584,14 @@ supported the resulting Finding.
   Out of scope filter, and active roots are projected before broad excluded
   branches consume the safety cap. It never infers authorization, ownership, or
   exploitability from relationship evidence alone.
+- A backend-owned Effective Scope Projection now wraps the canonical matcher
+  and exposes stable included/excluded/unmatched/unsupported states, reason
+  codes, target kinds, and matched include/exclusion IDs on Scope and Entity
+  reads. Effective state remains derived rather than persisted; Finding
+  reportability and Entity review stay separate axes. Scope mutation controls
+  still operate only on exact rules, while target selectors, Dossier, and Paths
+  consume the server projection and no longer treat raw shadowed includes as
+  executable.
 - Migration `0071` adds durable canonical Entity review dispositions plus
   reversible ownership receipts for exact exclusions and Finding reportability
   changes. Dossier supports searched bulk Keep/Exclude review for up to 1,000

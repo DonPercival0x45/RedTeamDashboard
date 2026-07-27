@@ -1,4 +1,5 @@
 import { extractDossierRelationships } from "@/lib/dossier";
+import { effectiveScopeState } from "@/lib/effective-scope";
 import type {
   Entity,
   Finding,
@@ -359,7 +360,7 @@ function excludedEntityKeys(entities: Entity[]): Set<string> {
     entities
       .filter(
         (entity) =>
-          entity.scope_status === "excluded" ||
+          effectiveScopeState(entity) === "excluded" ||
           entity.review_disposition === "excluded",
       )
       .map((entity) => nodeKey(entity.type, entity.value)),

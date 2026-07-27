@@ -236,6 +236,15 @@ export function ScopeEditor({
                     {item.is_exclusion ? " · exclude" : ""}
                   </Badge>
                   <span className="font-mono text-sm">{item.value}</span>
+                  {!item.is_exclusion &&
+                    item.effective_scope?.state === "excluded" && (
+                      <span
+                        className="rounded-full border border-amber-500/50 bg-amber-500/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-amber-700 dark:text-amber-300"
+                        title={item.effective_scope.reason}
+                      >
+                        shadowed by exclusion
+                      </span>
+                    )}
                   {found && (
                     <span
                       className="rounded-full border border-emerald-500/50 bg-emerald-500/15 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-emerald-600 dark:text-emerald-400"

@@ -12,6 +12,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { runToolDirect, type ToolRunResult } from "@/lib/api";
+import { isScopeItemEffectivelyIncluded } from "@/lib/effective-scope";
 import { qk, useScope } from "@/lib/hooks";
 
 const V3_TOOLS = [
@@ -41,7 +42,8 @@ export function V3ToolsPanel({ slug }: { slug: string }) {
   const targets = useMemo(
     () =>
       (scopeQuery.data ?? []).filter(
-        (item) => !item.is_exclusion && item.kind === "domain",
+        (item) =>
+          item.kind === "domain" && isScopeItemEffectivelyIncluded(item),
       ),
     [scopeQuery.data],
   );

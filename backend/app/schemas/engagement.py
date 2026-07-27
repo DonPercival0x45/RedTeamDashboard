@@ -16,6 +16,7 @@ from app.models import (
     EngagementWorkState,
     ScopeKind,
 )
+from app.schemas.scope import EffectiveScopeDecisionRead
 from app.services.scope_matcher import normalize_email
 
 LLMProvider = Literal[
@@ -74,9 +75,7 @@ class EngagementCreate(BaseModel):
     initial_scope: list[InitialScopeItemCreate] = Field(
         default_factory=list,
         max_length=1000,
-        description=(
-            "Optional client-defined scope persisted atomically with the engagement."
-        ),
+        description=("Optional client-defined scope persisted atomically with the engagement."),
     )
     intelligence_architecture: EngagementArchitecture | None = Field(
         default=None,
@@ -109,9 +108,7 @@ class EngagementCreate(BaseModel):
             self.intelligence_architecture is EngagementArchitecture.v3
             and not self.methodology_slug
         ):
-            raise ValueError(
-                "v3 engagement creation requires methodology_slug"
-            )
+            raise ValueError("v3 engagement creation requires methodology_slug")
 
         seen: set[tuple[ScopeKind, str, bool]] = set()
         for item in self.initial_scope:
@@ -220,6 +217,7 @@ class ScopeItemRead(BaseModel):
     note: str | None
     source: str = "defined"
     is_effectively_in_scope: bool | None = None
+    effective_scope: EffectiveScopeDecisionRead | None = None
     created_at: datetime
     updated_at: datetime
 

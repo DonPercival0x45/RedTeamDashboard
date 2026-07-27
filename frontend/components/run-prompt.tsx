@@ -15,6 +15,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { startRun } from "@/lib/api";
+import { isScopeItemEffectivelyIncluded } from "@/lib/effective-scope";
 import { useMe, useProviderKeys, useScope } from "@/lib/hooks";
 import { CUSTOM_VALUE, getPresetModels } from "@/lib/llm-providers";
 import { runSlugFromId, useRunToast } from "@/components/run-toast-provider";
@@ -113,7 +114,7 @@ export function RunPrompt({
   }, []);
   const { data: scopeItems } = useScope(slug);
   const scopeActions = useMemo<ScopeItem[]>(
-    () => (scopeItems ?? []).filter((s) => !s.is_exclusion),
+    () => (scopeItems ?? []).filter(isScopeItemEffectivelyIncluded),
     [scopeItems],
   );
   useEffect(() => {

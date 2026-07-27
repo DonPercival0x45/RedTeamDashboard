@@ -16,6 +16,7 @@ from uuid import UUID
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.models import FindingExclusion, FindingPhase, FindingStatus, Severity
+from app.schemas.scope import EffectiveScopeDecisionRead
 
 MAX_FINDING_SUMMARY_CHARS = 20_000
 MAX_FINDING_TAGS = 20
@@ -424,6 +425,9 @@ class EntityRead(BaseModel):
     # scope target. Legacy is only populated for deletions performed after
     # v2.19 shipped (older hard-deletes left no audit trace).
     scope_status: str = "oos"
+    effective_scope: EffectiveScopeDecisionRead | None = None
+    exact_scope_include_ids: list[UUID] = Field(default_factory=list)
+    exact_scope_exclusion_ids: list[UUID] = Field(default_factory=list)
     # Classification is advisory only: no entity or finding is deleted. The UI
     # may collapse conservative third-party patterns while keeping them reviewable.
     relevance: str = "review"
