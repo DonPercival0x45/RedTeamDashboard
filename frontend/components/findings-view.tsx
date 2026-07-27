@@ -10,15 +10,13 @@ import { DateTime } from "@/components/date-time";
 import { LoaderOverlay } from "@/components/loader";
 import { GroupedItemsView, extractItems } from "@/components/grouped-items-view";
 import { FindingHierarchyWorkspace } from "@/components/finding-hierarchy-workspace";
+import { FindingCreateDialog } from "@/components/finding-create-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
 import {
   bulkDeleteFindings,
   correlateFindings,
-  createFinding,
   mergeFindings,
   regroupFindingsApply,
   regroupFindingsPreview,
@@ -537,6 +535,7 @@ export function FindingsView({
         onViewChange={changeWorkspaceView}
         onCreated={onUpdated}
         onUseClassic={() => changeWorkspaceView("classic")}
+        findings={findings}
       />
     );
   }
@@ -1047,7 +1046,7 @@ export function FindingsView({
       )}
 
       {showAddModal && (
-        <AddFindingModal
+        <FindingCreateDialog
           slug={slug}
           onClose={() => setShowAddModal(false)}
           onCreated={(f) => {
@@ -1754,189 +1753,6 @@ function RegroupModal({
                 : `Apply ${openCount} group${openCount === 1 ? "" : "s"}`}
             </Button>
           </div>
-        </div>
-      </div>
-    </>
-  );
-}
-
-// ── v1.4.0: Add Finding modal ──────────────────────────────────────────────
-
-function AddFindingModal({
-  slug,
-  onClose,
-  onCreated,
-}: {
-  slug: string;
-  onClose: () => void;
-  onCreated: (finding: Finding) => void;
-}) {
-  const [title, setTitle] = useState("");
-  const [summary, setSummary] = useState("");
-  const [target, setTarget] = useState("");
-  const [severity, setSeverity] = useState<Severity>("info");
-  const [phase, setPhase] = useState<FindingPhase>("general");
-  // <input type="date"> value format is YYYY-MM-DD. We turn empty into
-  // null before shipping; a set value becomes an ISO string at UTC noon
-  // so the calendar day round-trips regardless of the analyst's TZ.
-  const [observedAt, setObservedAt] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const canSubmit = title.trim().length > 0 && !busy;
-
-  const submit = async () => {
-    if (!canSubmit) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const observedIso = observedAt
-        ? new Date(`${observedAt}T12:00:00Z`).toISOString()
-        : null;
-      const finding = await createFinding(slug, {
-        title: title.trim(),
-        summary: summary.trim() || null,
-        severity,
-        phase,
-        target: target.trim() || null,
-        observed_at: observedIso,
-      });
-      onCreated(finding);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-      setBusy(false);
-    }
-  };
-
-  return (
-    <>
-      <div
-        className="fixed inset-0 z-[60] bg-black/70"
-        onClick={onClose}
-        aria-hidden
-      />
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label="Add finding"
-        className="fixed left-1/2 top-1/2 z-[70] flex max-h-[90vh] w-[min(560px,94vw)] -translate-x-1/2 -translate-y-1/2 flex-col rounded-lg border border-border bg-popover shadow-xl"
-      >
-        <div className="flex items-start justify-between gap-4 border-b border-border px-5 py-4">
-          <div>
-            <h3 className="text-sm font-semibold text-foreground">Add finding</h3>
-            <p className="mt-0.5 text-xs text-muted-foreground">
-              Hand-type a finding the tooling didn&apos;t surface. New row
-              lands at the top of the Findings tab.
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="text-muted-foreground hover:text-foreground"
-            aria-label="Close"
-          >
-            <X className="h-5 w-5" />
-          </button>
-        </div>
-
-        <div className="grid gap-4 overflow-y-auto px-5 py-4">
-          <div>
-            <Label htmlFor="add-finding-title">Title *</Label>
-            <Input
-              id="add-finding-title"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              placeholder="e.g. Reflected XSS in /search endpoint"
-              className="mt-1.5"
-              autoFocus
-            />
-          </div>
-
-          <div>
-            <Label htmlFor="add-finding-summary">Details</Label>
-            <Textarea
-              id="add-finding-summary"
-              value={summary}
-              onChange={(e) => setSummary(e.target.value)}
-              rows={4}
-              placeholder="What did you observe? Impact, evidence, reproduction steps."
-              className="mt-1.5 text-sm"
-            />
-          </div>
-
-          <div>
-            <Label htmlFor="add-finding-target">Target</Label>
-            <Input
-              id="add-finding-target"
-              value={target}
-              onChange={(e) => setTarget(e.target.value)}
-              placeholder="host / URL / entity affected"
-              className="mt-1.5 font-mono text-xs"
-            />
-          </div>
-
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <Label htmlFor="add-finding-severity">Severity</Label>
-              <select
-                id="add-finding-severity"
-                value={severity}
-                onChange={(e) => setSeverity(e.target.value as Severity)}
-                className="mt-1.5 h-9 w-full rounded-md border border-border bg-background px-2 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
-              >
-                {SEVERITY_OPTIONS.map((s) => (
-                  <option key={s} value={s}>
-                    {s}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <Label htmlFor="add-finding-phase">Phase</Label>
-              <select
-                id="add-finding-phase"
-                value={phase}
-                onChange={(e) => setPhase(e.target.value as FindingPhase)}
-                className="mt-1.5 h-9 w-full rounded-md border border-border bg-background px-2 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
-              >
-                {PHASE_OPTIONS.map((p) => (
-                  <option key={p} value={p}>
-                    {PHASE_LABEL[p]}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          <div>
-            <Label htmlFor="add-finding-observed">Observed on</Label>
-            <Input
-              id="add-finding-observed"
-              type="date"
-              value={observedAt}
-              onChange={(e) => setObservedAt(e.target.value)}
-              className="mt-1.5"
-            />
-            <p className="mt-1 text-[11px] text-muted-foreground">
-              When the issue was seen in the wild. Leave empty to fall back
-              to today.
-            </p>
-          </div>
-
-          {error && (
-            <p className="text-xs text-critical" role="alert">
-              {error}
-            </p>
-          )}
-        </div>
-
-        <div className="flex justify-end gap-2 border-t border-border px-5 py-3">
-          <Button variant="outline" size="sm" onClick={onClose} disabled={busy}>
-            Cancel
-          </Button>
-          <Button size="sm" onClick={submit} disabled={!canSubmit}>
-            {busy ? "Creating…" : "Create finding"}
-          </Button>
         </div>
       </div>
     </>

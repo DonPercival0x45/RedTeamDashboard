@@ -62,6 +62,7 @@ import {
   listEngagements,
   listEntities,
   listEntityDuplicateCandidates,
+  listFindingGroups,
   listFindings,
   getFinding,
   getFindingActivity,
@@ -160,6 +161,7 @@ export const qk = {
   reportReadiness: (slug: string) => ["report-readiness", slug] as const,
   findings: (slug: string) => ["findings", slug] as const,
   findingHierarchy: (slug: string) => ["finding-hierarchy", slug] as const,
+  findingGroups: (slug: string) => ["finding-groups", slug] as const,
   diagnostics: (slug: string) => ["diagnostics", slug] as const,
   finding: (id: string) => ["finding", id] as const,
   findingActivity: (id: string) => ["finding-activity", id] as const,
@@ -279,6 +281,13 @@ export function useFindingHierarchy(slug: string) {
   return useQuery({
     queryKey: qk.findingHierarchy(slug),
     queryFn: () => getFindingHierarchy(slug),
+  });
+}
+
+export function useFindingGroups(slug: string) {
+  return useQuery({
+    queryKey: qk.findingGroups(slug),
+    queryFn: () => listFindingGroups(slug),
   });
 }
 

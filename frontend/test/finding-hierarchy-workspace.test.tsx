@@ -92,6 +92,7 @@ vi.mock("@/lib/hooks", () => ({
   qk: {
     findings: (slug: string) => ["findings", slug],
     findingHierarchy: (slug: string) => ["finding-hierarchy", slug],
+    findingGroups: (slug: string) => ["finding-groups", slug],
     entities: (slug: string) => ["entities", slug],
   },
   useFindingHierarchy: () => ({
@@ -100,10 +101,19 @@ vi.mock("@/lib/hooks", () => ({
     error: null,
     refetch: vi.fn(),
   }),
+  useFindingGroups: () => ({
+    data: [],
+    isLoading: false,
+    error: null,
+  }),
 }));
 
 vi.mock("@/lib/api", () => ({
   createFindingFromHierarchyItem: (...args: unknown[]) => createFromItem(...args),
+  createFinding: vi.fn(),
+  createFindingGroup: vi.fn(),
+  updateFindingGroup: vi.fn(),
+  deleteFindingGroup: vi.fn(),
 }));
 
 import { FindingHierarchyWorkspace } from "@/components/finding-hierarchy-workspace";
@@ -133,6 +143,7 @@ describe("FindingHierarchyWorkspace", () => {
     expect(screen.getByText(/443\/tcp · HTTPS · nginx 1.24/i)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Create Finding" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Classic table" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Create or group" })).not.toBeInTheDocument();
   });
 
   it("binds duplicate override to the reviewed candidates and source target", async () => {

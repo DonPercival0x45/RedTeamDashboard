@@ -595,6 +595,46 @@ export function createFinding(
   });
 }
 
+export function listFindingGroups(
+  slug: string,
+): Promise<import("@/lib/types").FindingGroup[]> {
+  return request<import("@/lib/types").FindingGroup[]>(
+    `/engagements/${slug}/finding-groups`,
+  );
+}
+
+export function createFindingGroup(
+  slug: string,
+  body: import("@/lib/types").FindingGroupCreate,
+): Promise<import("@/lib/types").FindingGroup> {
+  return request<import("@/lib/types").FindingGroup>(
+    `/engagements/${slug}/finding-groups`,
+    { method: "POST", body: JSON.stringify(body) },
+  );
+}
+
+export function updateFindingGroup(
+  slug: string,
+  groupId: string,
+  body: import("@/lib/types").FindingGroupUpdate,
+): Promise<import("@/lib/types").FindingGroup> {
+  return request<import("@/lib/types").FindingGroup>(
+    `/engagements/${slug}/finding-groups/${groupId}`,
+    { method: "PUT", body: JSON.stringify(body) },
+  );
+}
+
+export function deleteFindingGroup(
+  slug: string,
+  groupId: string,
+  expectedRowVersion: number,
+): Promise<void> {
+  return request<void>(
+    `/engagements/${slug}/finding-groups/${groupId}?expected_row_version=${expectedRowVersion}`,
+    { method: "DELETE" },
+  );
+}
+
 // v1.4.0: kick the CorrelateAgent. Returns proposed groups; nothing
 // merges until the analyst approves in the Correlate modal and each
 // approval routes through mergeFindings().

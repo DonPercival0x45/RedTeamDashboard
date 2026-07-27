@@ -82,6 +82,7 @@ from app.models.finding_followup import (
     FindingRetest,
     FindingRetestOutcome,
 )
+from app.models.finding_group import FindingGroup, FindingGroupMember
 from app.models.finding_summary import FindingSummary
 from app.models.integration import Integration, IntegrationPurpose, IntegrationType
 from app.models.mcp_lease import MCPLease, MCPLeaseStatus
@@ -187,6 +188,8 @@ __all__ = [
     "EntityReviewScopeLink",
     "Finding",
     "FindingExclusion",
+    "FindingGroup",
+    "FindingGroupMember",
     "FindingOrigin",
     "FindingRemediationStatus",
     "FindingRemediationUpdate",
