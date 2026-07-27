@@ -9,6 +9,7 @@ import { Ban, Layers, Link2, ListChecks, Maximize2, Plus, Search, Sparkles, Tras
 import { DateTime } from "@/components/date-time";
 import { LoaderOverlay } from "@/components/loader";
 import { GroupedItemsView, extractItems } from "@/components/grouped-items-view";
+import { FindingHierarchyWorkspace } from "@/components/finding-hierarchy-workspace";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -25,6 +26,7 @@ import {
 } from "@/lib/api";
 import { getWorkItemRollup } from "@/lib/strategy-api";
 import { cn } from "@/lib/utils";
+import { FINDING_WORKSPACE_VIEW_VALUES } from "@/lib/finding-hierarchy";
 import {
   compareValidationPriority,
   findingNeedsValidation,
@@ -38,6 +40,7 @@ import type {
   FindingPhase,
   FindingSort,
   FindingValidationStatus,
+  FindingWorkspaceView,
   RegroupProposal,
   Severity,
 } from "@/lib/types";
@@ -178,11 +181,13 @@ export function FindingsView({
   findings,
   onUpdated,
   onDeleted,
+  canWrite = true,
 }: {
   slug: string;
   findings: Finding[];
   onUpdated: (finding: Finding) => void;
   onDeleted: (findingId: string) => void;
+  canWrite?: boolean;
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -194,6 +199,16 @@ export function FindingsView({
     SEVERITY_FILTER_VALUES,
   );
   const readinessFilter = validFilter(searchParams.get("readiness"), READINESS_FILTERS);
+  const requestedWorkspaceView = searchParams.get("findingView");
+  const [workspaceView, setWorkspaceView] = useState<FindingWorkspaceView | "classic">(
+    requestedWorkspaceView === "classic"
+      ? "classic"
+      : FINDING_WORKSPACE_VIEW_VALUES.has(
+            requestedWorkspaceView as FindingWorkspaceView,
+          )
+        ? (requestedWorkspaceView as FindingWorkspaceView)
+        : "focus",
+  );
   const [phase, setPhase] = useState<FindingPhase | "all">(queryPhase ?? "all");
   const [status, setStatus] = useState<FindingValidationStatus | "all">(
     queryStatus ?? "all",
@@ -273,6 +288,20 @@ export function FindingsView({
     setSeverityFilter(querySeverity ?? "all");
   }, [queryPhase, querySeverity, queryStatus]);
 
+  useEffect(() => {
+    if (requestedWorkspaceView === "classic") {
+      setWorkspaceView("classic");
+    } else if (
+      FINDING_WORKSPACE_VIEW_VALUES.has(
+        requestedWorkspaceView as FindingWorkspaceView,
+      )
+    ) {
+      setWorkspaceView(requestedWorkspaceView as FindingWorkspaceView);
+    } else {
+      setWorkspaceView("focus");
+    }
+  }, [requestedWorkspaceView]);
+
   const replaceQueryFilter = useCallback(
     (key: "phase" | "status" | "severity" | "readiness", value: string | null) => {
       const next = new URLSearchParams(searchParams.toString());
@@ -283,6 +312,13 @@ export function FindingsView({
     },
     [pathname, router, searchParams],
   );
+
+  const changeWorkspaceView = (next: FindingWorkspaceView | "classic") => {
+    setWorkspaceView(next);
+    const params = new URLSearchParams(searchParams.toString());
+    params.set("findingView", next);
+    router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+  };
 
   const changePhase = (next: FindingPhase | "all") => {
     setPhase(next);
@@ -492,8 +528,32 @@ export function FindingsView({
     }
   };
 
+  if (workspaceView !== "classic" || !canWrite) {
+    return (
+      <FindingHierarchyWorkspace
+        slug={slug}
+        canWrite={canWrite}
+        view={workspaceView === "classic" ? "focus" : workspaceView}
+        onViewChange={changeWorkspaceView}
+        onCreated={onUpdated}
+        onUseClassic={() => changeWorkspaceView("classic")}
+      />
+    );
+  }
+
   return (
     <div className="space-y-6">
+      <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-muted/20 p-3">
+        <div>
+          <p className="text-sm font-medium">Classic Finding table</p>
+          <p className="text-xs text-muted-foreground">
+            Original row-by-row management view. Entity grouping is non-destructive.
+          </p>
+        </div>
+        <Button type="button" size="sm" onClick={() => changeWorkspaceView("focus")}>
+          Entity-centred view
+        </Button>
+      </div>
       {/* Key metrics. v0.8.1: colour-coded per severity, with each tile
           acting as a click-to-filter button. Click a tile to filter the
           findings table by that severity; click the same tile again to

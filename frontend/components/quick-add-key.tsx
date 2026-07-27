@@ -27,21 +27,30 @@ type Preset = ProviderPreset;
 
 export function QuickAddKey({
   onCreated,
+  initialProvider,
 }: {
   onCreated: (created: ProviderKey) => void;
+  initialProvider?: string;
 }) {
+  const initialPreset = initialProvider
+    ? PROVIDER_PRESETS.find((item) => item.slug === initialProvider)
+    : undefined;
   const [presetSlug, setPresetSlug] = useState<string>(
-    PROVIDER_PRESETS[0].slug,
+    initialPreset?.slug ?? (initialProvider ? CUSTOM_VALUE : PROVIDER_PRESETS[0].slug),
   );
-  const [customProvider, setCustomProvider] = useState("");
-  const [kind, setKind] = useState<Kind>("model_provider");
+  const [customProvider, setCustomProvider] = useState(
+    initialPreset ? "" : (initialProvider ?? ""),
+  );
+  const [kind, setKind] = useState<Kind>(
+    initialPreset?.kind === "tool_secret" ? "other" : "model_provider",
+  );
   const [apiKey, setApiKey] = useState("");
   // v2.25.0: two-field credential for WiGLE (name + token). Combined into
   // a JSON blob at submit and shipped in ``api_key`` so the backend contract
   // (single string) doesn't change.
   const [wigleName, setWigleName] = useState("");
   const [wigleToken, setWigleToken] = useState("");
-  const [endpoint, setEndpoint] = useState("");
+  const [endpoint, setEndpoint] = useState(initialPreset?.endpoint ?? "");
   const [name, setName] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);

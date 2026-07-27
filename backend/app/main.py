@@ -39,6 +39,7 @@ from app.api.engagement_strategist import router as engagement_strategist_router
 from app.api.engagements import router as engagements_router
 from app.api.entities import router as entities_router
 from app.api.events import router as events_router
+from app.api.finding_hierarchy import router as finding_hierarchy_router
 from app.api.infrastructure import router as infrastructure_router
 from app.api.integrations import router as integrations_router
 from app.api.intelligence import router as intelligence_router
@@ -78,9 +79,7 @@ app = FastAPI(title="Red Team Dashboard API", version="0.0.1", lifespan=lifespan
 
 
 @app.exception_handler(NoProviderKeyError)
-async def missing_provider_key_handler(
-    _request: Request, exc: NoProviderKeyError
-) -> JSONResponse:
+async def missing_provider_key_handler(_request: Request, exc: NoProviderKeyError) -> JSONResponse:
     """Give every unhandled BYO-key path the same actionable response."""
     return JSONResponse(
         status_code=status.HTTP_400_BAD_REQUEST,
@@ -95,9 +94,7 @@ async def missing_provider_key_handler(
 
 
 @app.exception_handler(redis_lib.RedisError)
-async def redis_unavailable_handler(
-    _request: Request, exc: redis_lib.RedisError
-) -> JSONResponse:
+async def redis_unavailable_handler(_request: Request, exc: redis_lib.RedisError) -> JSONResponse:
     """Treat ephemeral-key/queue backend outages as unavailable, not 500s."""
     log.warning("redis.unavailable", error=str(exc))
     return JSONResponse(
@@ -128,6 +125,7 @@ app.include_router(orchestrator_tools_router)
 app.include_router(provider_keys_router)
 app.include_router(reports_router)
 app.include_router(entities_router)
+app.include_router(finding_hierarchy_router)
 app.include_router(me_router)
 app.include_router(methodology_router)
 app.include_router(tool_runs_router)

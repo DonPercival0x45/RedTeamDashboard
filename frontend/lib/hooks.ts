@@ -66,6 +66,7 @@ import {
   getFinding,
   getFindingActivity,
   getFindingChat,
+  getFindingHierarchy,
   listFindingContextCandidates,
   listInfraSubscriptions,
   listIntegrations,
@@ -86,6 +87,9 @@ import {
   listRunningJobs,
   listPlaybooks,
   getPlaybook,
+  getPlaybookCatalogOptions,
+  createPlaybook,
+  createPlaybookVersion,
   listPlaybookRuns,
   getPlaybookRun,
   getEvidenceArtifact,
@@ -155,6 +159,7 @@ export const qk = {
   methodologies: () => ["methodologies"] as const,
   reportReadiness: (slug: string) => ["report-readiness", slug] as const,
   findings: (slug: string) => ["findings", slug] as const,
+  findingHierarchy: (slug: string) => ["finding-hierarchy", slug] as const,
   diagnostics: (slug: string) => ["diagnostics", slug] as const,
   finding: (id: string) => ["finding", id] as const,
   findingActivity: (id: string) => ["finding-activity", id] as const,
@@ -221,6 +226,7 @@ export const qk = {
     ["analytics", "engagement-log", engagement ?? "all", limit] as const,
   playbooks: () => ["playbooks"] as const,
   playbook: (slug: string) => ["playbook", slug] as const,
+  playbookCatalogOptions: () => ["playbook-catalog-options"] as const,
   playbookRuns: (
     engagementSlug: string,
     status?: import("@/lib/types").PlaybookRunStatus,
@@ -266,6 +272,13 @@ export function useDiagnostics(slug: string) {
   return useQuery({
     queryKey: qk.diagnostics(slug),
     queryFn: () => getEngagementDiagnostics(slug),
+  });
+}
+
+export function useFindingHierarchy(slug: string) {
+  return useQuery({
+    queryKey: qk.findingHierarchy(slug),
+    queryFn: () => getFindingHierarchy(slug),
   });
 }
 
@@ -1387,6 +1400,38 @@ export function usePlaybook(slug: string | null) {
     queryKey: slug ? qk.playbook(slug) : ["playbook", "none"],
     queryFn: () => getPlaybook(slug!),
     enabled: !!slug,
+  });
+}
+
+export function usePlaybookCatalogOptions() {
+  return useQuery({
+    queryKey: qk.playbookCatalogOptions(),
+    queryFn: () => getPlaybookCatalogOptions(),
+    staleTime: 5 * 60_000,
+  });
+}
+
+export function useCreatePlaybookMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: import("@/lib/types").PlaybookCreate) =>
+      createPlaybook(body),
+    onSuccess: (playbook) => {
+      qc.setQueryData(qk.playbook(playbook.slug), playbook);
+      void qc.invalidateQueries({ queryKey: qk.playbooks() });
+    },
+  });
+}
+
+export function useCreatePlaybookVersionMutation(slug: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: import("@/lib/types").PlaybookNewVersion) =>
+      createPlaybookVersion(slug, body),
+    onSuccess: (playbook) => {
+      qc.setQueryData(qk.playbook(playbook.slug), playbook);
+      void qc.invalidateQueries({ queryKey: qk.playbooks() });
+    },
   });
 }
 

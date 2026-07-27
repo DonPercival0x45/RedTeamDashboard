@@ -11,6 +11,7 @@ must:
 Without a lease, the legacy behavior is unchanged: findings get stored
 server-side and the response carries ``_findings_stored=N``.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -134,9 +135,7 @@ def _build_lease(task: Task) -> MCPLease:
     )
 
 
-def _set_caller_context(
-    user: User, key: APIKey, lease: MCPLease | None
-) -> list[object]:
+def _set_caller_context(user: User, key: APIKey, lease: MCPLease | None) -> list[object]:
     """Set the three ContextVars _run_osint reads. Returns reset tokens."""
     tokens = [
         mcp_auth._current_key.set(key),  # type: ignore[attr-defined]
@@ -178,9 +177,9 @@ def test_run_osint_leased_returns_lease_findings_and_skips_db_store(
     user, key = cli_user_and_key
     lease = _build_lease(task)
 
-    pre_findings = db.execute(
-        select(Finding).where(Finding.engagement_id == engagement.id)
-    ).scalars().all()
+    pre_findings = (
+        db.execute(select(Finding).where(Finding.engagement_id == engagement.id)).scalars().all()
+    )
     assert pre_findings == []
 
     tokens = _set_caller_context(user, key, lease)
@@ -196,18 +195,22 @@ def test_run_osint_leased_returns_lease_findings_and_skips_db_store(
     assert result["records"] == [{"a": "1.2.3.4"}]
 
     # Worker is the writer on the leased path — server-side store skipped.
-    post_findings = db.execute(
-        select(Finding).where(Finding.engagement_id == engagement.id)
-    ).scalars().all()
+    post_findings = (
+        db.execute(select(Finding).where(Finding.engagement_id == engagement.id)).scalars().all()
+    )
     assert post_findings == []
 
     # Audit row was still written (single source of truth for tool calls).
-    audits = db.execute(
-        select(AuditLog).where(
-            AuditLog.engagement_id == engagement.id,
-            AuditLog.event_type == "mcp.tool.dns_lookup",
+    audits = (
+        db.execute(
+            select(AuditLog).where(
+                AuditLog.engagement_id == engagement.id,
+                AuditLog.event_type == "mcp.tool.dns_lookup",
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert len(audits) == 1
     assert audits[0].payload["via"] == "mcp.lease"
 
@@ -237,7 +240,8 @@ def test_active_mcp_call_creates_pending_decision_without_execution(
     assert approval.status is ApprovalStatus.pending
 
 
-def test_active_playbook_lease_reuses_run_approval(
+def test_active_playbook_lease_persists_concrete_approved_decision(
+    db: Session,
     engagement: Engagement,
     cli_user_and_key: tuple[User, APIKey],
     task: Task,
@@ -245,10 +249,12 @@ def test_active_playbook_lease_reuses_run_approval(
     user, key = cli_user_and_key
     lease = _build_lease(task)
     lease.allowed_tools = ["portscan"]
+    run_id = uuid.uuid4()
     lease.context = {
-        "playbook_run_id": str(uuid.uuid4()),
+        "playbook_run_id": str(run_id),
         "playbook_approved_by": str(user.id),
         "playbook_approved_at": datetime.now(tz=UTC).isoformat(),
+        "credential_owner_id": str(user.id),
     }
     tokens = _set_caller_context(user, key, lease)
     try:
@@ -266,6 +272,24 @@ def test_active_playbook_lease_reuses_run_approval(
 
     assert result.get("open_ports") == [443], result
     run_tool_mock.assert_called_once()
+    approval = db.scalar(
+        select(Approval).where(
+            Approval.engagement_id == engagement.id,
+            Approval.thread_id == f"playbook-{run_id}",
+        )
+    )
+    assert approval is not None
+    assert approval.status is ApprovalStatus.approved
+    assert approval.decided_by == user.id
+    assert approval.scope_check["ok"] is True
+    audit = db.scalar(
+        select(AuditLog).where(
+            AuditLog.engagement_id == engagement.id,
+            AuditLog.event_type == "approval.approved",
+        )
+    )
+    assert audit is not None
+    assert audit.payload["playbook_run_id"] == str(run_id)
 
 
 def test_lease_pinned_engagement_rejects_conflicting_slug(
@@ -286,9 +310,7 @@ def test_lease_pinned_engagement_rejects_conflicting_slug(
     finally:
         _reset_caller_context(tokens)
 
-    assert result == {
-        "error": "engagement_slug conflicts with the active MCP lease"
-    }
+    assert result == {"error": "engagement_slug conflicts with the active MCP lease"}
 
 
 def test_run_osint_without_lease_stores_findings_server_side(
@@ -310,9 +332,9 @@ def test_run_osint_without_lease_stores_findings_server_side(
     assert result["_findings_stored"] == 1
     assert "_lease_findings" not in result
 
-    post_findings = db.execute(
-        select(Finding).where(Finding.engagement_id == engagement.id)
-    ).scalars().all()
+    post_findings = (
+        db.execute(select(Finding).where(Finding.engagement_id == engagement.id)).scalars().all()
+    )
     assert len(post_findings) == 1
     assert post_findings[0].target == "acme.test"
 
@@ -326,11 +348,15 @@ def test_run_osint_without_lease_stores_findings_server_side(
     assert feedback.encoded_payload["data"].find(str(user.id)) >= 0
     assert feedback.encoded_payload["data"].find(str(post_findings[0].id)) >= 0
 
-    audits = db.execute(
-        select(AuditLog).where(
-            AuditLog.engagement_id == engagement.id,
-            AuditLog.event_type == "mcp.tool.dns_lookup",
+    audits = (
+        db.execute(
+            select(AuditLog).where(
+                AuditLog.engagement_id == engagement.id,
+                AuditLog.event_type == "mcp.tool.dns_lookup",
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert len(audits) == 1
     assert audits[0].payload["via"] == "mcp.api"

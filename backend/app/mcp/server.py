@@ -309,9 +309,7 @@ def _infer_engagement_slug(provided: str | None) -> str | None:
     inferred = engagement.get("slug")
     pinned = inferred if isinstance(inferred, str) and inferred else None
     if provided and pinned and provided != pinned:
-        raise ValueError(
-            "engagement_slug conflicts with the active MCP lease"
-        )
+        raise ValueError("engagement_slug conflicts with the active MCP lease")
     return pinned or provided or None
 
 
@@ -355,9 +353,7 @@ def _run_osint(
             eng = _resolve_engagement(session, engagement_slug)
             lease = get_current_lease()
             if lease is not None and lease.engagement_id != eng.id:
-                raise ValueError(
-                    "engagement does not match the active MCP lease"
-                )
+                raise ValueError("engagement does not match the active MCP lease")
             _ensure_mutable_engagement(eng)
         except ValueError as exc:
             return {"error": str(exc)}
@@ -428,7 +424,58 @@ def _run_osint(
                     "status": ApprovalStatus.pending.value,
                 }
 
-        operation_id = uuid.uuid4()
+            try:
+                approved_by_id = uuid.UUID(str(approved_by))
+                approved_at_value = datetime.fromisoformat(str(approved_at).replace("Z", "+00:00"))
+                requester_id = (
+                    uuid.UUID(str(lease_context["credential_owner_id"]))
+                    if lease_context.get("credential_owner_id")
+                    else approved_by_id
+                )
+            except (KeyError, TypeError, ValueError):
+                return {"error": "invalid durable playbook approval context"}
+            operation_id = uuid.uuid4()
+            approval = Approval(
+                engagement_id=eng.id,
+                thread_id=f"playbook-{approved_run_id}",
+                node="playbook_step",
+                tool_name=tool_name,
+                tool_call_id=str(operation_id),
+                tool_args=args,
+                risk=decision.risk,
+                scope_check=decision.scope.to_jsonable(),
+                status=ApprovalStatus.approved,
+                decided_by=approved_by_id,
+                decision_args=args,
+                acting_user_id=requester_id,
+                decided_at=approved_at_value,
+                run_context={
+                    "playbook_run_id": str(approved_run_id),
+                    "credential_owner_id": str(requester_id),
+                },
+            )
+            session.add(approval)
+            session.flush()
+            session.add(
+                AuditLog(
+                    engagement_id=eng.id,
+                    actor_type=ActorType.user,
+                    actor_id=str(approved_by_id),
+                    event_type="approval.approved",
+                    payload={
+                        "approval_id": str(approval.id),
+                        "playbook_run_id": str(approved_run_id),
+                        "tool": tool_name,
+                        "status": ApprovalStatus.approved.value,
+                        "via": "playbook",
+                    },
+                )
+            )
+            # The approval must be durable before the active invocation begins.
+            session.commit()
+        else:
+            operation_id = uuid.uuid4()
+
         result = run_tool(tool_name, args)
 
         # Lease-bound call (Stage 1.5 worker): the worker owns finding
@@ -694,12 +741,7 @@ def add_scope_item(
     try:
         scope_kind = ScopeKind(kind)
     except ValueError:
-        return {
-            "error": (
-                f"invalid kind '{kind}' — must be one of: "
-                "domain, ip, cidr, url, email"
-            )
-        }
+        return {"error": (f"invalid kind '{kind}' — must be one of: domain, ip, cidr, url, email")}
     if scope_kind is ScopeKind.email and normalize_email(value) is None:
         return {"error": "email scope must be one valid exact mailbox"}
 
@@ -991,9 +1033,7 @@ async def reverse_dns(ip: str, engagement_slug: str = "") -> dict:
 
 
 @mcp.tool()
-async def freeipapi(
-    ip: str, engagement_slug: str = "", api_key: str = ""
-) -> dict:
+async def freeipapi(ip: str, engagement_slug: str = "", api_key: str = "") -> dict:
     """[PASSIVE] IP geolocation enrichment via freeipapi.com.
 
     Third-party API call — no traffic touches the target. Returns country,
@@ -1011,9 +1051,7 @@ async def freeipapi(
 
 
 @mcp.tool()
-async def ipinfo(
-    ip: str, engagement_slug: str = "", api_key: str = ""
-) -> dict:
+async def ipinfo(ip: str, engagement_slug: str = "", api_key: str = "") -> dict:
     """[PASSIVE] IP intel enrichment via ipinfo.io.
 
     Third-party API call — no traffic touches the target. Returns ASN,

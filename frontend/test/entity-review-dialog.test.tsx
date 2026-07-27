@@ -52,6 +52,7 @@ describe("EntityReviewDialog", () => {
       }],
       finding_ids: ["finding-1"],
       exact_include_conflicts: 1,
+      includes_to_create: 0,
       exclusions_to_create: 2,
       managed_exclusions_to_remove: 0,
       findings_to_mark_out_of_scope: 1,

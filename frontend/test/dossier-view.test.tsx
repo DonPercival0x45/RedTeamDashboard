@@ -1,4 +1,5 @@
 import { render, screen } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -7,6 +8,12 @@ const hookState = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/hooks", () => ({
+  qk: {
+    scope: (slug: string) => ["scope", slug],
+    entities: (slug: string) => ["entities", slug],
+    storedEntities: (slug: string) => ["stored-entities", slug],
+    engagements: () => ["engagements"],
+  },
   useEngagement: () => ({
     data: { name: "Example engagement", description: "External assessment." },
     isLoading: false,
@@ -99,11 +106,24 @@ vi.mock("@/lib/hooks", () => ({
     error: hookState.entitiesError,
   }),
   useStoredEntities: () => ({ data: [], isLoading: false, error: null }),
+  useScope: () => ({ data: [], isLoading: false, error: null }),
+  useMe: () => ({ data: { role: "user" } }),
   useObservations: () => ({ data: [], isLoading: false, error: null }),
   usePlaybookRuns: () => ({ data: [], isLoading: false, error: null }),
 }));
 
 import { DossierView } from "@/components/dossier-view";
+
+function renderDossier() {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <DossierView slug="example" />
+    </QueryClientProvider>,
+  );
+}
 
 afterEach(() => {
   hookState.entitiesError = null;
@@ -112,7 +132,7 @@ afterEach(() => {
 describe("DossierView narrative", () => {
   it("uses strategy-style tabs while keeping exact DNS provenance", async () => {
     const user = userEvent.setup();
-    render(<DossierView slug="example" />);
+    renderDossier();
 
     expect(screen.getByText("Engagement dossier")).toBeInTheDocument();
     expect(screen.getByText("Current picture")).toBeInTheDocument();
@@ -144,6 +164,11 @@ describe("DossierView narrative", () => {
     ]);
     await user.click(screen.getByRole("button", { name: "Select all matching (3)" }));
     expect(screen.getByText("3 selected")).toBeInTheDocument();
+    await user.click(
+      screen.getByRole("button", { name: "Open ip 2.16.40.67" }),
+    );
+    expect(screen.getByRole("dialog", { name: "2.16.40.67" })).toBeInTheDocument();
+    await user.keyboard("{Escape}");
 
     await user.click(screen.getByRole("tab", { name: "Timeline" }));
     expect(screen.getByText("Engagement timeline")).toBeInTheDocument();
@@ -154,7 +179,7 @@ describe("DossierView narrative", () => {
 
   it("withholds factual counts and gap conclusions when a source query fails", () => {
     hookState.entitiesError = new Error("entity projection unavailable");
-    render(<DossierView slug="example" />);
+    renderDossier();
 
     expect(screen.getByRole("alert")).toHaveTextContent("The dossier is incomplete");
     expect(screen.queryByText("Current picture")).not.toBeInTheDocument();

@@ -16,6 +16,7 @@ The worker-facing shape (``execute_pending_run``) uses row-level locking so
 multiple worker replicas cooperate: whichever holds the pending row's lock
 executes it, the others try the next one.
 """
+
 from __future__ import annotations
 
 import uuid
@@ -32,6 +33,7 @@ from sqlalchemy.orm import Session
 from app.engagement import milestones as ms
 from app.models import (
     ActorType,
+    AuditLog,
     CoverageNodeTier,
     CoverageRecordStatus,
     Engagement,
@@ -59,6 +61,7 @@ from app.services.playbook.executor import (
     executor_for_tool_slug,
     resolve_step_args,
 )
+from app.services.playbook.policy import MAX_PLAYBOOK_CALLS
 
 logger = structlog.get_logger(__name__)
 
@@ -127,10 +130,18 @@ def enqueue_run(
     releases them via ``approve_run``. Inactive playbooks bypass the
     gate and go straight to ``pending``.
     """
+    from app.services.playbook.policy import recipe_requires_approval
+
     ts = _now(now)
+    try:
+        policy_requires_approval = recipe_requires_approval(
+            step.tool_slug for step in playbook.steps
+        )
+    except ValueError:
+        policy_requires_approval = False
     initial_status = (
         PlaybookRunStatus.awaiting_approval
-        if playbook.active
+        if playbook.active or policy_requires_approval
         else PlaybookRunStatus.pending
     )
     run = PlaybookRun(
@@ -162,9 +173,7 @@ class RunNotCancellableError(Exception):
     def __init__(self, run_id: uuid.UUID, status: PlaybookRunStatus) -> None:
         self.run_id = run_id
         self.status = status
-        super().__init__(
-            f"run {run_id} is {status.value}; cannot cancel a terminal run"
-        )
+        super().__init__(f"run {run_id} is {status.value}; cannot cancel a terminal run")
 
 
 class RunNotAwaitingApprovalError(Exception):
@@ -210,6 +219,7 @@ def approve_run(
         raise KeyError(str(run_id))
     if run.status is PlaybookRunStatus.pending and run.approved_by is not None:
         # Already approved — second call is a no-op.
+        run._approval_transitioned = False
         return run
     if run.status is not PlaybookRunStatus.awaiting_approval:
         raise RunNotAwaitingApprovalError(run_id, run.status)
@@ -219,6 +229,7 @@ def approve_run(
     run.approved_at = ts
     if reason:
         run.approval_reason = reason
+    run._approval_transitioned = True
     session.flush()
     return run
 
@@ -247,6 +258,7 @@ def reject_run(
     if run is None:
         raise KeyError(str(run_id))
     if run.status is PlaybookRunStatus.cancelled and run.rejected_by is not None:
+        run._rejection_transitioned = False
         return run
     if run.status is not PlaybookRunStatus.awaiting_approval:
         raise RunNotAwaitingApprovalError(run_id, run.status)
@@ -259,6 +271,7 @@ def reject_run(
         run.last_error = f"rejected: {reason}"
     if run.completed_at is None:
         run.completed_at = ts
+    run._rejection_transitioned = True
     session.flush()
     return run
 
@@ -418,10 +431,7 @@ def recover_abandoned_runs(
         ).scalars()
     )
     for run in runs:
-        message = (
-            "worker heartbeat expired; in-flight step outcome is unknown and "
-            "was not retried"
-        )
+        message = "worker heartbeat expired; in-flight step outcome is unknown and was not retried"
         run.status = PlaybookRunStatus.failed
         run.completed_at = recovered_at
         run.last_error = message
@@ -430,8 +440,7 @@ def recover_abandoned_runs(
         receipts = session.execute(
             select(PlaybookStepExecution).where(
                 PlaybookStepExecution.playbook_run_id == run.id,
-                PlaybookStepExecution.status
-                == PlaybookStepExecutionStatus.running,
+                PlaybookStepExecution.status == PlaybookStepExecutionStatus.running,
             )
         ).scalars()
         for receipt in receipts:
@@ -527,6 +536,24 @@ def execute_pending_run(
         session.flush()
         return run
 
+    if run.plan_snapshot is not None:
+        from app.services.playbook.planning import build_execution_plan
+
+        current_plan = build_execution_plan(
+            playbook=playbook,
+            scope_subset=list(run.scope_subset or []),
+            required_executor=run.executor_kind.value,
+        )
+        snapshot_hash = str(run.plan_snapshot.get("plan_sha256") or "")
+        if current_plan["plan_sha256"] != run.plan_sha256 or snapshot_hash != run.plan_sha256:
+            run.status = PlaybookRunStatus.failed
+            run.completed_at = _now(now)
+            run.last_error = "playbook recipe no longer matches the reviewed execution plan"
+            run.worker_id = None
+            run.worker_heartbeat_at = None
+            session.flush()
+            return run
+
     started = run.started_at or _now(now)
     effective_actor_type, effective_actor_id = _effective_actor(
         run,
@@ -548,6 +575,7 @@ def execute_pending_run(
 
     cancelled_mid = False
     halted_on_error = False
+    invocations_attempted = 0
     discovered_domains: set[str] = set()
     for step in playbook.steps:
         target_source = (step.args_template or {}).get("__target_source")
@@ -568,6 +596,28 @@ def execute_pending_run(
                 run.status = PlaybookRunStatus.cancelled
                 cancelled_mid = True
                 break
+            if invocations_attempted >= MAX_PLAYBOOK_CALLS:
+                halted_on_error = True
+                run.steps_failed += 1
+                run.last_error = (
+                    f"playbook call budget exhausted at {MAX_PLAYBOOK_CALLS} invocations"
+                )
+                session.add(
+                    AuditLog(
+                        engagement_id=engagement.id,
+                        actor_type=effective_actor_type,
+                        actor_id=effective_actor_id,
+                        event_type="playbook_run.call_budget_exhausted",
+                        payload={
+                            "playbook_run_id": str(run.id),
+                            "playbook_id": str(playbook.id),
+                            "maximum_calls": MAX_PLAYBOOK_CALLS,
+                            "invocation_count": invocations_attempted,
+                        },
+                    )
+                )
+                break
+            invocations_attempted += 1
             try:
                 result = _run_one(
                     session,
@@ -675,6 +725,45 @@ def start_run(
     )
 
 
+def _current_scope_authorization(
+    session: Session,
+    *,
+    engagement: Engagement,
+    playbook: Playbook,
+    target: str,
+) -> tuple[bool, str]:
+    """Re-evaluate one concrete target immediately before dispatch."""
+    from app.models import ScopeItem
+    from app.services.playbook.policy import execution_target_kind
+    from app.services.scope_matcher import (
+        evaluate_scope_candidates,
+        infer_scope_kind,
+        normalize_scope_value,
+    )
+
+    rows = list(
+        session.execute(select(ScopeItem).where(ScopeItem.engagement_id == engagement.id)).scalars()
+    )
+    kind = infer_scope_kind(target)
+    target_kind = execution_target_kind(
+        list(playbook.applicable_entity_types or []) or [playbook.applies_to_asset_class]
+    )
+    if target_kind != "scope" and kind.value != target_kind:
+        return False, f"target kind {kind.value!r} is incompatible with {target_kind!r}"
+    if target_kind == "scope":
+        normalized = normalize_scope_value(target, kind)
+        exact_include = any(
+            not row.is_exclusion
+            and row.kind == kind
+            and normalize_scope_value(row.value, row.kind) == normalized
+            for row in rows
+        )
+        if not exact_include:
+            return False, "scope review requires a current exact include row"
+    decision = evaluate_scope_candidates([(target, kind)], rows)
+    return decision.allowed, decision.reason
+
+
 def _run_one(
     session: Session,
     *,
@@ -698,9 +787,7 @@ def _run_one(
     step_args_template = step.args_template or {}
     step_satisfies_node_ids = list(step.satisfies_node_ids or [])
     execution_args = {
-        key: value
-        for key, value in step_args_template.items()
-        if not str(key).startswith("__")
+        key: value for key, value in step_args_template.items() if not str(key).startswith("__")
     }
 
     from app.services.playbook.evidence import redact_json, redact_text, safe_arguments
@@ -729,9 +816,7 @@ def _run_one(
         transport=transport,
         attempt=(prior_attempt or 0) + 1,
         status=PlaybookStepExecutionStatus.running,
-        arguments=safe_arguments(
-            resolve_step_args(step_tool_slug, execution_args, scope_item)
-        ),
+        arguments=safe_arguments(resolve_step_args(step_tool_slug, execution_args, scope_item)),
         started_at=receipt_started_at,
     )
     session.add(receipt)
@@ -742,24 +827,43 @@ def _run_one(
     if progress_commit is not None and not progress_commit("before"):
         raise _RunCancelledBeforeStep
 
-    try:
-        result = executor.run_step(
-            tool_slug=step_tool_slug,
-            args_template=execution_args,
-            scope_context=scope_item,
+    if run.plan_snapshot is None:
+        # Legacy/internal callers predate authoritative kickoff plans. HTTP and
+        # worker-created runs always carry a plan and take the fresh gate below.
+        authorized, authorization_reason = True, "legacy internal run"
+    else:
+        authorized, authorization_reason = _current_scope_authorization(
+            session,
+            engagement=engagement,
+            playbook=playbook,
+            target=scope_item,
         )
-    except Exception as exc:  # noqa: BLE001 - executor is untrusted; convert to step failure
+    if not authorized:
         result = StepResult(
             ok=False,
-            error=redact_text(f"{type(exc).__name__}: {exc}"),
+            error=redact_text(
+                f"target is no longer authorized; invocation skipped ({authorization_reason})"
+            ),
         )
-        logger.warning(
-            "playbook.step.executor_raised",
-            playbook=playbook.slug,
-            tool=step_tool_slug,
-            scope_item=scope_item,
-            error=result.error,
-        )
+    else:
+        try:
+            result = executor.run_step(
+                tool_slug=step_tool_slug,
+                args_template=execution_args,
+                scope_context=scope_item,
+            )
+        except Exception as exc:  # noqa: BLE001 - executor is untrusted; convert to step failure
+            result = StepResult(
+                ok=False,
+                error=redact_text(f"{type(exc).__name__}: {exc}"),
+            )
+            logger.warning(
+                "playbook.step.executor_raised",
+                playbook=playbook.slug,
+                tool=step_tool_slug,
+                scope_item=scope_item,
+                error=result.error,
+            )
 
     safe_error = redact_text(result.error)
     safe_data = redact_json(result.data)
@@ -803,9 +907,7 @@ def _run_one(
         run.findings_new += bridge.items_added
         # Multiple tools can enrich the same canonical group in one run.
         # Count the group's latest total once, then only its growth.
-        seen_totals: dict[uuid.UUID, int] = getattr(
-            run, "_bridge_finding_totals", {}
-        )
+        seen_totals: dict[uuid.UUID, int] = getattr(run, "_bridge_finding_totals", {})
         previous = seen_totals.get(bridge.finding_id, 0)
         run.findings_total += max(bridge.items_total - previous, 0)
         seen_totals[bridge.finding_id] = max(previous, bridge.items_total)
@@ -896,9 +998,7 @@ def _authorized_discovered_domains(
     values = result.data.get("subdomains")
     if isinstance(values, list):
         candidates.update(
-            normalize_domain(value)
-            for value in values
-            if isinstance(value, str) and value.strip()
+            normalize_domain(value) for value in values if isinstance(value, str) and value.strip()
         )
     for item in result.data.get("lease_findings") or []:
         if not isinstance(item, dict):
@@ -910,21 +1010,16 @@ def _authorized_discovered_domains(
     if not candidates:
         return set()
     scope_rows = list(
-        session.execute(
-            select(ScopeItem).where(ScopeItem.engagement_id == engagement.id)
-        ).scalars()
+        session.execute(select(ScopeItem).where(ScopeItem.engagement_id == engagement.id)).scalars()
     )
     return {
         candidate
         for candidate in sorted(candidates)[:500]
-        if candidate
-        and evaluate_scope(candidate, ScopeKind.domain, scope_rows).allowed
+        if candidate and evaluate_scope(candidate, ScopeKind.domain, scope_rows).allowed
     }
 
 
-def _scope_items_by_asset_class(
-    session: Session, engagement: Engagement
-) -> dict[str, list[str]]:
+def _scope_items_by_asset_class(session: Session, engagement: Engagement) -> dict[str, list[str]]:
     """Group the engagement's active scope items by their kind.
 
     The methodology snapshot keys baseline nodes by ``asset_class`` (e.g.
@@ -935,12 +1030,16 @@ def _scope_items_by_asset_class(
     """
     from app.models import ScopeItem
 
-    rows = session.execute(
-        select(ScopeItem).where(
-            ScopeItem.engagement_id == engagement.id,
-            ScopeItem.is_exclusion.is_(False),
+    rows = (
+        session.execute(
+            select(ScopeItem).where(
+                ScopeItem.engagement_id == engagement.id,
+                ScopeItem.is_exclusion.is_(False),
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     grouped: dict[str, list[str]] = {}
     for item in rows:
         grouped.setdefault(item.kind, []).append(item.value)
@@ -1070,13 +1169,7 @@ def _emit_completion(
             run_id=str(run.id),
         )
         return
-    node_ids = sorted(
-        {
-            n
-            for s in playbook.steps
-            for n in (s.satisfies_node_ids or [])
-        }
-    )
+    node_ids = sorted({n for s in playbook.steps for n in (s.satisfies_node_ids or [])})
     payload = ms.collection_job_completed(
         engagement_id=str(engagement.id),
         playbook_run_id=str(run.id),

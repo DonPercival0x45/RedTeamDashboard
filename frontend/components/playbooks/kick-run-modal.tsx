@@ -12,7 +12,8 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Loader2 } from "lucide-react";
+import { KeyRound, Loader2 } from "lucide-react";
+import { QuickAddKey } from "@/components/quick-add-key";
 import {
   Dialog,
   DialogClose,
@@ -29,12 +30,20 @@ import { Label } from "@/components/ui/label";
 import {
   useCreatePlaybookRunMutation,
   usePlaybookRunPlan,
+  useProviderKeys,
   useScope,
 } from "@/lib/hooks";
+import { isPlaybookApplicable, playbookEntityTypes } from "@/lib/playbook-catalog";
 import type { PlaybookRead, ScopeItem } from "@/lib/types";
 
 function kindLabel(item: ScopeItem): string {
   return item.kind.toUpperCase();
+}
+
+function entityFamily(value: string): string {
+  return value === "domain" || value === "subdomain" || value === "host"
+    ? "domain"
+    : value;
 }
 
 export function KickRunModal({
@@ -52,22 +61,27 @@ export function KickRunModal({
 }) {
   const create = useCreatePlaybookRunMutation(engagementSlug);
   const scopeQuery = useScope(engagementSlug);
+  const providerKeysQuery = useProviderKeys();
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [addingCredential, setAddingCredential] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const initialTargetHandled = useRef(false);
 
   // Only currently effective includes compatible with the playbook asset
   // class are offered. The backend computes effective scope with the same
   // matcher used at execution time, so exclusions disappear immediately.
+  const applicableTypes = playbookEntityTypes(playbook);
+  const targetKind = applicableTypes.includes("scope")
+    ? "scope"
+    : entityFamily(applicableTypes[0] ?? playbook.applies_to_asset_class);
   const scopeItems = useMemo(
     () =>
       (scopeQuery.data ?? []).filter(
         (item) =>
           isScopeItemEffectivelyIncluded(item) &&
-          (playbook.applies_to_asset_class === "scope" ||
-            item.kind === playbook.applies_to_asset_class),
+          (targetKind === "scope" || item.kind === targetKind),
       ),
-    [playbook.applies_to_asset_class, scopeQuery.data],
+    [scopeQuery.data, targetKind],
   );
 
   // Entity launch hints are untrusted UI state. Preselect only an exact target
@@ -83,13 +97,12 @@ export function KickRunModal({
     }
     initialTargetHandled.current = true;
     if (
-      (playbook.applies_to_asset_class === "scope" ||
-        initialTarget.type === playbook.applies_to_asset_class) &&
+      isPlaybookApplicable(playbook, initialTarget.type) &&
       scopeItems.some((item) => item.value === initialTarget.value)
     ) {
       setSelected(new Set([initialTarget.value]));
     }
-  }, [initialTarget, playbook.applies_to_asset_class, scopeItems, scopeQuery.data]);
+  }, [initialTarget, playbook, scopeItems, scopeQuery.data]);
 
   // A scope row may be deleted or become excluded while this dialog is open.
   // Do not retain an invisible stale selection or submit an empty subset.
@@ -139,8 +152,22 @@ export function KickRunModal({
     );
   };
 
+  const requiredCredentials = playbook.required_credentials ?? [];
+  const configuredProviders = new Set(
+    (providerKeysQuery.data ?? []).map((key) => key.provider.toLowerCase()),
+  );
+  const missingCredentials = providerKeysQuery.data
+    ? requiredCredentials.filter(
+        (credential) => !configuredProviders.has(credential.toLowerCase()),
+      )
+    : [];
+  const credentialsReady =
+    requiredCredentials.length === 0 ||
+    (providerKeysQuery.data !== undefined && !providerKeysQuery.error);
   const canSubmit =
     selected.size > 0 &&
+    credentialsReady &&
+    missingCredentials.length === 0 &&
     !!planQuery.data &&
     !planQuery.isFetching &&
     !planQuery.error &&
@@ -178,7 +205,7 @@ export function KickRunModal({
             <p className="text-sm font-medium">{playbook.name}</p>
             <p className="text-xs text-muted-foreground">
               v{playbook.version} · {playbook.step_count} steps ·{" "}
-              {playbook.applies_to_asset_class}
+              {applicableTypes.join(", ")}
               {playbook.active
                 ? " · gated (analyst approval required)"
                 : ""}
@@ -224,11 +251,23 @@ export function KickRunModal({
                       ))}
                     </ol>
                     <p className="text-xs text-muted-foreground">
-                      Minimum {planQuery.data.minimum_calls} tool calls.
+                      {planQuery.data.dynamic_expansion
+                        ? `${planQuery.data.minimum_calls} initial calls; hard limit ${planQuery.data.maximum_calls ?? 500}.`
+                        : `${planQuery.data.minimum_calls} tool calls.`}
                       {planQuery.data.dynamic_expansion
                         ? " Authorized discoveries may add calls after scope and exclusion revalidation."
                         : " No dynamic target expansion."}
                     </p>
+                    <p className="text-xs font-medium">
+                      {planQuery.data.approval_required
+                        ? "Analyst approval is required before dispatch."
+                        : "No additional approval gate is required."}
+                    </p>
+                    <ul className="list-disc space-y-0.5 pl-5 text-[11px] text-muted-foreground">
+                      {planQuery.data.safety_notes.map((note) => (
+                        <li key={note}>{note}</li>
+                      ))}
+                    </ul>
                     <p className="font-mono text-[10px] text-muted-foreground">
                       Plan {planQuery.data.plan_sha256.slice(0, 12)}…
                     </p>
@@ -265,7 +304,7 @@ export function KickRunModal({
             {scopeQuery.data === undefined ? null : scopeItems.length === 0 ? (
               <div className="rounded-md border border-dashed border-border p-3 text-xs text-muted-foreground">
                 <p>
-                  No included {playbook.applies_to_asset_class} targets are
+                  No included {applicableTypes.join(", ")} targets are
                   available for this playbook.
                 </p>
                 <p className="mt-1">
@@ -296,7 +335,7 @@ export function KickRunModal({
                         {kindLabel(item)}
                       </span>
                       <span className="font-mono">{item.value}</span>
-                {playbook.applies_to_asset_class === "scope" ? (
+                {targetKind === "scope" ? (
                   <span className="ml-auto text-[10px] text-muted-foreground">
                     {item.source === "found" ? "discovered" : "client-defined"}
                   </span>
@@ -319,21 +358,52 @@ export function KickRunModal({
 
           {(playbook.required_credentials?.length ?? 0) > 0 ? (
             <div className="space-y-2">
-              <Label>Required credentials</Label>
-              <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs">
+              <Label>Requester-owned credentials</Label>
+              <div className="space-y-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs">
                 <p>
-                  This run needs requester-owned credentials for{" "}
-                  <span className="font-medium">
-                    {playbook.required_credentials?.join(", ")}
-                  </span>
-                  .
+                  Keys are cached for your session and are never persisted in the playbook or run.
                 </p>
-                <Link
-                  href="/settings/keys"
-                  className="mt-1 inline-block font-medium underline underline-offset-2"
-                >
-                  Review keys
-                </Link>
+                <QueryState
+                  isLoading={providerKeysQuery.data === undefined && providerKeysQuery.isLoading}
+                  error={providerKeysQuery.error}
+                  hasData={providerKeysQuery.data !== undefined}
+                  loadingLabel="Checking requester credentials…"
+                  errorLabel="Could not check requester credentials."
+                  onRetry={() => void providerKeysQuery.refetch()}
+                  isRetrying={providerKeysQuery.isFetching}
+                  compact={providerKeysQuery.data !== undefined}
+                />
+                <div className="flex flex-wrap gap-2">
+                  {requiredCredentials.map((credential) => {
+                    const missing = missingCredentials.includes(credential);
+                    const checked = providerKeysQuery.data !== undefined && !providerKeysQuery.error;
+                    return (
+                      <Button
+                        key={credential}
+                        type="button"
+                        size="sm"
+                        variant={missing ? "outline" : "ghost"}
+                        disabled={!credentialsReady || !missing}
+                        onClick={() => setAddingCredential(credential)}
+                      >
+                        <KeyRound className="mr-1 h-3.5 w-3.5" />
+                        {credential}: {checked ? (missing ? "Add key" : "Configured") : "Unavailable"}
+                      </Button>
+                    );
+                  })}
+                </div>
+                {addingCredential ? (
+                  <div className="rounded-md border border-border bg-background p-3">
+                    <QuickAddKey
+                      key={addingCredential}
+                      initialProvider={addingCredential}
+                      onCreated={async () => {
+                        await providerKeysQuery.refetch();
+                        setAddingCredential(null);
+                      }}
+                    />
+                  </div>
+                ) : null}
               </div>
             </div>
           ) : null}

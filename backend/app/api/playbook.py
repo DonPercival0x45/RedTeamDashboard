@@ -15,6 +15,7 @@ Sync execution is fine for A3b's OSINT playbook (5 steps × dozens of scope
 items = seconds, not minutes). The queue + async fan-out for 100k-entity
 runs lands in A3c.
 """
+
 from __future__ import annotations
 
 import uuid
@@ -38,15 +39,19 @@ from app.models import (
     PlaybookStep,
     PlaybookStepExecution,
     ScopeItem,
+    UserRole,
 )
 from app.schemas.playbook import (
     EvidenceArtifactRead,
     EvidenceArtifactSummaryRead,
     PlaybookApprovalPayload,
+    PlaybookCatalogOptionsRead,
     PlaybookCreatePayload,
     PlaybookDetail,
     PlaybookExecutionPlanRead,
+    PlaybookNewVersionPayload,
     PlaybookPatchPayload,
+    PlaybookPlanPayload,
     PlaybookRead,
     PlaybookRunPayload,
     PlaybookRunRead,
@@ -54,28 +59,37 @@ from app.schemas.playbook import (
     PlaybookStepExecutionRead,
     PlaybookStepPatchPayload,
     PlaybookStepRead,
+    PlaybookToolRead,
 )
 from app.services.playbook import (
     PlaybookHasRunsError,
     PlaybookSlugConflictError,
     RunNotAwaitingApprovalError,
     RunNotCancellableError,
-    StepNotFoundError,
-    add_step,
     approve_run,
     cancel_run,
     catalog,
+    create_authored_playbook,
+    create_new_version,
     create_playbook,
     delete_playbook,
-    delete_step,
     enqueue_run,
     load_seed_playbooks,
     reject_run,
-    update_playbook,
-    update_step,
 )
-from app.services.playbook.executor import executor_kinds_for_tools
+from app.services.playbook.executor import (
+    executor_for_tool_slug,
+    executor_kinds_for_tools,
+)
 from app.services.playbook.planning import build_execution_plan
+from app.services.playbook.policy import (
+    ENTITY_TYPES,
+    MAX_PLAYBOOK_CALLS,
+    PLAYBOOK_CATEGORIES,
+    catalog_tool_specs,
+    execution_target_kind,
+    tool_spec,
+)
 from app.services.scope_matcher import evaluate_scope_candidates, infer_scope_kind
 
 router = APIRouter()
@@ -95,9 +109,7 @@ def _executor_for_tool_slugs(tool_slugs: list[str]) -> PlaybookExecutorKind:
 
 
 def _required_executor(playbook: Playbook) -> PlaybookExecutorKind:
-    return _executor_for_tool_slugs(
-        [step.tool_slug for step in playbook.steps]
-    )
+    return _executor_for_tool_slugs([step.tool_slug for step in playbook.steps])
 
 
 def _validated_executor(
@@ -112,8 +124,7 @@ def _validated_executor(
         raise HTTPException(
             status_code=422,
             detail=(
-                f"executor must be one of "
-                f"{sorted(kind.value for kind in PlaybookExecutorKind)}"
+                f"executor must be one of {sorted(kind.value for kind in PlaybookExecutorKind)}"
             ),
         ) from exc
     if selected is not required:
@@ -129,7 +140,7 @@ def _validated_executor(
 
 def _playbook_for_payload(
     session: Session,
-    payload: PlaybookRunPayload,
+    payload: PlaybookPlanPayload,
 ) -> Playbook:
     playbook = catalog.get_by_slug(
         session,
@@ -138,13 +149,16 @@ def _playbook_for_payload(
     )
     if playbook is None:
         version = (
-            f" version {payload.playbook_version}"
-            if payload.playbook_version is not None
-            else ""
+            f" version {payload.playbook_version}" if payload.playbook_version is not None else ""
         )
         raise HTTPException(
             status_code=404,
             detail=f"playbook '{payload.playbook_slug}'{version} not found",
+        )
+    if not playbook.steps:
+        raise HTTPException(
+            status_code=409,
+            detail=f"playbook '{playbook.slug}' has no executable steps",
         )
     return playbook
 
@@ -177,32 +191,107 @@ def _execution_paths(playbook: Playbook) -> list[str]:
 
 
 def _expands_targets(playbook: Playbook) -> bool:
-    return any(
-        bool((step.args_template or {}).get("__target_source"))
-        for step in playbook.steps
+    return any(bool((step.args_template or {}).get("__target_source")) for step in playbook.steps)
+
+
+def _catalog_read(
+    session: Session,
+    playbook: Playbook,
+    *,
+    can_write: bool,
+    include_steps: bool = False,
+    step_count: int | None = None,
+    has_runs: bool | None = None,
+) -> PlaybookRead | PlaybookDetail:
+    if has_runs is None:
+        has_runs = (
+            session.execute(
+                select(PlaybookRun.id).where(PlaybookRun.playbook_id == playbook.id).limit(1)
+            ).scalar_one_or_none()
+            is not None
+        )
+    payload = {
+        "id": playbook.id,
+        "slug": playbook.slug,
+        "version": playbook.version,
+        "name": playbook.name,
+        "description": playbook.description,
+        "applies_to_asset_class": playbook.applies_to_asset_class,
+        "applicable_entity_types": list(playbook.applicable_entity_types or [])
+        or [playbook.applies_to_asset_class],
+        "category": playbook.category or "other",
+        "origin": playbook.origin or "system",
+        "created_by": playbook.created_by,
+        "supersedes_id": playbook.supersedes_id,
+        "can_edit": can_write,
+        "has_runs": has_runs,
+        "active": playbook.active,
+        "step_count": len(playbook.steps) if step_count is None else step_count,
+        "required_executor": _required_executor(playbook).value,
+        "required_credentials": _required_credentials(playbook),
+        "step_preview": _step_preview(playbook),
+        "expands_targets": _expands_targets(playbook),
+        "execution_paths": _execution_paths(playbook),
+    }
+    if include_steps:
+        return PlaybookDetail(
+            **payload,
+            steps=[PlaybookStepRead.model_validate(step) for step in playbook.steps],
+        )
+    return PlaybookRead(**payload)
+
+
+def _audit_catalog_change(
+    session: Session,
+    *,
+    actor_id: uuid.UUID,
+    event_type: str,
+    playbook: Playbook,
+    previous_id: uuid.UUID | None = None,
+) -> None:
+    recipe_steps: list[dict[str, object]] = []
+    for step in sorted(playbook.steps, key=lambda item: (item.sort_order, str(item.id))):
+        try:
+            spec = tool_spec(step.tool_slug)
+            risk = spec.risk
+            credential = spec.credential
+        except ValueError:
+            risk = "unknown"
+            credential = None
+        recipe_steps.append(
+            {
+                "id": str(step.id),
+                "sort_order": step.sort_order,
+                "tool_slug": step.tool_slug,
+                "transport": (
+                    executor_for_tool_slug(step.tool_slug) if risk != "unknown" else "unknown"
+                ),
+                "risk": risk,
+                "credential": credential,
+            }
+        )
+    session.add(
+        AuditLog(
+            engagement_id=None,
+            actor_type=ActorType.user,
+            actor_id=str(actor_id),
+            event_type=event_type,
+            payload={
+                "playbook_id": str(playbook.id),
+                "slug": playbook.slug,
+                "version": playbook.version,
+                "origin": playbook.origin,
+                "category": playbook.category,
+                "applicable_entity_types": list(playbook.applicable_entity_types or []),
+                "previous_id": str(previous_id) if previous_id else None,
+                "steps": recipe_steps,
+            },
+        )
     )
 
 
-def _ensure_recipe_mutable(session: Session, playbook: Playbook) -> None:
-    has_run = session.execute(
-        select(PlaybookRun.id)
-        .where(PlaybookRun.playbook_id == playbook.id)
-        .limit(1)
-    ).scalar_one_or_none()
-    if has_run is not None:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "playbook recipes are immutable after their first run; "
-                "create a new version before changing metadata or steps"
-            ),
-        )
-
-
 def _engagement_by_slug(session: Session, slug: str) -> Engagement:
-    eng = session.execute(
-        select(Engagement).where(Engagement.slug == slug)
-    ).scalar_one_or_none()
+    eng = session.execute(select(Engagement).where(Engagement.slug == slug)).scalar_one_or_none()
     if eng is None:
         raise HTTPException(status_code=404, detail=f"engagement '{slug}' not found")
     return eng
@@ -217,12 +306,30 @@ def _ensure_playbook_engagement_mutable(engagement: Engagement) -> None:
         raise HTTPException(status_code=409, detail="completed engagement is read-only")
 
 
+def _dedupe_scope_subset(values: list[str]) -> list[str]:
+    """Preserve analyst order while preventing duplicate tool invocations."""
+    return list(dict.fromkeys(str(value).strip() for value in values))
+
+
+def _enforce_call_budget(playbook: Playbook, targets: list[str]) -> None:
+    minimum_calls = len(playbook.steps) * len(targets)
+    if minimum_calls > MAX_PLAYBOOK_CALLS:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"playbook plan requires {minimum_calls} calls; "
+                f"the per-run limit is {MAX_PLAYBOOK_CALLS}"
+            ),
+        )
+
+
 def _validate_scope_subset(
     session: Session,
     engagement: Engagement,
     scope_subset: list[str],
     *,
-    asset_class: str,
+    applicable_entity_types: list[str] | None = None,
+    asset_class: str | None = None,
 ) -> None:
     """Enforce the in-scope-only invariant on playbook run targets.
 
@@ -239,9 +346,10 @@ def _validate_scope_subset(
             detail="scope_subset is required — pick at least one in-scope target.",
         )
     items = list(
-        session.execute(
-            select(ScopeItem).where(ScopeItem.engagement_id == engagement.id)
-        ).scalars()
+        session.execute(select(ScopeItem).where(ScopeItem.engagement_id == engagement.id)).scalars()
+    )
+    target_kind = execution_target_kind(
+        applicable_entity_types or ([asset_class] if asset_class else [])
     )
     rejected: list[str] = []
     for raw in scope_subset:
@@ -250,26 +358,22 @@ def _validate_scope_subset(
             rejected.append("(empty value)")
             continue
         kind = infer_scope_kind(value)
-        if asset_class == "scope":
+        if target_kind == "scope":
             exact_include = next(
                 (
                     item
                     for item in items
-                    if not item.is_exclusion
-                    and item.kind == kind
-                    and item.value == value
+                    if not item.is_exclusion and item.kind == kind and item.value == value
                 ),
                 None,
             )
             if exact_include is None:
-                rejected.append(
-                    f"{value!r} (scope review requires an exact include row)"
-                )
+                rejected.append(f"{value!r} (scope review requires an exact include row)")
                 continue
-        elif kind.value != asset_class:
+        elif kind.value != target_kind:
             rejected.append(
                 f"{value!r} (kind {kind.value!r} is incompatible with "
-                f"playbook asset class {asset_class!r})"
+                f"playbook target kind {target_kind!r})"
             )
             continue
         match = evaluate_scope_candidates([(value, kind)], items)
@@ -286,9 +390,7 @@ def _validate_scope_subset(
         )
 
 
-def _step_execution_reads(
-    session: Session, run_id: uuid.UUID
-) -> list[PlaybookStepExecutionRead]:
+def _step_execution_reads(session: Session, run_id: uuid.UUID) -> list[PlaybookStepExecutionRead]:
     rows = list(
         session.execute(
             select(PlaybookStepExecution)
@@ -308,9 +410,7 @@ def _step_execution_reads(
         artifact.playbook_step_execution_id: artifact
         for artifact in session.execute(
             select(EvidenceArtifact).where(
-                EvidenceArtifact.playbook_step_execution_id.in_(
-                    [row.id for row in rows]
-                )
+                EvidenceArtifact.playbook_step_execution_id.in_([row.id for row in rows])
             )
         ).scalars()
         if artifact.playbook_step_execution_id is not None
@@ -390,35 +490,35 @@ def _run_read(
         rejected_by=run.rejected_by,
         rejected_at=run.rejected_at,
         rejection_reason=run.rejection_reason,
-        step_executions=(
-            _step_execution_reads(session, run.id)
-            if include_step_executions
-            else []
-        ),
+        step_executions=(_step_execution_reads(session, run.id) if include_step_executions else []),
     )
 
 
 @router.get("/playbooks", response_model=list[PlaybookRead])
 def list_playbooks(
     session: DbSession,
-    _user: CurrentUser,
+    user: CurrentUser,
 ) -> list[PlaybookRead]:
     """List every catalog entry with a step count. Auto-installs seeds on
     first call so a fresh deployment surfaces the OSINT + PTES starters
     without a separate provisioning step."""
     load_seed_playbooks(session)
     session.commit()
-    counts_stmt = (
-        select(
-            PlaybookStep.playbook_id,
-            func.count(PlaybookStep.id).label("count"),
-        ).group_by(PlaybookStep.playbook_id)
-    )
+    counts_stmt = select(
+        PlaybookStep.playbook_id,
+        func.count(PlaybookStep.id).label("count"),
+    ).group_by(PlaybookStep.playbook_id)
     counts = {row[0]: row[1] for row in session.execute(counts_stmt).all()}
+    run_counts = {
+        row[0]: row[1]
+        for row in session.execute(
+            select(PlaybookRun.playbook_id, func.count(PlaybookRun.id)).group_by(
+                PlaybookRun.playbook_id
+            )
+        ).all()
+    }
     catalog_rows = list(
-        session.execute(
-            select(Playbook).order_by(Playbook.slug, Playbook.version.desc())
-        ).scalars()
+        session.execute(select(Playbook).order_by(Playbook.slug, Playbook.version.desc())).scalars()
     )
     # The catalog is an action surface, not version history. Show only the
     # newest recipe per slug; pinned historical versions remain readable via
@@ -431,30 +531,43 @@ def list_playbooks(
         seen_slugs.add(playbook.slug)
         playbooks.append(playbook)
     return [
-        PlaybookRead(
-            id=p.id,
-            slug=p.slug,
-            version=p.version,
-            name=p.name,
-            description=p.description,
-            applies_to_asset_class=p.applies_to_asset_class,
-            active=p.active,
-            step_count=counts.get(p.id, 0),
-            required_executor=_required_executor(p).value,
-            required_credentials=_required_credentials(p),
-            step_preview=_step_preview(p),
-            expands_targets=_expands_targets(p),
-            execution_paths=_execution_paths(p),
+        _catalog_read(
+            session,
+            playbook,
+            can_write=user.role != UserRole.guest,
+            step_count=counts.get(playbook.id, 0),
+            has_runs=run_counts.get(playbook.id, 0) > 0,
         )
-        for p in playbooks
+        for playbook in playbooks
     ]
+
+
+@router.get("/playbook-catalog/options", response_model=PlaybookCatalogOptionsRead)
+def playbook_catalog_options(_user: CurrentUser) -> PlaybookCatalogOptionsRead:
+    """Return the server-owned authoring vocabulary and tool policy."""
+    return PlaybookCatalogOptionsRead(
+        categories=list(PLAYBOOK_CATEGORIES),
+        entity_types=list(ENTITY_TYPES),
+        tools=[
+            PlaybookToolRead(
+                slug=spec.slug,
+                name=spec.name,
+                description=spec.description,
+                target_kinds=list(spec.target_kinds),
+                transport=spec.transport,
+                risk=spec.risk,
+                credential=spec.credential,
+            )
+            for spec in catalog_tool_specs()
+        ],
+    )
 
 
 @router.post("/playbooks", response_model=PlaybookDetail, status_code=201)
 def create_playbook_endpoint(
     payload: PlaybookCreatePayload,
     session: DbSession,
-    _user: CurrentNonGuestUser,
+    user: CurrentNonGuestUser,
 ) -> PlaybookDetail:
     """A5b: create a new analyst-authored playbook at version 1.
 
@@ -464,73 +577,119 @@ def create_playbook_endpoint(
     conflict rather than an IntegrityError leak.
     """
     try:
-        pb = create_playbook(
-            session,
-            slug=payload.slug,
-            name=payload.name,
-            applies_to_asset_class=payload.applies_to_asset_class,
-            description=payload.description,
-            active=payload.active,
-        )
+        if payload.steps:
+            pb = create_authored_playbook(
+                session,
+                slug=payload.slug,
+                name=payload.name,
+                description=payload.description,
+                category=payload.category,
+                applicable_entity_types=payload.applicable_entity_types,
+                active=payload.active,
+                steps=[step.model_dump() for step in payload.steps],
+                created_by=user.id,
+            )
+        else:
+            # Compatibility for existing API clients. The in-app authoring
+            # flow always sends at least one step atomically.
+            pb = create_playbook(
+                session,
+                slug=payload.slug,
+                name=payload.name,
+                applies_to_asset_class=payload.applies_to_asset_class or "scope",
+                applicable_entity_types=payload.applicable_entity_types,
+                category=payload.category,
+                description=payload.description,
+                active=payload.active,
+                created_by=user.id,
+            )
     except PlaybookSlugConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    _audit_catalog_change(
+        session,
+        actor_id=user.id,
+        event_type="playbook.created",
+        playbook=pb,
+    )
     session.commit()
     session.refresh(pb)
-    return PlaybookDetail(
-        id=pb.id,
-        slug=pb.slug,
-        version=pb.version,
-        name=pb.name,
-        description=pb.description,
-        applies_to_asset_class=pb.applies_to_asset_class,
-        active=pb.active,
-        step_count=0,
-        required_executor=_required_executor(pb).value,
-        required_credentials=_required_credentials(pb),
-        step_preview=_step_preview(pb),
-        expands_targets=_expands_targets(pb),
-        execution_paths=_execution_paths(pb),
-        steps=[],
+    return _catalog_read(
+        session,
+        pb,
+        can_write=True,
+        include_steps=True,
+        has_runs=False,
     )
 
 
 @router.patch("/playbooks/{slug}", response_model=PlaybookDetail)
 def update_playbook_endpoint(
     slug: str,
-    payload: PlaybookPatchPayload,
+    _payload: PlaybookPatchPayload,
     session: DbSession,
     _user: CurrentNonGuestUser,
 ) -> PlaybookDetail:
-    """A5b: patch metadata in place. Targets the latest version of the slug."""
-    playbook = catalog.get_by_slug(session, slug)
-    if playbook is None:
+    """Recipes are immutable; edits publish through the versions endpoint."""
+    if catalog.get_by_slug(session, slug) is None:
         raise HTTPException(status_code=404, detail=f"playbook '{slug}' not found")
-    _ensure_recipe_mutable(session, playbook)
-    update_playbook(
+    raise HTTPException(
+        status_code=409,
+        detail="playbook versions are immutable; publish a new version instead",
+    )
+
+
+@router.post(
+    "/playbooks/{slug}/versions",
+    response_model=PlaybookDetail,
+    status_code=201,
+)
+def create_playbook_version_endpoint(
+    slug: str,
+    payload: PlaybookNewVersionPayload,
+    session: DbSession,
+    user: CurrentNonGuestUser,
+) -> PlaybookDetail:
+    """Edit a shipped or executed recipe by publishing an immutable version."""
+    try:
+        playbook = create_new_version(
+            session,
+            slug=slug,
+            expected_supersedes_id=payload.expected_supersedes_id,
+            expected_version=payload.expected_version,
+            name=payload.name,
+            description=payload.description,
+            category=payload.category,
+            applicable_entity_types=payload.applicable_entity_types,
+            active=payload.active,
+            steps=[step.model_dump() for step in payload.steps],
+            created_by=user.id,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"playbook '{slug}' not found") from exc
+    except PlaybookSlugConflictError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="the catalog changed while this version was being published; reload and retry",
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    _audit_catalog_change(
         session,
+        actor_id=user.id,
+        event_type="playbook.version_created",
         playbook=playbook,
-        name=payload.name,
-        description=payload.description,
-        active=payload.active,
-        applies_to_asset_class=payload.applies_to_asset_class,
+        previous_id=payload.expected_supersedes_id,
     )
     session.commit()
     session.refresh(playbook)
-    return PlaybookDetail(
-        id=playbook.id,
-        slug=playbook.slug,
-        version=playbook.version,
-        name=playbook.name,
-        description=playbook.description,
-        applies_to_asset_class=playbook.applies_to_asset_class,
-        active=playbook.active,
-        step_count=len(playbook.steps),
-        required_executor=_required_executor(playbook).value,
-        required_credentials=_required_credentials(playbook),
-        step_preview=_step_preview(playbook),
-        expands_targets=_expands_targets(playbook),
-        execution_paths=_execution_paths(playbook),
-        steps=[PlaybookStepRead.model_validate(s) for s in playbook.steps],
+    return _catalog_read(
+        session,
+        playbook,
+        can_write=True,
+        include_steps=True,
+        has_runs=False,
     )
 
 
@@ -538,17 +697,25 @@ def update_playbook_endpoint(
 def delete_playbook_endpoint(
     slug: str,
     session: DbSession,
-    _user: CurrentNonGuestUser,
+    user: CurrentNonGuestUser,
 ) -> Response:
     """A5b: delete the latest version. Refuses (409) when runs reference it —
     the FK is RESTRICT so Postgres would reject anyway; we surface it first."""
     playbook = catalog.get_by_slug(session, slug)
     if playbook is None:
         raise HTTPException(status_code=404, detail=f"playbook '{slug}' not found")
+    if playbook.origin == "system":
+        raise HTTPException(status_code=409, detail="shipped playbooks cannot be deleted")
     try:
         delete_playbook(session, playbook=playbook)
     except PlaybookHasRunsError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    _audit_catalog_change(
+        session,
+        actor_id=user.id,
+        event_type="playbook.deleted",
+        playbook=playbook,
+    )
     session.commit()
     return Response(status_code=204)
 
@@ -560,31 +727,17 @@ def delete_playbook_endpoint(
 )
 def add_step_endpoint(
     slug: str,
-    payload: PlaybookStepCreatePayload,
+    _payload: PlaybookStepCreatePayload,
     session: DbSession,
     _user: CurrentNonGuestUser,
 ) -> PlaybookStepRead:
-    """A5b: append a step. Omit ``sort_order`` to auto-place after the
-    current highest — the service adds +10 gap so future inserts have room."""
-    playbook = catalog.get_by_slug(session, slug)
-    if playbook is None:
+    """Step edits publish atomically through a complete new version."""
+    if catalog.get_by_slug(session, slug) is None:
         raise HTTPException(status_code=404, detail=f"playbook '{slug}' not found")
-    _ensure_recipe_mutable(session, playbook)
-    _executor_for_tool_slugs(
-        [step.tool_slug for step in playbook.steps] + [payload.tool_slug]
+    raise HTTPException(
+        status_code=409,
+        detail="playbook versions are immutable; publish a new version instead",
     )
-    step = add_step(
-        session,
-        playbook=playbook,
-        tool_slug=payload.tool_slug,
-        args_template=payload.args_template,
-        satisfies_node_ids=payload.satisfies_node_ids,
-        sort_order=payload.sort_order,
-        description=payload.description,
-    )
-    session.commit()
-    session.refresh(step)
-    return PlaybookStepRead.model_validate(step)
 
 
 @router.patch(
@@ -594,45 +747,17 @@ def add_step_endpoint(
 def update_step_endpoint(
     slug: str,
     step_id: uuid.UUID,
-    payload: PlaybookStepPatchPayload,
+    _payload: PlaybookStepPatchPayload,
     session: DbSession,
     _user: CurrentNonGuestUser,
 ) -> PlaybookStepRead:
-    """A5b: patch a step in place. Change ``sort_order`` to reorder within
-    the playbook."""
-    playbook = catalog.get_by_slug(session, slug)
-    if playbook is None:
+    """Step edits publish atomically through a complete new version."""
+    if catalog.get_by_slug(session, slug) is None:
         raise HTTPException(status_code=404, detail=f"playbook '{slug}' not found")
-    _ensure_recipe_mutable(session, playbook)
-    try:
-        current_step = next(
-            step for step in playbook.steps if step.id == step_id
-        )
-    except StopIteration as exc:
-        raise HTTPException(status_code=404, detail=f"step {step_id} not found") from exc
-    candidate_slug = payload.tool_slug or current_step.tool_slug
-    _executor_for_tool_slugs(
-        [
-            candidate_slug if step.id == step_id else step.tool_slug
-            for step in playbook.steps
-        ]
+    raise HTTPException(
+        status_code=409,
+        detail="playbook versions are immutable; publish a new version instead",
     )
-    try:
-        step = update_step(
-            session,
-            playbook=playbook,
-            step_id=step_id,
-            tool_slug=payload.tool_slug,
-            args_template=payload.args_template,
-            satisfies_node_ids=payload.satisfies_node_ids,
-            sort_order=payload.sort_order,
-            description=payload.description,
-        )
-    except StepNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    session.commit()
-    session.refresh(step)
-    return PlaybookStepRead.model_validate(step)
 
 
 @router.delete(
@@ -645,48 +770,31 @@ def delete_step_endpoint(
     session: DbSession,
     _user: CurrentNonGuestUser,
 ) -> Response:
-    """A5b: remove a step. Adjacent steps keep their sort_order; the runner
-    iterates by ORDER BY sort_order so gaps don't matter."""
-    playbook = catalog.get_by_slug(session, slug)
-    if playbook is None:
+    """Step edits publish atomically through a complete new version."""
+    if catalog.get_by_slug(session, slug) is None:
         raise HTTPException(status_code=404, detail=f"playbook '{slug}' not found")
-    _ensure_recipe_mutable(session, playbook)
-    try:
-        delete_step(session, playbook=playbook, step_id=step_id)
-    except StepNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    session.commit()
-    return Response(status_code=204)
+    raise HTTPException(
+        status_code=409,
+        detail="playbook versions are immutable; publish a new version instead",
+    )
 
 
 @router.get("/playbooks/{slug}", response_model=PlaybookDetail)
 def get_playbook(
     slug: str,
     session: DbSession,
-    _user: CurrentUser,
+    user: CurrentUser,
     version: int | None = None,
 ) -> PlaybookDetail:
     """One catalog entry with its full step list. Latest version by default."""
     playbook = catalog.get_by_slug(session, slug, version)
     if playbook is None:
-        raise HTTPException(
-            status_code=404, detail=f"playbook '{slug}' not found"
-        )
-    return PlaybookDetail(
-        id=playbook.id,
-        slug=playbook.slug,
-        version=playbook.version,
-        name=playbook.name,
-        description=playbook.description,
-        applies_to_asset_class=playbook.applies_to_asset_class,
-        active=playbook.active,
-        step_count=len(playbook.steps),
-        required_executor=_required_executor(playbook).value,
-        required_credentials=_required_credentials(playbook),
-        step_preview=_step_preview(playbook),
-        expands_targets=_expands_targets(playbook),
-        execution_paths=_execution_paths(playbook),
-        steps=[PlaybookStepRead.model_validate(s) for s in playbook.steps],
+        raise HTTPException(status_code=404, detail=f"playbook '{slug}' not found")
+    return _catalog_read(
+        session,
+        playbook,
+        can_write=user.role != UserRole.guest,
+        include_steps=True,
     )
 
 
@@ -696,7 +804,7 @@ def get_playbook(
 )
 def plan_playbook_run(
     slug: str,
-    payload: PlaybookRunPayload,
+    payload: PlaybookPlanPayload,
     session: DbSession,
     _user: CurrentNonGuestUser,
 ) -> PlaybookExecutionPlanRead:
@@ -705,15 +813,19 @@ def plan_playbook_run(
     _ensure_playbook_engagement_mutable(engagement)
     playbook = _playbook_for_payload(session, payload)
     executor_kind = _validated_executor(playbook, payload.executor)
+    targets = _dedupe_scope_subset(payload.scope_subset)
+    _enforce_call_budget(playbook, targets)
     _validate_scope_subset(
         session,
         engagement,
-        payload.scope_subset,
-        asset_class=playbook.applies_to_asset_class,
+        targets,
+        applicable_entity_types=(
+            list(playbook.applicable_entity_types or []) or [playbook.applies_to_asset_class]
+        ),
     )
     plan = build_execution_plan(
         playbook=playbook,
-        scope_subset=payload.scope_subset,
+        scope_subset=targets,
         required_executor=executor_kind.value,
     )
     return PlaybookExecutionPlanRead.model_validate(plan)
@@ -744,21 +856,30 @@ def create_playbook_run(
     # Persist requester identity because execution and milestone delivery happen
     # later in a worker process; never attempt to recover it from another user.
     executor_kind = _validated_executor(playbook, payload.executor)
+    targets = _dedupe_scope_subset(payload.scope_subset)
+    _enforce_call_budget(playbook, targets)
     # In-scope-only invariant (complaint 4b): every submitted target must be in
     # the engagement's declared scope and not match an exclusion, before we queue
     # anything for the worker to hand to tools.
     _validate_scope_subset(
         session,
         engagement,
-        payload.scope_subset,
-        asset_class=playbook.applies_to_asset_class,
+        targets,
+        applicable_entity_types=(
+            list(playbook.applicable_entity_types or []) or [playbook.applies_to_asset_class]
+        ),
     )
     plan = build_execution_plan(
         playbook=playbook,
-        scope_subset=payload.scope_subset,
+        scope_subset=targets,
         required_executor=executor_kind.value,
     )
-    if payload.plan_sha256 and payload.plan_sha256 != plan["plan_sha256"]:
+    if payload.plan_sha256 is None:
+        raise HTTPException(
+            status_code=428,
+            detail="preview and review the authoritative execution plan before starting",
+        )
+    if payload.plan_sha256 != plan["plan_sha256"]:
         raise HTTPException(
             status_code=409,
             detail=(
@@ -770,7 +891,7 @@ def create_playbook_run(
         session,
         engagement=engagement,
         playbook=playbook,
-        scope_subset=payload.scope_subset,
+        scope_subset=targets,
         executor_kind=executor_kind,
         requested_by=user.id,
         plan_snapshot=plan,
@@ -805,6 +926,20 @@ def approve_playbook_run(
         raise HTTPException(status_code=404, detail=f"playbook run {run_id} not found") from exc
     except RunNotAwaitingApprovalError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if getattr(run, "_approval_transitioned", False):
+        session.add(
+            AuditLog(
+                engagement_id=run.engagement_id,
+                actor_type=ActorType.user,
+                actor_id=str(user.id),
+                event_type="playbook.approved",
+                payload={
+                    "playbook_run_id": str(run.id),
+                    "status": run.status.value,
+                    "reason": run.approval_reason,
+                },
+            )
+        )
     session.commit()
     session.refresh(run)
     return _run_read(session, run)
@@ -838,6 +973,20 @@ def reject_playbook_run(
         raise HTTPException(status_code=404, detail=f"playbook run {run_id} not found") from exc
     except RunNotAwaitingApprovalError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if getattr(run, "_rejection_transitioned", False):
+        session.add(
+            AuditLog(
+                engagement_id=run.engagement_id,
+                actor_type=ActorType.user,
+                actor_id=str(user.id),
+                event_type="playbook.rejected",
+                payload={
+                    "playbook_run_id": str(run.id),
+                    "status": run.status.value,
+                    "reason": run.rejection_reason,
+                },
+            )
+        )
     session.commit()
     session.refresh(run)
     return _run_read(session, run)

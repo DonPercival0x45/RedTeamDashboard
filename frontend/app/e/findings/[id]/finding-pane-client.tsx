@@ -135,6 +135,7 @@ function syncFindingCaches(
   void Promise.all([
     qc.invalidateQueries({ queryKey: qk.findings(slug) }),
     qc.invalidateQueries({ queryKey: qk.reportReadiness(slug) }),
+    qc.invalidateQueries({ queryKey: qk.findingHierarchy(slug) }),
     qc.invalidateQueries({ queryKey: qk.findingActivity(finding.id) }),
     qc.invalidateQueries({ queryKey: qk.entities(slug) }),
     qc.invalidateQueries({ queryKey: ["stored-entities", slug] }),
@@ -1627,6 +1628,7 @@ function DetailsPanel({ finding, slug }: { finding: Finding; slug: string | null
         await Promise.all([
           qc.invalidateQueries({ queryKey: qk.findings(slug) }),
           qc.invalidateQueries({ queryKey: qk.reportReadiness(slug) }),
+          qc.invalidateQueries({ queryKey: qk.findingHierarchy(slug) }),
           qc.invalidateQueries({ queryKey: qk.entities(slug) }),
           qc.invalidateQueries({ queryKey: ["stored-entities", slug] }),
         ]);

@@ -10,6 +10,7 @@ Layers covered:
 - API POST accepts executor='mcp' + persists it; validation rejects unknown.
 - Seed playbook ``osint-enrichment`` is present + wired to MCP tool slugs.
 """
+
 from __future__ import annotations
 
 import json
@@ -67,12 +68,18 @@ def test_routed_executor_dispatches_each_step_by_server_affinity() -> None:
     mcp = _RecordingExecutor("mcp")
     routed = RoutedExecutor({"internal": internal, "mcp": mcp})
 
-    assert routed.run_step(
-        tool_slug="whois", args_template={}, scope_context="example.com"
-    ).data["executor"] == "internal"
-    assert routed.run_step(
-        tool_slug="dns_lookup", args_template={}, scope_context="example.com"
-    ).data["executor"] == "mcp"
+    assert (
+        routed.run_step(tool_slug="whois", args_template={}, scope_context="example.com").data[
+            "executor"
+        ]
+        == "internal"
+    )
+    assert (
+        routed.run_step(tool_slug="dns_lookup", args_template={}, scope_context="example.com").data[
+            "executor"
+        ]
+        == "mcp"
+    )
     assert internal.calls == ["whois"]
     assert mcp.calls == ["dns_lookup"]
 
@@ -274,13 +281,13 @@ def engagement(db: Session) -> Engagement:
     db.flush()
     # POST /playbook-runs now enforces in-scope-only; seed the IP the HTTP
     # tests submit so they exercise the happy path.
-    db.add(
-        ScopeItem(engagement_id=eng.id, kind=ScopeKind.ip, value="1.2.3.4")
-    )
+    db.add(ScopeItem(engagement_id=eng.id, kind=ScopeKind.ip, value="1.2.3.4"))
     db.flush()
     meth.load_seed_catalog(db)
     meth.select_for_engagement(
-        db, engagement_id=eng.id, slug="osint-minimal",
+        db,
+        engagement_id=eng.id,
+        slug="osint-minimal",
         now=datetime(2026, 7, 23, tzinfo=UTC),
     )
     db.commit()
@@ -375,6 +382,26 @@ def _headers(u: User) -> dict[str, str]:
     return {"X-User-Id": u.email}
 
 
+def _post_reviewed_run(
+    client: TestClient,
+    *,
+    engagement_slug: str,
+    user: User,
+    payload: dict,
+):
+    plan = client.post(
+        f"/engagements/{engagement_slug}/playbook-runs/plan",
+        headers=_headers(user),
+        json=payload,
+    )
+    assert plan.status_code == 200, plan.text
+    return client.post(
+        f"/engagements/{engagement_slug}/playbook-runs",
+        headers=_headers(user),
+        json={**payload, "plan_sha256": plan.json()["plan_sha256"]},
+    )
+
+
 def test_catalog_declares_server_owned_executor_affinity(
     client: TestClient,
     user: User,
@@ -383,9 +410,7 @@ def test_catalog_declares_server_owned_executor_affinity(
     response = client.get("/playbooks", headers=_headers(user))
 
     assert response.status_code == 200
-    enrichment = next(
-        item for item in response.json() if item["slug"] == "osint-enrichment"
-    )
+    enrichment = next(item for item in response.json() if item["slug"] == "osint-enrichment")
     assert enrichment["required_executor"] == "mcp"
     assert enrichment["required_credentials"] == ["freeipapi", "ipinfo"]
 
@@ -397,10 +422,11 @@ def test_post_accepts_executor_mcp_and_persists_it(
     engagement: Engagement,
     enrichment_playbook,
 ) -> None:
-    resp = client.post(
-        f"/engagements/{engagement.slug}/playbook-runs",
-        headers=_headers(user),
-        json={
+    resp = _post_reviewed_run(
+        client,
+        engagement_slug=engagement.slug,
+        user=user,
+        payload={
             "playbook_slug": "osint-enrichment",
             "scope_subset": ["1.2.3.4"],
             "executor": "mcp",
@@ -419,10 +445,11 @@ def test_post_selects_catalog_required_executor_when_omitted(
     engagement: Engagement,
     enrichment_playbook,
 ) -> None:
-    resp = client.post(
-        f"/engagements/{engagement.slug}/playbook-runs",
-        headers=_headers(user),
-        json={
+    resp = _post_reviewed_run(
+        client,
+        engagement_slug=engagement.slug,
+        user=user,
+        payload={
             "playbook_slug": "osint-enrichment",
             "scope_subset": ["1.2.3.4"],
         },
@@ -483,9 +510,7 @@ def test_osint_enrichment_seed_is_installed(db: Session, client: TestClient, use
     assert "osint-enrichment" in slugs
 
 
-def test_osint_enrichment_targets_ip_asset_class(
-    db: Session, enrichment_playbook
-) -> None:
+def test_osint_enrichment_targets_ip_asset_class(db: Session, enrichment_playbook) -> None:
     assert enrichment_playbook.applies_to_asset_class == "ip"
     tools = {s.tool_slug for s in enrichment_playbook.steps}
     assert tools == {"mcp_reverse_dns", "freeipapi", "ipinfo"}
