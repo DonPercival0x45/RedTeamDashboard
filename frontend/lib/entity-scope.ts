@@ -1,3 +1,4 @@
+import { effectiveScopeState } from "@/lib/effective-scope";
 import type { Entity, ScopeItem, ScopeKind } from "@/lib/types";
 
 export function entityKey(entity: Pick<Entity, "type" | "value">): string {
@@ -68,22 +69,45 @@ export function exactScopeRules(
 }
 
 export function scopeActionState(
-  entity: Pick<Entity, "type" | "value" | "scope_status">,
+  entity: Pick<
+    Entity,
+    | "type"
+    | "value"
+    | "scope_status"
+    | "effective_scope"
+    | "exact_scope_include_ids"
+    | "exact_scope_exclusion_ids"
+  >,
   items: ScopeItem[],
 ) {
-  const rules = exactScopeRules(entity, items);
-  const exactIncludes = rules.filter((item) => !item.is_exclusion);
-  const exactExclusions = rules.filter((item) => item.is_exclusion);
-  const hasExactRule = exactIncludes.length > 0 || exactExclusions.length > 0;
+  const hasProjectedExactRules =
+    entity.exact_scope_include_ids !== undefined &&
+    entity.exact_scope_exclusion_ids !== undefined;
+  const includeIds = new Set(entity.exact_scope_include_ids ?? []);
+  const exclusionIds = new Set(entity.exact_scope_exclusion_ids ?? []);
+  const rules = hasProjectedExactRules
+    ? items.filter((item) => includeIds.has(item.id) || exclusionIds.has(item.id))
+    : exactScopeRules(entity, items);
+  const exactIncludes = hasProjectedExactRules
+    ? rules.filter((item) => includeIds.has(item.id))
+    : rules.filter((item) => !item.is_exclusion);
+  const exactExclusions = hasProjectedExactRules
+    ? rules.filter((item) => exclusionIds.has(item.id))
+    : rules.filter((item) => item.is_exclusion);
+  const hasExactRule = hasProjectedExactRules
+    ? includeIds.size > 0 || exclusionIds.size > 0
+    : exactIncludes.length > 0 || exactExclusions.length > 0;
+  const state = effectiveScopeState(entity);
   return {
     rules,
     exactIncludes,
     exactExclusions,
     // Never hide two mutations behind one button. Existing exact rules must be
     // explicitly removed before the opposite disposition can be created.
-    canAdd: !hasExactRule && entity.scope_status !== "live",
-    canExclude: !hasExactRule,
-    isIncluded: exactIncludes.length > 0 || entity.scope_status === "live",
-    isExcluded: exactExclusions.length > 0,
+    canAdd: !hasExactRule && state === "unmatched",
+    canExclude: !hasExactRule && state !== "excluded",
+    isIncluded: state === "included",
+    isExcluded: state === "excluded",
+    effectiveScope: entity.effective_scope ?? null,
   };
 }

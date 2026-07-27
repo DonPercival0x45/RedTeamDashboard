@@ -26,11 +26,15 @@ import type {
   EngagementArchitecture,
   EngagementStatus,
   EngagementTimeFrame,
+  EvidenceArtifactRead,
   IntelligenceConversionResponse,
   IntelligenceMode,
   IntelligenceRunResponse,
   MethodologyRead,
   Entity,
+  EntityReviewApplyResult,
+  EntityReviewPreview,
+  EntityReviewTarget,
   Finding,
   AdminUser,
   BurpImportResult,
@@ -40,6 +44,11 @@ import type {
   FindingSort,
   FindingSummaryEntry,
   FindingActivityEntry,
+  FindingFollowUp,
+  FindingRemediationStatus,
+  FindingRemediationUpdate,
+  FindingRetest,
+  FindingRetestOutcome,
   FindingChatActionResponse,
   FindingChatResponse,
   FindingChatState,
@@ -79,6 +88,7 @@ import type {
   ToolInvocationRead,
   OrchestratorTool,
   PlaybookDetail,
+  PlaybookExecutionPlanRead,
   PlaybookRead,
   PlaybookRunCreate,
   PlaybookRunRead,
@@ -371,6 +381,30 @@ export function getFindingActivity(
   return request<FindingActivityEntry[]>(`/findings/${findingId}/activity`);
 }
 
+export function getFindingFollowUp(findingId: string): Promise<FindingFollowUp> {
+  return request<FindingFollowUp>(`/findings/${findingId}/follow-up`);
+}
+
+export function createFindingRemediationUpdate(
+  findingId: string,
+  body: { status: FindingRemediationStatus; note?: string | null },
+): Promise<FindingRemediationUpdate> {
+  return request<FindingRemediationUpdate>(
+    `/findings/${findingId}/remediation-updates`,
+    { method: "POST", body: JSON.stringify(body) },
+  );
+}
+
+export function createFindingRetest(
+  findingId: string,
+  body: { outcome: FindingRetestOutcome; note?: string | null },
+): Promise<FindingRetest> {
+  return request<FindingRetest>(`/findings/${findingId}/retests`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
 export function getFindingChat(findingId: string): Promise<FindingChatState> {
   return request<FindingChatState>(`/findings/${findingId}/chat`);
 }
@@ -471,6 +505,37 @@ export async function importFindingsFromBurp(
   return response.json() as Promise<BurpImportResult>;
 }
 
+export function previewEntityReview(
+  slug: string,
+  body: {
+    targets: EntityReviewTarget[];
+    action: "keep" | "exclude";
+    cascade: boolean;
+  },
+): Promise<EntityReviewPreview> {
+  return request<EntityReviewPreview>(`/engagements/${slug}/entity-reviews/preview`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function applyEntityReview(
+  slug: string,
+  body: {
+    targets: EntityReviewTarget[];
+    action: "keep" | "exclude";
+    cascade: boolean;
+    reason: string;
+    preview_sha256: string;
+    remove_conflicting_exact_includes: boolean;
+  },
+): Promise<EntityReviewApplyResult> {
+  return request<EntityReviewApplyResult>(`/engagements/${slug}/entity-reviews/apply`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
 export function listEntities(
   slug: string,
   filters?: { type?: string; q?: string },
@@ -485,7 +550,7 @@ export function listEntities(
 export function validateFinding(
   findingId: string,
   decision: FindingValidationStatus,
-  reason?: string,
+  reason: string,
 ): Promise<Finding> {
   return request<Finding>(`/findings/${findingId}/validate`, {
     method: "POST",
@@ -2050,6 +2115,22 @@ export function listPlaybookRuns(
 
 export function getPlaybookRun(runId: string): Promise<PlaybookRunRead> {
   return request<PlaybookRunRead>(`/playbook-runs/${runId}`);
+}
+
+export function getEvidenceArtifact(
+  artifactId: string,
+): Promise<EvidenceArtifactRead> {
+  return request<EvidenceArtifactRead>(`/evidence-artifacts/${artifactId}`);
+}
+
+export function planPlaybookRun(
+  engagementSlug: string,
+  body: PlaybookRunCreate,
+): Promise<PlaybookExecutionPlanRead> {
+  return request<PlaybookExecutionPlanRead>(
+    `/engagements/${engagementSlug}/playbook-runs/plan`,
+    { method: "POST", body: JSON.stringify(body) },
+  );
 }
 
 export function createPlaybookRun(

@@ -88,6 +88,8 @@ import {
   getPlaybook,
   listPlaybookRuns,
   getPlaybookRun,
+  getEvidenceArtifact,
+  planPlaybookRun,
   createPlaybookRun,
   cancelPlaybookRun,
   approvePlaybookRun,
@@ -224,6 +226,12 @@ export const qk = {
     status?: import("@/lib/types").PlaybookRunStatus,
   ) => ["playbook-runs", engagementSlug, status ?? "all"] as const,
   playbookRun: (runId: string) => ["playbook-run", runId] as const,
+  evidenceArtifact: (artifactId: string) =>
+    ["evidence-artifact", artifactId] as const,
+  playbookRunPlan: (
+    engagementSlug: string,
+    request: import("@/lib/types").PlaybookRunCreate,
+  ) => ["playbook-run-plan", engagementSlug, request] as const,
   infraStatus: () => ["infra", "status"] as const,
   infraSubscriptions: () => ["infra", "subscriptions"] as const,
   vms: () => ["infra", "vms"] as const,
@@ -1099,10 +1107,17 @@ export function prefetchEngagementView(
         queryFn: () => getEngagementDiagnostics(slug),
       });
       return;
+    case "attack-paths":
+      void qc.prefetchQuery({
+        queryKey: qk.findings(slug),
+        queryFn: () => listFindings(slug),
+      });
+      return;
     case "strategy":
+    case "dossier":
     case "contributions":
-      // Strategy loads a coordinated dossier; contributions depends on filter
-      // state.
+      // Strategy and Dossier load coordinated projections; contributions
+      // depends on filter state.
       return;
   }
 }
@@ -1415,6 +1430,34 @@ export function usePlaybookRun(runId: string | null) {
         run.status === "awaiting_approval";
       return live ? 2000 : false;
     },
+  });
+}
+
+export function useEvidenceArtifact(
+  artifactId: string | null,
+  enabled = true,
+) {
+  return useQuery({
+    queryKey: artifactId
+      ? qk.evidenceArtifact(artifactId)
+      : ["evidence-artifact", "none"],
+    queryFn: () => getEvidenceArtifact(artifactId!),
+    enabled: !!artifactId && enabled,
+    staleTime: Infinity,
+  });
+}
+
+export function usePlaybookRunPlan(
+  engagementSlug: string,
+  request: import("@/lib/types").PlaybookRunCreate | null,
+) {
+  return useQuery({
+    queryKey: request
+      ? qk.playbookRunPlan(engagementSlug, request)
+      : ["playbook-run-plan", engagementSlug, "none"],
+    queryFn: () => planPlaybookRun(engagementSlug, request!),
+    enabled: request !== null,
+    staleTime: 0,
   });
 }
 

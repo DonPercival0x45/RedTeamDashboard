@@ -15,6 +15,7 @@ import {
   type EngagementView,
 } from "@/components/engagement-nav";
 import { DossierView } from "@/components/dossier-view";
+import { AttackPathsView } from "@/components/attack-paths-view";
 import { EntitiesView } from "@/components/entities-view";
 import { FindingsView } from "@/components/findings-view";
 import { ObservationsView } from "@/components/observations-view";
@@ -72,6 +73,7 @@ const VALID_VIEWS = new Set<EngagementView>([
   "strategy",
   "entities",
   "dossier",
+  "attack-paths",
   "observations",
   "costs",
   "scope",
@@ -102,6 +104,8 @@ function EngagementDetail({ slug }: { slug: string }) {
       // the flyout re-open every time the analyst returns to that tab.
       // Strip them on any tab switch so the deep-link is one-shot.
       p.delete("workItem");
+      p.delete("type");
+      p.delete("value");
       router.replace(`/e?${p.toString()}`, { scroll: false });
     },
     [params, router],
@@ -503,6 +507,8 @@ function EngagementDetail({ slug }: { slug: string }) {
           )}
 
           {view === "dossier" && <DossierView slug={slug} />}
+
+          {view === "attack-paths" && <AttackPathsView slug={slug} />}
 
           {view === "observations" && <ObservationsView slug={slug} />}
 

@@ -22,10 +22,13 @@ import {
   regroupFindingsApply,
   regroupFindingsPreview,
   repairFindingGroups,
-  validateFinding,
 } from "@/lib/api";
 import { getWorkItemRollup } from "@/lib/strategy-api";
 import { cn } from "@/lib/utils";
+import {
+  compareValidationPriority,
+  findingNeedsValidation,
+} from "@/lib/finding-order";
 import { FindingImporter } from "@/components/finding-importer";
 import { BurpImporter } from "@/components/burp-importer";
 import type {
@@ -155,7 +158,10 @@ function validFilter<T extends string>(
   return value !== null && allowed.has(value as T) ? (value as T) : null;
 }
 
-const SORT_LABEL: Record<FindingSort, string> = {
+type FindingsViewSort = FindingSort | "validation";
+
+const SORT_LABEL: Record<FindingsViewSort, string> = {
+  validation: "Needs validation first",
   newest: "Newest first",
   severity: "Severity",
   observed: "Observed date",
@@ -195,7 +201,7 @@ export function FindingsView({
   const [severityFilter, setSeverityFilter] = useState<Severity | "all">(
     querySeverity ?? "all",
   );
-  const [sort, setSort] = useState<FindingSort>("newest");
+  const [sort, setSort] = useState<FindingsViewSort>("validation");
   const [selected, setSelected] = useState<Finding | null>(null);
   const [showImporter, setShowImporter] = useState(false);
   const [showBurpImporter, setShowBurpImporter] = useState(false);
@@ -322,7 +328,7 @@ export function FindingsView({
     medium: findings.filter((f) => f.severity === "medium").length,
     low: findings.filter((f) => f.severity === "low").length,
     info: findings.filter((f) => f.severity === "info").length,
-    pending: findings.filter((f) => f.status === "pending_validation").length,
+    pending: findings.filter(findingNeedsValidation).length,
   };
 
   const toggleSeverity = (severity: Severity) =>
@@ -332,6 +338,8 @@ export function FindingsView({
 
   const compareFindings = (a: Finding, b: Finding): number => {
     switch (sort) {
+      case "validation":
+        return compareValidationPriority(a, b);
       case "severity": {
         const sev = SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity];
         if (sev !== 0) return sev;
@@ -391,7 +399,13 @@ export function FindingsView({
   const visible = findings
     .filter(matchesReadiness)
     .filter((f) => phase === "all" || f.phase === phase)
-    .filter((f) => status === "all" || f.status === status)
+    .filter(
+      (f) =>
+        status === "all" ||
+        (status === "pending_validation"
+          ? findingNeedsValidation(f)
+          : f.status === status),
+    )
     .filter((f) => severityFilter === "all" || f.severity === severityFilter)
     .filter((f) => tagFilter === null || (f.tags ?? []).includes(tagFilter))
     .filter((f) => {
@@ -487,6 +501,7 @@ export function FindingsView({
           in the top-left and Low (green) in the bottom-right; each half
           is its own click target. Info gets its own tile (blue). Pending
           validation toggles the status filter to pending_validation. */}
+      <div className="space-y-3 border-b border-border bg-background py-3 lg:sticky lg:top-0 lg:z-10">
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
         <SeverityMetricCard
           label="Critical"
@@ -525,8 +540,50 @@ export function FindingsView({
           onClick={togglePending}
         />
       </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          aria-pressed={status === "pending_validation"}
+          onClick={togglePending}
+          className={cn(
+            "rounded-md border px-3 py-2 text-xs font-medium",
+            status === "pending_validation"
+              ? "border-amber-500/60 bg-amber-500/15 text-amber-800 dark:text-amber-200"
+              : "border-border text-muted-foreground hover:bg-muted",
+          )}
+        >
+          Needs validation ({counts.pending})
+        </button>
+        <div className="relative min-w-64 flex-1">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            type="search"
+            aria-label="Search findings"
+            placeholder="Search findings — title, summary, target, ID"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            className="pl-8"
+          />
+        </div>
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <span className="hidden sm:inline">Sort by</span>
+          <select
+            aria-label="Sort findings"
+            value={sort}
+            onChange={(event) => setSort(event.target.value as FindingsViewSort)}
+            className="rounded-md border border-border bg-background px-2 py-2 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+          >
+            {(Object.keys(SORT_LABEL) as FindingsViewSort[]).map((option) => (
+              <option key={option} value={option}>
+                {SORT_LABEL[option]}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+      </div>
 
-      {/* Filters + sort + import toggle */}
+      {/* Filters + actions */}
       <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
         <FilterRow
           options={PHASE_FILTERS}
@@ -558,20 +615,6 @@ export function FindingsView({
             <option value="unlinked">No linked work</option>
           </select>
           {workRollupError && <span className="text-destructive">rollup unavailable</span>}
-        </div>
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          <span className="hidden sm:inline">Sort by</span>
-          <select
-            value={sort}
-            onChange={(e) => setSort(e.target.value as FindingSort)}
-            className="rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
-          >
-            {(Object.keys(SORT_LABEL) as FindingSort[]).map((opt) => (
-              <option key={opt} value={opt}>
-                {SORT_LABEL[opt]}
-              </option>
-            ))}
-          </select>
         </div>
         <div className="ml-auto flex flex-wrap gap-2">
           <Button size="sm" onClick={() => setShowAddModal(true)}>
@@ -653,19 +696,6 @@ export function FindingsView({
           </button>
         </div>
       )}
-
-      {/* v1.4.0: search bar. Substring match against title, summary,
-          target, and the row's short-id (as shown in the ID column). */}
-      <div className="relative max-w-md">
-        <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-        <Input
-          type="search"
-          placeholder="Search findings — title, summary, target, ID"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          className="pl-8"
-        />
-      </div>
 
       {/* v1.4.3: transient feedback strip for the Repair groups button. */}
       {(repairMessage || repairError) && (
@@ -770,9 +800,9 @@ export function FindingsView({
           )}
         </p>
       ) : (
-        <div className="overflow-x-auto rounded-lg border border-border">
+        <div className="max-h-[65vh] overflow-auto rounded-lg border border-border">
           <table className="w-full border-collapse text-sm">
-            <thead>
+            <thead className="sticky top-0 z-10 bg-background">
               <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted-foreground">
                 <th className="px-3 py-2 w-8">
                   <input
@@ -953,7 +983,6 @@ export function FindingsView({
           finding={selected}
           slug={slug}
           onClose={() => setSelected(null)}
-          onUpdated={handleUpdated}
         />
       )}
 
@@ -1194,16 +1223,11 @@ function FindingSlideOver({
   finding,
   slug,
   onClose,
-  onUpdated,
 }: {
   finding: Finding;
   slug: string;
   onClose: () => void;
-  onUpdated: (f: Finding) => void;
 }) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
@@ -1211,18 +1235,6 @@ function FindingSlideOver({
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [onClose]);
-
-  const decide = async (decision: FindingValidationStatus) => {
-    setBusy(true);
-    setError(null);
-    try {
-      onUpdated(await validateFinding(finding.id, decision));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  };
 
   const groupedItems = Array.isArray((finding.data as { items?: unknown }).items)
     ? (finding.data as { items: unknown[] }).items.length
@@ -1316,29 +1328,9 @@ function FindingSlideOver({
 
           <GroupedItemsPanel finding={finding} />
 
-          {error && (
-            <p className="rounded-md border border-critical/40 bg-critical/10 p-2 text-xs text-critical">
-              {error}
-            </p>
-          )}
         </div>
 
         <footer className="space-y-3 border-t border-border bg-background/70 px-5 py-4">
-          <div className="flex flex-wrap gap-2">
-            <Button
-              size="sm"
-              disabled={busy || finding.status === "validated"}
-              onClick={() => void decide("validated")}
-            >
-              Validate
-            </Button>
-            <Button size="sm" variant="outline" disabled={busy} onClick={() => void decide("rejected")}>
-              Reject
-            </Button>
-            <Button size="sm" variant="outline" disabled={busy} onClick={() => void decide("false_positive")}>
-              False positive
-            </Button>
-          </div>
           <div className="grid grid-cols-2 gap-2">
             <Button asChild variant="outline">
               <Link href={`/e/findings/${finding.id}?slug=${encodeURIComponent(slug)}&tab=details#discovered-context`}>
@@ -1346,17 +1338,16 @@ function FindingSlideOver({
               </Link>
             </Button>
             <Button asChild>
-              <Link href={`/e/findings/${finding.id}?slug=${encodeURIComponent(slug)}`}>
+              <Link href={`/e/findings/${finding.id}?slug=${encodeURIComponent(slug)}&tab=notes`}>
                 <Maximize2 className="mr-2 h-4 w-4" />
-                Open full view
+                Review and decide
               </Link>
             </Button>
           </div>
           <p className="text-center text-[10px] text-muted-foreground">
-            Editing, evidence, AI actions, context, and history live in the full view.
+            Decisions require an evidence-backed rationale in the full workbench.
           </p>
         </footer>
-        <LoaderOverlay show={busy} size={1.2} label="Applying decision" />
       </aside>
     </>
   );

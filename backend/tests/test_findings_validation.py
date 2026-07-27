@@ -130,7 +130,7 @@ def test_validate_promotes_finding(
     )
     resp = client.post(
         f"/findings/{f.id}/validate",
-        json={"decision": "validated"},
+        json={"decision": "validated", "reason": "Structured evidence confirms the record."},
         headers={"X-User-Id": "validator@example.com"},
     )
     assert resp.status_code == 200, resp.text
@@ -163,10 +163,25 @@ def test_reject_clears_validation_stamp(
 def test_validate_unknown_finding_404(client: TestClient) -> None:
     resp = client.post(
         f"/findings/{uuid.uuid4()}/validate",
-        json={"decision": "validated"},
+        json={"decision": "validated", "reason": "Review attempted."},
         headers={"X-User-Id": "validator@example.com"},
     )
     assert resp.status_code == 404
+
+
+def test_validation_requires_rationale(
+    client: TestClient, db: Session, engagement: Engagement
+) -> None:
+    finding = _seed(
+        db, engagement.id, tool="portscan",
+        phase=FindingPhase.vuln_scan, status=FindingStatus.pending_validation,
+    )
+    response = client.post(
+        f"/findings/{finding.id}/validate",
+        json={"decision": "validated"},
+        headers={"X-User-Id": "validator@example.com"},
+    )
+    assert response.status_code == 422
 
 
 # ── report only includes validated ───────────────────────────────────────

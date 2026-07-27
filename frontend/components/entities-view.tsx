@@ -1,6 +1,7 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useQueryClient } from "@tanstack/react-query";
@@ -66,6 +67,7 @@ import {
   scopeActionState,
   scopeTargetForEntity,
 } from "@/lib/entity-scope";
+import { effectiveScopeState } from "@/lib/effective-scope";
 import { cn } from "@/lib/utils";
 import type {
   DarkwebImportResult,
@@ -241,15 +243,19 @@ function ScopeStatusBadge({ status }: { status: string }) {
   const label =
     status === "live"
       ? "Live"
-      : status === "legacy"
-        ? "Legacy"
-        : "Out of scope";
+      : status === "excluded"
+        ? "Excluded"
+        : status === "legacy"
+          ? "Legacy"
+          : "Out of scope";
   const className =
     status === "live"
       ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200"
-      : status === "legacy"
-        ? "border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-200"
-        : "border-border text-muted-foreground";
+      : status === "excluded"
+        ? "border-rose-500/50 bg-rose-500/10 text-rose-700 dark:text-rose-200"
+        : status === "legacy"
+          ? "border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-200"
+          : "border-border text-muted-foreground";
   return (
     <Badge variant="outline" className={className}>
       {label}
@@ -275,6 +281,7 @@ export function EntitiesView({
   // v1.0.0: react-query owns the derived-entities fetch. Focus revalidation
   // catches new findings that landed while the tab was hidden.
   const qc = useQueryClient();
+  const params = useSearchParams();
   const entitiesQuery = useEntities(slug);
   const scopeQuery = useScope(slug);
   const entities = entitiesQuery.data;
@@ -282,11 +289,12 @@ export function EntitiesView({
   const { error } = entitiesQuery;
   const [search, setSearch] = useState("");
   const [type, setType] = useState<string>("all");
-  // v2.19.0: scope-status filter runs alongside type. "all" shows everything,
-  // "live" / "legacy" / "oos" narrow to entities with that classification.
+  // Actionable, authorized entities are the default. Historical, excluded,
+  // and unmatched inventory stays available behind an explicit review action.
   const [scopeStatus, setScopeStatus] = useState<
-    "all" | "live" | "legacy" | "oos"
-  >("all");
+    "all" | "live" | "excluded" | "legacy" | "oos"
+  >("live");
+  const [showScopeOutliers, setShowScopeOutliers] = useState(false);
   const [hideLikelyThirdParty, setHideLikelyThirdParty] = useState(true);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
@@ -295,6 +303,24 @@ export function EntitiesView({
   const [scopeError, setScopeError] = useState<string | null>(null);
   const [pendingScopeRemoval, setPendingScopeRemoval] = useState<ScopeItem[]>([]);
   const detailTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const deepLinkAppliedRef = useRef(false);
+  const deepLinkType = params.get("type");
+  const deepLinkValue = params.get("value");
+
+  useEffect(() => {
+    if (deepLinkAppliedRef.current || !entities || !deepLinkType || !deepLinkValue) return;
+    const match = entities.find(
+      (entity) => entity.type === deepLinkType && entity.value === deepLinkValue,
+    );
+    deepLinkAppliedRef.current = true;
+    if (!match) return;
+    setHideLikelyThirdParty(false);
+    setShowScopeOutliers(true);
+    setType("all");
+    setScopeStatus("all");
+    setSearch(deepLinkValue);
+    setSelectedKey(entityKey(match));
+  }, [deepLinkType, deepLinkValue, entities]);
 
   if (entities === undefined)
     return (
@@ -317,13 +343,23 @@ export function EntitiesView({
   const likelyThirdPartyCount = entities.filter(
     (entity) => entity.relevance === "likely_third_party",
   ).length;
+  const matchesScopeStatus = (entity: Entity) => {
+    if (scopeStatus === "all") return true;
+    const projectedState = effectiveScopeState(entity);
+    if (scopeStatus === "live") return projectedState === "included";
+    if (scopeStatus === "excluded") return projectedState === "excluded";
+    if (projectedState === "included" || projectedState === "excluded") return false;
+    return scopeStatus === "legacy"
+      ? entity.scope_status === "legacy"
+      : entity.scope_status !== "legacy";
+  };
   const visible = entities
     .filter(
       (entity) =>
         !hideLikelyThirdParty || entity.relevance !== "likely_third_party",
     )
     .filter((e) => type === "all" || e.type === type)
-    .filter((e) => scopeStatus === "all" || e.scope_status === scopeStatus)
+    .filter(matchesScopeStatus)
     .filter((e) => !q || e.value.toLowerCase().includes(q))
     .sort(
       (a, b) =>
@@ -488,28 +524,52 @@ export function EntitiesView({
         ))}
       </div>
 
-      <div className="flex flex-wrap gap-1">
-        {(["all", "live", "legacy", "oos"] as const).map((s) => (
-          <button
-            key={s}
-            type="button"
-            onClick={() => setScopeStatus(s)}
-            className={cn(
-              "rounded-full border px-2.5 py-1 text-xs transition-colors",
-              scopeStatus === s
-                ? "border-primary/50 bg-primary/10 text-foreground"
-                : "border-border text-muted-foreground hover:text-foreground",
-            )}
-          >
-            {s === "all"
-              ? "All scope"
-              : s === "live"
-                ? "Live"
-                : s === "legacy"
-                  ? "Legacy"
-                  : "Out of scope"}
-          </button>
-        ))}
+      <div className="flex flex-wrap items-center gap-1">
+        <button
+          type="button"
+          onClick={() => setScopeStatus("live")}
+          className={cn(
+            "rounded-full border px-2.5 py-1 text-xs transition-colors",
+            scopeStatus === "live"
+              ? "border-primary/50 bg-primary/10 text-foreground"
+              : "border-border text-muted-foreground hover:text-foreground",
+          )}
+        >
+          Live
+        </button>
+        <button
+          type="button"
+          aria-expanded={showScopeOutliers}
+          onClick={() => {
+            if (showScopeOutliers) setScopeStatus("live");
+            setShowScopeOutliers(!showScopeOutliers);
+          }}
+          className="rounded-full border border-dashed border-border px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
+        >
+          {showScopeOutliers ? "Show live only" : "Review other scope states"}
+        </button>
+        {showScopeOutliers &&
+          (["all", "excluded", "legacy", "oos"] as const).map((s) => (
+            <button
+              key={s}
+              type="button"
+              onClick={() => setScopeStatus(s)}
+              className={cn(
+                "rounded-full border px-2.5 py-1 text-xs transition-colors",
+                scopeStatus === s
+                  ? "border-primary/50 bg-primary/10 text-foreground"
+                  : "border-border text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {s === "all"
+                ? "All scope"
+                : s === "excluded"
+                  ? "Excluded"
+                  : s === "legacy"
+                    ? "Legacy"
+                    : "Out of scope"}
+            </button>
+          ))}
       </div>
 
       {canWrite && (
@@ -1351,6 +1411,13 @@ function EntitySlideOver({
     canExclude,
     isIncluded,
   } = scopeActionState(entity, scopeItems);
+  const matchedScopeRule = entity.effective_scope
+    ? scopeItems.find(
+        (item) =>
+          item.id === entity.effective_scope?.matched_exclusion_id ||
+          item.id === entity.effective_scope?.matched_include_id,
+      )
+    : undefined;
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="left-auto right-0 top-0 flex h-dvh w-full max-w-lg translate-x-0 translate-y-0 flex-col gap-0 rounded-none border-y-0 border-r-0 p-0 sm:rounded-none">
@@ -1400,6 +1467,16 @@ function EntitySlideOver({
                 Broader domain and CIDR exclusions remain authoritative.
               </p>
             </div>
+            {entity.effective_scope && (
+              <div className="rounded-md border border-border/70 bg-muted/20 px-3 py-2 text-xs">
+                <p>{entity.effective_scope.reason}</p>
+                {matchedScopeRule && (
+                  <p className="mt-1 font-mono text-muted-foreground">
+                    Matched {matchedScopeRule.kind}: {matchedScopeRule.value}
+                  </p>
+                )}
+              </div>
+            )}
             {!scopeTarget ? (
               <p className="text-xs text-muted-foreground">
                 {typeLabel(entity.type)} entities cannot be used as scope targets.
@@ -1472,6 +1549,7 @@ function EntitySlideOver({
 
             {onLaunchPlaybook &&
               canWrite &&
+              entity.effective_scope?.allowed !== false &&
               entity.scope_status === "live" &&
               exactIncludes.length > 0 && (
                 <Button

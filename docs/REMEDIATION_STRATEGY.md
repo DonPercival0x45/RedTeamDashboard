@@ -31,9 +31,9 @@ rollback points**. The most recent completed slices are:
 | `3e6470a` | playbook results persist through the canonical Findings contract | ✅ fixed |
 
 **Current validation evidence:**
-- backend: Ruff clean; **204 focused playbook/entity/provider tests pass**;
-  full suite **1042 passed / 4 documented Windows-host failures / 2 skipped**
-- frontend: `tsc --noEmit` and `next build` clean; **72 Vitest tests pass**
+- backend: Ruff clean; **97 focused scope/entity/API tests pass**;
+  full isolated suite **1081 passed / 3 documented SSE networking failures**
+- frontend: `tsc --noEmit` and `next build` clean; **102 Vitest tests pass**
 - CLI: **35 passed / 1 skipped** (documented Windows permissions limitation)
 - local backend tests reset an isolated `rtd_test` database and Redis DB 15;
   pytest refuses the operator-facing `rtd` database outside disposable CI
@@ -513,5 +513,110 @@ strategist attribution, tool review/pricing, and failure responses.
 provider-readiness banner; Keys-page guest card (the role-gating pattern `/e`
 is missing); engagements-list genuine-empty + pending-teaching banners;
 type-the-slug delete confirmation; the run → findings feedback toast.
+
+## 10. Durable playbook step receipts and evidence boundary
+
+Coverage records answer whether a methodology node was satisfied; they do not
+identify one concrete tool invocation. One invocation can produce zero, one,
+or several coverage records, so the run aggregate previously could not answer
+which target ran, how long it took, what transport was used, or which evidence
+supported the resulting Finding.
+
+**Landed locally on `feat/playbook-evidence-receipts`:**
+
+- `PlaybookStepExecution` stores one immutable, per-target attempt receipt with
+  the catalog-step snapshot, server-owned transport, target-bound redacted
+  arguments, status, duration, and failure detail.
+- `EvidenceArtifact` preserves bounded JSON tool output independently of the
+  Findings workspace. Clean results remain evidence rather than becoming fake
+  security issues; canonical Findings can be linked when the finding bridge
+  creates or enriches one.
+- Secret-like keys, bearer/basic credentials, URI passwords, nested string
+  values, receipt errors, run errors, and coverage notes are sanitized before
+  durable persistence. Oversized artifacts store a preview plus the complete
+  redacted payload digest and byte count.
+- Worker-owned runs now carry an independently refreshed heartbeat. Expired
+  worker leases are marked failed together with any in-flight receipt, with an
+  explicit “outcome unknown; not retried” message. Recovery never replays an
+  external call whose side effects may already have happened.
+- Run details show accessible per-target attempt receipts and lazy-load the
+  redacted evidence payload. Evidence linked to a canonical Finding provides a
+  direct navigation path.
+- Kickoff now requests an authoritative server-generated execution plan with
+  exact known targets, ordered steps, transports, risk labels, credential
+  requirements, minimum calls, approval state, and explicit dynamic-expansion
+  semantics. The client submits the plan digest; a changed plan is rejected for
+  review instead of being silently queued. The immutable plan snapshot remains
+  visible beside later approval decisions.
+- Playbook execution now has a dedicated, supervised worker pool with two
+  lanes in local Compose and a separate sibling worker process in the Azure
+  Container App pod. PostgreSQL advisory scheduling enforces global and per-engagement
+  concurrency caps without weakening per-run ownership fencing or replaying an
+  uncertain external call. The general worker no longer duplicates playbook
+  execution when the dedicated service is enabled.
+- Worker processes, components, idle/busy lane heartbeats, current runs, and
+  redacted operational incidents are durable. Docker health checks fail when a
+  process heartbeat expires, critical component death exits for container
+  restart, and the Runs view shows truthful animated worker activity, progress,
+  queue depth/age, offline/degraded state, and recent incidents.
+- The Dossier is now the engagement-wide narrative projection: deterministic
+  counts, structured DNS relationship paths, entity validation, a trust-labelled
+  chronology, research gaps, and direct citations into entity, finding, and run
+  records. Strategy-style tabs, sticky desktop navigation, bounded searchable
+  lists, and a validation-first entity queue replace the prior long page. The
+  existing infrastructure globe, enriched-IP inventory, and Wi-Fi context remain
+  under Infrastructure. Narrative query failures suppress conclusions rather
+  than presenting missing data as zero, and relationship extraction accepts only
+  known DNS schemas.
+- Findings now defaults to a client-only "Needs validation first" order that
+  combines `pending_validation` and `needs_review`, keeps search/sort controls
+  visible on desktop, and bounds the table with a sticky header. Validation and
+  bulk status decisions require a recorded rationale; the full workbench then
+  routes the analyst toward evidence, follow-up planning, separately controlled
+  execution, or remediation tracking.
+- The new Paths workspace deterministically assembles bounded, acyclic
+  infrastructure paths from structured DNS evidence. It consolidates repeat
+  observations, retains finding citations and validation dispositions, marks
+  invalidated-only sources as disputed, caps broad path enumeration, and links
+  nodes back to the exact Entity workspace. The default Active view now uses
+  authoritative Entity dispositions to hide explicitly excluded shared-provider
+  branches without deleting evidence; those paths remain inspectable under an
+  Out of scope filter, and active roots are projected before broad excluded
+  branches consume the safety cap. It never infers authorization, ownership, or
+  exploitability from relationship evidence alone.
+- A backend-owned Effective Scope Projection now wraps the canonical matcher
+  and exposes stable included/excluded/unmatched/unsupported states, reason
+  codes, target kinds, and matched include/exclusion IDs on Scope and Entity
+  reads. Effective state remains derived rather than persisted; Finding
+  reportability and Entity review stay separate axes. Scope mutation controls
+  still operate only on exact rules, while target selectors, Dossier, and Paths
+  consume the server projection and no longer treat raw shadowed includes as
+  executable.
+- Migration `0071` adds durable canonical Entity review dispositions plus
+  reversible ownership receipts for exact exclusions and Finding reportability
+  changes. Dossier supports searched bulk Keep/Exclude review for up to 1,000
+  selected roots, with an optional three-level/500-discovery cascade, complete
+  Entity/Finding preview, stale-plan digest rejection, rationale, and immutable
+  audit identities. Explicit exclusions and kept decisions stay out of the
+  Entity validation queue after rediscovery, while their Findings remain in the
+  Findings workspace. Cascade follows only Findings directly targeted at each
+  affected entity, preserves `outside_roe`, and Keep releases only scope and
+  Finding changes owned by entity review. Existing exact includes remain as
+  dormant history beneath a higher-precedence exclusion, so reversal restores
+  them without reconstruction; independently created exclusions stay authoritative.
+- Migration `0070` adds append-only client remediation updates and analyst
+  retest results as dimensions orthogonal to Finding validation. The finding
+  workbench shows current state and full history; recording a retest never runs
+  a tool, replays an external call, changes report eligibility, or closes a
+  Finding automatically.
+- Leaflet maps are isolated in a local stacking context so Settings and other
+  application dialogs stay above the globe. Active service detection now
+  requires a successful direct connection before emitting a service finding and
+  ignores environment HTTP proxies that could otherwise impersonate a target.
+
+This is additive: `CoverageRecord` remains methodology coverage,
+`Observation` remains the analyst notebook, and `Finding` remains an
+actionable/reportable conclusion. Evidence does not authorize targets, validate
+Findings, or change reportability.
 
 

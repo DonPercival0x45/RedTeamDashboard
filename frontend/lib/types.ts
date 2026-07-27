@@ -113,6 +113,23 @@ export interface IntelligenceRunResponse {
   error: string | null;
 }
 
+export type EffectiveScopeState =
+  | "included"
+  | "excluded"
+  | "unmatched"
+  | "unsupported";
+
+export interface EffectiveScopeDecision {
+  state: EffectiveScopeState;
+  allowed: boolean;
+  reason_code: string;
+  reason: string;
+  target: string | null;
+  target_kind: ScopeKind | null;
+  matched_include_id: string | null;
+  matched_exclusion_id: string | null;
+}
+
 export interface ScopeItem {
   id: string;
   engagement_id: string;
@@ -124,6 +141,7 @@ export interface ScopeItem {
   // "found" = added from findings.
   source?: string;
   is_effectively_in_scope?: boolean | null;
+  effective_scope?: EffectiveScopeDecision | null;
   created_at: string;
   updated_at: string;
 }
@@ -340,11 +358,53 @@ export interface StatusEntity {
   synopsis: string | null;
 }
 
+export interface WorkerRunProgress {
+  id: string;
+  playbook_name: string;
+  engagement_slug: string;
+  steps_total: number;
+  steps_completed: number;
+}
+
+export interface WorkerSlotStatus {
+  id: string;
+  slot: number;
+  state: "idle" | "busy" | "offline" | "failed" | "starting" | "untracked";
+  heartbeat_at: string | null;
+  heartbeat_age_seconds: number | null;
+  current_run: WorkerRunProgress | null;
+  last_error: string | null;
+}
+
+export interface WorkerFailureRead {
+  id: string;
+  occurred_at: string;
+  severity: string;
+  event_type: string;
+  component: string | null;
+  message: string;
+  playbook_run_id: string | null;
+}
+
+export interface WorkerPoolStatus {
+  health: "healthy" | "degraded" | "unavailable";
+  capacity: number;
+  online: number;
+  busy: number;
+  idle: number;
+  pending_depth: number;
+  oldest_pending_at: string | null;
+  oldest_pending_age_seconds: number | null;
+  slots: WorkerSlotStatus[];
+  recent_failures: WorkerFailureRead[];
+}
+
 export interface EngagementStatusResponse {
   agents: StatusEntity[];
   tasks: StatusEntity[];
   approvals: StatusEntity[];
   playbook_runs: StatusEntity[];
+  worker_pool?: WorkerPoolStatus | null;
 }
 
 // v1.2.0: one line in the per-entity step log. Newest last.
@@ -382,6 +442,46 @@ export interface FindingActivityEntry {
   detail: string | null;
   ref_type: string | null;
   ref_id: string | null;
+}
+
+export type FindingRemediationStatus =
+  | "acknowledged"
+  | "in_progress"
+  | "ready_for_retest"
+  | "client_reports_fixed"
+  | "accepted_risk";
+
+export type FindingRetestOutcome =
+  | "fixed"
+  | "partially_fixed"
+  | "not_fixed"
+  | "inconclusive";
+
+export interface FindingRemediationUpdate {
+  id: string;
+  finding_id: string;
+  status: FindingRemediationStatus;
+  note: string | null;
+  reported_at: string;
+  recorded_by_user_id: string | null;
+  created_at: string;
+}
+
+export interface FindingRetest {
+  id: string;
+  finding_id: string;
+  outcome: FindingRetestOutcome;
+  note: string | null;
+  tested_at: string;
+  performed_by_user_id: string | null;
+  created_at: string;
+}
+
+export interface FindingFollowUp {
+  latest_remediation: FindingRemediationUpdate | null;
+  latest_retest: FindingRetest | null;
+  remediation_updates: FindingRemediationUpdate[];
+  retests: FindingRetest[];
 }
 
 export type FindingChatRole = "user" | "assistant" | "system";
@@ -675,7 +775,7 @@ export interface EntityFindingRef {
 // scope, "legacy" = matched a scope item that was deleted after v2.19
 // shipped (older hard-deletes left no trace, so those show as "oos"),
 // "oos" = never a scope target.
-export type EntityScopeStatus = "live" | "legacy" | "oos";
+export type EntityScopeStatus = "live" | "excluded" | "legacy" | "oos";
 
 // Correlated entity derived from findings (GET /engagements/{slug}/entities).
 export interface Entity {
@@ -687,8 +787,64 @@ export interface Entity {
   last_seen: string;
   findings: EntityFindingRef[];
   scope_status: EntityScopeStatus;
-  relevance?: "in_scope" | "review" | "likely_third_party";
+  effective_scope?: EffectiveScopeDecision | null;
+  exact_scope_include_ids?: string[];
+  exact_scope_exclusion_ids?: string[];
+  relevance?: "in_scope" | "excluded" | "review" | "likely_third_party";
   relevance_reason?: string | null;
+  review_disposition?: "kept" | "excluded" | null;
+  review_reason?: string | null;
+  reviewed_at?: string | null;
+}
+
+export interface EntityReviewTarget {
+  type: string;
+  value: string;
+}
+
+export interface EntityReviewImpactItem extends EntityReviewTarget {
+  depth: number;
+  reason: string;
+  scope_kind: ScopeKind | null;
+  exact_include_ids: string[];
+  exact_exclusion_ids: string[];
+  managed_exclusion_ids: string[];
+}
+
+export interface EntityReviewFindingImpactItem {
+  id: string;
+  title: string;
+  target: string | null;
+  source_tool: string | null;
+  current_exclusion: "out_of_scope" | "outside_roe" | null;
+  parent_type: string;
+  parent_value: string;
+  depth: number;
+}
+
+export interface EntityReviewPreview {
+  action: "keep" | "exclude";
+  cascade: boolean;
+  preview_sha256: string;
+  entities: EntityReviewImpactItem[];
+  findings: EntityReviewFindingImpactItem[];
+  finding_ids: string[];
+  exact_include_conflicts: number;
+  exclusions_to_create: number;
+  managed_exclusions_to_remove: number;
+  findings_to_mark_out_of_scope: number;
+  findings_to_restore: number;
+  truncated: boolean;
+}
+
+export interface EntityReviewApplyResult {
+  reviewed: number;
+  exclusions_created: number;
+  exact_includes_removed: number;
+  managed_exclusions_removed: number;
+  findings_marked_out_of_scope: number;
+  findings_restored: number;
+  preview_sha256: string;
 }
 
 export interface Observation {
@@ -1504,9 +1660,88 @@ export interface PlaybookDetail extends PlaybookRead {
   steps: PlaybookStepRead[];
 }
 
+export type PlaybookStepExecutionStatus =
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "stub"
+  | "cancelled";
+
+export interface EvidenceArtifactSummaryRead {
+  id: string;
+  finding_id: string | null;
+  sha256: string;
+  size_bytes: number;
+  truncated: boolean;
+  redacted: boolean;
+}
+
+export interface EvidenceArtifactRead extends EvidenceArtifactSummaryRead {
+  engagement_id: string;
+  playbook_run_id: string | null;
+  playbook_step_execution_id: string | null;
+  kind: string;
+  source_tool: string;
+  target: string;
+  payload: Record<string, unknown>;
+  captured_at: string;
+}
+
+export interface PlaybookStepExecutionRead {
+  id: string;
+  playbook_step_id: string | null;
+  sort_order: number;
+  tool_slug: string;
+  target: string;
+  transport: string;
+  attempt: number;
+  status: PlaybookStepExecutionStatus;
+  arguments: Record<string, unknown>;
+  started_at: string;
+  completed_at: string | null;
+  duration_ms: number | null;
+  error: string | null;
+  evidence: EvidenceArtifactSummaryRead | null;
+}
+
+export interface PlaybookExecutionPlanStepRead {
+  step_id: string;
+  sort_order: number;
+  tool_slug: string;
+  description: string | null;
+  transport: PlaybookExecutorKind;
+  risk: "passive" | "active";
+  credential: string | null;
+  arguments_sha256: string;
+  coverage_node_ids: string[];
+  target_count: number;
+  expands_targets: boolean;
+  target_source: string | null;
+  on_error: string;
+}
+
+export interface PlaybookExecutionPlanRead {
+  format_version: number;
+  plan_sha256: string;
+  playbook_id: string;
+  playbook_slug: string;
+  playbook_version: number;
+  playbook_name: string;
+  approval_required: boolean;
+  required_executor: PlaybookExecutorKind;
+  execution_paths: string[];
+  required_credentials: string[];
+  scope_subset: string[];
+  minimum_calls: number;
+  dynamic_expansion: boolean;
+  steps: PlaybookExecutionPlanStepRead[];
+  safety_notes: string[];
+}
+
 export interface PlaybookRunRead {
   id: string;
   engagement_id: string;
+  engagement_slug: string;
   playbook_id: string;
   playbook_slug: string;
   playbook_version: number;
@@ -1523,12 +1758,17 @@ export interface PlaybookRunRead {
   findings_high_severity: number;
   findings_total: number;
   last_error: string | null;
+  plan_sha256: string | null;
+  planned_at: string | null;
+  execution_plan: PlaybookExecutionPlanRead | null;
+  requested_by: string | null;
   approved_by: string | null;
   approved_at: string | null;
   approval_reason: string | null;
   rejected_by: string | null;
   rejected_at: string | null;
   rejection_reason: string | null;
+  step_executions: PlaybookStepExecutionRead[];
 }
 
 export interface PlaybookRunCreate {
@@ -1536,4 +1776,5 @@ export interface PlaybookRunCreate {
   playbook_version?: number;
   scope_subset: string[];
   executor?: PlaybookExecutorKind;
+  plan_sha256?: string;
 }

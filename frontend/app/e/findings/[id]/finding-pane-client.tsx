@@ -55,6 +55,7 @@ import { cn } from "@/lib/utils";
 import { LoaderOverlay } from "@/components/loader";
 import { GroupedItemsView, extractItems } from "@/components/grouped-items-view";
 import { CopyJsonButton } from "@/components/copy-json-button";
+import { FindingFollowUpPanel } from "@/components/finding-follow-up-panel";
 import type {
   Attachment,
   Finding,
@@ -261,7 +262,14 @@ function ActivityRail({ entries }: { entries: FindingActivityEntry[] }) {
   );
 }
 
-type WorkbenchTab = "notes" | "ai" | "evidence" | "details" | "tasks" | "tools";
+type WorkbenchTab =
+  | "notes"
+  | "ai"
+  | "evidence"
+  | "follow_up"
+  | "details"
+  | "tasks"
+  | "tools";
 
 const WORKBENCH_TABS: Array<{
   id: WorkbenchTab;
@@ -282,6 +290,11 @@ const WORKBENCH_TABS: Array<{
     id: "evidence",
     label: "Evidence",
     description: "Attachments and artifacts supporting the finding.",
+  },
+  {
+    id: "follow_up",
+    label: "Remediation",
+    description: "Client remediation updates, analyst retests, and follow-up history.",
   },
   {
     id: "details",
@@ -359,7 +372,7 @@ function FindingWorkbench({
         {tab === "ai" && <ChatRail findingId={finding.id} slug={slug} />}
         {tab === "notes" && (
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-            <DecisionPanel finding={finding} slug={slug} />
+            <DecisionPanel finding={finding} slug={slug} onNavigate={setTab} />
             <TagsPanel finding={finding} slug={slug} />
             <SummaryPanel finding={finding} slug={slug} />
             <CommentsPanel finding={finding} slug={slug} />
@@ -374,6 +387,7 @@ function FindingWorkbench({
             </div>
           </div>
         )}
+        {tab === "follow_up" && <FindingFollowUpPanel findingId={finding.id} />}
         {tab === "details" && (
           <div className="space-y-4">
             {slug && <ContextPromotionPanel finding={finding} slug={slug} />}
@@ -390,17 +404,32 @@ function FindingWorkbench({
   );
 }
 
-function DecisionPanel({ finding, slug }: { finding: Finding; slug: string | null }) {
+function DecisionPanel({
+  finding,
+  slug,
+  onNavigate,
+}: {
+  finding: Finding;
+  slug: string | null;
+  onNavigate: (tab: WorkbenchTab) => void;
+}) {
   const qc = useQueryClient();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [reason, setReason] = useState("");
 
   async function setStatus(status: FindingValidationStatus) {
+    const rationale = reason.trim();
+    if (!rationale) {
+      setError("Record the evidence or rationale behind this decision.");
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
-      const updated = await validateFinding(finding.id, status);
+      const updated = await validateFinding(finding.id, status, rationale);
       syncFindingCaches(qc, updated, slug);
+      setReason("");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -423,23 +452,37 @@ function DecisionPanel({ finding, slug }: { finding: Finding; slug: string | nul
 
   return (
     <section className="relative rounded-lg border border-border bg-card/40 p-4">
-      <h2 className="text-sm font-medium">Decision</h2>
+      <h2 className="text-sm font-medium">Validation decision</h2>
       <p className="mt-1 text-xs text-muted-foreground">
-        Validation and reportability controls for this finding.
+        Record what the evidence supports, then choose the next human-controlled step.
       </p>
       <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
         <InfoTile label="Status" value={STATUS_LABEL[finding.status]} />
         <InfoTile label="Reportability" value={finding.exclusion ?? "included"} />
       </div>
+      <label className="mt-3 block text-xs font-medium">
+        Decision rationale
+        <textarea
+          aria-label="Validation decision rationale"
+          value={reason}
+          maxLength={2_000}
+          onChange={(event) => setReason(event.target.value)}
+          placeholder="What evidence supports this decision, and what remains uncertain?"
+          className="mt-1 min-h-20 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+        />
+      </label>
       <div className="mt-3 flex flex-wrap gap-2">
-        <SmallButton disabled={busy} onClick={() => setStatus("validated")}>
+        <SmallButton disabled={busy || !reason.trim()} onClick={() => setStatus("validated")}>
           Validate
         </SmallButton>
-        <SmallButton disabled={busy} onClick={() => setStatus("rejected")}>
+        <SmallButton disabled={busy || !reason.trim()} onClick={() => setStatus("rejected")}>
           Reject
         </SmallButton>
-        <SmallButton disabled={busy} onClick={() => setStatus("false_positive")}>
+        <SmallButton disabled={busy || !reason.trim()} onClick={() => setStatus("false_positive")}>
           False positive
+        </SmallButton>
+        <SmallButton disabled={busy || !reason.trim()} onClick={() => setStatus("needs_review")}>
+          Needs more evidence
         </SmallButton>
         <SmallButton disabled={busy} onClick={() => setExclusion("out_of_scope")}>
           Out of scope
@@ -452,6 +495,23 @@ function DecisionPanel({ finding, slug }: { finding: Finding; slug: string | nul
             Clear exclusion
           </SmallButton>
         )}
+      </div>
+      <div className="mt-4 border-t border-border pt-3">
+        <p className="text-xs font-medium">Next action</p>
+        <div className="mt-2 flex flex-wrap gap-2">
+          <SmallButton disabled={busy} onClick={() => onNavigate("evidence")}>
+            Review evidence
+          </SmallButton>
+          <SmallButton disabled={busy} onClick={() => onNavigate("tasks")}>
+            Plan follow-up
+          </SmallButton>
+          <SmallButton disabled={busy} onClick={() => onNavigate("tools")}>
+            Execute safely
+          </SmallButton>
+          <SmallButton disabled={busy} onClick={() => onNavigate("follow_up")}>
+            Track remediation
+          </SmallButton>
+        </div>
       </div>
       {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
       <LoaderOverlay show={busy} size={0.8} label="Updating decision" />

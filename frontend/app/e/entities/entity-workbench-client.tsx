@@ -208,9 +208,23 @@ export function EntityWorkbenchPage() {
     canExclude,
     isIncluded,
   } = scopeActionState(
-    { type, value, scope_status: entity?.scope_status ?? "oos" },
+    {
+      type,
+      value,
+      scope_status: entity?.scope_status ?? "oos",
+      effective_scope: entity?.effective_scope ?? null,
+      exact_scope_include_ids: entity?.exact_scope_include_ids,
+      exact_scope_exclusion_ids: entity?.exact_scope_exclusion_ids,
+    },
     scope ?? [],
   );
+  const matchedScopeRule = entity?.effective_scope
+    ? (scope ?? []).find(
+        (item) =>
+          item.id === entity.effective_scope?.matched_exclusion_id ||
+          item.id === entity.effective_scope?.matched_include_id,
+      )
+    : undefined;
 
   const assignScope = async (disposition: "include" | "exclude") => {
     if (!canWrite || !scopeTarget || scopeSaving) return;
@@ -295,6 +309,17 @@ export function EntityWorkbenchPage() {
         <p className="mt-2 text-sm text-muted-foreground">
           Entity workbench: provenance, related findings, scope status, and next actions.
         </p>
+
+        {entity?.effective_scope && (
+          <div className="mt-4 rounded-md border border-border bg-muted/20 px-3 py-2 text-xs">
+            <p>{entity.effective_scope.reason}</p>
+            {matchedScopeRule && (
+              <p className="mt-1 font-mono text-muted-foreground">
+                Matched {matchedScopeRule.kind}: {matchedScopeRule.value}
+              </p>
+            )}
+          </div>
+        )}
 
         <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-border pt-4">
           <span className="mr-auto text-xs text-muted-foreground">

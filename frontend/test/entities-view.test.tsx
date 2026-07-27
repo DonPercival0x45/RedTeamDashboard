@@ -178,13 +178,54 @@ describe("EntitiesView", () => {
     );
     renderView(true);
 
+    expect(screen.getByRole("button", { name: "Live" })).toHaveAttribute(
+      "class",
+      expect.stringContaining("border-primary"),
+    );
+    expect(screen.queryByRole("button", { name: "All scope" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "abuse@godaddy.com" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "security@supplier.example" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Review other scope states" }));
+    fireEvent.click(screen.getByRole("button", { name: "All scope" }));
     expect(screen.getByRole("button", { name: "security@supplier.example" })).toBeInTheDocument();
     expect(screen.getByText("Advisory only — nothing is deleted or removed from evidence.")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Show collapsed vendor contacts" }));
     expect(screen.getByRole("button", { name: "abuse@godaddy.com" })).toBeInTheDocument();
     expect(screen.getByText("Likely vendor")).toBeInTheDocument();
+  });
+
+  it("uses the authoritative projection instead of a conflicting legacy status", () => {
+    vi.mocked(useEntities).mockReturnValue(
+      query([
+        {
+          type: "domain",
+          value: "denied.example",
+          count: 1,
+          severity: "medium",
+          first_seen: "2026-07-24T00:00:00Z",
+          last_seen: "2026-07-24T00:00:00Z",
+          findings: [],
+          scope_status: "live",
+          effective_scope: {
+            state: "excluded",
+            allowed: false,
+            reason_code: "matched_exclusion",
+            reason: "Excluded by domain rule denied.example.",
+            target_kind: "domain",
+            matched_include_id: "scope-parent",
+            matched_exclusion_id: "scope-deny",
+          },
+        },
+      ]) as never,
+    );
+    renderView(true);
+
+    expect(screen.queryByRole("button", { name: "denied.example" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Review other scope states" }));
+    fireEvent.click(screen.getByRole("button", { name: "Excluded" }));
+    expect(screen.getByRole("button", { name: "denied.example" })).toBeInTheDocument();
   });
 
   it("keeps guest entity management read-only", () => {
@@ -251,6 +292,8 @@ describe("EntitiesView", () => {
       ]) as never,
     );
     renderView(true);
+    fireEvent.click(screen.getByRole("button", { name: "Review other scope states" }));
+    fireEvent.click(screen.getByRole("button", { name: "All scope" }));
 
     fireEvent.click(
       screen.getByRole("checkbox", {
@@ -330,6 +373,8 @@ describe("EntitiesView", () => {
       ]) as never,
     );
     renderView(true);
+    fireEvent.click(screen.getByRole("button", { name: "Review other scope states" }));
+    fireEvent.click(screen.getByRole("button", { name: "All scope" }));
 
     fireEvent.click(
       screen.getByRole("button", { name: "Manage scope for blocked.example" }),

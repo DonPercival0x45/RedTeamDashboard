@@ -95,6 +95,36 @@ describe("V3ToolsPanel", () => {
     expect(picker).not.toHaveTextContent("blocked.example");
   });
 
+  it("hides an include shadowed by an authoritative exclusion projection", async () => {
+    useScope.mockReturnValue({
+      data: scope.map((item) =>
+        item.id === "scope-2"
+          ? {
+              ...item,
+              effective_scope: {
+                state: "excluded",
+                allowed: false,
+                reason_code: "excluded_domain",
+                reason: "matched exclusion",
+                target: item.value,
+                target_kind: "domain",
+                matched_include_id: null,
+                matched_exclusion_id: "scope-3",
+              },
+            }
+          : item,
+      ),
+      error: null,
+      isLoading: false,
+      isFetching: false,
+      refetch: vi.fn(),
+    });
+    renderPanel();
+    const picker = await screen.findByLabelText("Authorized target");
+    expect(picker).toHaveTextContent("foo.example");
+    expect(picker).not.toHaveTextContent("bar.example");
+  });
+
   it("runs the selected passive tool against the selected scope", async () => {
     renderPanel();
     const picker = await screen.findByLabelText("Authorized target");

@@ -565,6 +565,8 @@ def test_create_and_list_scope_items(
         headers=_headers(),
     )
     assert a.status_code == 201, a.text
+    assert a.json()["effective_scope"]["state"] == "included"
+    assert a.json()["effective_scope"]["matched_include_id"] == a.json()["id"]
     b = client.post(
         f"/engagements/{eng['slug']}/scope",
         json={
@@ -586,6 +588,10 @@ def test_create_and_list_scope_items(
     # v1.4.13: items created without a source default to "defined".
     assert {r["source"] for r in rows} == {"defined"}
     assert all(r["is_effectively_in_scope"] for r in rows)
+    assert {r["effective_scope"]["state"] for r in rows} == {"included"}
+    assert all(
+        r["effective_scope"]["reason_code"].startswith("included_") for r in rows
+    )
 
 
 def test_scope_listing_marks_includes_overridden_by_exclusions(
@@ -609,7 +615,13 @@ def test_scope_listing_marks_includes_overridden_by_exclusions(
     ).json()
     by_value = {row["value"]: row for row in rows}
     assert by_value["app.acme.com"]["is_effectively_in_scope"] is False
+    assert by_value["app.acme.com"]["effective_scope"]["state"] == "excluded"
+    assert (
+        by_value["app.acme.com"]["effective_scope"]["matched_exclusion_id"]
+        == by_value["acme.com"]["id"]
+    )
     assert by_value["acme.com"]["is_effectively_in_scope"] is False
+    assert by_value["acme.com"]["effective_scope"]["state"] == "excluded"
 
 
 def test_scope_item_source_found_round_trips(

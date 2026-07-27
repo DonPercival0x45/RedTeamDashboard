@@ -10,30 +10,24 @@ The extractor is deliberately conservative: it pulls from each finding's
 keys (subdomains/domains/hosts). It does not guess domains from arbitrary text,
 to avoid noise.
 """
+
 from __future__ import annotations
 
 import re
 from collections.abc import Iterable
 from typing import Any
 
-from app.models import Finding, ScopeKind, Severity
+from app.models import Finding, Severity
 from app.services import scope_matcher
+from app.services.effective_scope import (
+    EffectiveScopeDecision,
+    EffectiveScopeState,
+    exact_scope_rule_ids_for_entity,
+    project_entity,
+)
 from app.services.entity_identity import normalize_entity_type, normalize_entity_value
 
 EntityType = str  # email | ip | cidr | domain | subdomain | url | host
-
-# v2.19.0: entity-type → scope-kind mapping for Live/Legacy/OOS classification.
-# `host` and `url` map to a small set of scope kinds we try in order; the first
-# match wins. Email scope is exact-mailbox only.
-_ENTITY_KIND_LOOKUP: dict[str, tuple[ScopeKind, ...]] = {
-    "ip": (ScopeKind.ip,),
-    "cidr": (ScopeKind.cidr,),
-    "domain": (ScopeKind.domain,),
-    "subdomain": (ScopeKind.domain,),
-    "host": (ScopeKind.ip, ScopeKind.domain),
-    "url": (ScopeKind.url,),
-    "email": (ScopeKind.email,),
-}
 
 
 def classify_entity_scope_status(
@@ -42,7 +36,7 @@ def classify_entity_scope_status(
     current_scope_items: Iterable[scope_matcher.ScopeItemLike],
     retired_scope_values: set[str],
 ) -> str:
-    """Return "live" | "legacy" | "oos" for one entity.
+    """Return "live" | "excluded" | "legacy" | "oos" for one entity.
 
     - live: value matches at least one CURRENT ScopeItem via ScopeMatcher.
     - legacy: not currently in scope, but a scope.item.deleted audit event
@@ -52,16 +46,11 @@ def classify_entity_scope_status(
     Unknown entity types short-circuit to "oos". Email uses conservative
     exact-mailbox matching; a scoped domain never authorizes every mailbox.
     """
-    kinds = _ENTITY_KIND_LOOKUP.get(entity_type)
-    if not kinds:
-        return "oos"
-    items = list(current_scope_items)
-    decision = scope_matcher.evaluate_scope_candidates(
-        [(entity_value, kind) for kind in kinds],
-        items,
-    )
-    if decision.allowed:
+    decision = project_entity(entity_type, entity_value, current_scope_items)
+    if decision.state is EffectiveScopeState.included:
         return "live"
+    if decision.state is EffectiveScopeState.excluded:
+        return "excluded"
     if entity_value.strip().lower() in retired_scope_values:
         return "legacy"
     return "oos"
@@ -90,9 +79,7 @@ def include_scope_entities(
             continue
         kind = getattr(item, "kind", "")
         entity_type = normalize_entity_type(getattr(kind, "value", kind))
-        value = normalize_entity_value(
-            entity_type, getattr(item, "value", "")
-        )
+        value = normalize_entity_value(entity_type, getattr(item, "value", ""))
         if not entity_type or not value or (entity_type, value) in seen:
             continue
         created_at = getattr(item, "created_at", None)
@@ -136,6 +123,8 @@ def classify_entity_relevance(
     """
     if scope_status == "live":
         return "in_scope", None
+    if scope_status == "excluded":
+        return "excluded", "Explicitly excluded by engagement scope"
     if entity_type == "email" and "@" in entity_value:
         local_part = entity_value.rsplit("@", 1)[0].lower()
         if local_part in _VENDOR_ROLE_MAILBOXES:
@@ -157,21 +146,38 @@ def annotate_scope_status(
     for entity in entities:
         entity_type = str(entity.get("type") or "")
         entity_value = str(entity.get("value") or "")
-        scope_status = classify_entity_scope_status(
+        decision: EffectiveScopeDecision = project_entity(
             entity_type,
             entity_value,
             items,
-            retired_scope_values,
+        )
+        scope_status = (
+            "live"
+            if decision.state is EffectiveScopeState.included
+            else "excluded"
+            if decision.state is EffectiveScopeState.excluded
+            else "legacy"
+            if entity_value.strip().lower() in retired_scope_values
+            else "oos"
         )
         relevance, reason = classify_entity_relevance(
             entity_type,
             entity_value,
             scope_status,
         )
+        exact_include_ids, exact_exclusion_ids = exact_scope_rule_ids_for_entity(
+            entity_type,
+            entity_value,
+            items,
+        )
         entity["scope_status"] = scope_status
+        entity["effective_scope"] = decision
+        entity["exact_scope_include_ids"] = exact_include_ids
+        entity["exact_scope_exclusion_ids"] = exact_exclusion_ids
         entity["relevance"] = relevance
         entity["relevance_reason"] = reason
     return entities
+
 
 _EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 _IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
@@ -211,6 +217,8 @@ def _classify_target(target: str) -> tuple[EntityType, str] | None:
     t = target.strip()
     if not t:
         return None
+    if _EMAIL_RE.fullmatch(t):
+        return ("email", t.lower())
     if t.startswith(("http://", "https://")):
         return ("url", t)
     if _CIDR_RE.match(t):

@@ -109,6 +109,47 @@ class StatusEntity(BaseModel):
     synopsis: str | None = None
 
 
+class WorkerRunProgress(BaseModel):
+    id: UUID
+    playbook_name: str
+    engagement_slug: str
+    steps_total: int
+    steps_completed: int
+
+
+class WorkerSlotStatus(BaseModel):
+    id: UUID
+    slot: int
+    state: Literal["idle", "busy", "offline", "failed", "starting", "untracked"]
+    heartbeat_at: datetime | None = None
+    heartbeat_age_seconds: int | None = None
+    current_run: WorkerRunProgress | None = None
+    last_error: str | None = None
+
+
+class WorkerFailureRead(BaseModel):
+    id: UUID
+    occurred_at: datetime
+    severity: str
+    event_type: str
+    component: str | None = None
+    message: str
+    playbook_run_id: UUID | None = None
+
+
+class WorkerPoolStatus(BaseModel):
+    health: Literal["healthy", "degraded", "unavailable"]
+    capacity: int
+    online: int
+    busy: int
+    idle: int
+    pending_depth: int
+    oldest_pending_at: datetime | None = None
+    oldest_pending_age_seconds: int | None = None
+    slots: list[WorkerSlotStatus] = Field(default_factory=list)
+    recent_failures: list[WorkerFailureRead] = Field(default_factory=list)
+
+
 class EngagementStatusResponse(BaseModel):
     """Aggregate feed for one engagement. Newest first within each list;
     the frontend interleaves them on a single timeline."""
@@ -117,3 +158,4 @@ class EngagementStatusResponse(BaseModel):
     tasks: list[StatusEntity]
     approvals: list[StatusEntity]
     playbook_runs: list[StatusEntity] = Field(default_factory=list)
+    worker_pool: WorkerPoolStatus | None = None

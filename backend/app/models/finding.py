@@ -55,12 +55,9 @@ class FindingStatus(enum.StrEnum):
     findings start ``pending_validation`` and need analyst sign-off before
     the report includes them.
 
-    ``needs_review`` is reserved for the upcoming confirmation-tool flow:
-    when an analyst clicks Validate on a manual-tier finding and the
-    backend dispatches a follow-up tool run, a failed/dead-target
-    confirmation drops the row here instead of promoting it to
-    ``validated``. Today the enum value exists in the schema but no code
-    writes it yet.
+    ``needs_review`` records an analyst decision that more evidence or a
+    confirmation step is required. It does not dispatch a tool by itself;
+    any follow-up execution remains an explicit, separately approved action.
     """
 
     pending_validation = "pending_validation"

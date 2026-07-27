@@ -16,6 +16,7 @@ from uuid import UUID
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.models import FindingExclusion, FindingPhase, FindingStatus, Severity
+from app.schemas.scope import EffectiveScopeDecisionRead
 
 MAX_FINDING_SUMMARY_CHARS = 20_000
 MAX_FINDING_TAGS = 20
@@ -134,6 +135,11 @@ class FindingBulkUpdate(BaseModel):
     def _normalize_bulk_tags(cls, value: list[str] | None) -> list[str] | None:
         return _normalize_tags(value) if value is not None else None
 
+    @field_validator("reason")
+    @classmethod
+    def _normalize_bulk_reason(cls, value: str | None) -> str | None:
+        return _strip_nonblank(value, field_name="reason")
+
     @model_validator(mode="after")
     def _operation_has_value(self) -> FindingBulkUpdate:
         if self.operation == "set_exclusion":
@@ -148,6 +154,8 @@ class FindingBulkUpdate(BaseModel):
             "remove_tags": self.tags,
         }
         value = required[self.operation]
+        if self.operation == "set_status" and self.reason is None:
+            raise ValueError("operation 'set_status' requires a reason")
         if value is None:
             raise ValueError(f"operation {self.operation!r} requires its matching value")
         if self.operation in {"add_tags", "remove_tags"} and not self.tags:
@@ -338,7 +346,21 @@ class FindingValidate(BaseModel):
     # 'validated' promotes to report-eligible; the others remove it from the
     # report while keeping an audit trail.
     decision: FindingStatus = FindingStatus.validated
-    reason: str | None = None
+    reason: str = Field(min_length=1, max_length=2_000)
+
+    @field_validator("decision")
+    @classmethod
+    def _decision_is_terminal_or_review(cls, value: FindingStatus) -> FindingStatus:
+        if value is FindingStatus.pending_validation:
+            raise ValueError("pending_validation is not a validation decision")
+        return value
+
+    @field_validator("reason")
+    @classmethod
+    def _normalize_reason(cls, value: str) -> str:
+        normalized = _strip_nonblank(value, field_name="reason")
+        assert normalized is not None
+        return normalized
 
 
 class FindingSummaryCreate(BaseModel):
@@ -403,7 +425,13 @@ class EntityRead(BaseModel):
     # scope target. Legacy is only populated for deletions performed after
     # v2.19 shipped (older hard-deletes left no audit trace).
     scope_status: str = "oos"
+    effective_scope: EffectiveScopeDecisionRead | None = None
+    exact_scope_include_ids: list[UUID] = Field(default_factory=list)
+    exact_scope_exclusion_ids: list[UUID] = Field(default_factory=list)
     # Classification is advisory only: no entity or finding is deleted. The UI
     # may collapse conservative third-party patterns while keeping them reviewable.
     relevance: str = "review"
     relevance_reason: str | None = None
+    review_disposition: str | None = None
+    review_reason: str | None = None
+    reviewed_at: datetime | None = None

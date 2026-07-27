@@ -219,6 +219,19 @@ class PlaybookRun(Base, TimestampMixin):
     )
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Worker ownership is a recoverability lease, not authorization. A separate
+    # heartbeat transaction lets another worker truthfully fail abandoned runs
+    # after process/container death without replaying an uncertain tool call.
+    worker_id: Mapped[str | None] = mapped_column(String(100), index=True)
+    worker_heartbeat_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), index=True
+    )
+    # Immutable server-generated plan reviewed at kickoff. The digest lets the
+    # create endpoint reject a stale client preview rather than silently queue
+    # a different transport/target plan.
+    plan_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    plan_sha256: Mapped[str | None] = mapped_column(String(64), index=True)
+    planned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     steps_total: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default="0"
     )

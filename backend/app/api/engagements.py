@@ -85,8 +85,11 @@ from app.models import (
     Engagement,
     EngagementArchitecture,
     EngagementStatus,
+    EntityReview,
     Finding,
     FindingPhase,
+    FindingRemediationUpdate,
+    FindingRetest,
     FindingStatus,
     FindingSummary,
     Observation,
@@ -136,20 +139,30 @@ from app.schemas.finding import (
     RepairGroupsResult,
     _normalize_tags,
 )
+from app.schemas.finding_followup import (
+    FindingFollowUpRead,
+    FindingRemediationUpdateCreate,
+    FindingRemediationUpdateRead,
+    FindingRetestCreate,
+    FindingRetestRead,
+)
 from app.schemas.observation import ObservationCreate, ObservationRead
+from app.schemas.scope import EffectiveScopeDecisionRead
 from app.services import methodology as methodology_service
 from app.services.command_outbox import enqueue_command, publish_entry
+from app.services.effective_scope import project_scope_item
 from app.services.entities import (
     annotate_scope_status,
     extract_entities,
     include_scope_entities,
 )
+from app.services.entity_identity import entity_identity_key
 from app.services.findings import (
     get_active_finding_or_404,
     lock_active_finding_or_404,
 )
 from app.services.scope_import import parse_scope_text
-from app.services.scope_matcher import evaluate_scope, normalize_email
+from app.services.scope_matcher import normalize_email
 
 router = APIRouter()
 
@@ -756,10 +769,7 @@ def create_engagement(
             )
         except ValueError:
             resolved_architecture = EngagementArchitecture.legacy
-        if (
-            resolved_architecture is EngagementArchitecture.v3
-            and body.methodology_slug is None
-        ):
+        if resolved_architecture is EngagementArchitecture.v3 and body.methodology_slug is None:
             resolved_architecture = EngagementArchitecture.legacy
     eng = Engagement(
         name=body.name,
@@ -829,9 +839,7 @@ def create_engagement(
                 "include_count": include_count,
                 "exclusion_count": exclusion_count,
                 "intelligence_architecture": eng.intelligence_architecture.value,
-                "methodology_id": (
-                    str(eng.methodology_id) if eng.methodology_id else None
-                ),
+                "methodology_id": (str(eng.methodology_id) if eng.methodology_id else None),
                 "initial_scope": [
                     {
                         "kind": item.kind.value,
@@ -1092,6 +1100,19 @@ def flush_engagement(
 # ---------------------------------------------------------------------------
 
 
+def _scope_item_read(
+    item: ScopeItem,
+    scope_items: list[ScopeItem],
+) -> ScopeItemRead:
+    decision = project_scope_item(item, scope_items)
+    return ScopeItemRead.model_validate(item).model_copy(
+        update={
+            "is_effectively_in_scope": (not item.is_exclusion and decision.allowed),
+            "effective_scope": EffectiveScopeDecisionRead.model_validate(decision),
+        }
+    )
+
+
 @router.post(
     "/engagements/{slug}/scope",
     response_model=ScopeItemRead,
@@ -1102,7 +1123,7 @@ def create_scope_item(
     body: ScopeItemCreate,
     session: DbSession,
     user: CurrentNonGuestUser,
-) -> ScopeItem:
+) -> ScopeItemRead:
     eng = _get_engagement_or_404(session, slug)
     _reject_flushed(eng)
     item = ScopeItem(
@@ -1126,7 +1147,10 @@ def create_scope_item(
     )
     session.commit()
     session.refresh(item)
-    return item
+    rows = list(
+        session.execute(select(ScopeItem).where(ScopeItem.engagement_id == eng.id)).scalars()
+    )
+    return _scope_item_read(item, rows)
 
 
 @router.post(
@@ -1250,8 +1274,11 @@ def import_scope(
     for c in created:
         session.refresh(c)
 
+    all_scope_items = list(
+        session.execute(select(ScopeItem).where(ScopeItem.engagement_id == eng.id)).scalars()
+    )
     return ScopeImportResult(
-        created=[ScopeItemRead.model_validate(c) for c in created],
+        created=[_scope_item_read(c, all_scope_items) for c in created],
         errors=error_rows,
         duplicates=duplicates,
     )
@@ -1270,17 +1297,7 @@ def list_scope(slug: str, session: DbSession, _user: CurrentUser) -> list[ScopeI
             .order_by(ScopeItem.created_at)
         ).scalars()
     )
-    return [
-        ScopeItemRead.model_validate(item).model_copy(
-            update={
-                "is_effectively_in_scope": (
-                    not item.is_exclusion
-                    and evaluate_scope(item.value, item.kind, rows).allowed
-                )
-            }
-        )
-        for item in rows
-    ]
+    return [_scope_item_read(item, rows) for item in rows]
 
 
 @router.patch(
@@ -1293,7 +1310,7 @@ def update_scope_item(
     body: ScopeItemUpdate,
     session: DbSession,
     user: CurrentNonGuestUser,
-) -> ScopeItem:
+) -> ScopeItemRead:
     eng = _get_engagement_or_404(session, slug)
     _reject_flushed(eng)
     item = session.get(ScopeItem, scope_id)
@@ -1325,7 +1342,10 @@ def update_scope_item(
         )
     session.commit()
     session.refresh(item)
-    return item
+    rows = list(
+        session.execute(select(ScopeItem).where(ScopeItem.engagement_id == eng.id)).scalars()
+    )
+    return _scope_item_read(item, rows)
 
 
 @router.delete(
@@ -1487,15 +1507,18 @@ def list_entities(
     scope_items = list(
         session.execute(select(ScopeItem).where(ScopeItem.engagement_id == eng.id)).scalars()
     )
+    deleted_scope_events = session.execute(
+        select(AuditLog.payload).where(
+            AuditLog.engagement_id == eng.id,
+            AuditLog.event_type == "scope.item.deleted",
+        )
+    ).scalars()
     retired_values = {
-        v.strip().lower()
-        for v in session.execute(
-            select(AuditLog.payload["value"].astext).where(
-                AuditLog.engagement_id == eng.id,
-                AuditLog.event_type == "scope.item.deleted",
-            )
-        ).scalars()
-        if v
+        str(payload.get("value") or "").strip().lower()
+        for payload in deleted_scope_events
+        if isinstance(payload, dict)
+        and payload.get("value")
+        and not bool(payload.get("is_exclusion", False))
     }
     entities_with_scope = include_scope_entities(list(full), scope_items)
     result = annotate_scope_status(
@@ -1503,6 +1526,17 @@ def list_entities(
         current_scope_items=scope_items,
         retired_scope_values=retired_values,
     )
+    reviews = {
+        (row.entity_type, row.normalized_value): row
+        for row in session.execute(
+            select(EntityReview).where(EntityReview.engagement_id == eng.id)
+        ).scalars()
+    }
+    for entity in result:
+        review = reviews.get(entity_identity_key(entity.get("type"), entity.get("value")))
+        entity["review_disposition"] = review.disposition.value if review else None
+        entity["review_reason"] = review.reason if review else None
+        entity["reviewed_at"] = review.updated_at if review else None
     if type:
         result = [e for e in result if e.get("type") == type]
     if q:
@@ -1584,6 +1618,127 @@ def validate_finding(
     session.commit()
     session.refresh(finding)
     return _finding_to_read(finding)
+
+
+@router.get(
+    "/findings/{finding_id}/follow-up",
+    response_model=FindingFollowUpRead,
+)
+def get_finding_follow_up(
+    finding_id: uuid.UUID,
+    session: DbSession,
+    _user: CurrentUser,
+) -> FindingFollowUpRead:
+    """Return the canonical append-only remediation and retest history."""
+    get_active_finding_or_404(session, finding_id)
+    remediation = list(
+        session.execute(
+            select(FindingRemediationUpdate)
+            .where(FindingRemediationUpdate.finding_id == finding_id)
+            .order_by(
+                FindingRemediationUpdate.reported_at.desc(),
+                FindingRemediationUpdate.created_at.desc(),
+                FindingRemediationUpdate.id.desc(),
+            )
+        ).scalars()
+    )
+    retests = list(
+        session.execute(
+            select(FindingRetest)
+            .where(FindingRetest.finding_id == finding_id)
+            .order_by(
+                FindingRetest.tested_at.desc(),
+                FindingRetest.created_at.desc(),
+                FindingRetest.id.desc(),
+            )
+        ).scalars()
+    )
+    return FindingFollowUpRead(
+        latest_remediation=remediation[0] if remediation else None,
+        latest_retest=retests[0] if retests else None,
+        remediation_updates=remediation,
+        retests=retests,
+    )
+
+
+@router.post(
+    "/findings/{finding_id}/remediation-updates",
+    response_model=FindingRemediationUpdateRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_finding_remediation_update(
+    finding_id: uuid.UUID,
+    body: FindingRemediationUpdateCreate,
+    session: DbSession,
+    user: CurrentNonGuestUser,
+) -> FindingRemediationUpdate:
+    finding = _lock_active_finding_for_mutation(session, finding_id)
+    row = FindingRemediationUpdate(
+        finding_id=finding.id,
+        status=body.status,
+        note=body.note,
+        reported_at=body.reported_at or datetime.now(tz=UTC),
+        recorded_by_user_id=user.id,
+    )
+    session.add(row)
+    session.flush()
+    session.add(
+        AuditLog(
+            engagement_id=finding.engagement_id,
+            actor_type=ActorType.user,
+            actor_id=str(user.id),
+            event_type="finding.remediation_updated",
+            payload={
+                "finding_id": str(finding.id),
+                "remediation_update_id": str(row.id),
+                "status": body.status.value,
+                "reported_at": row.reported_at.isoformat(),
+            },
+        )
+    )
+    session.commit()
+    session.refresh(row)
+    return row
+
+
+@router.post(
+    "/findings/{finding_id}/retests",
+    response_model=FindingRetestRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_finding_retest(
+    finding_id: uuid.UUID,
+    body: FindingRetestCreate,
+    session: DbSession,
+    user: CurrentNonGuestUser,
+) -> FindingRetest:
+    finding = _lock_active_finding_for_mutation(session, finding_id)
+    row = FindingRetest(
+        finding_id=finding.id,
+        outcome=body.outcome,
+        note=body.note,
+        tested_at=body.tested_at or datetime.now(tz=UTC),
+        performed_by_user_id=user.id,
+    )
+    session.add(row)
+    session.flush()
+    session.add(
+        AuditLog(
+            engagement_id=finding.engagement_id,
+            actor_type=ActorType.user,
+            actor_id=str(user.id),
+            event_type="finding.retest_recorded",
+            payload={
+                "finding_id": str(finding.id),
+                "retest_id": str(row.id),
+                "outcome": body.outcome.value,
+                "tested_at": row.tested_at.isoformat(),
+            },
+        )
+    )
+    session.commit()
+    session.refresh(row)
+    return row
 
 
 # ---------------------------------------------------------------------------
@@ -4103,9 +4258,7 @@ def _require_user_provider_key(
     )
 
     try:
-        resolved = resolve_for_user(
-            redis_client, user_id=user_id, provider=provider
-        )
+        resolved = resolve_for_user(redis_client, user_id=user_id, provider=provider)
     except NoProviderKeyError as exc:
         raise HTTPException(
             status_code=400,
@@ -4219,9 +4372,7 @@ def start_run(
     elif body.model is not None:
         # Pin the MRU row selected at enqueue so worker delay/rotation cannot
         # switch credentials behind the analyst's explicit provider choice.
-        chosen_key_id = _require_user_provider_key(
-            redis_client, user_id=user.id, provider=provider
-        )
+        chosen_key_id = _require_user_provider_key(redis_client, user_id=user.id, provider=provider)
     effective_model = RunModel(provider=provider, name=model_name, key_id=chosen_key_id)
 
     thread_id = uuid.uuid4()

@@ -2,6 +2,7 @@
 
 Alembic's env.py imports this module so autogenerate can see all tables.
 """
+
 from app.models.agent_execution import (
     AgentExecution,
     AgentExecutionStatus,
@@ -61,6 +62,12 @@ from app.models.engagement_strategy import (
 from app.models.entity import Entity
 from app.models.entity_finding_link import EntityFindingLink
 from app.models.entity_group import EntityGroup, EntityGroupMember
+from app.models.entity_review import (
+    EntityReview,
+    EntityReviewDisposition,
+    EntityReviewFindingLink,
+    EntityReviewScopeLink,
+)
 from app.models.finding import (
     Finding,
     FindingExclusion,
@@ -68,6 +75,12 @@ from app.models.finding import (
     FindingPhase,
     FindingStatus,
     Severity,
+)
+from app.models.finding_followup import (
+    FindingRemediationStatus,
+    FindingRemediationUpdate,
+    FindingRetest,
+    FindingRetestOutcome,
 )
 from app.models.finding_summary import FindingSummary
 from app.models.integration import Integration, IntegrationPurpose, IntegrationType
@@ -90,6 +103,11 @@ from app.models.playbook import (
     PlaybookRun,
     PlaybookRunStatus,
     PlaybookStep,
+)
+from app.models.playbook_execution import (
+    EvidenceArtifact,
+    PlaybookStepExecution,
+    PlaybookStepExecutionStatus,
 )
 from app.models.processing_receipt import ProcessingReceipt, ProcessingReceiptStatus
 from app.models.roadmap_suggestion import (
@@ -114,6 +132,11 @@ from app.models.tool import (
     ToolTaskKind,
 )
 from app.models.user import User, UserRole
+from app.models.worker_observability import (
+    WorkerComponent,
+    WorkerInstance,
+    WorkerOperationalEvent,
+)
 
 __all__ = [
     "APIKey",
@@ -154,12 +177,21 @@ __all__ = [
     "EngagementTimeFrame",
     "EngagementWorkState",
     "Entity",
+    "EvidenceArtifact",
     "EntityFindingLink",
     "EntityGroup",
     "EntityGroupMember",
+    "EntityReview",
+    "EntityReviewDisposition",
+    "EntityReviewFindingLink",
+    "EntityReviewScopeLink",
     "Finding",
     "FindingExclusion",
     "FindingOrigin",
+    "FindingRemediationStatus",
+    "FindingRemediationUpdate",
+    "FindingRetest",
+    "FindingRetestOutcome",
     "FindingPhase",
     "FindingStatus",
     "FindingSummary",
@@ -187,6 +219,8 @@ __all__ = [
     "PlaybookRun",
     "PlaybookRunStatus",
     "PlaybookStep",
+    "PlaybookStepExecution",
+    "PlaybookStepExecutionStatus",
     "ProcessingReceipt",
     "ProcessingReceiptStatus",
     "RiskLevel",
@@ -224,6 +258,9 @@ __all__ = [
     "WorkItemResult",
     "WorkItemResultState",
     "WorkItemStatus",
+    "WorkerComponent",
+    "WorkerInstance",
+    "WorkerOperationalEvent",
     "scope_satisfies",
     "snapshot_payload",
 ]

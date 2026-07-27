@@ -67,13 +67,13 @@ async def _read_some(reader: asyncio.StreamReader) -> bytes:
         return b""
 
 
-async def _grab_banner(ip: str, port: int) -> str | None:
+async def _grab_banner(ip: str, port: int) -> tuple[bool, str | None]:
     try:
         reader, writer = await asyncio.wait_for(
             asyncio.open_connection(ip, port), CONNECT_TIMEOUT_S
         )
     except (OSError, TimeoutError):
-        return None
+        return False, None
     try:
         data = await _read_some(reader)
         if not data:
@@ -82,7 +82,7 @@ async def _grab_banner(ip: str, port: int) -> str | None:
                 writer.write(b"\r\n")
                 await writer.drain()
             data = await _read_some(reader)
-        return _clean(data) or None
+        return True, _clean(data) or None
     finally:
         await _close(writer)
 
@@ -145,6 +145,10 @@ async def _http_info(ip: str, port: int, *, tls: bool) -> dict[str, Any] | None:
             timeout=HTTP_TIMEOUT_S,
             verify=False,
             follow_redirects=False,
+            # Service detection must probe the authorized target directly.
+            # Environment proxies can answer on behalf of a closed port and
+            # would turn the proxy response into a false service finding.
+            trust_env=False,
             headers={"User-Agent": "redteam-dashboard/0.0.1 (+phase1)"},
         ) as client:
             resp = await client.get(url)
@@ -237,12 +241,19 @@ def _identify(
 
 
 async def _probe_port(ip: str, port: int, sni: str | None) -> dict[str, Any]:
-    banner = await _grab_banner(ip, port)
+    connected, banner = await _grab_banner(ip, port)
     tls = await _tls_info(ip, port, sni)
     http = await _http_info(ip, port, tls=bool(tls))
-    service, product = _identify(port, banner, http, tls)
+    is_open = connected or tls is not None or http is not None
+    service, product = (
+        _identify(port, banner, http, tls) if is_open else (None, None)
+    )
 
-    entry: dict[str, Any] = {"port": port, "service": service}
+    entry: dict[str, Any] = {
+        "port": port,
+        "open": is_open,
+        "service": service,
+    }
     if product:
         entry["product"] = product
     if banner:
@@ -307,12 +318,7 @@ def service_detect_impl(args: Mapping[str, Any]) -> ToolResult:
     # pollute the findings table.
     findings: list[dict[str, Any]] = []
     for probe in services:
-        if not (
-            probe.get("banner")
-            or probe.get("tls")
-            or probe.get("http")
-            or probe.get("service")
-        ):
+        if not probe.get("open"):
             continue
         port = int(probe["port"])
         severity, signals = _severity_for_probe(port, probe)

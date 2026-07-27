@@ -11,8 +11,22 @@
 // populated from wigle findings. Each wigle finding = one collapsible
 // section per geo bucket; inner table lists SSID / BSSID / enc / channel.
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import dynamic from "next/dynamic";
+import Link from "next/link";
+import {
+  AlertTriangle,
+  ArrowRight,
+  BookOpenText,
+  Box,
+  Clock3,
+  ExternalLink,
+  FileSearch,
+  GitBranch,
+  Globe2,
+  Search,
+  ShieldCheck,
+} from "lucide-react";
 import {
   Card,
   CardContent,
@@ -21,9 +35,37 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { useFindings } from "@/lib/hooks";
-import type { Finding } from "@/lib/types";
+import { Input } from "@/components/ui/input";
+import { EntityReviewDialog } from "@/components/entity-review-dialog";
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "@/components/ui/tabs";
+import {
+  useEngagement,
+  useEntities,
+  useFindings,
+  useObservations,
+  usePlaybookRuns,
+  useStoredEntities,
+} from "@/lib/hooks";
+import type {
+  Entity,
+  Finding,
+  Observation,
+  PlaybookRunRead,
+  StoredEntity,
+} from "@/lib/types";
 import type { MapPoint } from "@/components/leaflet-map";
+import { effectiveScopeState } from "@/lib/effective-scope";
+import { engagementEntityHref } from "@/lib/engagement-links";
+import {
+  buildDossierTimeline,
+  extractDossierRelationships,
+  type DossierTimelineItem,
+} from "@/lib/dossier";
 
 const LeafletMap = dynamic(
   () => import("@/components/leaflet-map").then((m) => m.LeafletMap),
@@ -36,6 +78,12 @@ const LeafletMap = dynamic(
 );
 
 type DossierSource = "freeipapi" | "ipinfo";
+
+const EMPTY_FINDINGS: Finding[] = [];
+const EMPTY_ENTITIES: Entity[] = [];
+const EMPTY_STORED_ENTITIES: StoredEntity[] = [];
+const EMPTY_OBSERVATIONS: Observation[] = [];
+const EMPTY_RUNS: PlaybookRunRead[] = [];
 
 interface DossierEntry {
   ip: string;
@@ -261,8 +309,83 @@ function nearestEnrichedIp(
   return best?.entry ?? null;
 }
 
+const SEVERITY_STYLE: Record<string, string> = {
+  critical: "border-red-500/50 bg-red-500/10 text-red-700 dark:text-red-200",
+  high: "border-orange-500/50 bg-orange-500/10 text-orange-700 dark:text-orange-200",
+  medium: "border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-200",
+  low: "border-sky-500/50 bg-sky-500/10 text-sky-700 dark:text-sky-200",
+  info: "text-muted-foreground",
+};
+
+const TIMELINE_STYLE: Record<
+  DossierTimelineItem["trust"],
+  { label: string; className: string }
+> = {
+  observed: {
+    label: "Observed",
+    className: "border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-200",
+  },
+  analyst: {
+    label: "Analyst",
+    className: "border-violet-500/40 bg-violet-500/10 text-violet-700 dark:text-violet-200",
+  },
+  execution: {
+    label: "Execution",
+    className: "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200",
+  },
+  record: {
+    label: "Finding record",
+    className: "border-border bg-muted/40 text-muted-foreground",
+  },
+};
+
+function formatDateTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(date);
+}
+
+function relationshipVerb(kind: string): string {
+  if (kind === "aliases_to") return "aliases to";
+  if (kind === "delegates_to") return "delegates to";
+  return "resolves to";
+}
+
 export function DossierView({ slug }: { slug: string }) {
-  const { data: findings = [], error, isLoading } = useFindings(slug);
+  const engagementQuery = useEngagement(slug);
+  const findingsQuery = useFindings(slug);
+  const entitiesQuery = useEntities(slug);
+  const storedEntitiesQuery = useStoredEntities(slug);
+  const observationsQuery = useObservations(slug);
+  const runsQuery = usePlaybookRuns(slug);
+  const engagement = engagementQuery.data;
+  const findings = findingsQuery.data ?? EMPTY_FINDINGS;
+  const entities = entitiesQuery.data ?? EMPTY_ENTITIES;
+  const storedEntities = storedEntitiesQuery.data ?? EMPTY_STORED_ENTITIES;
+  const observations = observationsQuery.data ?? EMPTY_OBSERVATIONS;
+  const runs = runsQuery.data ?? EMPTY_RUNS;
+  const dossierQueries = [
+    engagementQuery,
+    findingsQuery,
+    entitiesQuery,
+    storedEntitiesQuery,
+    observationsQuery,
+    runsQuery,
+  ];
+  const dossierLoading = dossierQueries.some((query) => query.isLoading);
+  const dossierError = dossierQueries.find((query) => query.error)?.error;
+  const dossierReady = !dossierLoading && !dossierError;
+  const [showAllTimeline, setShowAllTimeline] = useState(false);
+  const [tab, setTab] = useState("overview");
+  const [entityQuery, setEntityQuery] = useState("");
+  const [entityFilter, setEntityFilter] = useState<"validation" | "all">("validation");
+  const [relationshipQuery, setRelationshipQuery] = useState("");
+  const [timelineQuery, setTimelineQuery] = useState("");
+  const [selectedEntityKeys, setSelectedEntityKeys] = useState<Set<string>>(new Set());
+  const [reviewAction, setReviewAction] = useState<"keep" | "exclude" | null>(null);
 
   const entries = useMemo(() => {
     const map = new Map<string, DossierEntry>();
@@ -290,31 +413,622 @@ export function DossierView({ slug }: { slug: string }) {
     [findings, entries],
   );
 
+  const relationships = useMemo(
+    () => extractDossierRelationships(findings),
+    [findings],
+  );
+  const timeline = useMemo(
+    () => buildDossierTimeline(findings, observations, runs, relationships),
+    [findings, observations, relationships, runs],
+  );
+  const findingStatusById = useMemo(
+    () => new Map(findings.map((finding) => [finding.id, finding.status])),
+    [findings],
+  );
+  const rankedEntities = useMemo(() => {
+    const severityRank: Record<string, number> = {
+      info: 0,
+      low: 1,
+      medium: 2,
+      high: 3,
+      critical: 4,
+    };
+    return entities
+      .map((entity) => {
+        const pendingFindingCount = entity.findings.filter((finding) => {
+          const status = findingStatusById.get(finding.id);
+          return status === "pending_validation" || status === "needs_review";
+        }).length;
+        const dispositionResolved =
+          effectiveScopeState(entity) === "excluded" ||
+          entity.review_disposition === "excluded" ||
+          entity.review_disposition === "kept";
+        const needsValidation =
+          !dispositionResolved &&
+          (pendingFindingCount > 0 ||
+            entity.relevance === "review" ||
+            entity.scope_status === "legacy");
+        const validationPriority =
+          pendingFindingCount * 100 +
+          (entity.relevance === "review" ? 50 : 0) +
+          (entity.scope_status === "legacy" ? 25 : 0) +
+          (severityRank[entity.severity] ?? 0);
+        return {
+          entity,
+          pendingFindingCount,
+          needsValidation,
+          validationPriority,
+        };
+      })
+      .sort(
+        (a, b) =>
+          Number(b.needsValidation) - Number(a.needsValidation) ||
+          b.validationPriority - a.validationPriority ||
+          b.entity.count - a.entity.count ||
+          a.entity.value.localeCompare(b.entity.value),
+      );
+  }, [entities, findingStatusById]);
+  const reviewEntities = rankedEntities.filter((row) => row.needsValidation);
+  const entityReviewTargets = useMemo(
+    () =>
+      rankedEntities
+        .filter((row) =>
+          selectedEntityKeys.has(`${row.entity.type}\u0000${row.entity.value}`),
+        )
+        .map((row) => ({ type: row.entity.type, value: row.entity.value })),
+    [rankedEntities, selectedEntityKeys],
+  );
+  const normalizedEntityQuery = entityQuery.trim().toLowerCase();
+  const visibleEntities = rankedEntities.filter(
+    (row) =>
+      (entityFilter === "all" || row.needsValidation) &&
+      (!normalizedEntityQuery ||
+        row.entity.value.toLowerCase().includes(normalizedEntityQuery) ||
+        row.entity.type.toLowerCase().includes(normalizedEntityQuery)),
+  );
+  const normalizedRelationshipQuery = relationshipQuery.trim().toLowerCase();
+  const visibleRelationships = relationships.filter(
+    (relationship) =>
+      !normalizedRelationshipQuery ||
+      relationship.sourceValue.toLowerCase().includes(normalizedRelationshipQuery) ||
+      relationship.targetValue.toLowerCase().includes(normalizedRelationshipQuery) ||
+      relationship.findingTitle.toLowerCase().includes(normalizedRelationshipQuery),
+  );
+  const normalizedTimelineQuery = timelineQuery.trim().toLowerCase();
+  const filteredTimeline = timeline.filter(
+    (item) =>
+      !normalizedTimelineQuery ||
+      item.title.toLowerCase().includes(normalizedTimelineQuery) ||
+      item.description.toLowerCase().includes(normalizedTimelineQuery) ||
+      item.sourceLabel.toLowerCase().includes(normalizedTimelineQuery),
+  );
+  const visibleTimeline = showAllTimeline
+    ? filteredTimeline
+    : filteredTimeline.slice(0, 12);
+  const enrichedIps = useMemo(
+    () => new Set(entries.map((entry) => entry.ip)),
+    [entries],
+  );
+  const missingIpContext = entities.filter(
+    (entity) => entity.type === "ip" && !enrichedIps.has(entity.value),
+  );
+  const pendingFindings = findings.filter(
+    (finding) =>
+      finding.status === "pending_validation" || finding.status === "needs_review",
+  );
+  const incompleteRuns = runs.filter(
+    (run) => run.status === "failed" || run.status === "partial",
+  );
+  const validatedFindings = findings.filter(
+    (finding) => finding.status === "validated",
+  ).length;
+
   return (
     <div className="space-y-6">
-      <div className="space-y-1">
-        <h2 className="text-base font-medium">Dossier</h2>
-        <p className="text-xs text-muted-foreground">
-          IP intel inventory — geo (freeipapi) plus ASN, netblock owner, and
-          hosting/VPN/proxy/Tor flags (ipinfo). One row per IP; each source
-          contributes columns it knows. Run the tools from Scope, or use the
-          quick actions on an IP entity.
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="space-y-1">
+          <div className="flex items-center gap-2">
+            <BookOpenText className="h-5 w-5 text-primary" aria-hidden="true" />
+            <h2 className="text-lg font-semibold">Engagement dossier</h2>
+          </div>
+          <p className="max-w-3xl text-sm text-muted-foreground">
+            The evidence-backed story of {engagement?.name ?? slug}: what was
+            observed, how the pieces connect, and which questions still need an
+            analyst. Open any citation to inspect the underlying entity,
+            finding, or execution.
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <Badge variant="outline" className="gap-1 text-muted-foreground">
+            <ShieldCheck className="h-3 w-3" aria-hidden="true" />
+            Evidence-backed
+          </Badge>
+          <Badge variant="outline" className="gap-1 text-muted-foreground">
+            <Clock3 className="h-3 w-3" aria-hidden="true" />
+            Live projection
+          </Badge>
+        </div>
       </div>
 
-      {error && (
-        <p className="text-sm text-critical">
-          {error instanceof Error ? error.message : String(error)}
-        </p>
+      {dossierLoading && (
+        <Card>
+          <CardContent className="p-6 text-sm text-muted-foreground" role="status">
+            Assembling the engagement narrative and provenance…
+          </CardContent>
+        </Card>
       )}
 
+      {dossierError && (
+        <Card className="border-critical/50">
+          <CardContent className="p-6" role="alert">
+            <p className="font-medium text-critical">The dossier is incomplete.</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Narrative counts and gap conclusions are hidden until every
+              required evidence source can be loaded. {dossierError instanceof Error ? dossierError.message : String(dossierError)}
+            </p>
+          </CardContent>
+        </Card>
+      )}
+
+      {dossierReady && (
+        <Tabs value={tab} onValueChange={setTab} className="space-y-4">
+          <div className="border-b border-border bg-background py-3 lg:sticky lg:top-0 lg:z-10">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+        {[
+          { label: "Observed entities", value: entities.length, Icon: Box },
+          { label: "Needs validation", value: reviewEntities.length, Icon: AlertTriangle },
+          { label: "Findings", value: findings.length, Icon: FileSearch },
+          { label: "Evidence paths", value: relationships.length, Icon: GitBranch },
+          { label: "Playbook runs", value: runs.length, Icon: Search },
+        ].map(({ label, value, Icon }) => (
+          <Card key={label}>
+            <CardContent className="flex items-center justify-between p-4">
+              <div>
+                <p className="text-2xl font-semibold tabular-nums">{value}</p>
+                <p className="text-xs text-muted-foreground">{label}</p>
+              </div>
+              <Icon className="h-5 w-5 text-muted-foreground" aria-hidden="true" />
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+            <TabsList className="mt-3 border-b-0">
+              <TabsTrigger value="overview">Overview</TabsTrigger>
+              <TabsTrigger value="relationships">Relationships</TabsTrigger>
+              <TabsTrigger value="entities" className="gap-1.5">
+                Entity review
+                {reviewEntities.length > 0 && (
+                  <Badge className="h-5 min-w-5 justify-center px-1.5 text-[10px]" variant="destructive">
+                    {reviewEntities.length}
+                  </Badge>
+                )}
+              </TabsTrigger>
+              <TabsTrigger value="timeline">Timeline</TabsTrigger>
+              <TabsTrigger value="infrastructure">Infrastructure</TabsTrigger>
+              <TabsTrigger value="research">Research gaps</TabsTrigger>
+            </TabsList>
+          </div>
+
+      <TabsContent value="overview" className="space-y-4">
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <BookOpenText className="h-4 w-4" aria-hidden="true" />
+            Current picture
+          </CardTitle>
+          <CardDescription>
+            Deterministic summary of the records currently in the engagement.
+            It does not change scope or promote an observation into a finding.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3 text-sm leading-6">
+          {engagement?.description && <p>{engagement.description}</p>}
+          <p>
+            The dashboard currently correlates <strong>{entities.length}</strong>{" "}
+            entities across <strong>{findings.length}</strong> findings. Of those
+            findings, <strong>{validatedFindings}</strong> are validated and{" "}
+            <strong>{pendingFindings.length}</strong> still require review.
+          </p>
+          {relationships.length > 0 && (
+            <p>
+              Structured DNS evidence supplies <strong>{relationships.length}</strong>{" "}
+              explainable relationship {relationships.length === 1 ? "path" : "paths"}.
+              These paths describe what a tool observed; they do not establish
+              ownership or authorization.
+            </p>
+          )}
+          {storedEntities.length > 0 && (
+            <p className="text-xs text-muted-foreground">
+              {storedEntities.length} persisted/imported entities are retained
+              alongside the live finding-derived inventory.
+            </p>
+          )}
+        </CardContent>
+      </Card>
+      </TabsContent>
+
+      <TabsContent value="relationships" className="space-y-4">
+      {relationships.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <GitBranch className="h-4 w-4" aria-hidden="true" />
+              How the infrastructure connects
+            </CardTitle>
+            <CardDescription>
+              Relationships extracted only from structured DNS evidence. Every
+              path links back to the finding that recorded it.
+            </CardDescription>
+            <div className="relative max-w-md">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+              <Input
+                type="search"
+                value={relationshipQuery}
+                onChange={(event) => setRelationshipQuery(event.target.value)}
+                aria-label="Search infrastructure relationships"
+                placeholder="Find a host, IP, or source finding"
+                className="pl-8"
+              />
+            </div>
+          </CardHeader>
+          <CardContent className="grid max-h-[60vh] gap-2 overflow-y-auto lg:grid-cols-2">
+            {visibleRelationships.map((relationship) => (
+              <div
+                key={relationship.id}
+                className="rounded-lg border border-border bg-muted/15 p-3"
+              >
+                <div className="flex min-w-0 items-center gap-2 text-sm">
+                  <Link
+                    href={engagementEntityHref(slug, {
+                      type: relationship.sourceType,
+                      value: relationship.sourceValue,
+                    })}
+                    className="truncate font-mono text-xs hover:underline"
+                  >
+                    {relationship.sourceValue}
+                  </Link>
+                  <span className="shrink-0 text-[10px] text-muted-foreground">
+                    {relationshipVerb(relationship.kind)}
+                  </span>
+                  <ArrowRight className="h-3 w-3 shrink-0 text-muted-foreground" aria-hidden="true" />
+                  <Link
+                    href={engagementEntityHref(slug, {
+                      type: relationship.targetType,
+                      value: relationship.targetValue,
+                    })}
+                    className="truncate font-mono text-xs font-medium hover:underline"
+                  >
+                    {relationship.targetValue}
+                  </Link>
+                </div>
+                <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-[11px] text-muted-foreground">
+                  <span>{formatDateTime(relationship.observedAt)}</span>
+                  <Link
+                    href={`/e/findings/${relationship.findingId}?slug=${encodeURIComponent(slug)}`}
+                    className="inline-flex items-center gap-1 hover:text-foreground hover:underline"
+                  >
+                    Evidence
+                    <ExternalLink className="h-3 w-3" aria-hidden="true" />
+                  </Link>
+                </div>
+              </div>
+            ))}
+            {visibleRelationships.length === 0 && (
+              <p className="text-sm text-muted-foreground">No relationships match that search.</p>
+            )}
+          </CardContent>
+        </Card>
+      )}
+      </TabsContent>
+
+      <TabsContent value="entities" className="space-y-4">
+      {rankedEntities.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <AlertTriangle className="h-4 w-4" aria-hidden="true" />
+              Entity validation queue
+            </CardTitle>
+            <CardDescription>
+              Entities requiring analyst judgment are always ordered first.
+              Relevance labels are advisory and never authorize a target.
+            </CardDescription>
+            <div className="flex flex-wrap gap-2">
+              <div className="relative min-w-60 flex-1">
+                <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+                <Input
+                  type="search"
+                  value={entityQuery}
+                  onChange={(event) => setEntityQuery(event.target.value)}
+                  aria-label="Search entity validation queue"
+                  placeholder="Find an entity by value or type"
+                  className="pl-8"
+                />
+              </div>
+              <div className="flex overflow-hidden rounded-md border border-border">
+                <button
+                  type="button"
+                  aria-pressed={entityFilter === "validation"}
+                  onClick={() => setEntityFilter("validation")}
+                  className={entityFilter === "validation" ? "bg-muted px-3 py-2 text-xs font-medium" : "px-3 py-2 text-xs text-muted-foreground"}
+                >
+                  Needs validation ({reviewEntities.length})
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={entityFilter === "all"}
+                  onClick={() => setEntityFilter("all")}
+                  className={entityFilter === "all" ? "border-l border-border bg-muted px-3 py-2 text-xs font-medium" : "border-l border-border px-3 py-2 text-xs text-muted-foreground"}
+                >
+                  All ({rankedEntities.length})
+                </button>
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-muted/20 px-3 py-2">
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setSelectedEntityKeys(
+                      new Set(
+                        visibleEntities.map(
+                          (row) => `${row.entity.type}\u0000${row.entity.value}`,
+                        ),
+                      ),
+                    )
+                  }
+                  className="rounded border border-border px-2 py-1 hover:text-foreground"
+                >
+                  Select all matching ({visibleEntities.length})
+                </button>
+                {selectedEntityKeys.size > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setSelectedEntityKeys(new Set())}
+                    className="hover:text-foreground hover:underline"
+                  >
+                    Clear
+                  </button>
+                )}
+                <span>{entityReviewTargets.length} selected</span>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  disabled={entityReviewTargets.length === 0}
+                  onClick={() => setReviewAction("keep")}
+                  className="rounded-md border border-border px-3 py-1.5 text-xs font-medium hover:bg-muted disabled:opacity-50"
+                >
+                  Keep reviewed
+                </button>
+                <button
+                  type="button"
+                  disabled={entityReviewTargets.length === 0}
+                  onClick={() => setReviewAction("exclude")}
+                  className="rounded-md border border-amber-500/50 px-3 py-1.5 text-xs font-medium text-amber-800 hover:bg-amber-500/10 disabled:opacity-50 dark:text-amber-200"
+                >
+                  Exclude…
+                </button>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="grid max-h-[60vh] gap-2 overflow-y-auto md:grid-cols-2 xl:grid-cols-3">
+            {visibleEntities.map(({ entity, pendingFindingCount, needsValidation }) => {
+              const selectionKey = `${entity.type}\u0000${entity.value}`;
+              return (
+              <div
+                key={`${entity.type}:${entity.value}`}
+                className="relative rounded-lg border border-border transition-colors hover:bg-muted/35"
+              >
+                <input
+                  type="checkbox"
+                  aria-label={`Select ${entity.type} ${entity.value}`}
+                  checked={selectedEntityKeys.has(selectionKey)}
+                  onChange={(event) => {
+                    const next = new Set(selectedEntityKeys);
+                    if (event.target.checked) next.add(selectionKey);
+                    else next.delete(selectionKey);
+                    setSelectedEntityKeys(next);
+                  }}
+                  className="absolute left-3 top-3 z-[1]"
+                />
+                <Link
+                  href={engagementEntityHref(slug, entity)}
+                  className="block p-3 pl-9 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="truncate font-mono text-xs font-medium">{entity.value}</p>
+                    <p className="mt-1 text-[11px] text-muted-foreground">
+                      {entity.type} · {entity.count} finding{entity.count === 1 ? "" : "s"}
+                    </p>
+                  </div>
+                  <div className="flex flex-col items-end gap-1">
+                    {needsValidation && (
+                      <Badge className="bg-amber-500/15 text-amber-800 dark:text-amber-200" variant="outline">
+                        Needs validation
+                      </Badge>
+                    )}
+                    <Badge
+                      variant="outline"
+                      className={SEVERITY_STYLE[entity.severity] ?? "text-muted-foreground"}
+                    >
+                      {entity.severity}
+                    </Badge>
+                  </div>
+                </div>
+                <div className="mt-2 flex flex-wrap gap-1">
+                  <Badge variant="outline" className="text-[10px] text-muted-foreground">
+                    {entity.scope_status === "live" ? "in scope" : entity.scope_status}
+                  </Badge>
+                  {entity.review_disposition && (
+                    <Badge variant="outline" className="text-[10px] text-muted-foreground">
+                      reviewed · {entity.review_disposition}
+                    </Badge>
+                  )}
+                  {entity.relevance && (
+                    <Badge variant="outline" className="text-[10px] text-muted-foreground">
+                      {entity.relevance.replaceAll("_", " ")}
+                    </Badge>
+                  )}
+                </div>
+                {needsValidation && (
+                  <p className="mt-2 text-[11px] text-amber-700 dark:text-amber-300">
+                    {pendingFindingCount > 0
+                      ? `${pendingFindingCount} linked finding${pendingFindingCount === 1 ? "" : "s"} awaiting validation`
+                      : entity.scope_status === "legacy"
+                        ? "Previously scoped entity needs disposition review"
+                        : "Relevance to the engagement needs analyst review"}
+                  </p>
+                )}
+                <p className="mt-2 text-[10px] text-muted-foreground">
+                  First seen {formatDateTime(entity.first_seen)} · Last seen {formatDateTime(entity.last_seen)}
+                </p>
+                </Link>
+              </div>
+              );
+            })}
+            {visibleEntities.length === 0 && (
+              <p className="text-sm text-muted-foreground">
+                {entityFilter === "validation"
+                  ? "No entities currently require validation."
+                  : "No entities match that search."}
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      )}
+      </TabsContent>
+
+      <TabsContent value="timeline" className="space-y-4">
+      {timeline.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Clock3 className="h-4 w-4" aria-hidden="true" />
+              Engagement timeline
+            </CardTitle>
+            <CardDescription>
+              Observations, analyst notes, findings, and playbook outcomes in
+              one chronology. Labels distinguish evidence from interpretation.
+            </CardDescription>
+            <div className="relative max-w-md">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+              <Input
+                type="search"
+                value={timelineQuery}
+                onChange={(event) => setTimelineQuery(event.target.value)}
+                aria-label="Search dossier timeline"
+                placeholder="Find an event, target, tool, or run"
+                className="pl-8"
+              />
+            </div>
+          </CardHeader>
+          <CardContent>
+            <ol className="relative ml-2 border-l border-border">
+              {visibleTimeline.map((item) => {
+                const style = TIMELINE_STYLE[item.trust];
+                const href = item.findingId
+                  ? `/e/findings/${item.findingId}?slug=${encodeURIComponent(slug)}`
+                  : item.runId
+                    ? `/e?slug=${encodeURIComponent(slug)}&view=status&run=${encodeURIComponent(item.runId)}`
+                    : item.entityType && item.entityValue
+                      ? engagementEntityHref(slug, {
+                          type: item.entityType as Entity["type"],
+                          value: item.entityValue,
+                        })
+                      : null;
+                return (
+                  <li key={item.id} className="relative pb-5 pl-6 last:pb-0">
+                    <span className="absolute -left-1.5 top-1.5 h-3 w-3 rounded-full border-2 border-background bg-muted-foreground" />
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge variant="outline" className={style.className}>
+                        {style.label}
+                      </Badge>
+                      <time className="text-[11px] text-muted-foreground">
+                        {formatDateTime(item.occurredAt)}
+                      </time>
+                    </div>
+                    <p className="mt-1 text-sm font-medium">{item.title}</p>
+                    <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">
+                      {item.description}
+                    </p>
+                    <div className="mt-1.5 flex items-center gap-3 text-[11px] text-muted-foreground">
+                      <span>{item.sourceLabel}</span>
+                      {href && (
+                        <Link href={href} className="inline-flex items-center gap-1 hover:text-foreground hover:underline">
+                          Open source
+                          <ExternalLink className="h-3 w-3" aria-hidden="true" />
+                        </Link>
+                      )}
+                    </div>
+                  </li>
+                );
+              })}
+            </ol>
+            {filteredTimeline.length === 0 && (
+              <p className="text-sm text-muted-foreground">No timeline events match that search.</p>
+            )}
+            {filteredTimeline.length > 12 && (
+              <button
+                type="button"
+                onClick={() => setShowAllTimeline((value) => !value)}
+                className="mt-4 rounded-md border border-border px-3 py-1.5 text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                {showAllTimeline ? "Show recent activity" : `Show all ${filteredTimeline.length} events`}
+              </button>
+            )}
+          </CardContent>
+        </Card>
+      )}
+      </TabsContent>
+
+      <TabsContent value="research" className="space-y-4">
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <AlertTriangle className="h-4 w-4" aria-hidden="true" />
+            Research gaps
+          </CardTitle>
+          <CardDescription>
+            Missing context and incomplete work are shown as questions—not as
+            findings or authorization decisions.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-2 text-sm">
+          {missingIpContext.length > 0 && (
+            <p><strong>{missingIpContext.length}</strong> observed IPs do not yet have ownership or routing enrichment.</p>
+          )}
+          {reviewEntities.length > 0 && (
+            <p><strong>{reviewEntities.length}</strong> entities remain in the relevance review queue.</p>
+          )}
+          {pendingFindings.length > 0 && (
+            <p><strong>{pendingFindings.length}</strong> findings still require analyst validation.</p>
+          )}
+          {incompleteRuns.length > 0 && (
+            <p><strong>{incompleteRuns.length}</strong> playbook runs ended partial or failed and may have incomplete context.</p>
+          )}
+          {missingIpContext.length === 0 &&
+            reviewEntities.length === 0 &&
+            pendingFindings.length === 0 &&
+            incompleteRuns.length === 0 && (
+              <p className="text-muted-foreground">No immediate dossier gaps were detected.</p>
+            )}
+        </CardContent>
+      </Card>
+      </TabsContent>
+
+      <TabsContent value="infrastructure" className="space-y-4">
       {mapPoints.length > 0 && (
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">World map</CardTitle>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Globe2 className="h-4 w-4" aria-hidden="true" />
+              Infrastructure globe
+            </CardTitle>
             <CardDescription>
-              {mapPoints.length} IP{mapPoints.length === 1 ? "" : "s"} with
-              coordinates. OpenStreetMap tiles.
+              Geographic context for {mapPoints.length} enriched IP{mapPoints.length === 1 ? "" : "s"}.
+              Location is supporting context, not proof of ownership or impact.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -323,17 +1037,18 @@ export function DossierView({ slug }: { slug: string }) {
         </Card>
       )}
 
+      {!findingsQuery.error && (
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Enriched IPs</CardTitle>
           <CardDescription>
-            {isLoading
+            {findingsQuery.isLoading
               ? "Loading findings…"
               : `${entries.length} IP${entries.length === 1 ? "" : "s"} — geo + intel merged across freeipapi and ipinfo.`}
           </CardDescription>
         </CardHeader>
         <CardContent>
-          {entries.length === 0 && !isLoading && (
+          {entries.length === 0 && !findingsQuery.isLoading && (
             <p className="text-sm text-muted-foreground">
               No IP enrichments yet. Upload keys at /settings/keys (providers{" "}
               <code className="font-mono">freeipapi</code> and{" "}
@@ -411,6 +1126,7 @@ export function DossierView({ slug }: { slug: string }) {
           )}
         </CardContent>
       </Card>
+      )}
 
       {wifiGroups.length > 0 && (
         <Card>
@@ -491,6 +1207,21 @@ export function DossierView({ slug }: { slug: string }) {
             ))}
           </CardContent>
         </Card>
+      )}
+      </TabsContent>
+        </Tabs>
+      )}
+      {reviewAction && (
+        <EntityReviewDialog
+          slug={slug}
+          targets={entityReviewTargets}
+          action={reviewAction}
+          open
+          onOpenChange={(open) => {
+            if (!open) setReviewAction(null);
+          }}
+          onApplied={() => setSelectedEntityKeys(new Set())}
+        />
       )}
     </div>
   );

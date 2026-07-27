@@ -23,9 +23,14 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { QueryState } from "@/components/query-state";
+import { isScopeItemEffectivelyIncluded } from "@/lib/effective-scope";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
-import { useCreatePlaybookRunMutation, useScope } from "@/lib/hooks";
+import {
+  useCreatePlaybookRunMutation,
+  usePlaybookRunPlan,
+  useScope,
+} from "@/lib/hooks";
 import type { PlaybookRead, ScopeItem } from "@/lib/types";
 
 function kindLabel(item: ScopeItem): string {
@@ -58,8 +63,7 @@ export function KickRunModal({
     () =>
       (scopeQuery.data ?? []).filter(
         (item) =>
-          !item.is_exclusion &&
-          item.is_effectively_in_scope !== false &&
+          isScopeItemEffectivelyIncluded(item) &&
           (playbook.applies_to_asset_class === "scope" ||
             item.kind === playbook.applies_to_asset_class),
       ),
@@ -98,6 +102,26 @@ export function KickRunModal({
   }, [scopeItems]);
   const loading = scopeQuery.isLoading;
   const loadError = scopeQuery.error;
+  const selectedTargets = useMemo(
+    () =>
+      scopeItems
+        .filter((item) => selected.has(item.value))
+        .map((item) => item.value),
+    [scopeItems, selected],
+  );
+  const planRequest = useMemo(
+    () =>
+      selectedTargets.length > 0
+        ? {
+            playbook_slug: playbook.slug,
+            playbook_version: playbook.version,
+            scope_subset: selectedTargets,
+            executor: playbook.required_executor,
+          }
+        : null,
+    [playbook, selectedTargets],
+  );
+  const planQuery = usePlaybookRunPlan(engagementSlug, planRequest);
 
   const toggle = (value: string) => {
     setSelected((prev) => {
@@ -115,7 +139,13 @@ export function KickRunModal({
     );
   };
 
-  const canSubmit = selected.size > 0 && !create.isPending && !loading;
+  const canSubmit =
+    selected.size > 0 &&
+    !!planQuery.data &&
+    !planQuery.isFetching &&
+    !planQuery.error &&
+    !create.isPending &&
+    !loading;
 
   const submit = async () => {
     setError(null);
@@ -123,10 +153,9 @@ export function KickRunModal({
       await create.mutateAsync({
         playbook_slug: playbook.slug,
         playbook_version: playbook.version,
-        scope_subset: scopeItems
-          .filter((s) => selected.has(s.value))
-          .map((s) => s.value),
+        scope_subset: selectedTargets,
         executor: playbook.required_executor,
+        plan_sha256: planQuery.data?.plan_sha256,
       });
       onStarted?.();
       onClose();
@@ -156,24 +185,58 @@ export function KickRunModal({
             </p>
           </div>
 
-          {(playbook.step_preview?.length ?? 0) > 0 ? (
-            <div className="space-y-2 rounded-md border border-border bg-muted/20 p-3">
-              <Label>Execution plan</Label>
-              <ol className="list-decimal space-y-1 pl-5 text-xs text-muted-foreground">
-                {playbook.step_preview?.map((step, index) => (
-                  <li key={`${index}-${step}`}>{step}</li>
-                ))}
-              </ol>
-              <p className="text-xs text-muted-foreground">
-                {selected.size > 0
-                  ? `At least ${selected.size * playbook.step_count} tool calls for the current selection.`
-                  : "Select targets to calculate the minimum tool calls."}
-                {playbook.expands_targets
-                  ? " Authorized discoveries may add later calls; every expanded target is checked against current exclusions."
-                  : ""}
-              </p>
-            </div>
-          ) : null}
+          <div className="space-y-2 rounded-md border border-border bg-muted/20 p-3">
+            <Label>Authoritative execution plan</Label>
+            {selectedTargets.length === 0 ? (
+              <div className="space-y-1 text-xs text-muted-foreground">
+                <p>Select targets to generate the server-validated plan.</p>
+                {(playbook.step_preview?.length ?? 0) > 0 ? (
+                  <ol className="list-decimal space-y-1 pl-5">
+                    {playbook.step_preview?.map((step, index) => (
+                      <li key={`${index}-${step}`}>{step}</li>
+                    ))}
+                  </ol>
+                ) : null}
+              </div>
+            ) : (
+              <>
+                <QueryState
+                  isLoading={planQuery.data === undefined && planQuery.isLoading}
+                  error={planQuery.error}
+                  hasData={planQuery.data !== undefined}
+                  loadingLabel="Validating execution plan…"
+                  errorLabel="Could not validate this execution plan."
+                  onRetry={() => void planQuery.refetch()}
+                  isRetrying={planQuery.isFetching}
+                  compact={planQuery.data !== undefined}
+                />
+                {planQuery.data ? (
+                  <div className="space-y-2">
+                    <ol className="list-decimal space-y-1 pl-5 text-xs text-muted-foreground">
+                      {planQuery.data.steps.map((step) => (
+                        <li key={step.step_id}>
+                          {step.description || step.tool_slug} — {step.target_count}{" "}
+                          {step.target_count === 1 ? "target" : "targets"} via{" "}
+                          {step.transport}
+                          {step.risk === "active" ? " · active" : ""}
+                          {step.expands_targets ? " · may expand" : ""}
+                        </li>
+                      ))}
+                    </ol>
+                    <p className="text-xs text-muted-foreground">
+                      Minimum {planQuery.data.minimum_calls} tool calls.
+                      {planQuery.data.dynamic_expansion
+                        ? " Authorized discoveries may add calls after scope and exclusion revalidation."
+                        : " No dynamic target expansion."}
+                    </p>
+                    <p className="font-mono text-[10px] text-muted-foreground">
+                      Plan {planQuery.data.plan_sha256.slice(0, 12)}…
+                    </p>
+                  </div>
+                ) : null}
+              </>
+            )}
+          </div>
 
           <div className="space-y-2">
             <div className="flex items-center justify-between">

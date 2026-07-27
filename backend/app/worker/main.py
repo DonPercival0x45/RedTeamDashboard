@@ -22,6 +22,7 @@ from app.core.logging import configure_logging
 from app.db.session import SessionLocal
 from app.orchestrator import build_graph
 from app.orchestrator.llm import default_provider_model, make_llm
+from app.services.worker_observability import WorkerRuntime
 from app.worker.authz import make_db_authorizer
 from app.worker.checkpoint import build_postgres_checkpointer
 from app.worker.consumer import StreamConsumer
@@ -32,6 +33,7 @@ from app.worker.outbox_relay import CommandOutboxRelay
 from app.worker.playbook_worker import PlaybookWorkerThread
 from app.worker.runner import RunRunner
 from app.worker.strategic_consumer import StrategicConsumer
+from app.worker.supervisor import heartbeat_loop
 
 log = structlog.get_logger()
 
@@ -142,6 +144,20 @@ def main() -> None:
     )
 
     stop_event = threading.Event()
+    critical_failure = threading.Event()
+    runtime = WorkerRuntime(
+        session_factory=SessionLocal,
+        role="core",
+        concurrency=1,
+    )
+    runtime.start()
+    process_heartbeat_thread = threading.Thread(
+        target=heartbeat_loop,
+        args=(runtime, stop_event, critical_failure),
+        name="worker-process-heartbeat",
+        daemon=True,
+    )
+    process_heartbeat_thread.start()
 
     def _shutdown(signum: int, _frame: object) -> None:
         log.info("worker.shutdown", signal=signum)
@@ -219,17 +235,20 @@ def main() -> None:
     # without stepping on each other. Same daemon-thread shape as the other
     # background loops; the analyst-facing HTTP endpoint returns 202 and this
     # thread does the actual work.
-    playbook_worker = PlaybookWorkerThread(
-        session_factory=SessionLocal,
-        redis_client=redis_client,
-    )
-    playbook_thread = threading.Thread(
-        target=playbook_worker.run_forever,
-        args=(stop_event,),
-        name="playbook-worker",
-        daemon=True,
-    )
-    playbook_thread.start()
+    playbook_thread: threading.Thread | None = None
+    if settings.playbook_worker_enabled:
+        playbook_worker = PlaybookWorkerThread(
+            session_factory=SessionLocal,
+            redis_client=redis_client,
+            runtime=runtime,
+        )
+        playbook_thread = threading.Thread(
+            target=playbook_worker.run_forever,
+            args=(stop_event,),
+            name="playbook-worker",
+            daemon=True,
+        )
+        playbook_thread.start()
 
     # Analyst-triggered v3 intelligence is persisted before execution so a
     # slow provider call is not tied to the browser request lifecycle.
@@ -245,14 +264,71 @@ def main() -> None:
     )
     intelligence_thread.start()
 
-    consumer.run_forever(stop_event)
+    monitored_threads = [
+        ("command-outbox-relay", outbox_thread),
+        ("strategic-watcher", strategic_thread),
+        ("lease-sweeper", sweeper_thread),
+        ("intelligence-worker", intelligence_thread),
+    ]
+    if playbook_thread is not None:
+        monitored_threads.append(("embedded-playbook-worker", playbook_thread))
+    for component, _thread in monitored_threads:
+        runtime.component_started(component)
+    runtime.component_started("stream-consumer")
+
+    def monitor_components() -> None:
+        while not stop_event.wait(settings.worker_heartbeat_interval):
+            for component, thread in monitored_threads:
+                if thread.is_alive():
+                    runtime.component_heartbeat(component, state="running")
+                    continue
+                runtime.component_failed(
+                    component,
+                    RuntimeError("critical worker component exited unexpectedly"),
+                )
+                critical_failure.set()
+                stop_event.set()
+                return
+            # The stream consumer owns the main thread. Reaching this monitor
+            # pass proves the process is alive while run_forever remains the
+            # blocking foreground loop.
+            runtime.component_heartbeat("stream-consumer", state="running")
+
+    monitor_thread = threading.Thread(
+        target=monitor_components,
+        name="worker-component-monitor",
+        daemon=True,
+    )
+    monitor_thread.start()
+
+    try:
+        consumer.run_forever(stop_event)
+        if not stop_event.is_set():
+            raise RuntimeError("stream consumer exited unexpectedly")
+    except BaseException as exc:
+        runtime.component_failed("stream-consumer", exc)
+        critical_failure.set()
+        stop_event.set()
+    finally:
+        runtime.component_stopped("stream-consumer")
+
     outbox_thread.join(timeout=5.0)
     strategic_thread.join(timeout=5.0)
     sweeper_thread.join(timeout=5.0)
     discord_thread.join(timeout=5.0)
-    playbook_thread.join(timeout=5.0)
+    if playbook_thread is not None:
+        playbook_thread.join(timeout=5.0)
     intelligence_thread.join(timeout=5.0)
-    sys.exit(0)
+    monitor_thread.join(timeout=5.0)
+    process_heartbeat_thread.join(timeout=5.0)
+    for component, _thread in monitored_threads:
+        runtime.component_stopped(component)
+    runtime.stop(
+        "critical component failure"
+        if critical_failure.is_set()
+        else "graceful shutdown"
+    )
+    sys.exit(1 if critical_failure.is_set() else 0)
 
 
 if __name__ == "__main__":

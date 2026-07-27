@@ -3,7 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useQueryClient } from "@tanstack/react-query";
-import { Trash2 } from "lucide-react";
+import { Eye, EyeOff, Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -17,6 +17,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import { importScope } from "@/lib/api";
+import { isScopeItemEffectivelyIncluded } from "@/lib/effective-scope";
 import {
   qk,
   useCreateScopeItemMutation,
@@ -50,6 +51,14 @@ export function ScopeEditor({
   const [note, setNote] = useState("");
   const [localError, setLocalError] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<ScopeItem | null>(null);
+  const [showHiddenScope, setShowHiddenScope] = useState(false);
+  const liveItems = (items ?? []).filter(isScopeItemEffectivelyIncluded);
+  const hiddenItems = (items ?? []).filter(
+    (item) => !isScopeItemEffectivelyIncluded(item),
+  );
+  const displayedItems = showHiddenScope
+    ? [...liveItems, ...hiddenItems]
+    : liveItems;
   const error =
     localError ??
     (queryError instanceof Error
@@ -97,8 +106,9 @@ export function ScopeEditor({
       <CardHeader>
         <CardTitle>Scope</CardTitle>
         <CardDescription>
-          Tool calls that fall outside these items are denied by the gate
-          before they ever run. Exclusions override includes.
+          Live, actionable scope is shown first. Tool calls outside it are denied
+          before execution; exclusions hide active branches without deleting
+          their historical findings, evidence, or path provenance.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -217,53 +227,104 @@ export function ScopeEditor({
         )}
 
         {items && items.length > 0 && (
-          <ul className="divide-y">
-            {items.map((item) => {
-              const found = item.source === "found";
-              return (
-              <li
-                key={item.id}
-                className={cn(
-                  "flex items-center justify-between py-2 px-2 -mx-2 rounded",
-                  found && "bg-emerald-500/10",
-                )}
-              >
-                <div className="flex items-center gap-3">
-                  <Badge
-                    variant={item.is_exclusion ? "destructive" : "secondary"}
-                  >
-                    {item.kind}
-                    {item.is_exclusion ? " · exclude" : ""}
-                  </Badge>
-                  <span className="font-mono text-sm">{item.value}</span>
-                  {found && (
-                    <span
-                      className="rounded-full border border-emerald-500/50 bg-emerald-500/15 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-emerald-600 dark:text-emerald-400"
-                      title="Added from findings, not original client scope"
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <p className="text-sm font-medium">Live scope</p>
+                <p className="text-xs text-muted-foreground">
+                  {liveItems.length} actionable {liveItems.length === 1 ? "item" : "items"}
+                </p>
+              </div>
+              {hiddenItems.length > 0 && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  aria-expanded={showHiddenScope}
+                  onClick={() => setShowHiddenScope((current) => !current)}
+                >
+                  {showHiddenScope ? (
+                    <EyeOff className="mr-1.5 h-3.5 w-3.5" />
+                  ) : (
+                    <Eye className="mr-1.5 h-3.5 w-3.5" />
+                  )}
+                  {showHiddenScope
+                    ? "Hide exclusions/outliers"
+                    : `Review exclusions/outliers (${hiddenItems.length})`}
+                </Button>
+              )}
+            </div>
+            {displayedItems.length === 0 ? (
+              <p className="rounded border border-border bg-muted/20 px-3 py-2 text-sm text-muted-foreground">
+                No live scope items. Review the hidden exclusions or add an authorized include.
+              </p>
+            ) : (
+              <ul className="divide-y">
+                {displayedItems.map((item) => {
+                  const found = item.source === "found";
+                  const hidden = !isScopeItemEffectivelyIncluded(item);
+                  return (
+                    <li
+                      key={item.id}
+                      className={cn(
+                        "flex items-center justify-between py-2 px-2 -mx-2 rounded",
+                        found && !hidden && "bg-emerald-500/10",
+                        hidden && "bg-muted/20 text-muted-foreground",
+                      )}
                     >
-                      found
-                    </span>
-                  )}
-                  {item.note && (
-                    <span className="text-xs text-muted-foreground">
-                      {item.note}
-                    </span>
-                  )}
-                </div>
-                {canWrite && (
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    onClick={() => setPendingDelete(item)}
-                    aria-label={`Delete scope item ${item.value}`}
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
-                )}
-              </li>
-              );
-            })}
-          </ul>
+                      <div className="flex flex-wrap items-center gap-3">
+                        <Badge variant={item.is_exclusion ? "destructive" : "secondary"}>
+                          {item.kind}
+                          {item.is_exclusion ? " · exclude" : ""}
+                        </Badge>
+                        <span className="font-mono text-sm">{item.value}</span>
+                        {!item.is_exclusion && item.effective_scope?.state === "excluded" && (
+                          <span
+                            className="rounded-full border border-amber-500/50 bg-amber-500/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-amber-700 dark:text-amber-300"
+                            title={item.effective_scope.reason}
+                          >
+                            shadowed by exclusion
+                          </span>
+                        )}
+                        {!item.is_exclusion &&
+                          item.effective_scope &&
+                          item.effective_scope.state !== "included" &&
+                          item.effective_scope.state !== "excluded" && (
+                            <span
+                              className="rounded-full border border-border px-1.5 py-0.5 text-[10px] uppercase tracking-wide"
+                              title={item.effective_scope.reason}
+                            >
+                              not actionable
+                            </span>
+                          )}
+                        {found && (
+                          <span
+                            className="rounded-full border border-emerald-500/50 bg-emerald-500/15 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-emerald-600 dark:text-emerald-400"
+                            title="Added from findings, not original client scope"
+                          >
+                            found
+                          </span>
+                        )}
+                        {item.note && (
+                          <span className="text-xs text-muted-foreground">{item.note}</span>
+                        )}
+                      </div>
+                      {canWrite && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => setPendingDelete(item)}
+                          aria-label={`Delete scope item ${item.value}`}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
         )}
       </CardContent>
     </Card>

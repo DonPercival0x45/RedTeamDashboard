@@ -55,6 +55,8 @@ def _entry(
 _AUDIT_LABELS: dict[str, str] = {
     "finding.validated": "Validated",
     "finding.updated": "Updated",
+    "finding.remediation_updated": "Remediation update recorded",
+    "finding.retest_recorded": "Retest result recorded",
     "finding.triaged": "AI Triage ran",
     "finding.summary_rewritten": "Summary rewritten (AI)",
     "finding.summary_recorded": "Summary recorded",
@@ -162,6 +164,14 @@ def build_finding_activity(
 
 
 def _summarize_audit(event_type: str, payload: dict[str, Any]) -> str | None:
+    if event_type == "finding.validated":
+        decision = str(payload.get("decision") or "").replace("_", " ")
+        reason = str(payload.get("reason") or "").strip()
+        return f"{decision} — {reason}" if reason else decision or None
+    if event_type == "finding.remediation_updated":
+        return str(payload.get("status") or "").replace("_", " ") or None
+    if event_type == "finding.retest_recorded":
+        return str(payload.get("outcome") or "").replace("_", " ") or None
     if event_type == "finding.summary_rewritten":
         d = payload.get("draft_chars")
         s = payload.get("summary_chars")

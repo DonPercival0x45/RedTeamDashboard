@@ -101,7 +101,7 @@ def test_soft_deleted_finding_rejects_active_reads_and_mutations_without_orphans
         client.patch(f"/findings/{finding.id}", json={"title": "Must stay hidden"}, headers=HDR),
         client.post(
             f"/findings/{finding.id}/validate",
-            json={"decision": "validated"},
+            json={"decision": "validated", "reason": "Regression fixture confirmation."},
             headers=HDR,
         ),
         client.post(

@@ -14,6 +14,7 @@ import shadowUrl from "leaflet/dist/images/marker-shadow.png";
 import type { ReactNode } from "react";
 import { useEffect } from "react";
 import { MapContainer, Marker, Popup, TileLayer, useMap } from "react-leaflet";
+import { cn } from "@/lib/utils";
 
 // Webpack+Leaflet's classic 404: the default marker-image URLs are baked into
 // the leaflet stylesheet as relative paths that don't survive bundling. Rewire
@@ -67,7 +68,10 @@ export function LeafletMap({
     points.length > 0 ? [points[0].lat, points[0].lon] : [20, 0];
   return (
     <div
-      className={className}
+      // Leaflet panes use internal z-indices up to ~700. Isolating the map
+      // keeps those layers inside this local stacking context so application
+      // dialogs and the Settings overlay remain above the globe.
+      className={cn("relative z-0 isolate overflow-hidden rounded-lg", className)}
       style={{ height: typeof height === "number" ? `${height}px` : height }}
     >
       <MapContainer

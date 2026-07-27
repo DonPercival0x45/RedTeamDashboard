@@ -1,4 +1,5 @@
 """Canonical scope matching shared by execution gates and import workflows."""
+
 from __future__ import annotations
 
 import ipaddress
@@ -44,9 +45,8 @@ def domain_matches(target: str, scope_value: str) -> bool:
     scope_normalized = normalize_domain(scope_value)
     if not target_normalized or not scope_normalized:
         return False
-    return (
-        target_normalized == scope_normalized
-        or target_normalized.endswith("." + scope_normalized)
+    return target_normalized == scope_normalized or target_normalized.endswith(
+        "." + scope_normalized
     )
 
 
@@ -116,13 +116,33 @@ def normalize_url(value: str) -> str | None:
         port = parsed.port
     except ValueError:
         return None
-    default_port = (scheme == "http" and port == 80) or (
-        scheme == "https" and port == 443
-    )
+    default_port = (scheme == "http" and port == 80) or (scheme == "https" and port == 443)
     host_for_netloc = f"[{host}]" if ":" in host else host
     netloc = host_for_netloc if port is None or default_port else f"{host_for_netloc}:{port}"
     path = parsed.path or "/"
     return urlunsplit((scheme, netloc, path, parsed.query, ""))
+
+
+def normalize_scope_value(value: str, kind: ScopeKind) -> str | None:
+    """Canonical identity for exact rule comparison and read projections."""
+    if kind is ScopeKind.domain:
+        normalized = normalize_domain(value)
+        return normalized or None
+    if kind is ScopeKind.email:
+        return normalize_email(value)
+    if kind is ScopeKind.url:
+        return normalize_url(value)
+    if kind is ScopeKind.ip:
+        try:
+            return ipaddress.ip_address(value.strip()).compressed
+        except ValueError:
+            return None
+    if kind is ScopeKind.cidr:
+        try:
+            return str(ipaddress.ip_network(value.strip(), strict=False))
+        except ValueError:
+            return None
+    return None
 
 
 def infer_scope_kind(value: str) -> ScopeKind:
@@ -270,7 +290,8 @@ def evaluate_scope_candidates(
         for target, kind in normalized_candidates:
             if item_matches(target, kind, item):
                 reason_suffix = (
-                    "cidr" if item.kind is ScopeKind.cidr
+                    "cidr"
+                    if item.kind is ScopeKind.cidr
                     else "parent_domain"
                     if (
                         item.kind is ScopeKind.domain
