@@ -33,7 +33,7 @@ rollback points**. The most recent completed slices are:
 **Current validation evidence:**
 - backend: Ruff clean; **42 focused entity/scope tests pass**;
   full isolated suite **1070 passed / 3 documented SSE networking failures**
-- frontend: `tsc --noEmit` and `next build` clean; **95 Vitest tests pass**
+- frontend: `tsc --noEmit` and `next build` clean; **99 Vitest tests pass**
 - CLI: **35 passed / 1 skipped** (documented Windows permissions limitation)
 - local backend tests reset an isolated `rtd_test` database and Redis DB 15;
   pytest refuses the operator-facing `rtd` database outside disposable CI
@@ -578,8 +578,12 @@ supported the resulting Finding.
   infrastructure paths from structured DNS evidence. It consolidates repeat
   observations, retains finding citations and validation dispositions, marks
   invalidated-only sources as disputed, caps broad path enumeration, and links
-  nodes back to the exact Entity workspace. It never infers authorization,
-  ownership, or exploitability.
+  nodes back to the exact Entity workspace. The default Active view now uses
+  authoritative Entity dispositions to hide explicitly excluded shared-provider
+  branches without deleting evidence; those paths remain inspectable under an
+  Out of scope filter, and active roots are projected before broad excluded
+  branches consume the safety cap. It never infers authorization, ownership, or
+  exploitability from relationship evidence alone.
 - Migration `0071` adds durable canonical Entity review dispositions plus
   reversible ownership receipts for exact exclusions and Finding reportability
   changes. Dossier supports searched bulk Keep/Exclude review for up to 1,000

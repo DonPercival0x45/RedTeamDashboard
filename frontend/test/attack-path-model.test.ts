@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { buildAttackPathEdges, buildAttackPaths } from "@/lib/attack-paths";
-import type { Finding } from "@/lib/types";
+import {
+  buildAttackPathEdges,
+  buildAttackPaths,
+  buildScopeAwareAttackPathProjection,
+} from "@/lib/attack-paths";
+import type { Entity, Finding } from "@/lib/types";
 
 function dnsFinding(
   id: string,
@@ -94,6 +98,105 @@ describe("attack path projection", () => {
     );
     const paths = buildAttackPaths([upper, lower]);
     expect(paths.every((path) => new Set(path.nodes.map((node) => node.value.toLowerCase())).size === path.nodes.length)).toBe(true);
+  });
+
+  it("moves explicitly excluded provider branches out of the active projection", () => {
+    const provider = dnsFinding("provider", "domaincontrol.com", [
+      {
+        domain: "domaincontrol.com",
+        type: "CNAME",
+        value: "dnsmgdp05.nw1.pods.domaincontrol.com",
+      },
+    ]);
+    const active = dnsFinding("active", "app.example", [
+      { domain: "app.example", type: "A", value: "192.0.2.10" },
+    ]);
+    const entities: Entity[] = [
+      {
+        type: "domain",
+        value: "domaincontrol.com",
+        count: 1,
+        severity: "info",
+        first_seen: "2026-07-25T10:00:00Z",
+        last_seen: "2026-07-25T10:00:00Z",
+        findings: [],
+        scope_status: "excluded",
+        relevance: "excluded",
+      },
+    ];
+
+    const projection = buildScopeAwareAttackPathProjection(
+      [provider, active],
+      entities,
+      4,
+      1,
+    );
+    expect(projection.paths).toHaveLength(2);
+    const activePath = projection.paths.find((path) => !path.outOfScope);
+    expect(activePath?.nodes[0].value).toBe("app.example");
+    expect(projection.paths.filter((path) => path.outOfScope)).toHaveLength(1);
+
+    const all = buildScopeAwareAttackPathProjection(
+      [provider, active],
+      entities,
+      4,
+      10,
+    );
+    const excluded = all.paths.find((path) =>
+      path.nodes.some((node) => node.value === "domaincontrol.com"),
+    );
+    expect(excluded?.outOfScope).toBe(true);
+    expect(excluded?.excludedEntityCount).toBe(1);
+  });
+
+  it("does not let an active first hop into a broad excluded branch starve later active roots", () => {
+    const firstHop = dnsFinding("first", "a.example", [
+      { domain: "a.example", type: "CNAME", value: "relay.example" },
+    ]);
+    const providerHop = dnsFinding("provider-hop", "relay.example", [
+      {
+        domain: "relay.example",
+        type: "CNAME",
+        value: "provider.shared.example",
+      },
+    ]);
+    const laterActive = dnsFinding("later", "z.example", [
+      { domain: "z.example", type: "A", value: "192.0.2.30" },
+    ]);
+    const entities: Entity[] = [
+      {
+        type: "domain",
+        value: "provider.shared.example",
+        count: 1,
+        severity: "info",
+        first_seen: "2026-07-25T10:00:00Z",
+        last_seen: "2026-07-25T10:00:00Z",
+        findings: [],
+        scope_status: "excluded",
+      },
+    ];
+    const projection = buildScopeAwareAttackPathProjection(
+      [firstHop, providerHop, laterActive],
+      entities,
+      4,
+      1,
+    );
+    expect(projection.paths.some((path) => !path.outOfScope)).toBe(true);
+    expect(
+      projection.paths.find((path) => !path.outOfScope)?.nodes[0].value,
+    ).toBe("z.example");
+  });
+
+  it("treats an edge as out of scope only when all supporting findings are excluded", () => {
+    const excluded = dnsFinding("excluded", "provider.example", [
+      { domain: "provider.example", type: "A", value: "192.0.2.20" },
+    ]);
+    excluded.exclusion = "out_of_scope";
+    const reportable = dnsFinding("reportable", "provider.example", [
+      { domain: "provider.example", type: "A", value: "192.0.2.20" },
+    ]);
+    expect(buildAttackPathEdges([excluded])[0].outOfScope).toBe(true);
+    expect(buildAttackPathEdges([excluded, reportable])[0].outOfScope).toBe(false);
   });
 
   it("does not infer a path from narrative text", () => {

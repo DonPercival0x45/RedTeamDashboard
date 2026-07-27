@@ -5,6 +5,7 @@ import Link from "next/link";
 import {
   AlertTriangle,
   ArrowRight,
+  CircleOff,
   GitBranch,
   Search,
   ShieldCheck,
@@ -13,9 +14,9 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { QueryState } from "@/components/query-state";
-import { buildAttackPathProjection } from "@/lib/attack-paths";
+import { buildScopeAwareAttackPathProjection } from "@/lib/attack-paths";
 import { engagementEntityHref } from "@/lib/engagement-links";
-import { useFindings } from "@/lib/hooks";
+import { useEntities, useFindings } from "@/lib/hooks";
 
 function label(value: string): string {
   return value.replaceAll("_", " ");
@@ -28,17 +29,29 @@ function formatDate(value: string): string {
 
 export function AttackPathsView({ slug }: { slug: string }) {
   const findingsQuery = useFindings(slug);
+  const entitiesQuery = useEntities(slug);
   const [query, setQuery] = useState("");
-  const [filter, setFilter] = useState<"all" | "validation">("all");
+  const [filter, setFilter] = useState<
+    "active" | "validation" | "out_of_scope" | "all"
+  >("active");
   const projection = useMemo(
-    () => buildAttackPathProjection(findingsQuery.data ?? []),
-    [findingsQuery.data],
+    () =>
+      buildScopeAwareAttackPathProjection(
+        findingsQuery.data ?? [],
+        entitiesQuery.data ?? [],
+      ),
+    [entitiesQuery.data, findingsQuery.data],
   );
   const paths = projection.paths;
   const normalized = query.trim().toLowerCase();
   const visible = paths.filter(
     (path) =>
-      (filter === "all" || path.needsValidation || path.disputed) &&
+      (filter === "all" ||
+        (filter === "active" && !path.outOfScope) ||
+        (filter === "validation" &&
+          !path.outOfScope &&
+          (path.needsValidation || path.disputed)) ||
+        (filter === "out_of_scope" && path.outOfScope)) &&
       (!normalized ||
         path.nodes.some((node) => node.value.toLowerCase().includes(normalized)) ||
         path.edges.some(
@@ -51,24 +64,23 @@ export function AttackPathsView({ slug }: { slug: string }) {
             ),
         )),
   );
+  const activeCount = paths.filter((path) => !path.outOfScope).length;
+  const outOfScopeCount = paths.length - activeCount;
   const attentionCount = paths.filter(
-    (path) => path.needsValidation || path.disputed,
+    (path) => !path.outOfScope && (path.needsValidation || path.disputed),
   ).length;
-  const citedFindings = new Set(
-    paths.flatMap((path) =>
-      path.edges.flatMap((edge) => edge.citations.map((citation) => citation.findingId)),
-    ),
-  ).size;
 
-  if (findingsQuery.data === undefined) {
+  if (findingsQuery.data === undefined || entitiesQuery.data === undefined) {
     return (
       <QueryState
-        isLoading={findingsQuery.isLoading}
-        error={findingsQuery.error}
-        loadingLabel="Building evidence-backed paths…"
-        errorLabel="Could not build attack paths because findings are unavailable."
-        onRetry={() => void findingsQuery.refetch()}
-        isRetrying={findingsQuery.isFetching}
+        isLoading={findingsQuery.isLoading || entitiesQuery.isLoading}
+        error={findingsQuery.error ?? entitiesQuery.error}
+        loadingLabel="Building scope-aware evidence paths…"
+        errorLabel="Could not build attack paths because findings or entity scope are unavailable."
+        onRetry={() =>
+          void Promise.all([findingsQuery.refetch(), entitiesQuery.refetch()])
+        }
+        isRetrying={findingsQuery.isFetching || entitiesQuery.isFetching}
       />
     );
   }
@@ -81,14 +93,26 @@ export function AttackPathsView({ slug }: { slug: string }) {
           <h2 className="text-lg font-semibold">Attack paths</h2>
         </div>
         <p className="mt-1 max-w-4xl text-sm text-muted-foreground">
-          Deterministic paths assembled only from structured relationship evidence. Paths help explain pivots; they do not establish ownership, scope, exploitability, or authorization.
+          Deterministic paths assembled only from structured relationship evidence. Effectively excluded branches are hidden from the active view but retained under Out of scope for provenance. Paths do not establish ownership, scope, exploitability, or authorization.
         </p>
       </header>
 
+      <QueryState
+        isLoading={findingsQuery.isLoading || entitiesQuery.isLoading}
+        error={findingsQuery.error ?? entitiesQuery.error}
+        hasData
+        errorLabel="Could not refresh findings or entity scope."
+        onRetry={() =>
+          void Promise.all([findingsQuery.refetch(), entitiesQuery.refetch()])
+        }
+        isRetrying={findingsQuery.isFetching || entitiesQuery.isFetching}
+        compact
+      />
+
       <div className="grid gap-3 sm:grid-cols-3">
-        <Card><CardContent className="p-4"><p className="text-2xl font-semibold">{paths.length}</p><p className="text-xs text-muted-foreground">Evidence paths</p></CardContent></Card>
+        <Card><CardContent className="p-4"><p className="text-2xl font-semibold">{activeCount}</p><p className="text-xs text-muted-foreground">Active evidence paths</p></CardContent></Card>
         <Card><CardContent className="p-4"><p className="text-2xl font-semibold">{attentionCount}</p><p className="text-xs text-muted-foreground">Need source review</p></CardContent></Card>
-        <Card><CardContent className="p-4"><p className="text-2xl font-semibold">{citedFindings}</p><p className="text-xs text-muted-foreground">Cited findings</p></CardContent></Card>
+        <Card><CardContent className="p-4"><p className="text-2xl font-semibold">{outOfScopeCount}</p><p className="text-xs text-muted-foreground">Out of scope</p></CardContent></Card>
       </div>
 
       <div className="space-y-3 border-b border-border bg-background py-3 lg:sticky lg:top-0 lg:z-10">
@@ -102,14 +126,14 @@ export function AttackPathsView({ slug }: { slug: string }) {
             className="pl-9"
           />
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <button
             type="button"
-            aria-pressed={filter === "all"}
-            onClick={() => setFilter("all")}
+            aria-pressed={filter === "active"}
+            onClick={() => setFilter("active")}
             className="rounded-md border border-border px-3 py-1.5 text-xs aria-pressed:bg-muted"
           >
-            All ({paths.length})
+            Active ({activeCount})
           </button>
           <button
             type="button"
@@ -119,12 +143,28 @@ export function AttackPathsView({ slug }: { slug: string }) {
           >
             Needs review ({attentionCount})
           </button>
+          <button
+            type="button"
+            aria-pressed={filter === "out_of_scope"}
+            onClick={() => setFilter("out_of_scope")}
+            className="rounded-md border border-border px-3 py-1.5 text-xs aria-pressed:bg-muted"
+          >
+            Out of scope ({outOfScopeCount})
+          </button>
+          <button
+            type="button"
+            aria-pressed={filter === "all"}
+            onClick={() => setFilter("all")}
+            className="rounded-md border border-border px-3 py-1.5 text-xs aria-pressed:bg-muted"
+          >
+            All ({paths.length})
+          </button>
         </div>
       </div>
 
       {projection.truncated && (
         <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
-          Showing the first 500 deterministic paths. Search or inspect source relationships to narrow broad branches.
+          Path projection reached its safety bound. Up to 500 active and 500 out-of-scope paths are retained; search or inspect source relationships to narrow broad branches.
         </div>
       )}
 
@@ -143,7 +183,9 @@ export function AttackPathsView({ slug }: { slug: string }) {
               <CardHeader className="pb-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <CardTitle className="flex items-center gap-2 text-sm">
-                    {path.disputed || path.needsValidation ? (
+                    {path.outOfScope ? (
+                      <CircleOff className="h-4 w-4 text-muted-foreground" />
+                    ) : path.disputed || path.needsValidation ? (
                       <AlertTriangle className="h-4 w-4 text-amber-500" />
                     ) : (
                       <ShieldCheck className="h-4 w-4 text-emerald-500" />
@@ -151,6 +193,9 @@ export function AttackPathsView({ slug }: { slug: string }) {
                     {path.edges.length} relationship {path.edges.length === 1 ? "step" : "steps"}
                   </CardTitle>
                   <div className="flex gap-2">
+                    {path.outOfScope && (
+                      <Badge variant="outline">Out of scope</Badge>
+                    )}
                     {path.disputed && <Badge variant="destructive">Disputed source</Badge>}
                     {!path.disputed && path.needsValidation && (
                       <Badge variant="outline">Needs validation</Badge>
@@ -180,7 +225,11 @@ export function AttackPathsView({ slug }: { slug: string }) {
                     <li key={edge.id} className="space-y-2">
                       <div className="flex flex-wrap items-center gap-2 text-xs">
                         <Badge variant="outline">
-                          {edge.disputed ? "Rejected source record" : "Observed"}
+                          {edge.outOfScope
+                            ? "Out-of-scope evidence"
+                            : edge.disputed
+                              ? "Rejected source record"
+                              : "Observed"}
                         </Badge>
                         <span className="font-mono">{edge.sourceValue}</span>
                         <span className="text-muted-foreground">{label(edge.relation)}</span>
