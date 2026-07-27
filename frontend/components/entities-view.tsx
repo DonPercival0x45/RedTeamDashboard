@@ -67,6 +67,7 @@ import {
   scopeActionState,
   scopeTargetForEntity,
 } from "@/lib/entity-scope";
+import { effectiveScopeState } from "@/lib/effective-scope";
 import { cn } from "@/lib/utils";
 import type {
   DarkwebImportResult,
@@ -288,11 +289,12 @@ export function EntitiesView({
   const { error } = entitiesQuery;
   const [search, setSearch] = useState("");
   const [type, setType] = useState<string>("all");
-  // v2.19.0: scope-status filter runs alongside type. "all" shows everything,
-  // "live" / "legacy" / "oos" narrow to entities with that classification.
+  // Actionable, authorized entities are the default. Historical, excluded,
+  // and unmatched inventory stays available behind an explicit review action.
   const [scopeStatus, setScopeStatus] = useState<
     "all" | "live" | "excluded" | "legacy" | "oos"
-  >("all");
+  >("live");
+  const [showScopeOutliers, setShowScopeOutliers] = useState(false);
   const [hideLikelyThirdParty, setHideLikelyThirdParty] = useState(true);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
@@ -313,6 +315,7 @@ export function EntitiesView({
     deepLinkAppliedRef.current = true;
     if (!match) return;
     setHideLikelyThirdParty(false);
+    setShowScopeOutliers(true);
     setType("all");
     setScopeStatus("all");
     setSearch(deepLinkValue);
@@ -340,13 +343,23 @@ export function EntitiesView({
   const likelyThirdPartyCount = entities.filter(
     (entity) => entity.relevance === "likely_third_party",
   ).length;
+  const matchesScopeStatus = (entity: Entity) => {
+    if (scopeStatus === "all") return true;
+    const projectedState = effectiveScopeState(entity);
+    if (scopeStatus === "live") return projectedState === "included";
+    if (scopeStatus === "excluded") return projectedState === "excluded";
+    if (projectedState === "included" || projectedState === "excluded") return false;
+    return scopeStatus === "legacy"
+      ? entity.scope_status === "legacy"
+      : entity.scope_status !== "legacy";
+  };
   const visible = entities
     .filter(
       (entity) =>
         !hideLikelyThirdParty || entity.relevance !== "likely_third_party",
     )
     .filter((e) => type === "all" || e.type === type)
-    .filter((e) => scopeStatus === "all" || e.scope_status === scopeStatus)
+    .filter(matchesScopeStatus)
     .filter((e) => !q || e.value.toLowerCase().includes(q))
     .sort(
       (a, b) =>
@@ -511,30 +524,52 @@ export function EntitiesView({
         ))}
       </div>
 
-      <div className="flex flex-wrap gap-1">
-        {(["all", "live", "excluded", "legacy", "oos"] as const).map((s) => (
-          <button
-            key={s}
-            type="button"
-            onClick={() => setScopeStatus(s)}
-            className={cn(
-              "rounded-full border px-2.5 py-1 text-xs transition-colors",
-              scopeStatus === s
-                ? "border-primary/50 bg-primary/10 text-foreground"
-                : "border-border text-muted-foreground hover:text-foreground",
-            )}
-          >
-            {s === "all"
-              ? "All scope"
-              : s === "live"
-                ? "Live"
+      <div className="flex flex-wrap items-center gap-1">
+        <button
+          type="button"
+          onClick={() => setScopeStatus("live")}
+          className={cn(
+            "rounded-full border px-2.5 py-1 text-xs transition-colors",
+            scopeStatus === "live"
+              ? "border-primary/50 bg-primary/10 text-foreground"
+              : "border-border text-muted-foreground hover:text-foreground",
+          )}
+        >
+          Live
+        </button>
+        <button
+          type="button"
+          aria-expanded={showScopeOutliers}
+          onClick={() => {
+            if (showScopeOutliers) setScopeStatus("live");
+            setShowScopeOutliers(!showScopeOutliers);
+          }}
+          className="rounded-full border border-dashed border-border px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
+        >
+          {showScopeOutliers ? "Show live only" : "Review other scope states"}
+        </button>
+        {showScopeOutliers &&
+          (["all", "excluded", "legacy", "oos"] as const).map((s) => (
+            <button
+              key={s}
+              type="button"
+              onClick={() => setScopeStatus(s)}
+              className={cn(
+                "rounded-full border px-2.5 py-1 text-xs transition-colors",
+                scopeStatus === s
+                  ? "border-primary/50 bg-primary/10 text-foreground"
+                  : "border-border text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {s === "all"
+                ? "All scope"
                 : s === "excluded"
                   ? "Excluded"
                   : s === "legacy"
                     ? "Legacy"
                     : "Out of scope"}
-          </button>
-        ))}
+            </button>
+          ))}
       </div>
 
       {canWrite && (
