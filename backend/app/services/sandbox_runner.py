@@ -13,7 +13,7 @@ runners implement the same protocol:
   mounted into the ACI.
 
 The service layer picks a runner via ``settings.sandbox_runner`` (env
-var ``RTD_SANDBOX_RUNNER``): ``docker`` in dev, ``aci`` in prod.
+var ``SANDBOX_RUNNER``): ``docker`` in dev, ``aci`` in prod.
 Callers do not know or care which one they got.
 
 Shared invariants enforced HERE (not per-runner):

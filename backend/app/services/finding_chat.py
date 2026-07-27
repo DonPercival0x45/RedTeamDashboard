@@ -53,10 +53,11 @@ from app.models import (
     TaskKind,
     TaskStatus,
 )
-from app.orchestrator.llm import default_provider_model
 from app.orchestrator.tools import all_tools, get_tool
-from app.services.ephemeral_provider_key import resolve_for_user
+from app.services.agent_model_resolver import resolve_agent_model_with_default
+from app.services.ephemeral_provider_key import resolve_for_user_with_fallback
 from app.services.finding_activity import build_finding_activity
+from app.services.scope_matcher import normalize_email
 
 _SYSTEM_PROMPT = """You are a finding-scoped copilot for an authorized security engagement.
 Use only the dossier supplied by the dashboard. Do not invent evidence, targets,
@@ -573,7 +574,11 @@ def _normalize_action_params(typ: str, params: dict[str, Any]) -> dict[str, Any]
         kind = str(params.get("kind") or "domain").strip().lower()
         return {
             "value": str(params.get("value") or "").strip()[:500],
-            "kind": kind if kind in {"domain", "ip", "cidr", "url"} else "domain",
+            "kind": (
+                kind
+                if kind in {"domain", "ip", "cidr", "url", "email"}
+                else "domain"
+            ),
             "note": str(params.get("note") or "").strip()[:500] or None,
         }
     return dict(params)
@@ -600,8 +605,18 @@ def generate_finding_chat_reply(
     acting_user_id: uuid.UUID,
 ) -> tuple[AgentExecution, ConversationMessage]:
     """Ask the BYO LLM for the assistant response and persist the bubble."""
-    provider, model_name = default_provider_model()
-    resolved = resolve_for_user(redis_client, user_id=acting_user_id, provider=provider)
+    provider, model_name = resolve_agent_model_with_default(
+        session,
+        user_id=acting_user_id,
+        engagement_id=finding.engagement_id,
+        role=AgentName.strategic,
+    )
+    provider, model_name, resolved = resolve_for_user_with_fallback(
+        redis_client,
+        user_id=acting_user_id,
+        preferred_provider=provider,
+        preferred_model=model_name,
+    )
     llm = _make_chat_model(
         provider,
         model_name,
@@ -727,8 +742,18 @@ def summarize_finding_chat(
 
     summary = _fallback_summary(messages)
     try:
-        provider, model_name = default_provider_model()
-        resolved = resolve_for_user(redis_client, user_id=acting_user_id, provider=provider)
+        provider, model_name = resolve_agent_model_with_default(
+            session,
+            user_id=acting_user_id,
+            engagement_id=finding.engagement_id,
+            role=AgentName.strategic,
+        )
+        provider, model_name, resolved = resolve_for_user_with_fallback(
+            redis_client,
+            user_id=acting_user_id,
+            preferred_provider=provider,
+            preferred_model=model_name,
+        )
         llm = _make_chat_model(
             provider,
             model_name,
@@ -905,6 +930,8 @@ def _accept_add_scope(
         scope_kind = ScopeKind(kind)
     except ValueError:
         scope_kind = ScopeKind.domain
+    if scope_kind is ScopeKind.email and normalize_email(value) is None:
+        raise ValueError("email scope must be one valid exact mailbox")
     item = ScopeItem(
         engagement_id=finding.engagement_id,
         kind=scope_kind,

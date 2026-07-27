@@ -478,6 +478,7 @@ def run_intelligence_analysis(
     trigger: AgentTrigger = AgentTrigger.manual,
     significant_batch: dict[str, Any] | None = None,
     context: dict[str, Any] | None = None,
+    execution: AgentExecution | None = None,
 ) -> tuple[Any, AgentExecution]:
     """Invoke the intelligence agent in ``mode`` and persist its output.
 
@@ -511,31 +512,42 @@ def run_intelligence_analysis(
             engagement_id=engagement_id,
             mode=mode,
         )
-    execution = AgentExecution(
-        engagement_id=engagement_id,
-        agent=AgentName.engagement_strategist,
-        trigger=trigger,
-        input={
-            "mode": mode.value,
-            "engagement_id": str(engagement_id),
-            "acting_user_id": str(acting_user_id),
-            "v3_intelligence": True,
-            "estimated_prompt_tokens": prompt_token_estimate,
-            "context_fingerprint": fingerprint_intelligence_context(context),
-            "significant_batch_fingerprint": context["significant_findings"][
-                "fingerprint"
-            ],
-            "significant_finding_count": context["significant_findings"]["total"],
-            "included_significant_finding_count": context["significant_findings"][
-                "included"
-            ],
-        },
-        status=AgentExecutionStatus.running,
-        started_at=datetime.now(tz=UTC),
-        model_provider=provider,
-        model_name=resolved_model_name,
-    )
-    session.add(execution)
+    execution_input = {
+        "mode": mode.value,
+        "engagement_id": str(engagement_id),
+        "acting_user_id": str(acting_user_id),
+        "v3_intelligence": True,
+        "estimated_prompt_tokens": prompt_token_estimate,
+        "context_fingerprint": fingerprint_intelligence_context(context),
+        "significant_batch_fingerprint": context["significant_findings"][
+            "fingerprint"
+        ],
+        "significant_finding_count": context["significant_findings"]["total"],
+        "included_significant_finding_count": context["significant_findings"][
+            "included"
+        ],
+    }
+    if execution is None:
+        execution = AgentExecution(
+            engagement_id=engagement_id,
+            agent=AgentName.engagement_strategist,
+            trigger=trigger,
+            input=execution_input,
+            status=AgentExecutionStatus.running,
+            started_at=datetime.now(tz=UTC),
+            model_provider=provider,
+            model_name=resolved_model_name,
+        )
+        session.add(execution)
+    else:
+        if execution.engagement_id != engagement_id:
+            raise ValueError("queued intelligence execution belongs to another engagement")
+        execution.input = {**(execution.input or {}), **execution_input}
+        execution.status = AgentExecutionStatus.running
+        execution.model_provider = provider
+        execution.model_name = resolved_model_name
+        execution.error = None
+        execution.completed_at = None
     session.flush()
 
     try:

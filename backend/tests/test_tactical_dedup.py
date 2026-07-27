@@ -33,6 +33,8 @@ from app.models import (
     TaskStatus,
 )
 
+pytestmark = pytest.mark.usefixtures("stub_tactical_provider_key")
+
 
 @pytest.fixture()
 def engagement(db: Session):

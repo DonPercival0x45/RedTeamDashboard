@@ -47,10 +47,12 @@ class Settings(BaseSettings):
 
     # v3 A4: URL the playbook worker's ``MCPExecutor`` hits when a run is
     # created with ``executor_kind='mcp'``. Defaults to the colocated MCP
-    # server on the backend service inside the compose network. Deployments
-    # that route MCP to the secondary Container App override this to the
-    # ``aca_mcp_url`` value + ``/mcp``.
-    playbook_mcp_url: str = "http://backend:8001/mcp"
+    # server on the backend service — the backend listens on container
+    # port 8000 (Dockerfile EXPOSE + uvicorn --port 8000), so the worker
+    # reaches it as ``backend:8000`` inside the compose network. Deployments
+    # that route MCP to the secondary Container App override this to that
+    # app's URL + ``/mcp``.
+    playbook_mcp_url: str = "http://backend:8000/mcp"
 
     # CORS allow-origins for the browser viewer. Defaults cover local dev.
     # Kit deploys override this with the central viewer's origin (Phase 6)
@@ -181,7 +183,7 @@ class Settings(BaseSettings):
     # ``api.github.com/repos/<github_repo>/releases`` + runs the same
     # categorization enricher install.sh writes into the static bundle,
     # caches for ``releases_cache_ttl_seconds``. Overridable per-deploy
-    # via env ``RTD_GITHUB_REPO`` if a fork wants to point at a
+    # via env ``GITHUB_REPO`` if a fork wants to point at a
     # different origin.
     github_repo: str = "DonPercival0x45/RedTeamDashboard"
     releases_cache_ttl_seconds: int = 3600
@@ -189,7 +191,7 @@ class Settings(BaseSettings):
     # v0.12.0 — Tools tab sandbox runner selection.
     # ``docker`` = LocalDockerRunner (mounts /var/run/docker.sock, used
     # in local dev + CI). ``aci`` = ACIRunner (Azure Container Instances
-    # via managed identity, used in prod). Set via env RTD_SANDBOX_RUNNER.
+    # via managed identity, used in prod). Set via env ``SANDBOX_RUNNER``.
     sandbox_runner: str = "docker"
     # Azure Files share used by ACIRunner to hand source into the
     # spawned container. Populated by Bicep in v0.12+ prod installs.

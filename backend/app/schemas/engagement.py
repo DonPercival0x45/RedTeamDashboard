@@ -16,6 +16,7 @@ from app.models import (
     EngagementWorkState,
     ScopeKind,
 )
+from app.services.scope_matcher import normalize_email
 
 LLMProvider = Literal[
     "anthropic",
@@ -195,6 +196,12 @@ class ScopeItemCreate(BaseModel):
     # "found" = added from findings. Defaults to "defined".
     source: Literal["defined", "found"] = "defined"
 
+    @model_validator(mode="after")
+    def validate_email_scope(self) -> ScopeItemCreate:
+        if self.kind is ScopeKind.email and normalize_email(self.value) is None:
+            raise ValueError("email scope must be one valid exact mailbox")
+        return self
+
 
 class ScopeItemUpdate(BaseModel):
     value: str | None = Field(default=None, min_length=1, max_length=500)
@@ -212,6 +219,7 @@ class ScopeItemRead(BaseModel):
     is_exclusion: bool
     note: str | None
     source: str = "defined"
+    is_effectively_in_scope: bool | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -221,9 +229,12 @@ class ScopeImportRequest(BaseModel):
 
     Whatever the analyst pasted/uploaded — .txt or .csv content, mixed kinds,
     optional ``!`` exclusions, ``#`` comments — goes straight in here.
+    ``source`` lets discovery surfaces retain provenance while reusing the
+    same parser and idempotent import contract as the scope editor.
     """
 
     text: str = Field(min_length=1, max_length=200_000)
+    source: Literal["defined", "found"] = "defined"
 
 
 class ScopeImportPreviewRow(BaseModel):

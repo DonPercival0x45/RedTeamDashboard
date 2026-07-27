@@ -171,6 +171,88 @@ def resolve_agent_model(
     return None
 
 
+def resolve_user_row_model_with_default(user: User) -> tuple[str, str]:
+    """Resolve a loaded user's global default, then the process fallback."""
+    from app.orchestrator.llm import default_provider_model
+
+    default_model = getattr(user, "default_llm_model", None)
+    if default_model:
+        stored_provider = getattr(user, "default_llm_provider", None)
+        provider, model_name = parse_model_string(default_model)
+        if provider is None:
+            provider = (stored_provider or "").strip().lower() or None
+        if provider is None:
+            provider = provider_for_model(model_name)
+        if provider is None:
+            provider, _ = default_provider_model()
+        logger.info(
+            "agent_model.resolved",
+            source="user_default",
+            user_id=str(user.id),
+            stored_model=default_model,
+            stored_provider=stored_provider,
+            provider=provider,
+            model=model_name,
+        )
+        return provider, model_name
+
+    provider, model_name = default_provider_model()
+    logger.info(
+        "agent_model.resolved",
+        source="process_default_fallback",
+        user_id=str(user.id),
+        provider=provider,
+        model=model_name,
+    )
+    return provider, model_name
+
+
+def resolve_user_model_with_default(
+    session: Session,
+    *,
+    user_id: uuid.UUID,
+) -> tuple[str, str]:
+    """Resolve the acting user's global default, then the process fallback.
+
+    User-triggered features without an engagement role/mode (for example
+    triage, finding chat, and roadmap ranking) must not jump straight to the
+    process-wide provider. Doing so turns the default Anthropic installation
+    setting into a false Anthropic-key requirement for analysts whose live
+    default is OpenAI, Kimi, or another provider.
+    """
+    user = session.get(User, user_id)
+    if user is not None:
+        return resolve_user_row_model_with_default(user)
+
+    from app.orchestrator.llm import default_provider_model
+
+    return default_provider_model()
+
+
+def resolve_agent_model_with_default(
+    session: Session,
+    *,
+    user_id: uuid.UUID,
+    engagement_id: uuid.UUID | None,
+    role: AgentName,
+) -> tuple[str, str]:
+    """Resolve role preference → user default → process fallback."""
+    from app.orchestrator.llm import default_provider_model
+
+    resolved = resolve_agent_model(
+        session,
+        user_id=user_id,
+        engagement_id=engagement_id,
+        role=role,
+    )
+    if resolved is None:
+        return default_provider_model()
+    provider, model_name = resolved
+    if provider is None:
+        provider, _ = default_provider_model()
+    return provider, model_name
+
+
 def resolve_model_for_mode(
     session: Session,
     *,
@@ -299,7 +381,7 @@ def resolve_llm_for_mode(
     attribution cannot drift from the model that actually ran.
     """
     from app.agents.strategic import _make_chat_model
-    from app.services.ephemeral_provider_key import resolve_for_user
+    from app.services.ephemeral_provider_key import resolve_for_user_with_fallback
 
     provider, model_name = resolve_model_for_mode_with_default(
         session,
@@ -308,7 +390,12 @@ def resolve_llm_for_mode(
         mode=mode,
     )
 
-    key = resolve_for_user(redis_client, user_id=user_id, provider=provider)
+    provider, model_name, key = resolve_for_user_with_fallback(
+        redis_client,
+        user_id=user_id,
+        preferred_provider=provider,
+        preferred_model=model_name,
+    )
     return (
         _make_chat_model(
             provider,

@@ -40,7 +40,7 @@ const ITEMS: { view: EngagementView; label: string; Icon: LucideIcon }[] = [
   { view: "findings", label: "Findings", Icon: ListChecks },
   { view: "entities", label: "Entities", Icon: Network },
   { view: "dossier", label: "Dossier", Icon: Globe },
-  { view: "status", label: "Status", Icon: Activity },
+  { view: "status", label: "Runs", Icon: Activity },
   { view: "contributions", label: "Contributions", Icon: CalendarDays },
   { view: "observations", label: "Observations", Icon: MessageSquare },
   { view: "costs", label: "Costs", Icon: DollarSign },

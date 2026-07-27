@@ -14,9 +14,10 @@
 // severity bars, ember red for the primary line) so light/dark/hicontrast
 // themes still work.
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { Download } from "lucide-react";
 import { CopyJsonButton } from "@/components/copy-json-button";
+import { QueryState } from "@/components/query-state";
 import {
   Bar,
   BarChart,
@@ -95,6 +96,17 @@ export default function AnalyticsPage() {
   const topFindingsQuery = useAnalyticsTopFindings(filter);
   const logQuery = useAnalyticsEngagementLog(filter);
 
+  const analyticsQueries = [
+    overTimeQuery,
+    severityQuery,
+    coverageQuery,
+    topFindingsQuery,
+    logQuery,
+  ];
+  const exportReady = analyticsQueries.every(
+    (query) => query.data !== undefined && !query.error,
+  );
+
   const onExport = () => {
     const payload = {
       exported_at: new Date().toISOString(),
@@ -133,6 +145,8 @@ export default function AnalyticsPage() {
           <select
             value={selected}
             onChange={(e) => setSelected(e.target.value)}
+            disabled={engagementsQuery.data === undefined}
+            aria-label="Engagement"
             className="h-9 rounded-md border border-input bg-background px-3 text-sm"
           >
             <option value="all">All engagements</option>
@@ -142,50 +156,103 @@ export default function AnalyticsPage() {
               </option>
             ))}
           </select>
-          <Button variant="outline" size="sm" onClick={onExport}>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onExport}
+            disabled={!exportReady}
+            title={
+              exportReady
+                ? "Export analytics JSON"
+                : "Wait for every analytics panel to load"
+            }
+          >
             <Download className="mr-1.5 h-4 w-4" />
             Export
           </Button>
         </div>
       </div>
 
-      <FindingsOverTimePanel
-        engagementLabel={selected === "all" ? "All engagements" : selected}
-        data={overTimeQuery.data ?? []}
-        loading={overTimeQuery.isLoading}
-        period={period}
-        setPeriod={setPeriod}
-        customStart={customStart}
-        setCustomStart={setCustomStart}
-        customEnd={customEnd}
-        setCustomEnd={setCustomEnd}
+      <QueryState
+        isLoading={engagementsQuery.isLoading}
+        error={engagementsQuery.error}
+        hasData={engagementsQuery.data !== undefined}
+        loadingLabel="Loading engagement filters…"
+        errorLabel="Could not load engagement filters."
+        onRetry={() => void engagementsQuery.refetch()}
+        isRetrying={engagementsQuery.isFetching}
+        compact
       />
 
-      <div className="grid gap-4 lg:grid-cols-[2fr_1fr]">
-        <SeverityBreakdownPanel
-          data={severityQuery.data ?? []}
-          loading={severityQuery.isLoading}
+      <AnalyticsQueryBoundary query={overTimeQuery} label="findings over time">
+        <FindingsOverTimePanel
+          engagementLabel={selected === "all" ? "All engagements" : selected}
+          data={overTimeQuery.data ?? []}
+          loading={false}
+          period={period}
+          setPeriod={setPeriod}
+          customStart={customStart}
+          setCustomStart={setCustomStart}
+          customEnd={customEnd}
+          setCustomEnd={setCustomEnd}
         />
+      </AnalyticsQueryBoundary>
+
+      <div className="grid gap-4 lg:grid-cols-[2fr_1fr]">
+        <AnalyticsQueryBoundary query={severityQuery} label="severity breakdown">
+          <SeverityBreakdownPanel data={severityQuery.data ?? []} loading={false} />
+        </AnalyticsQueryBoundary>
         <div className="space-y-4">
-          <ScanCoveragePanel
-            data={coverageQuery.data ?? null}
-            loading={coverageQuery.isLoading}
-          />
-          <V3RolloutPanel
-            engagements={engagements}
-            loading={engagementsQuery.isLoading}
-          />
-          <TopFindingsPanel
-            data={topFindingsQuery.data ?? []}
-            loading={topFindingsQuery.isLoading}
-          />
+          <AnalyticsQueryBoundary query={coverageQuery} label="scan coverage">
+            <ScanCoveragePanel data={coverageQuery.data ?? null} loading={false} />
+          </AnalyticsQueryBoundary>
+          {engagementsQuery.data !== undefined ? (
+            <V3RolloutPanel engagements={engagements} loading={false} />
+          ) : null}
+          <AnalyticsQueryBoundary query={topFindingsQuery} label="top findings">
+            <TopFindingsPanel data={topFindingsQuery.data ?? []} loading={false} />
+          </AnalyticsQueryBoundary>
         </div>
       </div>
 
-      <EngagementLogPanel
-        data={logQuery.data ?? []}
-        loading={logQuery.isLoading}
-      />
+      <AnalyticsQueryBoundary query={logQuery} label="engagement log">
+        <EngagementLogPanel data={logQuery.data ?? []} loading={false} />
+      </AnalyticsQueryBoundary>
+    </div>
+  );
+}
+
+function AnalyticsQueryBoundary({
+  query,
+  label,
+  children,
+}: {
+  query: {
+    data: unknown;
+    isLoading: boolean;
+    isFetching: boolean;
+    error: unknown;
+    refetch: () => unknown;
+  };
+  label: string;
+  children: ReactNode;
+}) {
+  const initial = query.data === undefined;
+  return (
+    <div className="space-y-2">
+      {(initial && (query.isLoading || query.error)) || query.error ? (
+        <QueryState
+          isLoading={initial && query.isLoading}
+          error={query.error}
+          hasData={!initial}
+          loadingLabel={`Loading ${label}…`}
+          errorLabel={`Could not load ${label}.`}
+          onRetry={() => void query.refetch()}
+          isRetrying={query.isFetching}
+          compact={!initial}
+        />
+      ) : null}
+      {!initial ? children : null}
     </div>
   );
 }
@@ -260,7 +327,12 @@ function FindingsOverTimePanel({
               <input
                 type="date"
                 value={customStart}
-                onChange={(e) => setCustomStart(e.target.value)}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  setCustomStart(value);
+                  if (customEnd && value > customEnd) setCustomEnd(value);
+                }}
+                max={customEnd || undefined}
                 className="h-8 rounded-md border border-input bg-background px-2 text-xs"
                 aria-label="Custom start date"
               />
@@ -359,7 +431,7 @@ function SeverityBreakdownPanel({
   const tooltipTextStyle = { color: "hsl(var(--foreground))" } as const;
 
   return (
-    <section className="rounded-lg border border-border bg-card/40 p-5">
+    <section className="h-full rounded-lg border border-border bg-card/40 p-5">
       <div className="flex items-start justify-between gap-3">
         <h2 className="text-sm font-semibold">Severity breakdown</h2>
         <ModeToggle mode={mode} setMode={setMode} />

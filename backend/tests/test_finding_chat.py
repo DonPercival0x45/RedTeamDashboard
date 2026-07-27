@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+import redis as redis_lib
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
@@ -26,6 +27,7 @@ from app.models import (
     Severity,
     Task,
 )
+from app.services.ephemeral_provider_key import NoProviderKeyError
 from app.services.finding_chat import (
     accept_chat_action,
     build_finding_dossier,
@@ -121,11 +123,21 @@ def _patch_llm(monkeypatch: pytest.MonkeyPatch) -> _FakeLLM:
     import app.services.finding_chat as chat
 
     fake = _FakeLLM()
-    monkeypatch.setattr(chat, "default_provider_model", lambda: ("anthropic", "fake-1"))
+    # Short-circuit model/key selection so the test never depends on process
+    # settings, a live user default, or Redis.
     monkeypatch.setattr(
         chat,
-        "resolve_for_user",
-        lambda *_args, **_kwargs: SimpleNamespace(api_key="sk-test", endpoint=None),
+        "resolve_agent_model_with_default",
+        lambda *_args, **_kwargs: ("anthropic", "fake-1"),
+    )
+    monkeypatch.setattr(
+        chat,
+        "resolve_for_user_with_fallback",
+        lambda *_args, **_kwargs: (
+            "openai",
+            "gpt-mru",
+            SimpleNamespace(api_key="sk-test", endpoint=None),
+        ),
     )
     monkeypatch.setattr(chat, "_make_chat_model", lambda *_args, **_kwargs: fake)
     return fake
@@ -135,11 +147,19 @@ def _patch_plain_llm(monkeypatch: pytest.MonkeyPatch) -> _FakePlainLLM:
     import app.services.finding_chat as chat
 
     fake = _FakePlainLLM()
-    monkeypatch.setattr(chat, "default_provider_model", lambda: ("anthropic", "fake-1"))
     monkeypatch.setattr(
         chat,
-        "resolve_for_user",
-        lambda *_args, **_kwargs: SimpleNamespace(api_key="sk-test", endpoint=None),
+        "resolve_agent_model_with_default",
+        lambda *_args, **_kwargs: ("anthropic", "fake-1"),
+    )
+    monkeypatch.setattr(
+        chat,
+        "resolve_for_user_with_fallback",
+        lambda *_args, **_kwargs: (
+            "anthropic",
+            "fake-1",
+            SimpleNamespace(api_key="sk-test", endpoint=None),
+        ),
     )
     monkeypatch.setattr(chat, "_make_chat_model", lambda *_args, **_kwargs: fake)
     return fake
@@ -205,6 +225,10 @@ def test_ask_finding_chat_persists_bubbles_execution_and_audit(
     assert execution is not None
     assert execution.input["mode"] == "finding_chat"
     assert execution.input["finding_id"] == str(finding.id)
+    assert (execution.model_provider, execution.model_name) == (
+        "openai",
+        "gpt-mru",
+    )
     assert execution.status.value == "completed"
 
     audit = db.execute(
@@ -245,6 +269,38 @@ def test_missing_provider_key_returns_actionable_error_without_orphan_message(
     assert count == 0
 
 
+def test_finding_chat_ask_returns_503_when_redis_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    client: TestClient,
+    db: Session,
+    finding: Finding,
+) -> None:
+    _patch_llm(monkeypatch)
+    import app.services.finding_chat as chat
+
+    def redis_down(*_args: object, **_kwargs: object) -> object:
+        raise redis_lib.ConnectionError("redis unavailable")
+
+    monkeypatch.setattr(
+        chat, "resolve_for_user_with_fallback", redis_down
+    )
+    response = client.post(
+        f"/findings/{finding.id}/chat",
+        headers=HDR,
+        json={"message": "What should I do next?"},
+    )
+
+    assert response.status_code == 503
+    assert "temporary credential/queue service outage" in response.json()[
+        "detail"
+    ]
+    assert db.execute(
+        select(func.count(ConversationMessage.id))
+        .join(Conversation, Conversation.id == ConversationMessage.conversation_id)
+        .where(Conversation.finding_id == finding.id)
+    ).scalar_one() == 0
+
+
 def test_plain_prose_chat_response_gets_safe_agent_action(
     monkeypatch: pytest.MonkeyPatch,
     client: TestClient,
@@ -274,6 +330,19 @@ def test_accept_finding_chat_run_tool_action_dispatches_task(
     finding: Finding,
 ) -> None:
     _patch_llm(monkeypatch)
+    import app.agents.tactical as tactical
+
+    monkeypatch.setattr(
+        tactical,
+        "resolve_for_user_with_fallback",
+        lambda *_args, **_kwargs: (
+            "anthropic",
+            "fake-1",
+            SimpleNamespace(
+                row_id=uuid.UUID(int=1), api_key="sk-test", endpoint=None
+            ),
+        ),
+    )
     chat = client.post(
         f"/findings/{finding.id}/chat",
         headers=HDR,
@@ -307,6 +376,81 @@ def test_accept_finding_chat_run_tool_action_dispatches_task(
         )
     ).scalar_one()
     assert audit.payload["action_type"] == "run_tool"
+
+
+def test_accept_run_tool_action_returns_actionable_missing_key_error(
+    monkeypatch: pytest.MonkeyPatch,
+    client: TestClient,
+    db: Session,
+    finding: Finding,
+) -> None:
+    _patch_llm(monkeypatch)
+    chat = client.post(
+        f"/findings/{finding.id}/chat",
+        headers=HDR,
+        json={"message": "Suggest tags"},
+    ).json()
+    message_id = chat["assistant_message"]["id"]
+    import app.agents.tactical as tactical
+
+    def missing_key(*_args: object, **_kwargs: object) -> object:
+        raise NoProviderKeyError(
+            user_id=uuid.uuid4(), provider="anthropic"
+        )
+
+    monkeypatch.setattr(
+        tactical, "resolve_for_user_with_fallback", missing_key
+    )
+    resp = client.post(
+        f"/findings/{finding.id}/chat/messages/{message_id}/actions/accept",
+        headers=HDR,
+        json={"action_index": 0},
+    )
+
+    assert resp.status_code == 400
+    assert resp.json()["detail"]["code"] == "missing_provider_key"
+    assert resp.json()["detail"]["action_url"] == "/settings/keys"
+    assert db.execute(
+        select(func.count(Task.id)).where(
+            Task.engagement_id == finding.engagement_id
+        )
+    ).scalar_one() == 0
+
+
+def test_accept_run_tool_action_returns_503_when_redis_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    client: TestClient,
+    db: Session,
+    finding: Finding,
+) -> None:
+    _patch_llm(monkeypatch)
+    chat = client.post(
+        f"/findings/{finding.id}/chat",
+        headers=HDR,
+        json={"message": "Suggest tags"},
+    ).json()
+    message_id = chat["assistant_message"]["id"]
+    import app.agents.tactical as tactical
+
+    def redis_down(*_args: object, **_kwargs: object) -> object:
+        raise redis_lib.ConnectionError("redis unavailable")
+
+    monkeypatch.setattr(
+        tactical, "resolve_for_user_with_fallback", redis_down
+    )
+    resp = client.post(
+        f"/findings/{finding.id}/chat/messages/{message_id}/actions/accept",
+        headers=HDR,
+        json={"action_index": 0},
+    )
+
+    assert resp.status_code == 503
+    assert "temporary credential/queue service outage" in resp.json()["detail"]
+    assert db.execute(
+        select(func.count(Task.id)).where(
+            Task.engagement_id == finding.engagement_id
+        )
+    ).scalar_one() == 0
 
 
 def test_clear_finding_chat_deletes_current_user_conversation(

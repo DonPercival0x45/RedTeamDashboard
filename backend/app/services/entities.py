@@ -18,12 +18,13 @@ from typing import Any
 
 from app.models import Finding, ScopeKind, Severity
 from app.services import scope_matcher
+from app.services.entity_identity import normalize_entity_type, normalize_entity_value
 
 EntityType = str  # email | ip | cidr | domain | subdomain | url | host
 
 # v2.19.0: entity-type → scope-kind mapping for Live/Legacy/OOS classification.
 # `host` and `url` map to a small set of scope kinds we try in order; the first
-# match wins. Emails never live in scope, so they're excluded.
+# match wins. Email scope is exact-mailbox only.
 _ENTITY_KIND_LOOKUP: dict[str, tuple[ScopeKind, ...]] = {
     "ip": (ScopeKind.ip,),
     "cidr": (ScopeKind.cidr,),
@@ -31,6 +32,7 @@ _ENTITY_KIND_LOOKUP: dict[str, tuple[ScopeKind, ...]] = {
     "subdomain": (ScopeKind.domain,),
     "host": (ScopeKind.ip, ScopeKind.domain),
     "url": (ScopeKind.url,),
+    "email": (ScopeKind.email,),
 }
 
 
@@ -47,20 +49,101 @@ def classify_entity_scope_status(
       recorded this exact value (case-insensitive) at some point.
     - oos: neither — discovered from a finding but never a scope target.
 
-    Emails and unknown entity types short-circuit to "oos" — they can't be
-    scope targets by construction.
+    Unknown entity types short-circuit to "oos". Email uses conservative
+    exact-mailbox matching; a scoped domain never authorizes every mailbox.
     """
     kinds = _ENTITY_KIND_LOOKUP.get(entity_type)
     if not kinds:
         return "oos"
     items = list(current_scope_items)
-    for kind in kinds:
-        for item in items:
-            if scope_matcher.item_matches(entity_value, kind, item):
-                return "live"
+    decision = scope_matcher.evaluate_scope_candidates(
+        [(entity_value, kind) for kind in kinds],
+        items,
+    )
+    if decision.allowed:
+        return "live"
     if entity_value.strip().lower() in retired_scope_values:
         return "legacy"
     return "oos"
+
+
+def include_scope_entities(
+    entities: list[dict[str, Any]],
+    scope_items: Iterable[scope_matcher.ScopeItemLike],
+) -> list[dict[str, Any]]:
+    """Merge current in-scope targets into the derived entity inventory.
+
+    Scope is already canonical operator input; requiring a finding before it
+    appears in Entities forces duplicate entry and makes a fresh engagement
+    look empty. Existing finding-derived rows win and retain provenance/counts.
+    """
+    result = [dict(entity) for entity in entities]
+    seen = {
+        (
+            normalize_entity_type(entity.get("type")),
+            normalize_entity_value(entity.get("type"), entity.get("value")),
+        )
+        for entity in result
+    }
+    for item in scope_items:
+        if bool(getattr(item, "is_exclusion", False)):
+            continue
+        kind = getattr(item, "kind", "")
+        entity_type = normalize_entity_type(getattr(kind, "value", kind))
+        value = normalize_entity_value(
+            entity_type, getattr(item, "value", "")
+        )
+        if not entity_type or not value or (entity_type, value) in seen:
+            continue
+        created_at = getattr(item, "created_at", None)
+        updated_at = getattr(item, "updated_at", None) or created_at
+        result.append(
+            {
+                "type": entity_type,
+                "value": value,
+                "count": 0,
+                "severity": Severity.info.value,
+                "first_seen": created_at,
+                "last_seen": updated_at,
+                "findings": [],
+            }
+        )
+        seen.add((entity_type, value))
+    return result
+
+
+_VENDOR_ROLE_MAILBOXES = {
+    "abuse",
+    "domains",
+    "hostmaster",
+    "noc",
+    "privacy",
+    "registrar",
+    "whois",
+}
+
+
+def classify_entity_relevance(
+    entity_type: str,
+    entity_value: str,
+    scope_status: str,
+) -> tuple[str, str | None]:
+    """Conservatively sort likely third-party chaff without deleting evidence.
+
+    Only a narrow, explainable pattern is auto-classified. Everything else
+    outside scope remains in the review bucket because CDN, SaaS, registrar,
+    and supplier infrastructure may be explicitly authorized in some tests.
+    """
+    if scope_status == "live":
+        return "in_scope", None
+    if entity_type == "email" and "@" in entity_value:
+        local_part = entity_value.rsplit("@", 1)[0].lower()
+        if local_part in _VENDOR_ROLE_MAILBOXES:
+            return (
+                "likely_third_party",
+                "Role mailbox on a domain outside current scope",
+            )
+    return "review", "Outside current scope; retain for analyst review"
 
 
 def annotate_scope_status(
@@ -72,12 +155,22 @@ def annotate_scope_status(
     """Attach ``scope_status`` to each entity dict in place and return the list."""
     items = list(current_scope_items)
     for entity in entities:
-        entity["scope_status"] = classify_entity_scope_status(
-            str(entity.get("type") or ""),
-            str(entity.get("value") or ""),
+        entity_type = str(entity.get("type") or "")
+        entity_value = str(entity.get("value") or "")
+        scope_status = classify_entity_scope_status(
+            entity_type,
+            entity_value,
             items,
             retired_scope_values,
         )
+        relevance, reason = classify_entity_relevance(
+            entity_type,
+            entity_value,
+            scope_status,
+        )
+        entity["scope_status"] = scope_status
+        entity["relevance"] = relevance
+        entity["relevance_reason"] = reason
     return entities
 
 _EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
@@ -88,7 +181,15 @@ _DOMAIN_FIND = re.compile(r"\b(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}\b")
 # Plural keys → typed list-of-strings. Singular keys → one entry per dict.
 # Singular forms exist so finding.details['items'][*].subdomain etc. from
 # subfinder/httpx/nmap flow into Discovered Context as promotable indicators.
-_HOST_KEYS_PLURAL = {"subdomains": "subdomain", "domains": "domain", "hosts": "host"}
+_HOST_KEYS_PLURAL = {
+    "subdomains": "subdomain",
+    "domains": "domain",
+    "hosts": "host",
+    "name_servers": "domain",
+    "nameservers": "domain",
+    "cname": "domain",
+    "ns": "domain",
+}
 _HOST_KEYS_SINGULAR = {
     "subdomain": "subdomain",
     "domain": "domain",
@@ -136,13 +237,37 @@ def _walk(value: Any, sink: list[tuple[EntityType, str]]) -> None:
             sink.append(("ip", ip))
         return
     if isinstance(value, dict):
+        # Canonical DNS grouping stores one record per {type, value} item.
+        # Preserve that structure as entities instead of relying on regex over
+        # an otherwise context-free string (which intentionally ignores most
+        # arbitrary domain-looking prose).
+        record_type = str(value.get("type") or "").upper()
+        record_value = value.get("value")
+        if isinstance(record_value, str) and record_value.strip():
+            cleaned = record_value.strip().rstrip(".")
+            if record_type in {"A", "AAAA"}:
+                sink.append(("ip", cleaned))
+            elif record_type in {"CNAME", "NS", "PTR"}:
+                sink.append(("domain", cleaned.lower()))
+            elif record_type == "MX":
+                mx_host = cleaned.split()[-1].rstrip(".")
+                if mx_host:
+                    sink.append(("domain", mx_host.lower()))
         for k, v in value.items():
             if k in _HOST_KEYS_PLURAL and isinstance(v, list):
                 for item in v:
                     if isinstance(item, str) and item.strip():
-                        sink.append((_HOST_KEYS_PLURAL[k], item.strip().lower()))
+                        entity_type = _HOST_KEYS_PLURAL[k]
+                        normalized = item.strip().lower()
+                        if entity_type in {"domain", "subdomain", "host"}:
+                            normalized = normalized.rstrip(".")
+                        sink.append((entity_type, normalized))
             if k in _HOST_KEYS_SINGULAR and isinstance(v, str) and v.strip():
-                sink.append((_HOST_KEYS_SINGULAR[k], v.strip().lower()))
+                entity_type = _HOST_KEYS_SINGULAR[k]
+                normalized = v.strip().lower()
+                if entity_type in {"domain", "subdomain", "host"}:
+                    normalized = normalized.rstrip(".")
+                sink.append((entity_type, normalized))
             if k == "host" and isinstance(v, str) and v.strip():
                 host = v.strip()
                 kind: EntityType = "ip" if _IPV4_RE.fullmatch(host) else "host"
@@ -154,7 +279,9 @@ def _walk(value: Any, sink: list[tuple[EntityType, str]]) -> None:
             _walk(item, sink)
 
 
-def _extract_one(finding: Finding) -> list[tuple[EntityType, str]]:
+def extract_finding_entities(
+    finding: Finding,
+) -> list[tuple[EntityType, str]]:
     found: list[tuple[EntityType, str]] = []
     if finding.target:
         hit = _classify_target(finding.target)
@@ -175,7 +302,7 @@ def extract_finding_context(finding: Finding) -> list[tuple[EntityType, str]]:
     finding-scoped path also inspects title/summary and domain-like strings
     because every candidate is shown to an analyst before it is persisted.
     """
-    found = _extract_one(finding)
+    found = extract_finding_entities(finding)
     narrative = f"{finding.title}\n{finding.summary or ''}"
     _walk(narrative, found)
     for domain in _DOMAIN_FIND.findall(narrative):
@@ -195,7 +322,7 @@ def extract_entities(
     agg: dict[tuple[str, str], dict[str, Any]] = {}
 
     for f in findings:
-        for etype, value in _extract_one(f):
+        for etype, value in extract_finding_entities(f):
             key = (etype, value)
             rec = agg.get(key)
             ref = {

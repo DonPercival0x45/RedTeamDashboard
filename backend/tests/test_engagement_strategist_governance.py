@@ -8,6 +8,7 @@ from collections.abc import Iterator
 from types import SimpleNamespace
 
 import pytest
+import redis as redis_lib
 from fastapi.testclient import TestClient
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
@@ -37,6 +38,7 @@ from app.services.engagement_strategist import (
     build_engagement_dossier,
     run_engagement_strategist,
 )
+from app.services.ephemeral_provider_key import NoProviderKeyError
 
 
 @pytest.fixture()
@@ -110,6 +112,85 @@ def test_v3_engagement_rejects_new_legacy_strategist_calls(
     assert history.status_code == 200
 
 
+@pytest.mark.parametrize(
+    ("raised", "expected_status", "expected_code"),
+    [
+        (
+            NoProviderKeyError(
+                user_id=uuid.UUID(int=3), provider="anthropic"
+            ),
+            400,
+            "missing_provider_key",
+        ),
+        (redis_lib.ConnectionError("redis unavailable"), 503, None),
+    ],
+)
+def test_strategist_dependency_failures_keep_actionable_http_status(
+    client: TestClient,
+    engagement: Engagement,
+    monkeypatch: pytest.MonkeyPatch,
+    raised: Exception,
+    expected_status: int,
+    expected_code: str | None,
+) -> None:
+    from app.api import engagement_strategist as api
+
+    monkeypatch.setattr(api.settings, "engagement_strategist_enabled", True)
+
+    def fail(*_args: object, **_kwargs: object) -> object:
+        raise raised
+
+    monkeypatch.setattr(api, "run_engagement_strategist", fail)
+    response = client.post(
+        f"/engagements/{engagement.slug}/strategy/recommend",
+        headers={"X-User-Id": "strategist-errors@example.com"},
+    )
+
+    assert response.status_code == expected_status
+    if expected_code:
+        assert response.json()["detail"]["code"] == expected_code
+    else:
+        assert "temporary credential/queue service outage" in response.json()[
+            "detail"
+        ]
+
+
+@pytest.mark.parametrize(
+    "raised",
+    [
+        NoProviderKeyError(user_id=uuid.UUID(int=4), provider="anthropic"),
+        redis_lib.ConnectionError("redis unavailable"),
+    ],
+)
+def test_strategist_chat_dependency_failure_does_not_persist_orphan_prompt(
+    client: TestClient,
+    db: Session,
+    engagement: Engagement,
+    monkeypatch: pytest.MonkeyPatch,
+    raised: Exception,
+) -> None:
+    from app.api import engagement_strategist as api
+
+    monkeypatch.setattr(api.settings, "engagement_strategist_enabled", True)
+
+    def fail(*_args: object, **_kwargs: object) -> object:
+        raise raised
+
+    monkeypatch.setattr(api, "run_engagement_strategist", fail)
+    response = client.post(
+        f"/engagements/{engagement.slug}/strategy/chat",
+        headers={"X-User-Id": "strategist-chat-errors@example.com"},
+        json={"message": "What should we do next?"},
+    )
+
+    assert response.status_code in {400, 503}
+    assert db.execute(
+        select(ConversationMessage)
+        .join(Conversation, Conversation.id == ConversationMessage.conversation_id)
+        .where(Conversation.engagement_id == engagement.id)
+    ).scalars().all() == []
+
+
 def test_dossier_hash_is_stable_and_injected_record_remains_bounded_data(
     db: Session, engagement: Engagement
 ) -> None:
@@ -165,10 +246,19 @@ def test_manual_strategist_delimits_untrusted_records_and_records_context_hash(
     monkeypatch.setattr(service, "_resolve_model", lambda *_args: ("test", "fake-model"))
     monkeypatch.setattr(
         service,
-        "resolve_for_user",
-        lambda *_args, **_kwargs: SimpleNamespace(api_key="not-persisted", endpoint=None),
+        "resolve_for_user_with_fallback",
+        lambda *_args, **_kwargs: (
+            "openai",
+            "gpt-mru",
+            SimpleNamespace(api_key="not-persisted", endpoint="https://mru.test/v1"),
+        ),
     )
-    monkeypatch.setattr(service, "_make_chat_model", lambda *_args, **_kwargs: FakeLLM())
+
+    def make_chat_model(provider: str, model: str, **kwargs: object) -> FakeLLM:
+        captured["model"] = (provider, model, kwargs)
+        return FakeLLM()
+
+    monkeypatch.setattr(service, "_make_chat_model", make_chat_model)
     monkeypatch.setattr(service.pricing, "cost_usd", lambda *_args, **_kwargs: 0.0)
 
     execution, output, context_hash, suggestions = run_engagement_strategist(
@@ -181,6 +271,17 @@ def test_manual_strategist_delimits_untrusted_records_and_records_context_hash(
 
     assert suggestions == []
     assert output.situation_summary == "Reviewed canonical records only."
+    assert execution.model_provider == "openai"
+    assert execution.model_name == "gpt-mru"
+    assert captured["model"] == (
+        "openai",
+        "gpt-mru",
+        {
+            "api_key": "not-persisted",
+            "endpoint": "https://mru.test/v1",
+            "max_tokens": 16_000,
+        },
+    )
     messages = captured["messages"]
     assert isinstance(messages, list)
     system = messages[0][1]

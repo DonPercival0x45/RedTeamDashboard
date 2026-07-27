@@ -348,6 +348,16 @@ def resolve_for_user_with_fallback(
         for e in list_all(redis, user_id=user_id)
         if e.get("kind") == "model_provider"
         and (e.get("api_key") or e.get("is_local"))
+        and (
+            str(e.get("provider") or "").strip().lower()
+            in _FALLBACK_MODELS
+            or (
+                str(e.get("provider") or "").strip().lower() == "custom"
+                and isinstance(e.get("models"), list)
+                and bool(e.get("models"))
+                and bool(e.get("endpoint"))
+            )
+        )
     ]
     if not candidates:
         # Preserve the original error message (still names the preferred
@@ -364,9 +374,13 @@ def resolve_for_user_with_fallback(
     if isinstance(winner_models, list) and winner_models:
         fallback_model = str(winner_models[0])
     else:
-        fallback_model = _FALLBACK_MODELS.get(
-            fallback_provider, preferred_model
-        )
+        fallback_model = _FALLBACK_MODELS.get(fallback_provider)
+        if fallback_model is None:
+            # Never pair one provider with another provider's model. Custom
+            # providers must declare at least one model so routing is explicit.
+            raise NoProviderKeyError(
+                user_id=user_id, provider=fallback_provider
+            )
 
     resolved = ResolvedProviderKey(
         row_id=uuid.UUID(str(winner["id"])),

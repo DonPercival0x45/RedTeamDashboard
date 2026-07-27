@@ -141,8 +141,12 @@ def test_recommend_uses_dedicated_prompt_and_dedups(
     monkeypatch.setattr(service, "_resolve_model", lambda *_a, **_k: ("test", "fake-model"))
     monkeypatch.setattr(
         service,
-        "resolve_for_user",
-        lambda *_a, **_k: SimpleNamespace(api_key="not-persisted", endpoint=None),
+        "resolve_for_user_with_fallback",
+        lambda *_a, **_k: (
+            "test",
+            "fake-model",
+            SimpleNamespace(api_key="not-persisted", endpoint=None),
+        ),
     )
     monkeypatch.setattr(service, "_make_chat_model", lambda *_a, **_k: FakeLLM())
     monkeypatch.setattr(service.pricing, "cost_usd", lambda *_a, **_k: 0.0)
@@ -186,8 +190,12 @@ def test_non_initial_mode_fallback_is_honest_not_initial_strategy(
     monkeypatch.setattr(service, "_resolve_model", lambda *_a, **_k: ("test", "fake-model"))
     monkeypatch.setattr(
         service,
-        "resolve_for_user",
-        lambda *_a, **_k: SimpleNamespace(api_key="not-persisted", endpoint=None),
+        "resolve_for_user_with_fallback",
+        lambda *_a, **_k: (
+            "test",
+            "fake-model",
+            SimpleNamespace(api_key="not-persisted", endpoint=None),
+        ),
     )
     monkeypatch.setattr(service, "_make_chat_model", lambda *_a, **_k: BoomLLM())
     monkeypatch.setattr(service.pricing, "cost_usd", lambda *_a, **_k: 0.0)

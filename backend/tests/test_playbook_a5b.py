@@ -27,12 +27,15 @@ from app.db.session import SessionLocal
 from app.main import app
 from app.models import (
     Engagement,
+    EngagementArchitecture,
     EngagementStatus,
     EngagementWorkState,
     Playbook,
     PlaybookRun,
     PlaybookRunStatus,
     PlaybookStep,
+    ScopeItem,
+    ScopeKind,
     User,
     UserRole,
 )
@@ -143,6 +146,7 @@ def test_delete_playbook_refuses_when_runs_exist(
         slug=f"a5bd-{uuid.uuid4().hex[:6]}",
         status=EngagementStatus.active,
         work_state=EngagementWorkState.active,
+        intelligence_architecture=EngagementArchitecture.v3,
     )
     db.add(eng)
     db.flush()
@@ -364,6 +368,7 @@ def test_delete_playbook_with_runs_409(
         slug=f"a5bh-{uuid.uuid4().hex[:6]}",
         status=EngagementStatus.active,
         work_state=EngagementWorkState.active,
+        intelligence_architecture=EngagementArchitecture.v3,
     )
     db.add(eng)
     db.flush()
@@ -373,6 +378,20 @@ def test_delete_playbook_with_runs_409(
     db.commit()
     resp = client.delete(f"/playbooks/{custom_playbook.slug}", headers=_h(user))
     assert resp.status_code == 409
+
+    metadata = client.patch(
+        f"/playbooks/{custom_playbook.slug}",
+        headers=_h(user),
+        json={"name": "mutated after enqueue"},
+    )
+    step = client.post(
+        f"/playbooks/{custom_playbook.slug}/steps",
+        headers=_h(user),
+        json={"tool_slug": "whois"},
+    )
+    assert metadata.status_code == 409
+    assert step.status_code == 409
+    assert "immutable after their first run" in step.json()["detail"]
 
 
 def test_post_step_endpoint_appends(
@@ -395,6 +414,54 @@ def test_post_step_endpoint_appends(
     body = resp.json()
     assert body["tool_slug"] == "whois"
     assert body["sort_order"] == 10  # first step auto-placed at 10
+
+
+def test_step_editor_rejects_unknown_and_accepts_server_routed_mixed_tools(
+    client: TestClient, user: User
+) -> None:
+    unknown_slug = f"unknown-{uuid.uuid4().hex[:6]}"
+    client.post(
+        "/playbooks",
+        headers=_h(user),
+        json={
+            "slug": unknown_slug,
+            "name": "unknown",
+            "applies_to_asset_class": "ip",
+        },
+    )
+    unknown = client.post(
+        f"/playbooks/{unknown_slug}/steps",
+        headers=_h(user),
+        json={"tool_slug": "portscan", "args_template": {"ip": "{{scope_item}}"}},
+    )
+    assert unknown.status_code == 422
+    assert "unsupported playbook tools" in unknown.json()["detail"]
+
+    mixed_slug = f"mixed-{uuid.uuid4().hex[:6]}"
+    client.post(
+        "/playbooks",
+        headers=_h(user),
+        json={
+            "slug": mixed_slug,
+            "name": "mixed",
+            "applies_to_asset_class": "domain",
+        },
+    )
+    assert client.post(
+        f"/playbooks/{mixed_slug}/steps",
+        headers=_h(user),
+        json={"tool_slug": "whois"},
+    ).status_code == 201
+    mixed = client.post(
+        f"/playbooks/{mixed_slug}/steps",
+        headers=_h(user),
+        json={"tool_slug": "dns_lookup"},
+    )
+    assert mixed.status_code == 201, mixed.text
+    detail = client.get(f"/playbooks/{mixed_slug}", headers=_h(user))
+    assert detail.status_code == 200
+    assert detail.json()["required_executor"] == "mcp"
+    assert detail.json()["execution_paths"] == ["Built-in", "Connected service"]
 
 
 def test_patch_step_endpoint_edits(
@@ -494,8 +561,14 @@ def test_analyst_authored_active_playbook_hits_the_gate(
         slug=eng_slug,
         status=EngagementStatus.active,
         work_state=EngagementWorkState.active,
+        intelligence_architecture=EngagementArchitecture.v3,
     )
     db.add(eng)
+    db.flush()
+    # POST /playbook-runs enforces in-scope-only; seed the submitted target.
+    db.add(
+        ScopeItem(engagement_id=eng.id, kind=ScopeKind.domain, value="foo.com")
+    )
     db.flush()
     meth.load_seed_catalog(db)
     meth.select_for_engagement(

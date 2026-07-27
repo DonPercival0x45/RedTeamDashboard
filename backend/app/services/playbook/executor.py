@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -81,6 +81,119 @@ class PlaybookExecutor(Protocol):
 
 ToolCallable = Callable[[str, dict[str, Any]], StepResult]
 
+# Scope-bearing arguments for built-in playbook tools. The run's validated
+# scope item is authoritative; a custom playbook cannot redirect execution by
+# hard-coding a different target in its step template.
+_SCOPE_TARGET_ARG: dict[str, str] = {
+    "whois": "domain",
+    "dns-inventory": "domain",
+    "dns_inventory": "domain",
+    "subfinder": "domain",
+    "crtsh": "domain",
+    "crt_sh": "domain",
+    "dns_lookup": "domain",
+    "httpx_probe": "url",
+    "reverse_dns": "ip",
+    "freeipapi": "ip",
+    "ipinfo": "ip",
+    "port_scan": "target",
+    "service_detect": "target",
+    "subnet_sweep": "cidr",
+    "dns-ownership-boundary": "domain",
+    "dangling-dns-triage": "domain",
+    "web-security-baseline": "url",
+    "mail-auth-posture": "domain",
+    "cloud-edge-boundary": "domain",
+    "mcp_subfinder": "domain",
+    "mcp_crt_sh": "domain",
+    "mcp_dns_lookup": "domain",
+    "mcp_httpx_probe": "url",
+    "mcp_reverse_dns": "ip",
+    "mcp_port_scan": "target",
+    "mcp_service_detect": "target",
+    "mcp_subnet_sweep": "cidr",
+}
+_PLAYBOOK_TOOL_EXECUTOR: dict[str, str] = {
+    "dns-inventory": "internal",
+    "whois": "internal",
+    "subfinder": "internal",
+    "crtsh": "internal",
+    "breach-lookup": "internal",
+    "scope-hygiene": "internal",
+    "dns-ownership-boundary": "internal",
+    "dangling-dns-triage": "internal",
+    "web-security-baseline": "internal",
+    "mail-auth-posture": "internal",
+    "cloud-edge-boundary": "internal",
+    "crt_sh": "mcp",
+    "dns_lookup": "mcp",
+    "httpx_probe": "mcp",
+    "reverse_dns": "mcp",
+    "freeipapi": "mcp",
+    "ipinfo": "mcp",
+    "port_scan": "mcp",
+    "service_detect": "mcp",
+    "subnet_sweep": "mcp",
+    "mcp_subfinder": "mcp",
+    "mcp_crt_sh": "mcp",
+    "mcp_dns_lookup": "mcp",
+    "mcp_httpx_probe": "mcp",
+    "mcp_reverse_dns": "mcp",
+    "mcp_port_scan": "mcp",
+    "mcp_service_detect": "mcp",
+    "mcp_subnet_sweep": "mcp",
+}
+
+
+def executor_for_tool_slug(tool_slug: str) -> str:
+    """Return the allowlisted transport for one tool, failing closed."""
+    try:
+        return _PLAYBOOK_TOOL_EXECUTOR[str(tool_slug)]
+    except KeyError as exc:
+        raise ValueError(f"unsupported playbook tools: {tool_slug}") from exc
+
+
+def executor_kinds_for_tools(tool_slugs: Iterable[str]) -> set[str]:
+    """Validate tool slugs and return every transport required by the recipe."""
+    slugs = {str(slug) for slug in tool_slugs}
+    unknown = sorted(slugs - _PLAYBOOK_TOOL_EXECUTOR.keys())
+    if unknown:
+        raise ValueError(f"unsupported playbook tools: {', '.join(unknown)}")
+    return {_PLAYBOOK_TOOL_EXECUTOR[slug] for slug in slugs} or {"internal"}
+
+
+def required_executor_for_tools(tool_slugs: Iterable[str]) -> str:
+    """Return the one safe executor shared by every catalog step.
+
+    Unknown tools and mixed-transport playbooks fail closed. In particular,
+    arbitrary MCP methods must never become runnable merely because an analyst
+    typed their slug into the catalog editor.
+    """
+    executors = executor_kinds_for_tools(tool_slugs)
+    if len(executors) > 1:
+        raise ValueError("playbook steps require incompatible executors")
+    return next(iter(executors), "internal")
+
+
+def resolve_step_args(
+    tool_slug: str,
+    args_template: Mapping[str, Any],
+    scope_context: str,
+) -> dict[str, Any]:
+    """Expand a step template and bind built-in target args to validated scope."""
+    args = substitute_scope(args_template, scope_context)
+    if tool_slug == "breach-lookup":
+        # The same passive connector supports domain-wide and exact-mailbox
+        # playbooks. The template selects the mode; validated scope remains
+        # authoritative in either case.
+        target_arg = "email" if "email" in args else "domain"
+        args[target_arg] = scope_context
+    else:
+        target_arg = _SCOPE_TARGET_ARG.get(tool_slug)
+        if target_arg is not None:
+            args[target_arg] = scope_context
+    return args
+
 
 def _default_registry() -> dict[str, ToolCallable]:
     """The A3b tool dispatch table.
@@ -97,7 +210,48 @@ def _default_registry() -> dict[str, ToolCallable]:
         "subfinder": _tools.run_subfinder,
         "crtsh": _tools.run_crtsh,
         "breach-lookup": _tools.run_breach_lookup,
+        "scope-hygiene": lambda _scope, _args: StepResult(
+            ok=False,
+            error="scope-hygiene requires engagement context",
+        ),
+        "dns-ownership-boundary": _tools.run_dns_ownership_boundary,
+        "dangling-dns-triage": _tools.run_dangling_dns_triage,
+        "web-security-baseline": _tools.run_web_security_baseline,
+        "mail-auth-posture": _tools.run_mail_auth_posture,
+        "cloud-edge-boundary": _tools.run_cloud_edge_boundary,
     }
+
+
+class RoutedExecutor:
+    """Dispatch each allowlisted step to its required transport.
+
+    Homogeneous runs continue to use their concrete executor directly. This
+    router is used only for recipes that intentionally combine built-in and
+    MCP-backed steps; tool-to-transport affinity remains server-owned.
+    """
+
+    def __init__(self, delegates: Mapping[str, PlaybookExecutor]) -> None:
+        self._delegates = dict(delegates)
+
+    def run_step(
+        self,
+        *,
+        tool_slug: str,
+        args_template: Mapping[str, Any],
+        scope_context: str,
+    ) -> StepResult:
+        kind = executor_for_tool_slug(tool_slug)
+        delegate = self._delegates.get(kind)
+        if delegate is None:
+            return StepResult(
+                ok=False,
+                error=f"{kind} executor unavailable for {tool_slug}",
+            )
+        return delegate.run_step(
+            tool_slug=tool_slug,
+            args_template=args_template,
+            scope_context=scope_context,
+        )
 
 
 class InternalExecutor:
@@ -135,7 +289,7 @@ class InternalExecutor:
                 ok=False,
                 error=f"unknown tool: {tool_slug!r}",
             )
-        args = substitute_scope(args_template, scope_context)
+        args = resolve_step_args(tool_slug, args_template, scope_context)
         return fn(scope_context, args)
 
 
@@ -192,10 +346,14 @@ class MCPExecutor:
         base_url: str,
         api_key: str,
         lease_token: str | None = None,
+        engagement_slug: str | None = None,
+        tool_secrets: Mapping[str, str] | None = None,
     ) -> None:
         self._base_url = base_url
         self._api_key = api_key
         self._lease_token = lease_token
+        self._engagement_slug = engagement_slug
+        self._tool_secrets = dict(tool_secrets or {})
         self._client: Any | None = None
         self._tool_cache: dict[str, Any] = {}
 
@@ -239,9 +397,15 @@ class MCPExecutor:
         args_template: Mapping[str, Any],
         scope_context: str,
     ) -> StepResult:
-        args = substitute_scope(args_template, scope_context)
+        args = resolve_step_args(tool_slug, args_template, scope_context)
+        if self._engagement_slug:
+            args["engagement_slug"] = self._engagement_slug
+        method_name = tool_slug.removeprefix("mcp_")
+        secret = self._tool_secrets.get(method_name)
+        if secret:
+            args["api_key"] = secret
         try:
-            raw = asyncio.run(self._ainvoke(tool_slug, args))
+            raw = asyncio.run(self._ainvoke(method_name, args))
         except KeyError:
             return StepResult(
                 ok=False,
@@ -251,7 +415,7 @@ class MCPExecutor:
             detail = _unwrap_exception_detail(exc)
             logger.exception(
                 "playbook.mcp_executor_failed",
-                tool=tool_slug,
+                tool=method_name,
                 error=detail,
             )
             return StepResult(
@@ -288,6 +452,12 @@ def _coerce_response(raw: Any) -> StepResult:
     findings = raw.get("_lease_findings")
     findings_total = len(findings) if isinstance(findings, list) else 0
     data = {k: v for k, v in raw.items() if k != "_lease_findings"}
+    if isinstance(findings, list) and findings:
+        # PlaybookWorker does not use the legacy graph's finding writer. Keep
+        # leased finding candidates available to the canonical playbook bridge.
+        data["lease_findings"] = [
+            dict(item) for item in findings if isinstance(item, Mapping)
+        ]
     return StepResult(
         ok=True,
         findings_new=findings_total,

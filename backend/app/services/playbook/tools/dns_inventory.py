@@ -19,7 +19,7 @@ from app.services.playbook.executor import StepResult
 
 logger = logging.getLogger(__name__)
 
-_QUERY_TYPES = ("A", "AAAA", "MX", "TXT", "NS")
+_QUERY_TYPES = ("A", "AAAA", "CNAME", "MX", "TXT", "NS")
 
 
 def run(scope_context: str, args: dict[str, Any]) -> StepResult:

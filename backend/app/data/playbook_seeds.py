@@ -1,8 +1,8 @@
 """Seed playbooks — Track A step A3a.
 
-Two starter playbooks that map to the seeded methodology nodes from A1. Both
-target the ``domain`` asset class since the seeded trees emphasize passive
-domain recon.
+The domain starters map to seeded methodology nodes from A1. Exploration-tier
+IP enrichment and exact-mailbox exposure triage are also installed so email
+scope has an explicit catalog path instead of falling back to domain runs.
 
 * ``osint-passive-domain`` — satisfies the OSINT-minimal starter's four
   passive domain nodes.
@@ -17,6 +17,7 @@ Loader called from a service helper — not auto-installed on migration
 (different lifecycle from the methodology catalog: playbooks may be
 analyst-curated per tenant).
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -152,8 +153,419 @@ OSINT_ENRICHMENT_V1: dict[str, Any] = {
 }
 
 
+EMAIL_EXPOSURE_TRIAGE_V1: dict[str, Any] = {
+    "slug": "email-exposure-triage",
+    "version": 1,
+    "name": "Email exposure triage",
+    "description": (
+        "Checks an explicitly scoped mailbox against DeHashed records already "
+        "imported into this engagement. Exact email scope is required; "
+        "authorizing a domain does not authorize every mailbox at that domain. "
+        "No breach evidence leaves the deployment during this lookup."
+    ),
+    "applies_to_asset_class": "email",
+    "active": False,
+    "steps": [
+        {
+            "sort_order": 10,
+            "tool_slug": "breach-lookup",
+            "args_template": {"email": "{{scope_item}}"},
+            "satisfies_node_ids": [],
+            "description": "Match the exact mailbox against imported DeHashed evidence.",
+        },
+    ],
+}
+
+
+EMAIL_EXPOSURE_TRIAGE_V2: dict[str, Any] = {
+    **EMAIL_EXPOSURE_TRIAGE_V1,
+    "version": 2,
+}
+
+
+DOMAIN_WEB_SURFACE_V1: dict[str, Any] = {
+    "slug": "domain-web-surface",
+    "version": 1,
+    "name": "Domain and web-surface discovery",
+    "description": (
+        "Runs real passive collection through the MCP tool plane: subdomain "
+        "enumeration, certificate transparency, DNS resolution, and an HTTP "
+        "technology probe for each selected domain."
+    ),
+    "applies_to_asset_class": "domain",
+    "active": False,
+    "steps": [
+        {
+            "sort_order": 10,
+            "tool_slug": "mcp_subfinder",
+            "args_template": {"domain": "{{scope_item}}"},
+            "satisfies_node_ids": ["osint.domain.enum"],
+            "description": "Real passive subdomain enumeration.",
+        },
+        {
+            "sort_order": 20,
+            "tool_slug": "mcp_crt_sh",
+            "args_template": {"domain": "{{scope_item}}"},
+            "satisfies_node_ids": ["osint.domain.cert"],
+            "description": "Certificate-transparency discovery.",
+        },
+        {
+            "sort_order": 30,
+            "tool_slug": "mcp_dns_lookup",
+            "args_template": {"domain": "{{scope_item}}"},
+            "satisfies_node_ids": ["osint.domain.dns"],
+            "description": "Resolve current A, AAAA, and CNAME records.",
+        },
+        {
+            "sort_order": 40,
+            "tool_slug": "mcp_httpx_probe",
+            "args_template": {
+                "url": "{{scope_item}}",
+                "__target_source": "discovered_domains",
+            },
+            "satisfies_node_ids": [],
+            "description": "Identify reachable web services and technology signals.",
+        },
+    ],
+}
+
+
+DOMAIN_WEB_SURFACE_V2: dict[str, Any] = {
+    **DOMAIN_WEB_SURFACE_V1,
+    "version": 2,
+    "description": (
+        "Runs real passive discovery, then expands authorized subdomains from "
+        "Subfinder and certificate transparency into HTTP technology probes. "
+        "Every discovered target is rechecked against current exclusions."
+    ),
+}
+
+
+DOMAIN_WEB_SURFACE_V3: dict[str, Any] = {
+    **DOMAIN_WEB_SURFACE_V2,
+    "version": 3,
+    "description": (
+        "Combines built-in WHOIS with connected passive discovery, then "
+        "expands authorized subdomains into HTTP technology probes. Every "
+        "discovered target is rechecked against current exclusions."
+    ),
+    "steps": [
+        {
+            "tool_slug": "whois",
+            "args_template": {"domain": "{{scope_item}}"},
+            "satisfies_node_ids": [],
+            "description": "Collect registration and nameserver context.",
+        },
+        *DOMAIN_WEB_SURFACE_V2["steps"],
+    ],
+}
+
+
+OSINT_ENRICHMENT_V2: dict[str, Any] = {
+    **OSINT_ENRICHMENT_V1,
+    "version": 2,
+    "name": "IP intelligence and ownership",
+    "description": (
+        "Passive IP triage: reverse DNS, geolocation/ISP context, and "
+        "ASN/hosting/VPN/proxy/Tor intelligence. FreeIPAPI and IPinfo require "
+        "requester-owned credentials; reverse DNS is keyless."
+    ),
+    "steps": [
+        {
+            "sort_order": 10,
+            "tool_slug": "mcp_reverse_dns",
+            "args_template": {"ip": "{{scope_item}}"},
+            "satisfies_node_ids": [],
+            "description": "Resolve the IP's PTR hostname.",
+        },
+        {
+            "sort_order": 20,
+            "tool_slug": "freeipapi",
+            "args_template": {"ip": "{{scope_item}}"},
+            "satisfies_node_ids": [],
+            "description": "Geo and ISP context via FreeIPAPI.",
+        },
+        {
+            "sort_order": 30,
+            "tool_slug": "ipinfo",
+            "args_template": {"ip": "{{scope_item}}"},
+            "satisfies_node_ids": [],
+            "description": "ASN, ownership, and hosting/privacy signals via IPinfo.",
+        },
+    ],
+}
+
+
+HOST_SERVICE_VALIDATION_V1: dict[str, Any] = {
+    "slug": "host-service-validation",
+    "version": 1,
+    "name": "Host service validation",
+    "description": (
+        "Actively validates a bounded set of common exposure ports, then "
+        "fingerprints services on the same ports. Requires analyst approval "
+        "before any target connection is made."
+    ),
+    "applies_to_asset_class": "ip",
+    "active": True,
+    "steps": [
+        {
+            "sort_order": 10,
+            "tool_slug": "mcp_port_scan",
+            "args_template": {
+                "target": "{{scope_item}}",
+                "ports": "21,22,25,53,80,110,143,443,445,3389,5432,6379,8080,8443",
+                "__on_error": "stop",
+            },
+            "satisfies_node_ids": [],
+            "description": "TCP-connect scan of a bounded common-port set.",
+        },
+        {
+            "sort_order": 20,
+            "tool_slug": "mcp_service_detect",
+            "args_template": {
+                "target": "{{scope_item}}",
+                "ports": "21,22,25,53,80,110,143,443,445,3389,5432,6379,8080,8443",
+            },
+            "satisfies_node_ids": [],
+            "description": "Banner, HTTP, and TLS fingerprinting on the approved ports.",
+        },
+    ],
+}
+
+
+HOST_SERVICE_VALIDATION_V2: dict[str, Any] = {
+    **HOST_SERVICE_VALIDATION_V1,
+    "version": 2,
+}
+
+
+CIDR_EXPOSURE_SURVEY_V1: dict[str, Any] = {
+    "slug": "cidr-exposure-survey",
+    "version": 1,
+    "name": "CIDR exposure survey",
+    "description": (
+        "Actively surveys an authorized CIDR (maximum /24) for a bounded set "
+        "of common exposure ports. Explicit host exclusions are enforced by "
+        "the tool and analyst approval is required before execution."
+    ),
+    "applies_to_asset_class": "cidr",
+    "active": True,
+    "steps": [
+        {
+            "sort_order": 10,
+            "tool_slug": "mcp_subnet_sweep",
+            "args_template": {
+                "cidr": "{{scope_item}}",
+                "ports": "22,80,443,445,3389,8080,8443",
+            },
+            "satisfies_node_ids": [],
+            "description": "Bounded TCP sweep with per-host scope exclusions.",
+        }
+    ],
+}
+
+
+MAIL_DNS_POSTURE_V1: dict[str, Any] = {
+    "slug": "mail-dns-posture",
+    "version": 1,
+    "name": "Mail and DNS posture collection",
+    "description": (
+        "Collects authoritative DNS and certificate-transparency evidence for "
+        "mail and domain posture review, including MX/TXT evidence persisted "
+        "through the canonical DNS finding group."
+    ),
+    "applies_to_asset_class": "domain",
+    "active": False,
+    "steps": [
+        {
+            "sort_order": 10,
+            "tool_slug": "mcp_dns_lookup",
+            "args_template": {"domain": "{{scope_item}}"},
+            "satisfies_node_ids": ["osint.domain.dns"],
+            "description": "Collect DNS evidence used for mail posture analysis.",
+        },
+        {
+            "sort_order": 20,
+            "tool_slug": "mcp_crt_sh",
+            "args_template": {"domain": "{{scope_item}}"},
+            "satisfies_node_ids": ["osint.domain.cert"],
+            "description": "Collect certificate names related to the domain.",
+        },
+    ],
+}
+
+
+MAIL_DNS_POSTURE_V2: dict[str, Any] = {
+    **MAIL_DNS_POSTURE_V1,
+    "version": 2,
+    "name": "Mail authentication posture",
+    "description": (
+        "Keyless, bounded review of MX, SPF, DMARC, MTA-STS, and SMTP TLS "
+        "reporting. DKIM is reported as not tested because selector discovery "
+        "cannot be exhaustive without configured selectors."
+    ),
+    "steps": [
+        {
+            "sort_order": 10,
+            "tool_slug": "mail-auth-posture",
+            "args_template": {"domain": "{{scope_item}}"},
+            "satisfies_node_ids": ["osint.domain.dns"],
+            "description": "Analyze keyless mail-authentication DNS evidence.",
+        }
+    ],
+}
+
+
+SCOPE_HYGIENE_REVIEW_V1: dict[str, Any] = {
+    "slug": "scope-hygiene-review",
+    "version": 1,
+    "name": "Scope hygiene review",
+    "description": (
+        "Reviews client-defined and discovered exact scope entries for provenance, "
+        "external dependencies, non-global IPs, role mailboxes, duplicates, and "
+        "include/exclusion collisions. Report-only: it never changes authorization."
+    ),
+    "applies_to_asset_class": "scope",
+    "active": False,
+    "steps": [
+        {
+            "sort_order": 10,
+            "tool_slug": "scope-hygiene",
+            "args_template": {},
+            "satisfies_node_ids": [],
+            "description": (
+                "Produce explainable keep/review/remove recommendations without mutation."
+            ),
+        }
+    ],
+}
+
+
+DNS_OWNERSHIP_BOUNDARY_V1: dict[str, Any] = {
+    "slug": "dns-ownership-boundary",
+    "version": 1,
+    "name": "DNS ownership boundary",
+    "description": (
+        "Maps authoritative DNS, mail, address, SOA, and CNAME dependencies. "
+        "External infrastructure is evidence for review, not an ownership verdict."
+    ),
+    "applies_to_asset_class": "domain",
+    "active": False,
+    "steps": [
+        {
+            "sort_order": 10,
+            "tool_slug": "dns-ownership-boundary",
+            "args_template": {"domain": "{{scope_item}}"},
+            "satisfies_node_ids": ["osint.domain.dns"],
+            "description": "Map DNS and mail dependencies across the domain boundary.",
+        }
+    ],
+}
+
+
+DANGLING_DNS_TRIAGE_V1: dict[str, Any] = {
+    "slug": "dangling-dns-triage",
+    "version": 1,
+    "name": "Dangling DNS triage",
+    "description": (
+        "Discovers authorized names, follows a bounded CNAME check, and flags "
+        "NXDOMAIN-backed dangling candidates. It never claims provider resources "
+        "or labels a takeover confirmed."
+    ),
+    "applies_to_asset_class": "domain",
+    "active": False,
+    "steps": [
+        {
+            "sort_order": 10,
+            "tool_slug": "mcp_subfinder",
+            "args_template": {"domain": "{{scope_item}}"},
+            "satisfies_node_ids": ["osint.domain.subdomains"],
+            "description": "Discover candidate hostnames passively.",
+        },
+        {
+            "sort_order": 20,
+            "tool_slug": "mcp_crt_sh",
+            "args_template": {"domain": "{{scope_item}}"},
+            "satisfies_node_ids": ["osint.domain.cert"],
+            "description": "Add certificate-transparency hostnames.",
+        },
+        {
+            "sort_order": 30,
+            "tool_slug": "dangling-dns-triage",
+            "args_template": {
+                "domain": "{{scope_item}}",
+                "__target_source": "discovered_domains",
+            },
+            "satisfies_node_ids": [],
+            "description": "Triage authorized CNAME targets without claiming resources.",
+        },
+    ],
+}
+
+
+WEB_SECURITY_BASELINE_V1: dict[str, Any] = {
+    "slug": "web-security-baseline",
+    "version": 1,
+    "name": "Web security baseline",
+    "description": (
+        "Makes one bounded HTTPS request per authorized domain, without redirects "
+        "or crawling, and reviews common response headers and cookie flags."
+    ),
+    "applies_to_asset_class": "domain",
+    "active": False,
+    "steps": [
+        {
+            "sort_order": 10,
+            "tool_slug": "web-security-baseline",
+            "args_template": {"url": "{{scope_item}}"},
+            "satisfies_node_ids": [],
+            "description": "Collect one response and assess baseline browser protections.",
+        }
+    ],
+}
+
+
+CLOUD_EDGE_BOUNDARY_V1: dict[str, Any] = {
+    "slug": "cloud-edge-boundary",
+    "version": 1,
+    "name": "Cloud/CDN edge boundary",
+    "description": (
+        "Correlates CNAME, address, and bounded HTTP header signals for common "
+        "delivery providers. It does not probe for hidden origins or equate an "
+        "edge address with client ownership."
+    ),
+    "applies_to_asset_class": "domain",
+    "active": False,
+    "steps": [
+        {
+            "sort_order": 10,
+            "tool_slug": "cloud-edge-boundary",
+            "args_template": {"domain": "{{scope_item}}"},
+            "satisfies_node_ids": ["osint.domain.dns"],
+            "description": "Map explicit edge-provider signals without origin bypass.",
+        }
+    ],
+}
+
+
 SEED_PLAYBOOKS: list[dict[str, Any]] = [
     OSINT_PASSIVE_DOMAIN_V1,
     PTES_PASSIVE_RECON_V1,
     OSINT_ENRICHMENT_V1,
+    OSINT_ENRICHMENT_V2,
+    EMAIL_EXPOSURE_TRIAGE_V1,
+    EMAIL_EXPOSURE_TRIAGE_V2,
+    DOMAIN_WEB_SURFACE_V1,
+    DOMAIN_WEB_SURFACE_V2,
+    DOMAIN_WEB_SURFACE_V3,
+    HOST_SERVICE_VALIDATION_V1,
+    HOST_SERVICE_VALIDATION_V2,
+    CIDR_EXPOSURE_SURVEY_V1,
+    MAIL_DNS_POSTURE_V1,
+    MAIL_DNS_POSTURE_V2,
+    SCOPE_HYGIENE_REVIEW_V1,
+    DNS_OWNERSHIP_BOUNDARY_V1,
+    DANGLING_DNS_TRIAGE_V1,
+    WEB_SECURITY_BASELINE_V1,
+    CLOUD_EDGE_BOUNDARY_V1,
 ]

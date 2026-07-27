@@ -6,9 +6,10 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { cn } from "@/lib/utils";
 import { ASCII_CAT_PLAYING, PlaceholderPage } from "@/components/placeholder-page";
 import { PlaybooksTab } from "@/components/playbooks/playbooks-tab";
+import { QueryState } from "@/components/query-state";
 import { ReportBuilder } from "@/components/report-builder";
-import { useEngagements, useRunningTasks } from "@/lib/hooks";
-import type { RunningTask } from "@/lib/api";
+import { useEngagements, useRunningJobs } from "@/lib/hooks";
+import type { RunningJob } from "@/lib/api";
 
 type AutomationTab =
   | "playbooks"
@@ -113,8 +114,32 @@ function PlaybooksEngagementPicker({
   const selected =
     engagements.find((e) => e.slug === requestedSlug) ?? null;
 
+  if (
+    engagementsQuery.data === undefined &&
+    (engagementsQuery.isLoading || engagementsQuery.error)
+  ) {
+    return (
+      <QueryState
+        isLoading={engagementsQuery.isLoading}
+        error={engagementsQuery.error}
+        loadingLabel="Loading engagements…"
+        errorLabel="Could not load engagements for Playbooks."
+        onRetry={() => void engagementsQuery.refetch()}
+        isRetrying={engagementsQuery.isFetching}
+      />
+    );
+  }
+
   return (
     <div className="space-y-4">
+      <QueryState
+        isLoading={false}
+        error={engagementsQuery.error}
+        hasData
+        compact
+        onRetry={() => void engagementsQuery.refetch()}
+        isRetrying={engagementsQuery.isFetching}
+      />
       <label className="flex max-w-xl flex-col gap-1 text-xs">
         <span className="text-muted-foreground">Engagement</span>
         <select
@@ -211,24 +236,35 @@ function ReportingTab({ requestedSlug, onSlugChange }: { requestedSlug: string; 
 }
 
 function RunningJobsBanner() {
-  const { data, isLoading, error } = useRunningTasks();
-  const rows: RunningTask[] = data ?? [];
+  const query = useRunningJobs();
+  const rows: RunningJob[] = query.data ?? [];
 
-  if (isLoading) return null;
-  if (error) {
+  if (query.data === undefined && (query.isLoading || query.error)) {
     return (
-      <section className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-xs text-destructive">
-        <div className="flex items-center gap-2">
-          <span className="h-2 w-2 rounded-full bg-destructive" />
-          <span className="font-medium">Running jobs</span>
-          <span>· status unknown — {error instanceof Error ? error.message : String(error)}</span>
-        </div>
+      <section className="rounded-lg border border-border bg-card/30 p-4">
+        <QueryState
+          isLoading={query.isLoading}
+          error={query.error}
+          loadingLabel="Loading running jobs…"
+          errorLabel="Could not load running jobs."
+          onRetry={() => void query.refetch()}
+          isRetrying={query.isFetching}
+          compact
+        />
       </section>
     );
   }
   if (rows.length === 0) {
     return (
       <section className="rounded-lg border border-border bg-card/30 p-4 text-xs text-muted-foreground">
+        <QueryState
+          isLoading={false}
+          error={query.error}
+          hasData
+          onRetry={() => void query.refetch()}
+          isRetrying={query.isFetching}
+          compact
+        />
         <div className="flex items-center gap-2">
           <span className="h-2 w-2 rounded-full bg-muted-foreground/60" />
           <span className="font-medium">Running jobs</span><span>· none active</span>
@@ -238,30 +274,55 @@ function RunningJobsBanner() {
   }
 
   return (
-    <section className="rounded-lg border border-border bg-card/40 p-4">
+    <section className="space-y-3 rounded-lg border border-border bg-card/40 p-4">
+      <QueryState
+        isLoading={false}
+        error={query.error}
+        hasData
+        onRetry={() => void query.refetch()}
+        isRetrying={query.isFetching}
+        compact
+      />
       <div className="flex items-center gap-2 text-xs">
         <span className="h-2 w-2 rounded-full bg-emerald-500" />
         <span className="font-medium">Running jobs</span>
         <span className="text-muted-foreground">· {rows.length} active</span>
       </div>
-      <ul className="mt-3 space-y-3">{rows.map((task) => <RunningJobRow key={task.id} task={task} />)}</ul>
+      <ul className="space-y-3">
+        {rows.map((task) => <RunningJobRow key={`${task.kind}-${task.id}`} task={task} />)}
+      </ul>
     </section>
   );
 }
 
-function RunningJobRow({ task }: { task: RunningTask }) {
-  const percent = task.status === "running" ? 66 : task.status === "dispatched" ? 25 : 10;
+function RunningJobRow({ task }: { task: RunningJob }) {
   const href = `/e?slug=${encodeURIComponent(task.engagement_slug)}&view=status&run=${encodeURIComponent(task.id)}`;
+  const progress =
+    task.kind === "playbook" && task.steps_total !== null && task.steps_total > 0
+      ? `${task.steps_completed ?? 0}/${task.steps_total} steps`
+      : null;
   return (
     <li>
       <Link href={href} className="-mx-2 block rounded-md px-2 py-1.5 hover:bg-secondary/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
         <div className="flex items-center justify-between gap-2 text-xs">
-          <div className="min-w-0 flex-1 truncate"><span className="font-medium">{task.title}</span><span className="ml-2 text-muted-foreground">· {task.engagement_slug}</span></div>
-          <span className="shrink-0 font-mono text-[10px] text-muted-foreground">{task.status}</span>
+          <div className="flex min-w-0 flex-1 items-center gap-2">
+            <span
+              className={cn(
+                "h-2 w-2 shrink-0 rounded-full",
+                task.awaiting_action ? "bg-amber-500" : "bg-emerald-500",
+              )}
+            />
+            <span className="truncate font-medium">{task.title}</span>
+            <span className="truncate text-muted-foreground">· {task.engagement_slug}</span>
+          </div>
+          <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
+            {task.awaiting_action ? "needs approval" : task.status}
+            {progress ? ` · ${progress}` : ""}
+          </span>
         </div>
-        <div className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-secondary/60">
-          <div className="h-full rounded-full bg-critical transition-[width] duration-500" style={{ width: `${percent}%` }} />
-        </div>
+        <p className="ml-4 mt-1 text-[10px] text-muted-foreground">
+          {task.kind === "playbook" ? "Playbook run" : "Legacy task"}
+        </p>
       </Link>
     </li>
   );

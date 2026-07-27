@@ -19,17 +19,23 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import CurrentNonGuestUser, CurrentUser, DbSession
 from app.models import (
+    ActorType,
+    AuditLog,
     Engagement,
+    EngagementArchitecture,
+    EngagementStatus,
+    EngagementWorkState,
     Playbook,
     PlaybookExecutorKind,
     PlaybookRun,
     PlaybookStep,
+    ScopeItem,
 )
 from app.schemas.playbook import (
     PlaybookApprovalPayload,
@@ -62,8 +68,79 @@ from app.services.playbook import (
     update_playbook,
     update_step,
 )
+from app.services.playbook.executor import executor_kinds_for_tools
+from app.services.scope_matcher import evaluate_scope_candidates, infer_scope_kind
 
 router = APIRouter()
+
+
+def _executor_for_tool_slugs(tool_slugs: list[str]) -> PlaybookExecutorKind:
+    """Validate the server-owned step plan and return its queue transport.
+
+    Mixed recipes use the MCP queue path while the worker routes each step to
+    its allowlisted executor. The persisted run enum stays backwards compatible.
+    """
+    try:
+        kinds = executor_kinds_for_tools(tool_slugs)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return PlaybookExecutorKind.mcp if "mcp" in kinds else PlaybookExecutorKind.internal
+
+
+def _required_executor(playbook: Playbook) -> PlaybookExecutorKind:
+    return _executor_for_tool_slugs(
+        [step.tool_slug for step in playbook.steps]
+    )
+
+
+def _required_credentials(playbook: Playbook) -> list[str]:
+    credential_tools = {"freeipapi", "ipinfo", "dehashed"}
+    return sorted(
+        {
+            step.tool_slug.removeprefix("mcp_")
+            for step in playbook.steps
+            if step.tool_slug.removeprefix("mcp_") in credential_tools
+        }
+    )
+
+
+def _step_preview(playbook: Playbook) -> list[str]:
+    return [
+        step.description or step.tool_slug.removeprefix("mcp_").replace("_", " ")
+        for step in playbook.steps
+    ]
+
+
+def _execution_paths(playbook: Playbook) -> list[str]:
+    try:
+        kinds = executor_kinds_for_tools(step.tool_slug for step in playbook.steps)
+    except ValueError:
+        return []
+    labels = {"internal": "Built-in", "mcp": "Connected service"}
+    return [labels[kind] for kind in ("internal", "mcp") if kind in kinds]
+
+
+def _expands_targets(playbook: Playbook) -> bool:
+    return any(
+        bool((step.args_template or {}).get("__target_source"))
+        for step in playbook.steps
+    )
+
+
+def _ensure_recipe_mutable(session: Session, playbook: Playbook) -> None:
+    has_run = session.execute(
+        select(PlaybookRun.id)
+        .where(PlaybookRun.playbook_id == playbook.id)
+        .limit(1)
+    ).scalar_one_or_none()
+    if has_run is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "playbook recipes are immutable after their first run; "
+                "create a new version before changing metadata or steps"
+            ),
+        )
 
 
 def _engagement_by_slug(session: Session, slug: str) -> Engagement:
@@ -73,6 +150,84 @@ def _engagement_by_slug(session: Session, slug: str) -> Engagement:
     if eng is None:
         raise HTTPException(status_code=404, detail=f"engagement '{slug}' not found")
     return eng
+
+
+def _ensure_playbook_engagement_mutable(engagement: Engagement) -> None:
+    if engagement.intelligence_architecture != EngagementArchitecture.v3:
+        raise HTTPException(status_code=409, detail="playbook runs require a v3 engagement")
+    if engagement.status != EngagementStatus.active:
+        raise HTTPException(status_code=409, detail="engagement is not active")
+    if engagement.work_state == EngagementWorkState.completed:
+        raise HTTPException(status_code=409, detail="completed engagement is read-only")
+
+
+def _validate_scope_subset(
+    session: Session,
+    engagement: Engagement,
+    scope_subset: list[str],
+    *,
+    asset_class: str,
+) -> None:
+    """Enforce the in-scope-only invariant on playbook run targets.
+
+    ``scope_subset`` values are handed straight to playbook tools, so an
+    unvalidated free-form string would let an analyst run a playbook against
+    an out-of-engagement target. Require every value to be non-empty and to
+    evaluate as *in scope* for the engagement (declared include, or a
+    subdomain/IP inside one) and not match any exclusion. Reuses the canonical
+    ``scope_matcher`` used by every other execution gate.
+    """
+    if not scope_subset:
+        raise HTTPException(
+            status_code=422,
+            detail="scope_subset is required — pick at least one in-scope target.",
+        )
+    items = list(
+        session.execute(
+            select(ScopeItem).where(ScopeItem.engagement_id == engagement.id)
+        ).scalars()
+    )
+    rejected: list[str] = []
+    for raw in scope_subset:
+        value = str(raw).strip()
+        if not value:
+            rejected.append("(empty value)")
+            continue
+        kind = infer_scope_kind(value)
+        if asset_class == "scope":
+            exact_include = next(
+                (
+                    item
+                    for item in items
+                    if not item.is_exclusion
+                    and item.kind == kind
+                    and item.value == value
+                ),
+                None,
+            )
+            if exact_include is None:
+                rejected.append(
+                    f"{value!r} (scope review requires an exact include row)"
+                )
+                continue
+        elif kind.value != asset_class:
+            rejected.append(
+                f"{value!r} (kind {kind.value!r} is incompatible with "
+                f"playbook asset class {asset_class!r})"
+            )
+            continue
+        match = evaluate_scope_candidates([(value, kind)], items)
+        if not match.allowed:
+            rejected.append(f"{value!r} ({match.reason})")
+    if rejected:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "scope_subset targets must be in the engagement scope and not "
+                f"match an exclusion. Rejected: {'; '.join(rejected)}. "
+                "Add the target to Scope first."
+            ),
+        )
 
 
 def _run_read(session: Session, run: PlaybookRun) -> PlaybookRunRead:
@@ -124,9 +279,21 @@ def list_playbooks(
         ).group_by(PlaybookStep.playbook_id)
     )
     counts = {row[0]: row[1] for row in session.execute(counts_stmt).all()}
-    playbooks = session.execute(
-        select(Playbook).order_by(Playbook.slug, Playbook.version.desc())
-    ).scalars()
+    catalog_rows = list(
+        session.execute(
+            select(Playbook).order_by(Playbook.slug, Playbook.version.desc())
+        ).scalars()
+    )
+    # The catalog is an action surface, not version history. Show only the
+    # newest recipe per slug; pinned historical versions remain readable via
+    # GET /playbooks/{slug}?version=N and existing runs retain their version.
+    seen_slugs: set[str] = set()
+    playbooks: list[Playbook] = []
+    for playbook in catalog_rows:
+        if playbook.slug in seen_slugs:
+            continue
+        seen_slugs.add(playbook.slug)
+        playbooks.append(playbook)
     return [
         PlaybookRead(
             id=p.id,
@@ -137,6 +304,11 @@ def list_playbooks(
             applies_to_asset_class=p.applies_to_asset_class,
             active=p.active,
             step_count=counts.get(p.id, 0),
+            required_executor=_required_executor(p).value,
+            required_credentials=_required_credentials(p),
+            step_preview=_step_preview(p),
+            expands_targets=_expands_targets(p),
+            execution_paths=_execution_paths(p),
         )
         for p in playbooks
     ]
@@ -177,6 +349,11 @@ def create_playbook_endpoint(
         applies_to_asset_class=pb.applies_to_asset_class,
         active=pb.active,
         step_count=0,
+        required_executor=_required_executor(pb).value,
+        required_credentials=_required_credentials(pb),
+        step_preview=_step_preview(pb),
+        expands_targets=_expands_targets(pb),
+        execution_paths=_execution_paths(pb),
         steps=[],
     )
 
@@ -192,6 +369,7 @@ def update_playbook_endpoint(
     playbook = catalog.get_by_slug(session, slug)
     if playbook is None:
         raise HTTPException(status_code=404, detail=f"playbook '{slug}' not found")
+    _ensure_recipe_mutable(session, playbook)
     update_playbook(
         session,
         playbook=playbook,
@@ -211,6 +389,11 @@ def update_playbook_endpoint(
         applies_to_asset_class=playbook.applies_to_asset_class,
         active=playbook.active,
         step_count=len(playbook.steps),
+        required_executor=_required_executor(playbook).value,
+        required_credentials=_required_credentials(playbook),
+        step_preview=_step_preview(playbook),
+        expands_targets=_expands_targets(playbook),
+        execution_paths=_execution_paths(playbook),
         steps=[PlaybookStepRead.model_validate(s) for s in playbook.steps],
     )
 
@@ -220,7 +403,7 @@ def delete_playbook_endpoint(
     slug: str,
     session: DbSession,
     _user: CurrentNonGuestUser,
-) -> None:
+) -> Response:
     """A5b: delete the latest version. Refuses (409) when runs reference it —
     the FK is RESTRICT so Postgres would reject anyway; we surface it first."""
     playbook = catalog.get_by_slug(session, slug)
@@ -231,6 +414,7 @@ def delete_playbook_endpoint(
     except PlaybookHasRunsError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     session.commit()
+    return Response(status_code=204)
 
 
 @router.post(
@@ -249,6 +433,10 @@ def add_step_endpoint(
     playbook = catalog.get_by_slug(session, slug)
     if playbook is None:
         raise HTTPException(status_code=404, detail=f"playbook '{slug}' not found")
+    _ensure_recipe_mutable(session, playbook)
+    _executor_for_tool_slugs(
+        [step.tool_slug for step in playbook.steps] + [payload.tool_slug]
+    )
     step = add_step(
         session,
         playbook=playbook,
@@ -279,6 +467,20 @@ def update_step_endpoint(
     playbook = catalog.get_by_slug(session, slug)
     if playbook is None:
         raise HTTPException(status_code=404, detail=f"playbook '{slug}' not found")
+    _ensure_recipe_mutable(session, playbook)
+    try:
+        current_step = next(
+            step for step in playbook.steps if step.id == step_id
+        )
+    except StopIteration as exc:
+        raise HTTPException(status_code=404, detail=f"step {step_id} not found") from exc
+    candidate_slug = payload.tool_slug or current_step.tool_slug
+    _executor_for_tool_slugs(
+        [
+            candidate_slug if step.id == step_id else step.tool_slug
+            for step in playbook.steps
+        ]
+    )
     try:
         step = update_step(
             session,
@@ -306,17 +508,19 @@ def delete_step_endpoint(
     step_id: uuid.UUID,
     session: DbSession,
     _user: CurrentNonGuestUser,
-) -> None:
+) -> Response:
     """A5b: remove a step. Adjacent steps keep their sort_order; the runner
     iterates by ORDER BY sort_order so gaps don't matter."""
     playbook = catalog.get_by_slug(session, slug)
     if playbook is None:
         raise HTTPException(status_code=404, detail=f"playbook '{slug}' not found")
+    _ensure_recipe_mutable(session, playbook)
     try:
         delete_step(session, playbook=playbook, step_id=step_id)
     except StepNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     session.commit()
+    return Response(status_code=204)
 
 
 @router.get("/playbooks/{slug}", response_model=PlaybookDetail)
@@ -341,6 +545,11 @@ def get_playbook(
         applies_to_asset_class=playbook.applies_to_asset_class,
         active=playbook.active,
         step_count=len(playbook.steps),
+        required_executor=_required_executor(playbook).value,
+        required_credentials=_required_credentials(playbook),
+        step_preview=_step_preview(playbook),
+        expands_targets=_expands_targets(playbook),
+        execution_paths=_execution_paths(playbook),
         steps=[PlaybookStepRead.model_validate(s) for s in playbook.steps],
     )
 
@@ -365,6 +574,7 @@ def create_playbook_run(
     the ``collection.job.completed`` milestone at end-of-run.
     """
     engagement = _engagement_by_slug(session, slug)
+    _ensure_playbook_engagement_mutable(engagement)
     playbook = catalog.get_by_slug(session, payload.playbook_slug, payload.playbook_version)
     if playbook is None:
         raise HTTPException(
@@ -381,8 +591,10 @@ def create_playbook_run(
         )
     # Persist requester identity because execution and milestone delivery happen
     # later in a worker process; never attempt to recover it from another user.
+    required_executor = _required_executor(playbook)
+    requested_executor = payload.executor or required_executor.value
     try:
-        executor_kind = PlaybookExecutorKind(payload.executor)
+        executor_kind = PlaybookExecutorKind(requested_executor)
     except ValueError as exc:
         raise HTTPException(
             status_code=422,
@@ -391,6 +603,23 @@ def create_playbook_run(
                 f"{sorted(k.value for k in PlaybookExecutorKind)}"
             ),
         ) from exc
+    if executor_kind is not required_executor:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"playbook '{playbook.slug}' requires executor "
+                f"'{required_executor.value}' for its configured tools"
+            ),
+        )
+    # In-scope-only invariant (complaint 4b): every submitted target must be in
+    # the engagement's declared scope and not match an exclusion, before we queue
+    # anything for the worker to hand to tools.
+    _validate_scope_subset(
+        session,
+        engagement,
+        payload.scope_subset,
+        asset_class=playbook.applies_to_asset_class,
+    )
     run = enqueue_run(
         session,
         engagement=engagement,
@@ -479,13 +708,21 @@ def cancel_playbook_run(
       and bails cleanly.
     * Terminal → 409 conflict.
     """
-    del user
     try:
         run = cancel_run(session, run_id=run_id, reason="cancelled by analyst")
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=f"playbook run {run_id} not found") from exc
     except RunNotCancellableError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    session.add(
+        AuditLog(
+            engagement_id=run.engagement_id,
+            actor_type=ActorType.user,
+            actor_id=str(user.id),
+            event_type="playbook.cancelled",
+            payload={"playbook_run_id": str(run.id), "status": run.status.value},
+        )
+    )
     session.commit()
     session.refresh(run)
     return _run_read(session, run)

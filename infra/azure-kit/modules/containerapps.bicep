@@ -140,6 +140,12 @@ var appEnv = [
   // "unhandled errors in a TaskGroup" because the worker can't resolve
   // `backend` and the SSE handshake times out before returning.
   { name: 'PUBLIC_BASE_URL', value: 'http://127.0.0.1:8000' }
+  // v3 A4: the playbook worker's MCPExecutor hits this URL for executor_kind='mcp'
+  // runs. The compose-network default (backend:8000) doesn't resolve on the ACA
+  // pod (backend + worker share the network namespace), so pin loopback — same
+  // rationale as PUBLIC_BASE_URL above. Without it every MCP playbook step fails
+  // with a transport error.
+  { name: 'PLAYBOOK_MCP_URL', value: 'http://127.0.0.1:8000/mcp' }
   { name: 'LLM_PROVIDER', value: llmProvider }
   { name: 'ANTHROPIC_API_KEY', secretRef: 'anthropic-api-key' }
   { name: 'ANTHROPIC_MODEL', value: anthropicModel }
@@ -161,8 +167,10 @@ var appEnv = [
   { name: 'ACA_MCP_APP_ENABLED', value: string(acaMcpAppEnabled) }
   { name: 'WORKER_MCP_API_KEY', secretRef: 'worker-mcp-api-key' }
   // v0.12.0: Tools tab sandbox runner selection. In prod we always use
-  // Azure Container Instances; local dev uses docker.sock.
-  { name: 'RTD_SANDBOX_RUNNER', value: 'aci' }
+  // Azure Container Instances; local dev uses docker.sock. The backend
+  // Settings class reads bare field names (no RTD_ prefix), so this must
+  // match the ``sandbox_runner`` field exactly.
+  { name: 'SANDBOX_RUNNER', value: 'aci' }
   { name: 'ACI_SUBSCRIPTION_ID', value: subscription().subscriptionId }
   { name: 'ACI_RESOURCE_GROUP', value: resourceGroup().name }
   { name: 'ACI_LOCATION', value: location }

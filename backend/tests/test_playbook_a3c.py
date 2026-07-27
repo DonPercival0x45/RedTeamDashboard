@@ -33,10 +33,13 @@ from app.models import (
     AuditLog,
     CommandOutbox,
     Engagement,
+    EngagementArchitecture,
     EngagementStatus,
     EngagementWorkState,
     PlaybookRun,
     PlaybookRunStatus,
+    ScopeItem,
+    ScopeKind,
     User,
     UserRole,
 )
@@ -122,8 +125,18 @@ def engagement(db: Session) -> Engagement:
         slug=f"a3c-{uuid.uuid4().hex[:8]}",
         status=EngagementStatus.active,
         work_state=EngagementWorkState.active,
+        intelligence_architecture=EngagementArchitecture.v3,
     )
     db.add(eng)
+    db.flush()
+    # POST /playbook-runs enforces in-scope-only; seed the target the HTTP
+    # cancel tests submit. enqueue_run tests call the service directly and
+    # bypass the endpoint, so their arbitrary values don't need seeding.
+    db.add(
+        ScopeItem(
+            engagement_id=eng.id, kind=ScopeKind.domain, value="foo.example"
+        )
+    )
     db.flush()
     meth.load_seed_catalog(db)
     meth.select_for_engagement(
@@ -295,6 +308,25 @@ def test_execute_drives_claimed_run_to_completed(
     assert coverage_audits
     assert all(row.actor_type is ActorType.user for row in coverage_audits)
     assert {row.actor_id for row in coverage_audits} == {str(user.id)}
+
+
+def test_execute_rechecks_engagement_lifecycle_after_queueing(
+    db: Session, engagement: Engagement, playbook
+) -> None:
+    run = enqueue_run(
+        db, engagement=engagement, playbook=playbook, scope_subset=["foo.com"],
+    )
+    db.commit()
+    engagement.status = EngagementStatus.archived
+    db.commit()
+    executor = MockExecutor()
+
+    result = execute_pending_run(db, run_id=run.id, executor=executor)
+    db.commit()
+
+    assert result.status is PlaybookRunStatus.failed
+    assert "active writable v3" in (result.last_error or "")
+    assert executor.calls == []
 
 
 def test_execute_bails_on_cancelled_pending(

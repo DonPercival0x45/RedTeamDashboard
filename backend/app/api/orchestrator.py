@@ -27,8 +27,9 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
+import redis as redis_lib
 from fastapi import APIRouter, HTTPException, Query, Response
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
@@ -51,6 +52,9 @@ from app.models import (
     EngagementStatus,
     EngagementWorkState,
     Finding,
+    Playbook,
+    PlaybookRun,
+    PlaybookRunStatus,
     Suggestion,
     SuggestionStatus,
     Task,
@@ -462,6 +466,9 @@ def ask_finding_chat(
     except NoProviderKeyError as exc:
         session.rollback()
         raise _missing_provider_key_error(exc) from exc
+    except redis_lib.RedisError:
+        session.rollback()
+        raise
     except Exception as exc:
         session.rollback()
         raise HTTPException(status_code=502, detail=f"chat failed: {exc}") from exc
@@ -665,6 +672,9 @@ def triage_finding(
     except NoProviderKeyError as exc:
         session.rollback()
         raise _missing_provider_key_error(exc) from exc
+    except redis_lib.RedisError:
+        session.rollback()
+        raise
     except Exception as exc:
         # The service marked the AgentExecution row failed before re-raising,
         # so a row exists for the Costs tab to surface the failed call. Commit
@@ -738,6 +748,9 @@ def rewrite_finding_summary_endpoint(
     except NoProviderKeyError as exc:
         session.rollback()
         raise _missing_provider_key_error(exc) from exc
+    except redis_lib.RedisError:
+        session.rollback()
+        raise
     except Exception as exc:
         session.commit()
         raise HTTPException(status_code=502, detail=f"rewrite failed: {exc}") from exc
@@ -967,6 +980,87 @@ def list_running_tasks(
         )
         for task, slug, name in rows
     ]
+
+
+class RunningJobRead(BaseModel):
+    """Normalized cross-engagement active work for the Automation banner."""
+
+    kind: Literal["task", "playbook"]
+    id: uuid.UUID
+    engagement_id: uuid.UUID
+    engagement_slug: str
+    engagement_name: str
+    title: str
+    status: str
+    started_at: datetime | None
+    created_at: datetime
+    steps_completed: int | None = None
+    steps_total: int | None = None
+    awaiting_action: bool = False
+
+
+@router.get("/jobs/running", response_model=list[RunningJobRead])
+def list_running_jobs(
+    session: DbSession,
+    _user: CurrentUser,
+) -> list[RunningJobRead]:
+    """All live legacy tasks and v3 playbook runs across engagements."""
+    task_rows = session.execute(
+        select(Task, Engagement.slug, Engagement.name)
+        .join(Engagement, Engagement.id == Task.engagement_id)
+        .where(Task.status.in_((TaskStatus.pending, TaskStatus.dispatched, TaskStatus.running)))
+    ).all()
+    playbook_rows = session.execute(
+        select(PlaybookRun, Playbook, Engagement.slug, Engagement.name)
+        .join(Playbook, Playbook.id == PlaybookRun.playbook_id)
+        .join(Engagement, Engagement.id == PlaybookRun.engagement_id)
+        .where(
+            PlaybookRun.status.in_(
+                (
+                    PlaybookRunStatus.awaiting_approval,
+                    PlaybookRunStatus.pending,
+                    PlaybookRunStatus.running,
+                )
+            )
+        )
+    ).all()
+    jobs = [
+        RunningJobRead(
+            kind="task",
+            id=task.id,
+            engagement_id=task.engagement_id,
+            engagement_slug=slug,
+            engagement_name=name,
+            title=task.title,
+            status=task.status.value,
+            started_at=task.dispatched_at,
+            created_at=task.created_at,
+            awaiting_action=False,
+        )
+        for task, slug, name in task_rows
+    ]
+    jobs.extend(
+        RunningJobRead(
+            kind="playbook",
+            id=run.id,
+            engagement_id=run.engagement_id,
+            engagement_slug=slug,
+            engagement_name=engagement_name,
+            title=playbook.name,
+            status=run.status.value,
+            started_at=run.started_at,
+            created_at=run.created_at,
+            steps_completed=run.steps_succeeded + run.steps_failed,
+            steps_total=run.steps_total,
+            awaiting_action=run.status == PlaybookRunStatus.awaiting_approval,
+        )
+        for run, playbook, slug, engagement_name in playbook_rows
+    )
+    jobs.sort(
+        key=lambda job: job.started_at or job.created_at,
+        reverse=True,
+    )
+    return jobs
 
 
 # ---------------------------------------------------------------------------

@@ -27,6 +27,8 @@ from app.mcp import auth as mcp_auth
 from app.mcp.server import _run_osint
 from app.models import (
     APIKey,
+    Approval,
+    ApprovalStatus,
     AuditLog,
     CommandOutbox,
     Engagement,
@@ -56,13 +58,21 @@ def engagement(db: Session) -> Iterator[Engagement]:
     db.add(eng)
     db.commit()
     db.refresh(eng)
-    db.add(
-        ScopeItem(
-            engagement_id=eng.id,
-            kind=ScopeKind.domain,
-            value="acme.test",
-            is_exclusion=False,
-        )
+    db.add_all(
+        [
+            ScopeItem(
+                engagement_id=eng.id,
+                kind=ScopeKind.domain,
+                value="acme.test",
+                is_exclusion=False,
+            ),
+            ScopeItem(
+                engagement_id=eng.id,
+                kind=ScopeKind.ip,
+                value="203.0.113.7",
+                is_exclusion=False,
+            ),
+        ]
     )
     db.commit()
     try:
@@ -200,6 +210,85 @@ def test_run_osint_leased_returns_lease_findings_and_skips_db_store(
     ).scalars().all()
     assert len(audits) == 1
     assert audits[0].payload["via"] == "mcp.lease"
+
+
+def test_active_mcp_call_creates_pending_decision_without_execution(
+    db: Session,
+    engagement: Engagement,
+    cli_user_and_key: tuple[User, APIKey],
+) -> None:
+    user, key = cli_user_and_key
+    tokens = _set_caller_context(user, key, lease=None)
+    try:
+        with patch("app.mcp.server.run_tool") as run_tool_mock:
+            result = _run_osint(
+                "portscan",
+                engagement.slug,
+                {"target": "203.0.113.7", "ports": "443"},
+            )
+    finally:
+        _reset_caller_context(tokens)
+
+    assert result.get("status") == "pending", result
+    assert "approval" in result["error"]
+    run_tool_mock.assert_not_called()
+    approval = db.get(Approval, uuid.UUID(result["approval_id"]))
+    assert approval is not None
+    assert approval.status is ApprovalStatus.pending
+
+
+def test_active_playbook_lease_reuses_run_approval(
+    engagement: Engagement,
+    cli_user_and_key: tuple[User, APIKey],
+    task: Task,
+) -> None:
+    user, key = cli_user_and_key
+    lease = _build_lease(task)
+    lease.allowed_tools = ["portscan"]
+    lease.context = {
+        "playbook_run_id": str(uuid.uuid4()),
+        "playbook_approved_by": str(user.id),
+        "playbook_approved_at": datetime.now(tz=UTC).isoformat(),
+    }
+    tokens = _set_caller_context(user, key, lease)
+    try:
+        with patch(
+            "app.mcp.server.run_tool",
+            return_value=ToolResult(ok=True, data={"open_ports": [443]}),
+        ) as run_tool_mock:
+            result = _run_osint(
+                "portscan",
+                engagement.slug,
+                {"target": "203.0.113.7", "ports": "443"},
+            )
+    finally:
+        _reset_caller_context(tokens)
+
+    assert result.get("open_ports") == [443], result
+    run_tool_mock.assert_called_once()
+
+
+def test_lease_pinned_engagement_rejects_conflicting_slug(
+    engagement: Engagement,
+    cli_user_and_key: tuple[User, APIKey],
+    task: Task,
+) -> None:
+    user, key = cli_user_and_key
+    lease = _build_lease(task)
+    lease.context = {"engagement": {"slug": engagement.slug}}
+    tokens = _set_caller_context(user, key, lease)
+    try:
+        result = _run_osint(
+            "dns_lookup",
+            "different-engagement",
+            {"domain": "acme.test"},
+        )
+    finally:
+        _reset_caller_context(tokens)
+
+    assert result == {
+        "error": "engagement_slug conflicts with the active MCP lease"
+    }
 
 
 def test_run_osint_without_lease_stores_findings_server_side(

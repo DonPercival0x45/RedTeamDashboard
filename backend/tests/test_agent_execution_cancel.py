@@ -95,7 +95,31 @@ def test_cancel_running_agent_execution(
     assert audit.payload["agent"] == "tactical"
 
 
-def test_cancel_only_running_allowed(
+def test_cancel_pending_intelligence_execution(
+    client: TestClient,
+    db: Session,
+    engagement: Engagement,
+) -> None:
+    row = AgentExecution(
+        engagement_id=engagement.id,
+        agent=AgentName.engagement_strategist,
+        trigger=AgentTrigger.manual,
+        input={"mode": "ideation", "durable_job": True},
+        status=AgentExecutionStatus.pending,
+        started_at=datetime.now(tz=UTC),
+    )
+    db.add(row)
+    db.commit()
+
+    response = client.post(f"/agent-executions/{row.id}/cancel", headers=HDR)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["raw_status"] == "cancelled"
+    db.refresh(row)
+    assert row.status is AgentExecutionStatus.cancelled
+
+
+def test_cancel_only_pending_or_running_allowed(
     client: TestClient,
     db: Session,
     engagement: Engagement,
@@ -115,7 +139,7 @@ def test_cancel_only_running_allowed(
 
     resp = client.post(f"/agent-executions/{row.id}/cancel", headers=HDR)
     assert resp.status_code == 400
-    assert "only running" in resp.json()["detail"].lower()
+    assert "only pending or running" in resp.json()["detail"].lower()
 
 
 def test_cancel_removes_queued_run_start(

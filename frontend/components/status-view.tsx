@@ -15,7 +15,6 @@
 // "Live events" panel below the boxes.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   Activity,
@@ -38,6 +37,8 @@ import { DateTime } from "@/components/date-time";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CopyJsonButton } from "@/components/copy-json-button";
+import { QueryState } from "@/components/query-state";
+import { RunDetailPanel } from "@/components/playbooks/run-detail-modal";
 import {
   useCancelAgentExecutionMutation,
   useCancelTaskMutation,
@@ -91,10 +92,12 @@ const KIND_LABEL: Record<StatusKind, string> = {
   agent: "Agent",
   task: "Task",
   approval: "Approval",
+  playbook: "Playbook",
 };
 
 const KIND_FILTERS: (StatusKind | "all")[] = [
   "all",
+  "playbook",
   "agent",
   "task",
   "approval",
@@ -142,6 +145,7 @@ export const EVENT_COLORS: Record<RunEvent["type"], string> = {
   "tool.denied": "border-orange-500 text-orange-700 dark:text-orange-200",
   "tool.auto_approved": "border-violet-500 text-violet-700 dark:text-violet-200",
   "finding.created": "border-emerald-500 text-emerald-700 dark:text-emerald-200",
+  "finding.updated": "border-teal-500 text-teal-700 dark:text-teal-200",
   "run.completed": "border-zinc-500 text-zinc-600 dark:text-zinc-300",
   "run.errored": "border-rose-500 text-rose-700 dark:text-rose-200",
 };
@@ -158,6 +162,8 @@ export function summarizeEvent(event: RunEvent): string {
       return `${event.tool} ${JSON.stringify(event.args)} — auto-approved (session grant)`;
     case "finding.created":
       return `${event.tool} → ${JSON.stringify(event.data).slice(0, 140)}`;
+    case "finding.updated":
+      return `${event.tool} enriched ${event.target ?? "a grouped finding"}`;
     case "run.completed":
       return `thread ${event.thread_id.slice(0, 8)}…`;
     case "run.errored":
@@ -167,8 +173,12 @@ export function summarizeEvent(event: RunEvent): string {
 
 export function StatusView({
   slug,
+  allowLegacyRetry = true,
+  canWrite = true,
 }: {
   slug: string;
+  allowLegacyRetry?: boolean;
+  canWrite?: boolean;
 }) {
   // v1.0.0: react-query owns the fetch + 2s polling + focus revalidation.
   // The old useEffect + setInterval + manual reload is gone; the useQuery
@@ -178,6 +188,7 @@ export function StatusView({
     data,
     error: queryError,
     refetch,
+    isFetching,
   } = useEngagementStatus(slug);
   const retryTaskMutation = useRetryTaskMutation(slug);
   const retryAgentMutation = useRetryAgentExecutionMutation(slug);
@@ -185,7 +196,6 @@ export function StatusView({
   const cancelAgentMutation = useCancelAgentExecutionMutation(slug);
 
   const [localError, setLocalError] = useState<string | null>(null);
-  const error = localError ?? (queryError instanceof Error ? queryError.message : queryError ? String(queryError) : null);
 
   const searchParams = useSearchParams();
   const pathname = usePathname();
@@ -199,7 +209,7 @@ export function StatusView({
   const initialSearch = searchParams?.get("statusSearch") ?? "";
   const initialView = searchParams?.get("statusView");
   const [filter, setFilter] = useState<StatusKind | "all">(
-    initialKind && ["agent", "task", "approval"].includes(initialKind)
+    initialKind && ["agent", "task", "approval", "playbook"].includes(initialKind)
       ? (initialKind as StatusKind)
       : "all",
   );
@@ -216,6 +226,7 @@ export function StatusView({
   const [agentFilter, setAgentFilter] = useState(initialAgent);
   const [viewMode, setViewMode] = useState<ViewMode>(initialView === "table" ? "table" : "cards");
   const [expanded, setExpanded] = useState<StatusEntity | null>(null);
+  const [selectedPlaybookRunId, setSelectedPlaybookRunId] = useState<string | null>(null);
   const [retryingId, setRetryingId] = useState<string | null>(null);
   const [cancellingId, setCancellingId] = useState<string | null>(null);
   const [bulkCancelling, setBulkCancelling] = useState(false);
@@ -232,15 +243,30 @@ export function StatusView({
   // effect below re-runs on the next render (its ``expanded`` dep flips
   // back to null) and immediately re-opens the modal — bug reported
   // from the Automation running-jobs hyperlink flow.
+  const stripRunParam = useCallback(() => {
+    if (!searchParams?.get("run")) return;
+    const next = new URLSearchParams(searchParams.toString());
+    next.delete("run");
+    const query = next.toString();
+    router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
+  }, [pathname, router, searchParams]);
   const closeExpanded = useCallback(() => {
     setExpanded(null);
-    if (searchParams?.get("run")) {
-      const next = new URLSearchParams(searchParams.toString());
-      next.delete("run");
-      const query = next.toString();
-      router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
+    stripRunParam();
+  }, [stripRunParam]);
+  const closePlaybook = useCallback(() => {
+    setSelectedPlaybookRunId(null);
+    stripRunParam();
+  }, [stripRunParam]);
+  const openEntity = useCallback((entity: StatusEntity) => {
+    if (entity.kind === "playbook") {
+      setExpanded(null);
+      setSelectedPlaybookRunId(entity.id);
+    } else {
+      setSelectedPlaybookRunId(null);
+      setExpanded(entity);
     }
-  }, [pathname, router, searchParams]);
+  }, []);
   const [dateRange, setDateRange] = useState<DateRange>(
     initialRange && ["24h", "7d", "14d", "30d"].includes(initialRange)
       ? (initialRange as DateRange)
@@ -290,7 +316,7 @@ export function StatusView({
 
   const all = useMemo<StatusEntity[]>(
     () => data
-      ? [...data.agents, ...data.tasks, ...data.approvals].sort((a, b) => {
+      ? [...data.agents, ...data.tasks, ...data.approvals, ...(data.playbook_runs ?? [])].sort((a, b) => {
           const ta = (a.started_at || a.completed_at || "").toString();
           const tb = (b.started_at || b.completed_at || "").toString();
           return tb.localeCompare(ta);
@@ -344,7 +370,7 @@ export function StatusView({
   //     the entity id and thread_id differ but both share a UUID
   //     prefix on the same run — a startsWith match catches either).
   useEffect(() => {
-    if (!runParam || expanded || all.length === 0) return;
+    if (!runParam || expanded || selectedPlaybookRunId || all.length === 0) return;
     const match = all.find(
       (e) =>
         e.id === runParam ||
@@ -357,8 +383,8 @@ export function StatusView({
           return input?.thread_id === runParam;
         })(),
     );
-    if (match) setExpanded(match);
-  }, [runParam, expanded, all]);
+    if (match) openEntity(match);
+  }, [runParam, expanded, selectedPlaybookRunId, all, openEntity]);
 
   // Filter pipeline: kind → color → outcome → agent role → date range → search.
   const searchTerm = search.trim().toLowerCase();
@@ -399,11 +425,19 @@ export function StatusView({
 
   // Bulk-cancel targets: in-flight tasks + running agents. Deferred work needs
   // an explicit per-card disposition so it is never swept away accidentally.
-  const activeForBulkCancel = all.filter(
-    (e) =>
-      (e.kind === "task" &&
-        ["pending", "dispatched", "running"].includes(e.raw_status)) ||
-      (e.kind === "agent" && e.raw_status === "running"),
+  const activeForBulkCancel = useMemo(
+    () =>
+      canWrite
+        ? all.filter(
+            (entity) =>
+              (entity.kind === "task" &&
+                ["pending", "dispatched", "running"].includes(
+                  entity.raw_status,
+                )) ||
+              (entity.kind === "agent" && entity.raw_status === "running"),
+          )
+        : [],
+    [all, canWrite],
   );
 
   const onBulkCancel = useCallback(async () => {
@@ -534,18 +568,20 @@ export function StatusView({
             </button>
           ))}
         </div>
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={() => void onBulkCancel()}
-          disabled={bulkCancelling || activeForBulkCancel.length === 0}
-          className="ml-2"
-        >
-          <CircleSlash className="mr-1.5 h-3.5 w-3.5" />
-          {bulkCancelling
-            ? "Cancelling…"
-            : `Cancel all active (${activeForBulkCancel.length})`}
-        </Button>
+        {canWrite && (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => void onBulkCancel()}
+            disabled={bulkCancelling || activeForBulkCancel.length === 0}
+            className="ml-2"
+          >
+            <CircleSlash className="mr-1.5 h-3.5 w-3.5" />
+            {bulkCancelling
+              ? "Cancelling…"
+              : `Cancel all active (${activeForBulkCancel.length})`}
+          </Button>
+        )}
         <div className="ml-auto flex rounded-md border border-border p-0.5">
           <button
             type="button"
@@ -588,12 +624,31 @@ export function StatusView({
         />
       </div>
 
-      {error && <p className="text-sm text-critical">{error}</p>}
+      <QueryState
+        isLoading={data == null && !queryError}
+        error={queryError}
+        hasData={data != null}
+        loadingLabel="Loading runs…"
+        errorLabel="Could not load engagement runs."
+        onRetry={() => void refetch()}
+        isRetrying={isFetching}
+        compact={data != null}
+      />
+      {localError && (
+        <p role="alert" className="text-sm text-destructive">
+          Action failed: {localError}
+        </p>
+      )}
 
-      {/* Box grid */}
-      {data == null && !error ? (
-        <p className="text-sm text-muted-foreground">Loading…</p>
-      ) : visible.length === 0 ? (
+      {/* Runs stay visible while a playbook is managed alongside them. */}
+      <div
+        className={cn(
+          "gap-4",
+          selectedPlaybookRunId && "lg:grid lg:grid-cols-[minmax(0,1fr)_minmax(22rem,0.7fr)]",
+        )}
+      >
+      <div className="min-w-0">
+      {data == null ? null : visible.length === 0 ? (
         <p className="text-sm text-muted-foreground">
           Nothing to show. {filter !== "all" || colorFilter !== "all" || outcomeFilter !== "all" || agentFilter !== "all"
             ? "Try clearing filters."
@@ -620,11 +675,17 @@ export function StatusView({
                       <StatusBox
                         key={`${entity.kind}-${entity.id}`}
                         entity={entity}
-                        onExpand={() => setExpanded(entity)}
+                        onExpand={() => openEntity(entity)}
                         onRetry={() => onRetry(entity)}
                         onCancel={() => onCancel(entity)}
                         retrying={retryingId === entity.id}
                         cancelling={cancellingId === entity.id}
+                        allowRetry={allowLegacyRetry && canWrite}
+                        allowMutations={canWrite}
+                        selected={
+                          entity.kind === "playbook" &&
+                          selectedPlaybookRunId === entity.id
+                        }
                       />
                     ))}
                   </div>
@@ -645,14 +706,24 @@ export function StatusView({
                         <th className="px-3 py-2">Outcome</th>
                         <th className="px-3 py-2">Started</th>
                         <th className="px-3 py-2">Synopsis</th>
+                        <th className="px-3 py-2 text-right">Action</th>
                       </tr>
                     </thead>
                     <tbody>
                       {shown.map((entity) => (
                         <tr
                           key={`${entity.kind}-${entity.id}`}
-                          onClick={() => setExpanded(entity)}
-                          className="cursor-pointer border-b border-border/50 last:border-0 hover:bg-muted/30"
+                          onClick={() => openEntity(entity)}
+                          aria-selected={
+                            entity.kind === "playbook" &&
+                            selectedPlaybookRunId === entity.id
+                          }
+                          className={cn(
+                            "cursor-pointer border-b border-border/50 last:border-0 hover:bg-muted/30",
+                            entity.kind === "playbook" &&
+                              selectedPlaybookRunId === entity.id &&
+                              "bg-muted/60",
+                          )}
                         >
                           <td className="px-3 py-2">
                             <p className="font-medium">{entity.title}</p>
@@ -675,6 +746,24 @@ export function StatusView({
                           </td>
                           <td className="whitespace-nowrap px-3 py-2 text-xs text-muted-foreground"><DateTime value={entity.started_at} /></td>
                           <td className="max-w-md px-3 py-2 text-xs text-muted-foreground">{entity.synopsis ?? entity.subtitle ?? "—"}</td>
+                          <td className="px-3 py-2 text-right">
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="ghost"
+                              aria-label={`${entity.kind === "playbook" ? (entity.raw_status === "awaiting_approval" ? "Review decision" : "Manage") : "Expand"} ${entity.title}`}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                openEntity(entity);
+                              }}
+                            >
+                              {entity.kind === "playbook"
+                                ? entity.raw_status === "awaiting_approval"
+                                  ? "Review decision"
+                                  : "Manage"
+                                : "Expand"}
+                            </Button>
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -701,6 +790,21 @@ export function StatusView({
           );
         })()
       )}
+      </div>
+      {selectedPlaybookRunId ? (
+        <aside
+          className="mt-4 rounded-lg border border-border bg-card/60 p-4 lg:sticky lg:top-4 lg:mt-0 lg:max-h-[calc(100vh-8rem)] lg:overflow-y-auto"
+          aria-label="Manage selected playbook run"
+        >
+          <RunDetailPanel
+            key={selectedPlaybookRunId}
+            runId={selectedPlaybookRunId}
+            onClose={closePlaybook}
+            canWrite={canWrite}
+          />
+        </aside>
+      ) : null}
+      </div>
 
       {/* v2.4.0: attribution — who used what (agent × model × user)
           for this engagement. Lives below the task/approval tables so
@@ -780,6 +884,9 @@ function StatusBox({
   onCancel,
   retrying,
   cancelling,
+  allowRetry,
+  allowMutations,
+  selected,
 }: {
   entity: StatusEntity;
   onExpand: () => void;
@@ -787,19 +894,25 @@ function StatusBox({
   onCancel: () => void;
   retrying: boolean;
   cancelling: boolean;
+  allowRetry: boolean;
+  allowMutations: boolean;
+  selected: boolean;
 }) {
   const Icon = COLOR_ICON[entity.color];
   const OutcomeIcon = entity.outcome ? OUTCOME_ICON[entity.outcome] : null;
   const cancellable =
-    (entity.kind === "task" &&
+    allowMutations &&
+    ((entity.kind === "task" &&
       ["pending", "deferred", "dispatched", "running"].includes(entity.raw_status)) ||
-    (entity.kind === "agent" && entity.raw_status === "running");
+    (entity.kind === "agent" && entity.raw_status === "running"));
   return (
     <div
       className={cn(
         "flex flex-col gap-3 rounded-lg border bg-card/40 p-3 transition-colors",
         COLOR_BORDER[entity.color],
+        selected && "ring-2 ring-foreground/30",
       )}
+      aria-current={selected ? "true" : undefined}
     >
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
@@ -868,7 +981,7 @@ function StatusBox({
             {cancelling ? "Cancelling…" : "Cancel"}
           </Button>
         )}
-        {entity.retryable && (
+        {allowRetry && entity.retryable && (
           <Button
             size="sm"
             variant="outline"
@@ -883,8 +996,23 @@ function StatusBox({
                 : "Retry"}
           </Button>
         )}
-        <Button size="sm" variant="ghost" onClick={onExpand}>
-          Expand
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={onExpand}
+          aria-label={`${
+            entity.kind === "playbook"
+              ? entity.raw_status === "awaiting_approval"
+                ? "Review decision"
+                : "Manage"
+              : "Expand"
+          } ${entity.title}`}
+        >
+          {entity.kind === "playbook"
+            ? entity.raw_status === "awaiting_approval"
+              ? "Review decision"
+              : "Manage"
+            : "Expand"}
         </Button>
       </div>
     </div>
@@ -917,7 +1045,7 @@ function ExpandedDetail({
       <div
         role="dialog"
         aria-modal="true"
-        aria-label="Status detail"
+        aria-label="Run detail"
         className="fixed left-1/2 top-1/2 z-[70] flex max-h-[85vh] w-[min(800px,94vw)] -translate-x-1/2 -translate-y-1/2 flex-col rounded-lg border border-border bg-popover p-5 shadow-xl"
       >
         <div className="flex items-start justify-between gap-4">

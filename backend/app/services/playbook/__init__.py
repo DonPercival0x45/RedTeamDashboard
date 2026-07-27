@@ -15,6 +15,7 @@ from app.services.playbook.catalog import (
 from app.services.playbook.executor import (
     InternalExecutor,
     PlaybookExecutor,
+    RoutedExecutor,
     StepResult,
 )
 from app.services.playbook.runner import (
@@ -36,6 +37,7 @@ __all__ = [
     "PlaybookSlugConflictError",
     "RunNotAwaitingApprovalError",
     "RunNotCancellableError",
+    "RoutedExecutor",
     "StepNotFoundError",
     "StepResult",
     "add_step",

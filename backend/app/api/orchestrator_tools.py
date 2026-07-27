@@ -34,7 +34,7 @@ class OrchestratorToolRead(BaseModel):
 
     v1.12.1: ``kind`` used to be labeled as the charter task-kind (enum
     / scan / exploit); it's actually the ``ScopeKind`` (domain / ip /
-    cidr / url) — the type of scope-item the tool accepts. Renamed to
+    cidr / url / email) — the type of scope-item the tool accepts. Renamed to
     ``scope_kind`` so callers stop reaching for it as a phase axis.
     ``phase`` is the correct grouping axis (osint / vuln_scan / …).
     """
@@ -42,7 +42,7 @@ class OrchestratorToolRead(BaseModel):
     name: str
     description: str
     scope_kind: str = Field(
-        description="ScopeKind of the target: domain | ip | cidr | url",
+        description="ScopeKind of the target: domain | ip | cidr | url | email",
     )
     phase: str = Field(
         description="FindingPhase: osint | vuln_scan | exploit | phishing | general",

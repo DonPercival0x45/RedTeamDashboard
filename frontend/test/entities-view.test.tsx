@@ -1,0 +1,395 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("next/dynamic", () => ({
+  default: () => () => <div data-testid="map" />,
+}));
+
+vi.mock("@/lib/hooks", () => ({
+  qk: {
+    engagements: () => ["engagements"],
+    entities: (slug: string) => ["entities", slug],
+    entityDuplicateCandidates: (slug: string) => ["entity-duplicates", slug],
+    scope: (slug: string) => ["scope", slug],
+    storedEntities: (slug: string) => ["stored-entities", slug],
+  },
+  useEntities: vi.fn(),
+  useEntityDuplicateCandidates: vi.fn(),
+  useFindings: vi.fn(),
+  useScope: vi.fn(),
+  useStoredEntities: vi.fn(),
+}));
+
+vi.mock("@/lib/api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/api")>();
+  return {
+    ...actual,
+    deleteScopeItem: vi.fn(),
+    importScope: vi.fn(),
+  };
+});
+
+import { EntitiesView } from "@/components/entities-view";
+import { deleteScopeItem, importScope } from "@/lib/api";
+import {
+  useEntities,
+  useEntityDuplicateCandidates,
+  useFindings,
+  useScope,
+  useStoredEntities,
+} from "@/lib/hooks";
+
+const query = (data: unknown, error: unknown = null) => ({
+  data,
+  error,
+  isLoading: data === undefined && !error,
+  isFetching: false,
+  refetch: vi.fn(),
+});
+
+function renderView(
+  canWrite = false,
+  onLaunchPlaybook?: (target: { type: string; value: string }) => void,
+) {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  return render(
+    <QueryClientProvider client={client}>
+      <EntitiesView
+        slug="acme"
+        canWrite={canWrite}
+        onLaunchPlaybook={onLaunchPlaybook}
+      />
+    </QueryClientProvider>,
+  );
+}
+
+describe("EntitiesView", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(useEntities).mockReturnValue(
+      query([
+        {
+          type: "domain",
+          value: "scope.example",
+          count: 0,
+          severity: "info",
+          first_seen: "2026-07-24T00:00:00Z",
+          last_seen: "2026-07-24T00:00:00Z",
+          findings: [],
+          scope_status: "live",
+        },
+      ]) as never,
+    );
+    vi.mocked(useFindings).mockReturnValue(query([]) as never);
+    vi.mocked(useScope).mockReturnValue(query([]) as never);
+    vi.mocked(useStoredEntities).mockReturnValue(query([]) as never);
+    vi.mocked(useEntityDuplicateCandidates).mockReturnValue(query([]) as never);
+    vi.mocked(importScope).mockResolvedValue({
+      created: [],
+      duplicates: [],
+      errors: [],
+    });
+    vi.mocked(deleteScopeItem).mockResolvedValue(undefined);
+  });
+
+  it("opens a keyboard-accessible Findings-style preview for a scope entity", async () => {
+    renderView(false);
+
+    const trigger = screen.getByRole("button", { name: "scope.example" });
+    trigger.focus();
+    fireEvent.click(trigger);
+
+    const dialog = screen.getByRole("dialog");
+    expect(dialog).toHaveTextContent("scope.example");
+    expect(dialog).toHaveTextContent("Entity preview with scope status");
+    expect(dialog).toHaveTextContent("no finding has referenced it yet");
+    expect(
+      screen.getByRole("link", { name: "Open full entity view" }),
+    ).toHaveAttribute(
+      "href",
+      "/e/entities?slug=acme&type=domain&value=scope.example",
+    );
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    await waitFor(() => expect(trigger).toHaveFocus());
+  });
+
+  it("launches a playbook only from an exact live scope entity", () => {
+    const onLaunch = vi.fn();
+    vi.mocked(useScope).mockReturnValue(
+      query([
+        {
+          id: "scope-1",
+          engagement_id: "eng-1",
+          kind: "domain",
+          value: "scope.example",
+          is_exclusion: false,
+          note: null,
+          created_at: "2026-07-24T00:00:00Z",
+          updated_at: "2026-07-24T00:00:00Z",
+          is_effectively_in_scope: true,
+        },
+      ]) as never,
+    );
+    renderView(true, onLaunch);
+    fireEvent.click(screen.getByRole("button", { name: "scope.example" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Run a playbook for this target" }),
+    );
+
+    expect(onLaunch).toHaveBeenCalledWith({
+      type: "domain",
+      value: "scope.example",
+    });
+  });
+
+  it("collapses likely vendor contacts without deleting or hiding review access", () => {
+    vi.mocked(useEntities).mockReturnValue(
+      query([
+        {
+          type: "email",
+          value: "abuse@godaddy.com",
+          count: 1,
+          severity: "info",
+          first_seen: "2026-07-24T00:00:00Z",
+          last_seen: "2026-07-24T00:00:00Z",
+          findings: [],
+          scope_status: "oos",
+          relevance: "likely_third_party",
+          relevance_reason: "Role mailbox on a domain outside current scope",
+        },
+        {
+          type: "email",
+          value: "security@supplier.example",
+          count: 1,
+          severity: "info",
+          first_seen: "2026-07-24T00:00:00Z",
+          last_seen: "2026-07-24T00:00:00Z",
+          findings: [],
+          scope_status: "oos",
+          relevance: "review",
+          relevance_reason: "Outside current scope; retain for analyst review",
+        },
+      ]) as never,
+    );
+    renderView(true);
+
+    expect(screen.queryByRole("button", { name: "abuse@godaddy.com" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "security@supplier.example" })).toBeInTheDocument();
+    expect(screen.getByText("Advisory only — nothing is deleted or removed from evidence.")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Show collapsed vendor contacts" }));
+    expect(screen.getByRole("button", { name: "abuse@godaddy.com" })).toBeInTheDocument();
+    expect(screen.getByText("Likely vendor")).toBeInTheDocument();
+  });
+
+  it("keeps guest entity management read-only", () => {
+    renderView(false);
+
+    expect(screen.getByText("Read-only")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Import" })).not.toBeInTheDocument();
+  });
+
+  it("shows retryable load failure without a false empty inventory", () => {
+    vi.mocked(useEntities).mockReturnValue(
+      query(undefined, new Error("offline")) as never,
+    );
+
+    renderView(true);
+
+    expect(
+      screen.getByText("Could not load scope and discovered entities."),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+    expect(
+      screen.queryByText("No entities yet — add scope or run a collection playbook."),
+    ).not.toBeInTheDocument();
+  });
+
+  it("keeps import available to writable analysts", () => {
+    renderView(true);
+    expect(screen.getByRole("button", { name: "Import" })).toBeInTheDocument();
+  });
+
+  it("bulk-selects visible scope-compatible entities and adds them with found provenance", async () => {
+    vi.mocked(useEntities).mockReturnValue(
+      query([
+        {
+          type: "domain",
+          value: "new.example",
+          count: 1,
+          severity: "low",
+          first_seen: "2026-07-24T00:00:00Z",
+          last_seen: "2026-07-24T00:00:00Z",
+          findings: [],
+          scope_status: "oos",
+        },
+        {
+          type: "subdomain",
+          value: "legacy.example",
+          count: 1,
+          severity: "info",
+          first_seen: "2026-07-24T00:00:00Z",
+          last_seen: "2026-07-24T00:00:00Z",
+          findings: [],
+          scope_status: "legacy",
+        },
+        {
+          type: "email",
+          value: "person@example.com",
+          count: 1,
+          severity: "info",
+          first_seen: "2026-07-24T00:00:00Z",
+          last_seen: "2026-07-24T00:00:00Z",
+          findings: [],
+          scope_status: "oos",
+        },
+      ]) as never,
+    );
+    renderView(true);
+
+    fireEvent.click(
+      screen.getByRole("checkbox", {
+        name: "Select all visible scope-compatible entities",
+      }),
+    );
+    expect(screen.getByRole("checkbox", { name: "Select new.example" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Select legacy.example" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Select person@example.com" })).toBeChecked();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add 3 to scope" }));
+    await waitFor(() =>
+      expect(importScope).toHaveBeenCalledWith(
+        "acme",
+        "new.example\nlegacy.example\nperson@example.com",
+        "found",
+      ),
+    );
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "3 entities added to scope",
+    );
+  });
+
+  it("bulk-assigns selected entities to the exclusion tag", async () => {
+    vi.mocked(useEntities).mockReturnValue(
+      query([
+        {
+          type: "ip",
+          value: "203.0.113.7",
+          count: 1,
+          severity: "info",
+          first_seen: "2026-07-24T00:00:00Z",
+          last_seen: "2026-07-24T00:00:00Z",
+          findings: [],
+          scope_status: "live",
+        },
+      ]) as never,
+    );
+    renderView(true);
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select 203.0.113.7" }));
+    fireEvent.click(screen.getByRole("button", { name: "Exclude 1" }));
+
+    await waitFor(() =>
+      expect(importScope).toHaveBeenCalledWith("acme", "!203.0.113.7", "found"),
+    );
+  });
+
+  it("requires removing an exclusion before adding the opposite rule", async () => {
+    vi.mocked(useEntities).mockReturnValue(
+      query([
+        {
+          type: "domain",
+          value: "blocked.example",
+          count: 1,
+          severity: "medium",
+          first_seen: "2026-07-24T00:00:00Z",
+          last_seen: "2026-07-24T00:00:00Z",
+          findings: [],
+          scope_status: "oos",
+        },
+      ]) as never,
+    );
+    vi.mocked(useScope).mockReturnValue(
+      query([
+        {
+          id: "scope-exclusion",
+          engagement_id: "engagement-id",
+          kind: "domain",
+          value: "blocked.example",
+          is_exclusion: true,
+          note: null,
+          source: "defined",
+          created_at: "2026-07-24T00:00:00Z",
+          updated_at: "2026-07-24T00:00:00Z",
+        },
+      ]) as never,
+    );
+    renderView(true);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Manage scope for blocked.example" }),
+    );
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByText(/Excluded · 1 exact rule/)).toBeInTheDocument();
+
+    expect(
+      within(dialog).queryByRole("button", { name: "Add to scope" }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Remove exclusion" }),
+    );
+    expect(
+      screen.getByRole("dialog", { name: /remove exact scope rule/i }),
+    ).toBeInTheDocument();
+    expect(importScope).not.toHaveBeenCalled();
+  });
+
+  it("confirms exact rule removal in an in-app window", async () => {
+    vi.mocked(useScope).mockReturnValue(
+      query([
+        {
+          id: "scope-include",
+          engagement_id: "engagement-id",
+          kind: "domain",
+          value: "scope.example",
+          is_exclusion: false,
+          note: null,
+          source: "defined",
+          created_at: "2026-07-24T00:00:00Z",
+          updated_at: "2026-07-24T00:00:00Z",
+        },
+      ]) as never,
+    );
+    renderView(true);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Manage scope for scope.example" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Remove from scope" }));
+    expect(
+      screen.getByRole("dialog", { name: /remove exact scope rule/i }),
+    ).toBeInTheDocument();
+    expect(deleteScopeItem).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove rule" }));
+    await waitFor(() =>
+      expect(deleteScopeItem).toHaveBeenCalledWith("acme", "scope-include"),
+    );
+  });
+
+  it("does not expose bulk or dialog scope mutations to guests", () => {
+    renderView(false);
+    expect(screen.queryByRole("checkbox", { name: /Select scope\.example/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Add to scope" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Manage scope for scope.example" }));
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByText("Read-only")).toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: "Add to scope" })).not.toBeInTheDocument();
+  });
+});

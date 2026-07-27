@@ -1,14 +1,24 @@
 "use client";
 
 import Link from "next/link";
-import { Bell, ChevronRight, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { Bell, ChevronRight } from "lucide-react";
+import { useRef, useState } from "react";
 import { ApprovalsModal, type PendingApproval } from "@/components/approvals-modal";
-import { usePendingApprovals } from "@/lib/hooks";
-import type { ApprovalInboxItem } from "@/lib/types";
+import { RunDetailModal } from "@/components/playbooks/run-detail-modal";
+import { QueryState } from "@/components/query-state";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+import { useDecisionInbox, useMe } from "@/lib/hooks";
+import type { ToolDecisionInboxItem } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-function toPending(row: ApprovalInboxItem): PendingApproval {
+function toPending(row: ToolDecisionInboxItem): PendingApproval {
   return {
     approval_id: row.id,
     thread_id: row.thread_id,
@@ -31,10 +41,9 @@ function age(value: string): string {
   return `${Math.floor(hours / 24)}d ago`;
 }
 
-// v2.0.0: the sidebar variant renders as a labeled row ("Notifications"
-// + icon + badge) that matches Settings and the nav items. Setting
-// `variant="sidebar"` also collapses the label + border, matching
-// the sidebar's own collapsed state via the `collapsed` prop.
+// Tenant-global decision inbox. Both legacy tool approvals and gated v3
+// playbook runs appear here; each keeps its existing decision modal and write
+// endpoint so their state-machine semantics remain separate.
 export function ApprovalInbox({
   variant = "icon",
   collapsed = false,
@@ -42,37 +51,24 @@ export function ApprovalInbox({
   variant?: "icon" | "sidebar";
   collapsed?: boolean;
 } = {}) {
-  const { data, error, isLoading } = usePendingApprovals();
-  const approvals = data ?? [];
+  const query = useDecisionInbox();
+  const { data: me } = useMe();
+  const canWrite = me !== undefined && me.role !== "guest";
+  const decisions = query.data ?? [];
   const [open, setOpen] = useState(false);
-  const [selected, setSelected] = useState<PendingApproval | null>(null);
-  const wrapperRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const closeOutside = (event: MouseEvent) => {
-      if (!wrapperRef.current?.contains(event.target as Node)) setOpen(false);
-    };
-    const closeEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !selected) setOpen(false);
-    };
-    document.addEventListener("mousedown", closeOutside);
-    document.addEventListener("keydown", closeEscape);
-    return () => {
-      document.removeEventListener("mousedown", closeOutside);
-      document.removeEventListener("keydown", closeEscape);
-    };
-  }, [open, selected]);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const [selectedApproval, setSelectedApproval] = useState<PendingApproval | null>(null);
+  const [selectedPlaybookRunId, setSelectedPlaybookRunId] = useState<string | null>(null);
 
   const isSidebar = variant === "sidebar";
-  const badgeCount = approvals.length;
+  const badgeCount = decisions.length;
+  const label = `${badgeCount} pending decision${badgeCount === 1 ? "" : "s"}`;
 
   const button = isSidebar ? (
     <button
+      ref={triggerRef}
       type="button"
-      onClick={() => setOpen((value) => !value)}
-      aria-label={`Notifications — ${badgeCount} pending`}
-      aria-expanded={open}
+      aria-label={`Notifications — ${label}`}
       title={collapsed ? `Notifications (${badgeCount})` : undefined}
       className={cn(
         "flex w-full items-center gap-3 rounded-md text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground",
@@ -91,10 +87,9 @@ export function ApprovalInbox({
     </button>
   ) : (
     <button
+      ref={triggerRef}
       type="button"
-      onClick={() => setOpen((value) => !value)}
-      aria-label={`${badgeCount} pending approvals`}
-      aria-expanded={open}
+      aria-label={label}
       className="relative rounded border border-border p-1.5 text-muted-foreground transition-colors hover:border-foreground/40 hover:text-foreground"
     >
       <Bell className="h-4 w-4" />
@@ -107,78 +102,124 @@ export function ApprovalInbox({
   );
 
   return (
-    <div ref={wrapperRef} className={isSidebar ? "w-full" : "relative"}>
-      {button}
-
-      {open && (
-        <>
-          {/* v2.0.0: dim scrim behind the centered popup so it reads
-              as a modal window rather than a floating dropdown. */}
-          <div
-            aria-hidden
-            className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm"
-          />
-          <div className="fixed left-1/2 top-1/2 z-50 w-[min(32rem,calc(100vw-2rem))] max-h-[80vh] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-lg border border-border bg-popover shadow-2xl">
-          <div className="flex items-center justify-between border-b border-border px-4 py-3">
-            <div>
-              <h2 className="text-sm font-semibold">Pending approvals</h2>
-              <p className="text-[10px] text-muted-foreground">
-                Closing this inbox never approves or denies an action.
-              </p>
-            </div>
-            <button type="button" onClick={() => setOpen(false)} aria-label="Close approval inbox" className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground">
-              <X className="h-4 w-4" />
-            </button>
-          </div>
+    <div className={isSidebar ? "w-full" : "relative"}>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogTrigger asChild>{button}</DialogTrigger>
+        <DialogContent className="max-h-[80vh] max-w-lg gap-0 overflow-hidden p-0">
+          <DialogHeader className="border-b border-border px-4 py-3 pr-12">
+            <DialogTitle className="text-sm">Pending decisions</DialogTitle>
+            <DialogDescription className="text-[10px]">
+              Closing this inbox never approves or denies an action.
+            </DialogDescription>
+          </DialogHeader>
 
           <div className="max-h-[28rem] overflow-y-auto">
-            {isLoading ? (
-              <p className="p-4 text-sm text-muted-foreground">Loading…</p>
-            ) : error ? (
-              <p className="p-4 text-sm text-destructive">Could not load approvals.</p>
-            ) : approvals.length === 0 ? (
-              <p className="p-4 text-sm text-muted-foreground">Nothing is waiting for a decision.</p>
+            {query.data === undefined && (query.isLoading || query.error) ? (
+              <div className="p-4">
+                <QueryState
+                  isLoading={query.isLoading}
+                  error={query.error}
+                  loadingLabel="Loading pending decisions…"
+                  errorLabel="Could not load pending decisions."
+                  onRetry={() => void query.refetch()}
+                  isRetrying={query.isFetching}
+                />
+              </div>
             ) : (
-              <ul className="divide-y divide-border">
-                {approvals.map((row) => (
-                  <li key={row.id}>
-                    <button
-                      type="button"
-                      onClick={() => setSelected(toPending(row))}
-                      className="flex w-full items-start gap-3 px-4 py-3 text-left hover:bg-muted/40"
-                    >
-                      <span className="mt-0.5 rounded-full border border-amber-500/50 bg-amber-500/10 px-2 py-0.5 text-[10px] uppercase text-amber-700 dark:text-amber-200">
-                        {row.risk}
-                      </span>
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate text-sm font-medium">{row.tool_name}</span>
-                        <span className="block truncate text-xs text-muted-foreground">{row.engagement_name} · {row.engagement_slug}</span>
-                        <span className="mt-1 block font-mono text-[10px] text-muted-foreground">{row.thread_id.slice(0, 12)}… · {age(row.created_at)}</span>
-                      </span>
-                      <ChevronRight className="mt-2 h-4 w-4 shrink-0 text-muted-foreground" />
-                    </button>
-                  </li>
-                ))}
-              </ul>
+              <>
+                {query.error && (
+                  <div className="p-3 pb-0">
+                    <QueryState
+                      isLoading={false}
+                      error={query.error}
+                      hasData
+                      compact
+                      onRetry={() => void query.refetch()}
+                      isRetrying={query.isFetching}
+                    />
+                  </div>
+                )}
+                {decisions.length === 0 ? (
+                  <p className="p-4 text-sm text-muted-foreground">
+                    Nothing is waiting for a decision.
+                  </p>
+                ) : (
+                  <ul className="divide-y divide-border">
+                    {decisions.map((row) => (
+                      <li key={`${row.kind}-${row.id}`}>
+                        <button
+                          type="button"
+                          disabled={row.kind === "tool_approval" && !canWrite}
+                          title={
+                            row.kind === "tool_approval" && !canWrite
+                              ? "Guest access is read-only"
+                              : undefined
+                          }
+                          onClick={() => {
+                            if (row.kind === "tool_approval" && !canWrite) return;
+                            setOpen(false);
+                            if (row.kind === "tool_approval") {
+                              setSelectedApproval(toPending(row));
+                            } else {
+                              setSelectedPlaybookRunId(row.id);
+                            }
+                          }}
+                          className="flex w-full items-start gap-3 px-4 py-3 text-left hover:bg-muted/40 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          <span className="mt-0.5 rounded-full border border-amber-500/50 bg-amber-500/10 px-2 py-0.5 text-[10px] uppercase text-amber-700 dark:text-amber-200">
+                            {row.kind === "tool_approval" ? row.risk : "Playbook"}
+                          </span>
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate text-sm font-medium">
+                              {row.kind === "tool_approval" ? row.tool_name : row.playbook_name}
+                            </span>
+                            <span className="block truncate text-xs text-muted-foreground">
+                              {row.engagement_name} · {row.engagement_slug}
+                            </span>
+                            <span className="mt-1 block font-mono text-[10px] text-muted-foreground">
+                              {row.kind === "tool_approval"
+                                ? `${row.thread_id.slice(0, 12)}…`
+                                : `${row.scope_subset.length} target${row.scope_subset.length === 1 ? "" : "s"}`}
+                              {" · "}{age(row.created_at)}
+                            </span>
+                          </span>
+                          <ChevronRight className="mt-2 h-4 w-4 shrink-0 text-muted-foreground" />
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </>
             )}
           </div>
 
-          {approvals.length > 0 && (
+          {decisions.length > 0 && (
             <div className="border-t border-border px-4 py-2 text-right">
-              <Link href={`/e?slug=${encodeURIComponent(approvals[0].engagement_slug)}&view=status`} onClick={() => setOpen(false)} className="text-xs text-muted-foreground hover:text-foreground hover:underline">
-                Open oldest engagement Status
+              <Link
+                href={`/e?slug=${encodeURIComponent(decisions[0].engagement_slug)}&view=status`}
+                onClick={() => setOpen(false)}
+                className="text-xs text-muted-foreground hover:text-foreground hover:underline"
+              >
+                Open oldest engagement Runs
               </Link>
             </div>
           )}
-        </div>
-        </>
-      )}
+        </DialogContent>
+      </Dialog>
 
       <ApprovalsModal
-        pending={selected}
-        onResolved={() => setSelected(null)}
-        onClose={() => setSelected(null)}
+        pending={selectedApproval}
+        onResolved={() => setSelectedApproval(null)}
+        onClose={() => setSelectedApproval(null)}
       />
+      {selectedPlaybookRunId && (
+        <RunDetailModal
+          runId={selectedPlaybookRunId}
+          onClose={() => setSelectedPlaybookRunId(null)}
+          returnFocus={() => triggerRef.current?.focus()}
+          canWrite={canWrite}
+        />
+      )}
     </div>
   );
 }

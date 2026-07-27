@@ -36,7 +36,7 @@ export interface Authorization {
   created_at: string;
   updated_at: string;
 }
-export type ScopeKind = "domain" | "cidr" | "ip" | "url";
+export type ScopeKind = "domain" | "cidr" | "ip" | "url" | "email";
 export type RiskLevel = "passive" | "active" | "destructive";
 export type ApprovalStatus =
   | "pending"
@@ -123,6 +123,7 @@ export interface ScopeItem {
   // v1.4.13: provenance (roadmap #5). "defined" = client-provided,
   // "found" = added from findings.
   source?: string;
+  is_effectively_in_scope?: boolean | null;
   created_at: string;
   updated_at: string;
 }
@@ -149,6 +150,29 @@ export interface ApprovalInboxItem extends Approval {
   engagement_slug: string;
   engagement_name: string;
 }
+
+export interface ToolDecisionInboxItem extends ApprovalInboxItem {
+  kind: "tool_approval";
+}
+
+export interface PlaybookDecisionInboxItem {
+  kind: "playbook_run";
+  id: string;
+  engagement_id: string;
+  engagement_slug: string;
+  engagement_name: string;
+  created_at: string;
+  playbook_slug: string;
+  playbook_name: string;
+  playbook_version: number;
+  executor: "internal" | "mcp";
+  scope_subset: string[];
+  requested_by: string | null;
+}
+
+export type DecisionInboxItem =
+  | ToolDecisionInboxItem
+  | PlaybookDecisionInboxItem;
 
 export type Severity = "info" | "low" | "medium" | "high" | "critical";
 
@@ -284,7 +308,7 @@ export interface LoggedEvent {
 // ── Status tab (v0.8.0) ───────────────────────────────────────────────────
 
 export type StatusColor = "active" | "pending" | "completed" | "failed";
-export type StatusKind = "agent" | "task" | "approval";
+export type StatusKind = "agent" | "task" | "approval" | "playbook";
 // v1.2.0: sub-outcome nuance under the four colours. null on
 // still-running / pending rows.
 export type StatusOutcome = "success" | "empty" | "partial" | "errored";
@@ -320,6 +344,7 @@ export interface EngagementStatusResponse {
   agents: StatusEntity[];
   tasks: StatusEntity[];
   approvals: StatusEntity[];
+  playbook_runs: StatusEntity[];
 }
 
 // v1.2.0: one line in the per-entity step log. Newest last.
@@ -662,6 +687,8 @@ export interface Entity {
   last_seen: string;
   findings: EntityFindingRef[];
   scope_status: EntityScopeStatus;
+  relevance?: "in_scope" | "review" | "likely_third_party";
+  relevance_reason?: string | null;
 }
 
 export interface Observation {
@@ -903,7 +930,7 @@ export type RunEvent =
       authorization_id: string;
     }
   | {
-      type: "finding.created";
+      type: "finding.created" | "finding.updated";
       thread_id: string;
       tool: string;
       args: Record<string, unknown>;
@@ -1466,6 +1493,11 @@ export interface PlaybookRead {
   applies_to_asset_class: string;
   active: boolean;
   step_count: number;
+  required_executor: PlaybookExecutorKind;
+  required_credentials?: string[];
+  step_preview?: string[];
+  expands_targets?: boolean;
+  execution_paths?: string[];
 }
 
 export interface PlaybookDetail extends PlaybookRead {

@@ -24,6 +24,8 @@ import { StatusView } from "@/components/status-view";
 import { DiagnosticsView } from "@/components/diagnostics-view";
 import { StrategyView } from "@/components/strategy-view";
 import { LegacyEngagementBanner } from "@/components/legacy-engagement-banner";
+import { PlaybooksTab } from "@/components/playbooks/playbooks-tab";
+import { QueryState } from "@/components/query-state";
 import { GrantsCard } from "@/components/grants-card";
 import { RunPrompt } from "@/components/run-prompt";
 import { RunPromptBridgeProvider } from "@/components/run-prompt-context";
@@ -81,8 +83,6 @@ const VALID_VIEWS = new Set<EngagementView>([
 function EngagementDetail({ slug }: { slug: string }) {
   const router = useRouter();
   const params = useSearchParams();
-  // Single-tenant: any signed-in analyst can act on the engagement.
-  const canWrite = true;
 
   const viewParam = params.get("view");
   // v2.4.0: naked-URL default landing view is Strategy (was Findings).
@@ -111,6 +111,10 @@ function EngagementDetail({ slug }: { slug: string }) {
   // quick-action fires on the Entities tab (roadmap #10). Consumed on
   // RunPrompt mount.
   const [pendingPrompt, setPendingPrompt] = useState<string | null>(null);
+  const [pendingPlaybookTarget, setPendingPlaybookTarget] = useState<{
+    type: string;
+    value: string;
+  } | null>(null);
 
   // v1.0.0: engagement + findings live in the React Query cache. Navigating
   // away and back is instant (cache-served) and window-focus revalidates
@@ -121,6 +125,7 @@ function EngagementDetail({ slug }: { slug: string }) {
   const engagementQuery = useEngagement(slug);
   const findingsQuery = useFindings(slug);
   const { data: me } = useMe();
+  const canWrite = me !== undefined && me.role !== "guest";
   const engagement = engagementQuery.data ?? null;
   const findings = findingsQuery.data ?? [];
   const archiveMutation = useArchiveEngagementMutation(slug);
@@ -223,6 +228,15 @@ function EngagementDetail({ slug }: { slug: string }) {
             qc.invalidateQueries({ queryKey: qk.entities(slug) }),
             qc.invalidateQueries({ queryKey: ["stored-entities", slug] }),
           ]);
+        } else if (event.type === "finding.updated") {
+          // Grouped playbook/tool reruns can add DNS/WHOIS entities without
+          // creating a new Finding row. Refresh every dependent inventory.
+          void Promise.all([
+            qc.invalidateQueries({ queryKey: qk.findings(slug) }),
+            qc.invalidateQueries({ queryKey: qk.reportReadiness(slug) }),
+            qc.invalidateQueries({ queryKey: qk.entities(slug) }),
+            qc.invalidateQueries({ queryKey: ["stored-entities", slug] }),
+          ]);
         } else if (
           event.type === "run.completed" ||
           event.type === "run.errored"
@@ -242,6 +256,7 @@ function EngagementDetail({ slug }: { slug: string }) {
           });
         } else if (event.type === "approval.pending" && canWrite) {
           void qc.invalidateQueries({ queryKey: qk.pendingApprovals() });
+          void qc.invalidateQueries({ queryKey: qk.decisionInbox() });
           setPending({
             approval_id: event.approval_id,
             thread_id: event.thread_id,
@@ -430,12 +445,34 @@ function EngagementDetail({ slug }: { slug: string }) {
 
         <div className="min-w-0 flex-1">
           {view === "findings" && (
-            <FindingsView
-              slug={slug}
-              findings={findings}
-              onUpdated={upsertFinding}
-              onDeleted={removeFinding}
-            />
+            findingsQuery.data === undefined &&
+            (findingsQuery.isLoading || findingsQuery.error) ? (
+              <QueryState
+                isLoading={findingsQuery.isLoading}
+                error={findingsQuery.error}
+                loadingLabel="Loading findings…"
+                errorLabel="Could not load engagement findings."
+                onRetry={() => void findingsQuery.refetch()}
+                isRetrying={findingsQuery.isFetching}
+              />
+            ) : (
+              <div className="space-y-3">
+                <QueryState
+                  isLoading={false}
+                  error={findingsQuery.error}
+                  hasData
+                  compact
+                  onRetry={() => void findingsQuery.refetch()}
+                  isRetrying={findingsQuery.isFetching}
+                />
+                <FindingsView
+                  slug={slug}
+                  findings={findings}
+                  onUpdated={upsertFinding}
+                  onDeleted={removeFinding}
+                />
+              </div>
+            )
           )}
 
           {view === "strategy" && (
@@ -445,10 +482,23 @@ function EngagementDetail({ slug }: { slug: string }) {
           {view === "entities" && (
             <EntitiesView
               slug={slug}
-              onQuickAction={(p) => {
-                setPendingPrompt(p);
-                setView("scope");
-              }}
+              canWrite={canWrite}
+              onQuickAction={
+                canWrite && engagement.intelligence_architecture !== "v3"
+                  ? (prompt) => {
+                      setPendingPrompt(prompt);
+                      setView("scope");
+                    }
+                  : undefined
+              }
+              onLaunchPlaybook={
+                canWrite && engagement.intelligence_architecture === "v3"
+                  ? (target) => {
+                      setPendingPlaybookTarget(target);
+                      setView("scope");
+                    }
+                  : undefined
+              }
             />
           )}
 
@@ -458,7 +508,13 @@ function EngagementDetail({ slug }: { slug: string }) {
 
           {view === "costs" && <CostsView slug={slug} />}
 
-          {view === "status" && <StatusView slug={slug} />}
+          {view === "status" && (
+            <StatusView
+              slug={slug}
+              allowLegacyRetry={engagement.intelligence_architecture !== "v3"}
+              canWrite={canWrite}
+            />
+          )}
 
           {view === "contributions" && <ContributionsView slug={slug} />}
           {view === "diagnostics" && <DiagnosticsView slug={slug} />}
@@ -466,37 +522,36 @@ function EngagementDetail({ slug }: { slug: string }) {
           {view === "scope" && (
             <div className="space-y-6">
               <ScopeEditor slug={slug} canWrite={canWrite} />
-              {engagement.intelligence_architecture === "v3" ? (
-                // v3.0.3: deterministic click-to-run tools panel. No
-                // LangGraph / Tactical / prompt textarea — each button
-                // hits POST /engagements/{slug}/tools/{slug}/run and
-                // writes a Finding row via the same grouping helper the
-                // playbook runner uses.
-                engagement.status === "active" ? (
-                  <V3ToolsPanel slug={slug} />
-                ) : (
-                  <p className="text-sm text-muted-foreground">
-                    This engagement is {engagement.status}; tool runs are
-                    disabled.
+              {engagement.status === "active" ? (
+                !canWrite ? (
+                  <p className="rounded-md border border-border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+                    Guest access is read-only. An analyst or admin can run tools
+                    and playbooks.
                   </p>
-                )
-              ) : engagement.status === "active" ? (
-                // v1.11.0: ToolsPanel + RunPrompt share a bridge so a
-                // click on a tool button drops its example prompt into
-                // the run textarea below.
-                // v1.15.0 (#93): entity quick-actions on the Entities
-                // tab also seed the textarea via ``initialPrompt``; both
-                // paths coexist because RunPrompt owns the prompt state.
-                <RunPromptBridgeProvider>
-                  <ToolsPanel />
-                  <div className="mt-6">
-                    <RunPrompt
-                      slug={slug}
-                      initialPrompt={pendingPrompt ?? undefined}
-                      onPromptConsumed={() => setPendingPrompt(null)}
+                ) : engagement.intelligence_architecture === "v3" ? (
+                  <div className="space-y-6">
+                    {/* Deterministic one-tool actions and full playbook runs are
+                        complementary v3 collection surfaces. Both use the same
+                        scope matcher and canonical finding bridge. */}
+                    <V3ToolsPanel slug={slug} />
+                    <PlaybooksTab
+                      engagementSlug={slug}
+                      initialTarget={pendingPlaybookTarget}
+                      onTargetConsumed={() => setPendingPlaybookTarget(null)}
                     />
                   </div>
-                </RunPromptBridgeProvider>
+                ) : (
+                  <RunPromptBridgeProvider>
+                    <ToolsPanel />
+                    <div className="mt-6">
+                      <RunPrompt
+                        slug={slug}
+                        initialPrompt={pendingPrompt ?? undefined}
+                        onPromptConsumed={() => setPendingPrompt(null)}
+                      />
+                    </div>
+                  </RunPromptBridgeProvider>
+                )
               ) : (
                 <p className="text-sm text-muted-foreground">
                   This engagement is {engagement.status}; runs are disabled.

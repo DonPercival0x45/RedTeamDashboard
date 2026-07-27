@@ -24,6 +24,7 @@ from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import redis as redis_lib
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -47,6 +48,9 @@ from app.models import (
     MCPLease,
     MCPLeaseStatus,
     OwnerEligibility,
+    Playbook,
+    PlaybookRun,
+    PlaybookRunStatus,
     Task,
     TaskKind,
     TaskStatus,
@@ -62,6 +66,7 @@ from app.schemas.status import (
     StepEntry,
     StepLogResponse,
 )
+from app.services.ephemeral_provider_key import NoProviderKeyError
 
 router = APIRouter()
 
@@ -140,7 +145,10 @@ def _run_slug(source: str | uuid.UUID) -> str:
 
 
 def _agent_outcome(row: AgentExecution) -> StatusOutcome | None:
-    if row.status == AgentExecutionStatus.running:
+    if row.status in {
+        AgentExecutionStatus.pending,
+        AgentExecutionStatus.running,
+    }:
         return None
     if row.status in (AgentExecutionStatus.failed, AgentExecutionStatus.cancelled) or row.error:
         return "errored"
@@ -194,6 +202,22 @@ def _approval_outcome(row: Approval) -> StatusOutcome | None:
     return "success"
 
 
+def _playbook_outcome(row: PlaybookRun) -> StatusOutcome | None:
+    if row.status in {
+        PlaybookRunStatus.awaiting_approval,
+        PlaybookRunStatus.pending,
+        PlaybookRunStatus.running,
+    }:
+        return None
+    if row.status == PlaybookRunStatus.completed:
+        # A successful coverage run is still successful when it finds no
+        # issues; zero findings is not equivalent to an empty/no-op run.
+        return "success"
+    if row.status == PlaybookRunStatus.partial:
+        return "partial"
+    return "errored"
+
+
 def _agent_synopsis(row: AgentExecution, outcome: StatusOutcome | None) -> str:
     """One-line "here's what I tried / what happened / why I failed"."""
     if outcome == "errored":
@@ -204,6 +228,9 @@ def _agent_synopsis(row: AgentExecution, outcome: StatusOutcome | None) -> str:
     output = row.output or {}
     agent = row.agent.value
     if outcome is None:
+        if row.status is AgentExecutionStatus.pending:
+            mode = str((row.input or {}).get("mode") or agent).replace("_", " ")
+            return f"{mode.capitalize()} queued for durable execution."
         return f"{agent.capitalize()} agent running…"
     if outcome == "empty":
         return f"{agent.capitalize()} agent completed — no output."
@@ -264,10 +291,37 @@ def _approval_synopsis(row: Approval, outcome: StatusOutcome | None) -> str:
     return f"Approved {tool}."
 
 
+def _playbook_synopsis(row: PlaybookRun, playbook: Playbook) -> str:
+    targets = len(row.scope_subset or [])
+    if row.status == PlaybookRunStatus.awaiting_approval:
+        return f"Awaiting analyst approval for {playbook.name} on {targets} target(s)."
+    if row.status == PlaybookRunStatus.pending:
+        return f"Queued {playbook.name} for {targets} target(s)."
+    if row.status == PlaybookRunStatus.running:
+        completed = row.steps_succeeded + row.steps_failed
+        return f"Running {playbook.name}: {completed}/{row.steps_total} step(s) finished."
+    if row.status == PlaybookRunStatus.completed:
+        return (
+            f"Completed {row.steps_succeeded}/{row.steps_total} step(s); "
+            f"persisted {row.findings_new} new finding item(s)."
+        )
+    if row.status == PlaybookRunStatus.partial:
+        return (
+            f"Completed with partial results: {row.steps_succeeded} succeeded, "
+            f"{row.steps_failed} failed."
+        )
+    if row.status == PlaybookRunStatus.cancelled:
+        reason = row.rejection_reason or row.last_error or "cancelled by analyst"
+        return f"Cancelled: {reason[:120]}"
+    return f"Failed: {(row.last_error or 'unknown error')[:120]}"
+
+
 # ── status colour mappers ────────────────────────────────────────────────
 
 
 def _agent_color(s: AgentExecutionStatus) -> StatusColor:
+    if s == AgentExecutionStatus.pending:
+        return "pending"
     if s == AgentExecutionStatus.running:
         return "active"
     if s == AgentExecutionStatus.completed:
@@ -293,6 +347,16 @@ def _approval_color(s: ApprovalStatus) -> StatusColor:
     return "completed"  # approved | edited | auto
 
 
+def _playbook_color(s: PlaybookRunStatus) -> StatusColor:
+    if s in {PlaybookRunStatus.awaiting_approval, PlaybookRunStatus.pending}:
+        return "pending"
+    if s == PlaybookRunStatus.running:
+        return "active"
+    if s in {PlaybookRunStatus.completed, PlaybookRunStatus.partial}:
+        return "completed"
+    return "failed"
+
+
 # ── status transition history (derived) ─────────────────────────────────
 
 
@@ -301,10 +365,19 @@ def _agent_history(row: AgentExecution) -> list[StatusTransition]:
     the entity reached its terminal colour at that time."""
     history: list[StatusTransition] = []
     if row.started_at:
+        initial_status: StatusColor = (
+            "pending"
+            if row.status is AgentExecutionStatus.pending
+            else "active"
+        )
         history.append(
             StatusTransition(
-                status="active",
-                raw_status=AgentExecutionStatus.running.value,
+                status=initial_status,
+                raw_status=(
+                    AgentExecutionStatus.pending.value
+                    if row.status is AgentExecutionStatus.pending
+                    else AgentExecutionStatus.running.value
+                ),
                 at=row.started_at,
             )
         )
@@ -371,6 +444,48 @@ def _approval_history(row: Approval) -> list[StatusTransition]:
                 status=_approval_color(row.status),
                 raw_status=row.status.value,
                 at=row.decided_at,
+            )
+        )
+    return history
+
+
+def _playbook_history(row: PlaybookRun) -> list[StatusTransition]:
+    history = [
+        StatusTransition(
+            status="pending",
+            raw_status=(
+                PlaybookRunStatus.awaiting_approval.value
+                if row.approved_at is not None
+                or row.rejected_at is not None
+                or row.status == PlaybookRunStatus.awaiting_approval
+                else PlaybookRunStatus.pending.value
+            ),
+            at=row.created_at,
+        )
+    ]
+    if row.approved_at:
+        history.append(
+            StatusTransition(status="pending", raw_status="approved", at=row.approved_at)
+        )
+    if row.started_at:
+        history.append(
+            StatusTransition(
+                status="active",
+                raw_status=PlaybookRunStatus.running.value,
+                at=row.started_at,
+            )
+        )
+    terminal_at = row.completed_at or row.rejected_at
+    if terminal_at and row.status not in {
+        PlaybookRunStatus.awaiting_approval,
+        PlaybookRunStatus.pending,
+        PlaybookRunStatus.running,
+    }:
+        history.append(
+            StatusTransition(
+                status=_playbook_color(row.status),
+                raw_status=row.status.value,
+                at=terminal_at,
             )
         )
     return history
@@ -494,6 +609,48 @@ def _approval_to_entity(row: Approval) -> StatusEntity:
             "authorization_id": (str(row.authorization_id) if row.authorization_id else None),
         },
         history=_approval_history(row),
+    )
+
+
+def _playbook_to_entity(row: PlaybookRun, playbook: Playbook) -> StatusEntity:
+    scope = [str(item) for item in (row.scope_subset or [])]
+    if len(scope) <= 2:
+        target_summary = ", ".join(scope) or "no targets"
+    else:
+        target_summary = f"{', '.join(scope[:2])} +{len(scope) - 2} more"
+    return StatusEntity(
+        id=row.id,
+        kind="playbook",
+        title=playbook.name,
+        subtitle=f"Playbook v{playbook.version} · {target_summary}",
+        color=_playbook_color(row.status),
+        raw_status=row.status.value,
+        started_at=row.started_at or row.created_at,
+        completed_at=row.completed_at or row.rejected_at,
+        retryable=False,
+        run_slug=_run_slug(row.id),
+        outcome=_playbook_outcome(row),
+        synopsis=_playbook_synopsis(row, playbook),
+        log={
+            "playbook_slug": playbook.slug,
+            "playbook_version": playbook.version,
+            "executor": row.executor_kind.value,
+            "scope_subset": scope,
+            "steps_total": row.steps_total,
+            "steps_succeeded": row.steps_succeeded,
+            "steps_failed": row.steps_failed,
+            "findings_new": row.findings_new,
+            "findings_unvalidated": row.findings_unvalidated,
+            "findings_high_severity": row.findings_high_severity,
+            "findings_total": row.findings_total,
+            "requested_by": str(row.requested_by) if row.requested_by else None,
+            "approved_by": str(row.approved_by) if row.approved_by else None,
+            "approval_reason": row.approval_reason,
+            "rejected_by": str(row.rejected_by) if row.rejected_by else None,
+            "rejection_reason": row.rejection_reason,
+            "last_error": row.last_error,
+        },
+        history=_playbook_history(row),
     )
 
 
@@ -794,11 +951,21 @@ def get_engagement_status(
             .limit(200)
         ).scalars()
     )
+    playbook_runs = list(
+        session.execute(
+            select(PlaybookRun, Playbook)
+            .join(Playbook, Playbook.id == PlaybookRun.playbook_id)
+            .where(PlaybookRun.engagement_id == eng.id)
+            .order_by(PlaybookRun.created_at.desc())
+            .limit(200)
+        ).all()
+    )
 
     return EngagementStatusResponse(
         agents=[_agent_to_entity(a) for a in agents],
         tasks=[_task_to_entity(t) for t in tasks],
         approvals=[_approval_to_entity(a) for a in approvals],
+        playbook_runs=[_playbook_to_entity(run, playbook) for run, playbook in playbook_runs],
     )
 
 
@@ -1183,6 +1350,81 @@ def get_approval_steps(
     )
 
 
+@router.get(
+    "/engagements/{slug}/status/playbooks/{run_id}/steps",
+    response_model=StepLogResponse,
+)
+def get_playbook_steps(
+    slug: str,
+    run_id: uuid.UUID,
+    session: DbSession,
+    _user: CurrentUser,
+) -> StepLogResponse:
+    """Durable lifecycle trace for a PlaybookRun.
+
+    Playbook runs are database-driven rather than Redis-thread-driven, so their
+    useful step summary comes from the run's lifecycle timestamps and counters.
+    """
+    eng = _engagement_by_slug(session, slug)
+    row = session.get(PlaybookRun, run_id)
+    if row is None or row.engagement_id != eng.id:
+        raise HTTPException(status_code=404, detail="playbook run not found")
+    playbook = session.get(Playbook, row.playbook_id)
+    name = playbook.name if playbook else "Playbook"
+    steps = [
+        StepEntry(
+            at=row.created_at,
+            kind="playbook.requested",
+            label=f"Requested {name} for {len(row.scope_subset or [])} target(s).",
+            detail={"scope_subset": row.scope_subset, "executor": row.executor_kind.value},
+        )
+    ]
+    if row.approved_at:
+        steps.append(
+            StepEntry(
+                at=row.approved_at,
+                kind="playbook.approved",
+                label="Run approved by an analyst.",
+                detail={"reason": row.approval_reason},
+            )
+        )
+    if row.rejected_at:
+        steps.append(
+            StepEntry(
+                at=row.rejected_at,
+                kind="playbook.rejected",
+                label=f"Run rejected: {row.rejection_reason or 'no reason supplied'}",
+                detail={"reason": row.rejection_reason},
+            )
+        )
+    if row.started_at:
+        steps.append(
+            StepEntry(
+                at=row.started_at,
+                kind="playbook.started",
+                label=f"Started {row.steps_total} planned step(s).",
+                detail=None,
+            )
+        )
+    if row.completed_at and row.rejected_at is None:
+        steps.append(
+            StepEntry(
+                at=row.completed_at,
+                kind=f"playbook.{row.status.value}",
+                label=_playbook_synopsis(row, playbook) if playbook else row.status.value,
+                detail={
+                    "steps_succeeded": row.steps_succeeded,
+                    "steps_failed": row.steps_failed,
+                    "findings_new": row.findings_new,
+                    "findings_total": row.findings_total,
+                    "last_error": row.last_error,
+                },
+            )
+        )
+    steps.sort(key=lambda step: step.at)
+    return StepLogResponse(steps=steps, truncated=False)
+
+
 # ── retry endpoints ──────────────────────────────────────────────────────
 
 
@@ -1217,6 +1459,41 @@ def retry_agent_execution(
             status_code=400,
             detail="only failed agent executions can be retried",
         )
+    if row.agent == AgentName.engagement_strategist and (row.input or {}).get(
+        "durable_job"
+    ):
+        retry_input = {
+            **(row.input or {}),
+            "acting_user_id": str(user.id),
+            "retry_of_execution_id": str(row.id),
+        }
+        retry = AgentExecution(
+            engagement_id=row.engagement_id,
+            agent=AgentName.engagement_strategist,
+            trigger=AgentTrigger.manual,
+            input=retry_input,
+            status=AgentExecutionStatus.pending,
+            started_at=datetime.now(tz=UTC),
+        )
+        session.add(retry)
+        session.flush()
+        session.add(
+            AuditLog(
+                engagement_id=row.engagement_id,
+                actor_type=ActorType.user,
+                actor_id=str(user.id),
+                event_type="intelligence.retried",
+                payload={
+                    "execution_id": str(retry.id),
+                    "retry_of_execution_id": str(row.id),
+                    "mode": retry_input.get("mode"),
+                },
+            )
+        )
+        session.commit()
+        session.refresh(retry)
+        return _agent_to_entity(retry)
+
     if row.agent == AgentName.tactical:
         # A Tactical run dispatched from a task: re-dispatch the source task
         # (TacticalAgent.dispatch re-derives the prompt; the run's own prompt
@@ -1294,6 +1571,9 @@ def retry_agent_execution(
                 "Add one under /settings/keys."
             ),
         ) from exc
+    except redis_lib.RedisError:
+        session.rollback()
+        raise
     except Exception as exc:
         session.commit()
         eng = session.get(Engagement, finding.engagement_id)
@@ -1394,7 +1674,7 @@ def cancel_agent_execution(
     redis_client: RedisClient,
     user: CurrentNonGuestUser,
 ) -> StatusEntity:
-    """Cancel a running AgentExecution row.
+    """Cancel a pending or running AgentExecution row.
 
     For stream-backed executions with ``input.thread_id`` and an engagement,
     this also removes a queued run.start command if it has not been consumed
@@ -1410,10 +1690,13 @@ def cancel_agent_execution(
     ).scalar_one_or_none()
     if row is None:
         raise HTTPException(status_code=404, detail="agent execution not found")
-    if row.status != AgentExecutionStatus.running:
+    if row.status not in {
+        AgentExecutionStatus.pending,
+        AgentExecutionStatus.running,
+    }:
         raise HTTPException(
             status_code=400,
-            detail="only running agent executions can be cancelled",
+            detail="only pending or running agent executions can be cancelled",
         )
 
     input_payload = row.input or {}
@@ -1660,11 +1943,20 @@ def _redispatch_task(
             )
         )
         session.commit()
-        status_code = 400 if isinstance(exc, ValueError) else 502
-        raise HTTPException(
-            status_code=status_code,
-            detail=f"task retry dispatch failed: {exc}",
-        ) from exc
+        if isinstance(exc, NoProviderKeyError):
+            status_code = 400
+            detail: object = {
+                "code": "missing_provider_key",
+                "message": str(exc),
+                "action_url": "/settings/keys",
+            }
+        elif isinstance(exc, redis_lib.RedisError):
+            status_code = 503
+            detail = "temporary credential/queue service outage; retry shortly"
+        else:
+            status_code = 400 if isinstance(exc, ValueError) else 502
+            detail = f"task retry dispatch failed: {exc}"
+        raise HTTPException(status_code=status_code, detail=detail) from exc
 
     session.add(
         AuditLog(

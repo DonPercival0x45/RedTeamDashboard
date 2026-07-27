@@ -126,6 +126,21 @@ services:
       NEXT_TELEMETRY_DISABLED: "1"
       # config.ts consumes this runtime value; backend is on host port 8000.
       RTD_API_BASE_URL: ${RTD_API_BASE_URL:-http://localhost:8000}
+    # The node_modules volume survives image rebuilds. Refresh it whenever the
+    # lockfile changes so newly added packages are not hidden by stale volume
+    # contents (for example, Leaflet being present in the image but missing at
+    # runtime).
+    command:
+      - /bin/sh
+      - -c
+      - |
+        lock_hash="$$(sha256sum package-lock.json | awk '{print $$1}')"
+        marker="node_modules/.rtd-package-lock.sha256"
+        if [ ! -f "$$marker" ] || [ "$$(cat "$$marker")" != "$$lock_hash" ]; then
+          npm ci --no-audit --no-fund
+          printf '%s' "$$lock_hash" > "$$marker"
+        fi
+        exec npm run dev
     volumes:
       # Live source bind mount. node_modules and .next stay in named volumes
       # so the host's filesystem doesn't shadow the container's installed deps

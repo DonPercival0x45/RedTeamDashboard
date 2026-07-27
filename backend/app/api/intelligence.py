@@ -2,18 +2,16 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
 
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import func, select
 
-from app.agents.intelligence import run_intelligence_analysis
-from app.api.deps import CurrentNonGuestUser, DbSession, RedisClient
+from app.api.deps import CurrentNonGuestUser, DbSession
 from app.models import (
     ActorType,
+    AgentExecution,
     AgentExecutionStatus,
-    AgentPromptMode,
+    AgentName,
     AgentTrigger,
     AuditLog,
     Engagement,
@@ -34,8 +32,6 @@ from app.schemas.intelligence_api import (
 )
 from app.services import memory
 from app.services import methodology as methodology_service
-from app.services.agent_model_resolver import resolve_llm_for_mode
-from app.services.ephemeral_provider_key import NoProviderKeyError
 from app.services.milestone_runner import acquire_engagement_memory_lock
 
 router = APIRouter(tags=["intelligence"])
@@ -61,14 +57,6 @@ def _require_mutable(engagement: Engagement) -> None:
             status_code=409,
             detail="completed engagement must be reopened before intelligence runs",
         )
-
-
-def _parsed(value: Any) -> dict[str, Any] | None:
-    if isinstance(value, BaseModel):
-        return value.model_dump(mode="json")
-    if isinstance(value, dict):
-        return value
-    return None
 
 
 @router.post(
@@ -187,13 +175,13 @@ def convert_engagement_to_v3(
 @router.post(
     "/engagements/{slug}/intelligence/runs",
     response_model=IntelligenceRunResponse,
+    status_code=status.HTTP_202_ACCEPTED,
 )
 def run_intelligence_on_demand(
     slug: str,
     body: IntelligenceRunRequest,
     session: DbSession,
     user: CurrentNonGuestUser,
-    redis_client: RedisClient,
 ) -> IntelligenceRunResponse:
     engagement = _locked_engagement(session, slug)
     _require_mutable(engagement)
@@ -203,41 +191,32 @@ def run_intelligence_on_demand(
             detail="legacy engagement must be converted before v3 intelligence runs",
         )
 
-    acquire_engagement_memory_lock(session, engagement.id)
-    if body.mode is AgentPromptMode.coverage_review:
-        memory.compact(session, engagement_id=engagement.id)
-    try:
-        llm, provider, model_name = resolve_llm_for_mode(
-            session,
-            redis_client=redis_client,
-            user_id=user.id,
-            engagement_id=engagement.id,
-            mode=body.mode,
-        )
-    except NoProviderKeyError as exc:
-        session.rollback()
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    parsed, execution = run_intelligence_analysis(
-        session,
+    now = datetime.now(tz=UTC)
+    execution = AgentExecution(
         engagement_id=engagement.id,
-        mode=body.mode,
-        acting_user_id=user.id,
-        llm=llm,
-        model_provider=provider,
-        model_name=model_name,
+        agent=AgentName.engagement_strategist,
         trigger=AgentTrigger.manual,
+        input={
+            "mode": body.mode.value,
+            "engagement_id": str(engagement.id),
+            "acting_user_id": str(user.id),
+            "v3_intelligence": True,
+            "durable_job": True,
+        },
+        status=AgentExecutionStatus.pending,
+        started_at=now,
     )
+    session.add(execution)
+    session.flush()
     session.add(
         AuditLog(
             engagement_id=engagement.id,
             actor_type=ActorType.user,
             actor_id=str(user.id),
-            event_type="intelligence.invoked",
+            event_type="intelligence.queued",
             payload={
                 "execution_id": str(execution.id),
                 "mode": body.mode.value,
-                "status": execution.status.value,
                 "manual": True,
             },
         )
@@ -247,6 +226,4 @@ def run_intelligence_on_demand(
         execution_id=execution.id,
         mode=body.mode,
         status=execution.status,
-        parsed=_parsed(parsed),
-        error=execution.error if execution.status is AgentExecutionStatus.failed else None,
     )

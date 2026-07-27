@@ -14,9 +14,27 @@ def run_group() -> None:
 @run_group.command("start")
 @click.argument("slug")
 @click.option("--prompt", "-p", required=True, help="Prompt sent to the agent.")
-@click.option("--provider",
-              type=click.Choice(["anthropic", "openai", "azure", "ollama"]),
-              help="LLM provider for this run. Omit to use the worker's default.")
+@click.option(
+    "--provider",
+    type=click.Choice(
+        [
+            "anthropic",
+            "openai",
+            "azure",
+            "ollama",
+            "google",
+            "xai",
+            "mistral",
+            "cohere",
+            "together",
+            "groq",
+            "deepseek",
+            "moonshot",
+            "custom",
+        ]
+    ),
+    help="LLM provider for this run. Omit to use your saved default.",
+)
 @click.option("--model", "model_name",
               help="Model id (provider-specific). Required if --provider is set.")
 @click.option("--tail/--no-tail", default=True,

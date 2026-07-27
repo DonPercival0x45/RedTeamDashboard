@@ -19,8 +19,9 @@ approval gates and audit logging as the web UI.
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+import redis as redis_lib
 import structlog
-from fastapi import FastAPI, status
+from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
@@ -60,6 +61,7 @@ from app.core.config import settings
 from app.core.logging import configure_logging
 from app.mcp.auth import MCPAuthMiddleware
 from app.mcp.server import mcp
+from app.services.ephemeral_provider_key import NoProviderKeyError
 
 configure_logging(settings.env)
 log = structlog.get_logger()
@@ -73,6 +75,36 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="Red Team Dashboard API", version="0.0.1", lifespan=lifespan)
+
+
+@app.exception_handler(NoProviderKeyError)
+async def missing_provider_key_handler(
+    _request: Request, exc: NoProviderKeyError
+) -> JSONResponse:
+    """Give every unhandled BYO-key path the same actionable response."""
+    return JSONResponse(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        content={
+            "detail": {
+                "code": "missing_provider_key",
+                "message": str(exc),
+                "action_url": "/settings/keys",
+            }
+        },
+    )
+
+
+@app.exception_handler(redis_lib.RedisError)
+async def redis_unavailable_handler(
+    _request: Request, exc: redis_lib.RedisError
+) -> JSONResponse:
+    """Treat ephemeral-key/queue backend outages as unavailable, not 500s."""
+    log.warning("redis.unavailable", error=str(exc))
+    return JSONResponse(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        content={"detail": "temporary credential/queue service outage; retry shortly"},
+    )
+
 
 # CORS for the browser viewer. Defaults cover local dev; Phase 6 central
 # viewer adds its origin via the CORS_ALLOW_ORIGINS env var (Bicep param).

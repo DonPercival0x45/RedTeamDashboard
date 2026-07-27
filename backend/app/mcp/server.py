@@ -57,6 +57,7 @@ from app.orchestrator.gate import Action, evaluate
 from app.orchestrator.scope import ScopeSnapshot, normalize_scope_items
 from app.orchestrator.tools import phase_for_tool
 from app.orchestrator.tools.runtime import run_tool
+from app.services.scope_matcher import normalize_email
 
 # ---------------------------------------------------------------------------
 # Server definition
@@ -301,14 +302,17 @@ def _infer_engagement_slug(provided: str | None) -> str | None:
     supply slug. Returns the inferred slug, or None when neither path
     provides one (caller raises with a clear message).
     """
-    if provided:
-        return provided
     lease = get_current_lease()
     if lease is None:
-        return None
+        return provided or None
     engagement = (lease.context or {}).get("engagement") or {}
     inferred = engagement.get("slug")
-    return inferred if isinstance(inferred, str) and inferred else None
+    pinned = inferred if isinstance(inferred, str) and inferred else None
+    if provided and pinned and provided != pinned:
+        raise ValueError(
+            "engagement_slug conflicts with the active MCP lease"
+        )
+    return pinned or provided or None
 
 
 def _run_osint(
@@ -327,7 +331,10 @@ def _run_osint(
     if denied is not None:
         return denied
 
-    engagement_slug = _infer_engagement_slug(engagement_slug)
+    try:
+        engagement_slug = _infer_engagement_slug(engagement_slug)
+    except ValueError as exc:
+        return {"error": str(exc)}
     if not engagement_slug:
         return {
             "error": (
@@ -346,9 +353,27 @@ def _run_osint(
     with _session() as session:
         try:
             eng = _resolve_engagement(session, engagement_slug)
+            lease = get_current_lease()
+            if lease is not None and lease.engagement_id != eng.id:
+                raise ValueError(
+                    "engagement does not match the active MCP lease"
+                )
             _ensure_mutable_engagement(eng)
         except ValueError as exc:
             return {"error": str(exc)}
+
+        # A server-minted lease may pin the analyst who requested an
+        # asynchronous run. Use that identity for audit/feedback instead of
+        # attributing work to the worker's transport API key.
+        lease = get_current_lease()
+        actor_id = (lease.context or {}).get("acting_user_id") if lease else None
+        if actor_id:
+            try:
+                leased_user = session.get(User, uuid.UUID(str(actor_id)))
+            except ValueError:
+                leased_user = None
+            if leased_user is not None:
+                user = leased_user
 
         scope = _get_scope(session, eng)
         decision = evaluate(tool_name, args, scope)
@@ -359,41 +384,49 @@ def _run_osint(
                 "scope_check": decision.scope.to_jsonable(),
             }
 
-        # Active/destructive tools require analyst confirmation per the MCP
-        # server instructions. By the time the model calls this tool it has
-        # already confirmed with the analyst in the conversation. Write an
-        # Approval row so the audit trail matches the LangGraph path.
+        # Active/destructive tools need a durable RTD decision. A playbook
+        # lease may reuse the already-approved run decision; an external MCP
+        # conversation cannot self-approve merely because the model says the
+        # analyst confirmed in chat.
         if decision.action is Action.interrupt:
-            approval = Approval(
-                engagement_id=eng.id,
-                thread_id=f"mcp-{uuid.uuid4()}",
-                node="mcp_tool",
-                tool_name=tool_name,
-                tool_args=args,
-                risk=decision.risk,
-                scope_check=decision.scope.to_jsonable(),
-                status=ApprovalStatus.approved,
-                decided_by=user.id,
-                decided_at=datetime.now(tz=UTC),
-            )
-            session.add(approval)
-            session.flush()
-            session.add(
-                AuditLog(
+            lease_context = (lease.context or {}) if lease is not None else {}
+            approved_run_id = lease_context.get("playbook_run_id")
+            approved_by = lease_context.get("playbook_approved_by")
+            approved_at = lease_context.get("playbook_approved_at")
+            if not (approved_run_id and approved_by and approved_at):
+                approval = Approval(
                     engagement_id=eng.id,
-                    actor_type=ActorType.user,
-                    actor_id=str(user.id),
-                    event_type="approval.decided",
-                    payload={
-                        "approval_id": str(approval.id),
-                        "thread_id": approval.thread_id,
-                        "tool": tool_name,
-                        "status": ApprovalStatus.approved.value,
-                        "approved": True,
-                        "via": "mcp",
-                    },
+                    thread_id=f"mcp-{uuid.uuid4()}",
+                    node="mcp_tool",
+                    tool_name=tool_name,
+                    tool_args=args,
+                    risk=decision.risk,
+                    scope_check=decision.scope.to_jsonable(),
+                    status=ApprovalStatus.pending,
                 )
-            )
+                session.add(approval)
+                session.flush()
+                session.add(
+                    AuditLog(
+                        engagement_id=eng.id,
+                        actor_type=ActorType.user,
+                        actor_id=str(user.id),
+                        event_type="approval.requested",
+                        payload={
+                            "approval_id": str(approval.id),
+                            "thread_id": approval.thread_id,
+                            "tool": tool_name,
+                            "status": ApprovalStatus.pending.value,
+                            "via": "mcp",
+                        },
+                    )
+                )
+                session.commit()
+                return {
+                    "error": "durable analyst approval is required before this active tool can run",
+                    "approval_id": str(approval.id),
+                    "status": ApprovalStatus.pending.value,
+                }
 
         operation_id = uuid.uuid4()
         result = run_tool(tool_name, args)
@@ -633,7 +666,7 @@ def get_scope(engagement_slug: str = "") -> dict:
             "engagement": engagement_slug,
             "includes": includes,
             "exclusions": exclusions,
-            "scope_kinds": ["domain", "cidr", "ip", "url"],
+            "scope_kinds": ["domain", "cidr", "ip", "url", "email"],
         }
 
 
@@ -648,7 +681,7 @@ def add_scope_item(
     """Add a scope item to an engagement.
 
     Requires cli scope.
-    kind: 'domain' | 'ip' | 'cidr' | 'url'
+    kind: 'domain' | 'ip' | 'cidr' | 'url' | 'email'
     is_exclusion: True to mark this as a target to skip (e.g. a honeypot inside
     an approved CIDR).
     """
@@ -661,7 +694,14 @@ def add_scope_item(
     try:
         scope_kind = ScopeKind(kind)
     except ValueError:
-        return {"error": f"invalid kind '{kind}' — must be one of: domain, ip, cidr, url"}
+        return {
+            "error": (
+                f"invalid kind '{kind}' — must be one of: "
+                "domain, ip, cidr, url, email"
+            )
+        }
+    if scope_kind is ScopeKind.email and normalize_email(value) is None:
+        return {"error": "email scope must be one valid exact mailbox"}
 
     engagement_slug = _infer_engagement_slug(engagement_slug) or ""
     if not engagement_slug:

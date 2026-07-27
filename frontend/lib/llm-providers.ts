@@ -104,7 +104,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     slug: "moonshot",
     label: "Moonshot AI (Kimi)",
     isLocal: false,
-    endpoint: "https://api.moonshot.cn/v1",
+    endpoint: "https://api.kimi.com/coding/v1",
     modelsDefault: ["kimi-k2-turbo-preview", "moonshot-v1-128k"],
   },
   {

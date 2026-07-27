@@ -44,10 +44,10 @@ from app.models import (
     AgentName,
     AgentTrigger,
 )
-from app.orchestrator.llm import default_provider_model
+from app.services.agent_model_resolver import resolve_agent_model_with_default
 from app.services.ephemeral_provider_key import (
     NoProviderKeyError,
-    resolve_for_user,
+    resolve_for_user_with_fallback,
 )
 
 _MAX_SOURCE_CHARS = 40_000  # roughly ~10k tokens of source at the outside
@@ -157,11 +157,19 @@ def review_tool_source(
     Persists one ``AgentExecution`` row per call (running → completed /
     failed) so cost accounting lines up with Strategic / Tactical /
     Triage."""
-    provider, model_name = default_provider_model()
+    provider, model_name = resolve_agent_model_with_default(
+        session,
+        user_id=acting_user_id,
+        engagement_id=None,
+        role=AgentName.tool_review,
+    )
 
     try:
-        resolved = resolve_for_user(
-            redis_client, user_id=acting_user_id, provider=provider
+        provider, model_name, resolved = resolve_for_user_with_fallback(
+            redis_client,
+            user_id=acting_user_id,
+            preferred_provider=provider,
+            preferred_model=model_name,
         )
     except NoProviderKeyError:
         return _skipped("no provider key")

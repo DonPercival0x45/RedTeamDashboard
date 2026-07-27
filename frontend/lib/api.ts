@@ -21,6 +21,7 @@ import type {
   Attachment,
   Authorization,
   CostRollup,
+  DecisionInboxItem,
   Engagement,
   EngagementArchitecture,
   EngagementStatus,
@@ -331,10 +332,11 @@ export function parseScope(
 export function importScope(
   slug: string,
   text: string,
+  source: "defined" | "found" = "defined",
 ): Promise<import("@/lib/types").ScopeImportResult> {
   return request<import("@/lib/types").ScopeImportResult>(
     `/engagements/${slug}/scope/import`,
-    { method: "POST", body: JSON.stringify({ text }) },
+    { method: "POST", body: JSON.stringify({ text, source }) },
   );
 }
 
@@ -645,6 +647,10 @@ export function listPendingApprovals(): Promise<ApprovalInboxItem[]> {
   return request<ApprovalInboxItem[]>("/approvals?status=pending&limit=200");
 }
 
+export function listDecisionInbox(): Promise<DecisionInboxItem[]> {
+  return request<DecisionInboxItem[]>("/decision-inbox?limit=200");
+}
+
 export function decideApproval(
   approvalId: string,
   body: {
@@ -841,6 +847,25 @@ export interface RunningTask {
 
 export function listRunningTasks(): Promise<RunningTask[]> {
   return request<RunningTask[]>("/tasks/running");
+}
+
+export interface RunningJob {
+  kind: "task" | "playbook";
+  id: string;
+  engagement_id: string;
+  engagement_slug: string;
+  engagement_name: string;
+  title: string;
+  status: string;
+  started_at: string | null;
+  created_at: string;
+  steps_completed: number | null;
+  steps_total: number | null;
+  awaiting_action: boolean;
+}
+
+export function listRunningJobs(): Promise<RunningJob[]> {
+  return request<RunningJob[]>("/jobs/running");
 }
 
 // v2.4.0 — Status-tab attribution table. Backend groups agent_executions
@@ -1683,7 +1708,13 @@ export function getStatusSteps(
   // Kind maps to a URL segment. Enforced at the type level; runtime
   // still guards against future StatusKind additions.
   const segment =
-    kind === "agent" ? "agents" : kind === "task" ? "tasks" : "approvals";
+    kind === "agent"
+      ? "agents"
+      : kind === "task"
+        ? "tasks"
+        : kind === "playbook"
+          ? "playbooks"
+          : "approvals";
   return request<StepLogResponse>(
     `/engagements/${slug}/status/${segment}/${entityId}/steps`,
   );

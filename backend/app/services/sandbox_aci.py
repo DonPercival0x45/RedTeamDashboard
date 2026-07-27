@@ -47,7 +47,7 @@ _UBUNTU_IMAGE = "ubuntu:22.04"
 
 
 class ACIRunnerNotConfigured(RuntimeError):
-    """Raised when ``RTD_SANDBOX_RUNNER=aci`` is set but the required
+    """Raised when ``SANDBOX_RUNNER=aci`` is set but the required
     ACI settings (subscription id, resource group, storage account) are
     empty. Surface path: 500 with a message pointing at Bicep."""
 

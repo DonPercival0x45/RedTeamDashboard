@@ -75,6 +75,7 @@ import {
   listVms,
   listOrchestratorTools,
   listPendingApprovals,
+  listDecisionInbox,
   fetchEngagementLog,
   fetchFindingsOverTime,
   fetchScanCoverage,
@@ -82,7 +83,7 @@ import {
   fetchTopFindings,
   listEngagementAttribution,
   listRoadmapSuggestions,
-  listRunningTasks,
+  listRunningJobs,
   listPlaybooks,
   getPlaybook,
   listPlaybookRuns,
@@ -146,6 +147,7 @@ export const qk = {
   authorizations: (engagementId: string, active?: boolean) =>
     ["authorizations", engagementId, { active }] as const,
   pendingApprovals: () => ["approvals", "pending"] as const,
+  decisionInbox: () => ["decision-inbox"] as const,
   engagements: () => ["engagements"] as const,
   engagement: (slug: string) => ["engagement", slug] as const,
   methodologies: () => ["methodologies"] as const,
@@ -191,7 +193,7 @@ export const qk = {
   orchestratorTools: () => ["orchestrator-tools"] as const,
   toolInvocations: (slug: string) =>
     ["tool-invocations", slug] as const,
-  runningTasks: () => ["running-tasks"] as const,
+  runningJobs: () => ["running-jobs"] as const,
   engagementAttribution: (slug: string) =>
     ["engagement-attribution", slug] as const,
   analyticsFindingsOverTime: (
@@ -288,10 +290,10 @@ export function useTasks(slug: string, status?: TaskStatus) {
 // v2.4.0 — cross-engagement running tasks for the Automation running-jobs
 // banner. Polls at 4s while any in-flight tasks exist; drops to focus-only
 // refresh once the queue is empty.
-export function useRunningTasks() {
+export function useRunningJobs() {
   return useQuery({
-    queryKey: qk.runningTasks(),
-    queryFn: () => listRunningTasks(),
+    queryKey: qk.runningJobs(),
+    queryFn: () => listRunningJobs(),
     refetchInterval: (query) => {
       const rows = query.state.data;
       return Array.isArray(rows) && rows.length > 0 ? 4000 : false;
@@ -631,11 +633,15 @@ export function useDeleteScopeItemMutation(slug: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => deleteScopeItem(slug, id),
-    onSuccess: (_res, id) => {
-      qc.setQueryData<ScopeItem[]>(qk.scope(slug), (prev) =>
-        prev ? prev.filter((s) => s.id !== id) : [],
+    onSuccess: (_response, id) => {
+      // Remove the deleted target immediately, then refetch the full set:
+      // deleting an include or exclusion can change every remaining row's
+      // effective-scope state.
+      qc.setQueryData<ScopeItem[]>(qk.scope(slug), (previous) =>
+        previous?.filter((item) => item.id !== id) ?? [],
       );
       void Promise.all([
+        qc.invalidateQueries({ queryKey: qk.scope(slug) }),
         qc.invalidateQueries({ queryKey: qk.entities(slug) }),
         qc.invalidateQueries({ queryKey: ["stored-entities", slug] }),
         qc.invalidateQueries({ queryKey: qk.engagements() }),
@@ -971,6 +977,15 @@ export function usePendingApprovals() {
   });
 }
 
+export function useDecisionInbox() {
+  return useQuery({
+    queryKey: qk.decisionInbox(),
+    queryFn: listDecisionInbox,
+    refetchInterval: (query) =>
+      (query.state.data?.length ?? 0) > 0 ? 3_000 : 10_000,
+  });
+}
+
 export function useDecideApprovalMutation() {
   const qc = useQueryClient();
   return useMutation({
@@ -980,6 +995,7 @@ export function useDecideApprovalMutation() {
     }) => decideApproval(params.approvalId, params.body),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: qk.pendingApprovals() });
+      void qc.invalidateQueries({ queryKey: qk.decisionInbox() });
       void qc.invalidateQueries({ queryKey: ["engagement-status"] });
     },
   });
@@ -1409,6 +1425,9 @@ export function useCreatePlaybookRunMutation(engagementSlug: string) {
       createPlaybookRun(engagementSlug, body),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["playbook-runs", engagementSlug] });
+      qc.invalidateQueries({ queryKey: qk.decisionInbox() });
+      qc.invalidateQueries({ queryKey: qk.runningJobs() });
+      qc.invalidateQueries({ queryKey: qk.engagementStatus(engagementSlug) });
     },
   });
 }
@@ -1419,7 +1438,13 @@ export function useCancelPlaybookRunMutation() {
     mutationFn: (runId: string) => cancelPlaybookRun(runId),
     onSuccess: (run) => {
       qc.invalidateQueries({ queryKey: qk.playbookRun(run.id) });
-      qc.invalidateQueries({ queryKey: ["playbook-runs", run.engagement_id] });
+      // List keys are slug-prefixed (qk.playbookRuns(slug, status)), and
+      // ``run.engagement_id`` is a UUID that never matches. Invalidate the
+      // bare prefix so the run list refreshes immediately, like approve/reject.
+      qc.invalidateQueries({ queryKey: ["playbook-runs"] });
+      qc.invalidateQueries({ queryKey: qk.decisionInbox() });
+      qc.invalidateQueries({ queryKey: qk.runningJobs() });
+      qc.invalidateQueries({ queryKey: ["engagement-status"] });
     },
   });
 }
@@ -1432,6 +1457,9 @@ export function useApprovePlaybookRunMutation() {
     onSuccess: (run) => {
       qc.invalidateQueries({ queryKey: qk.playbookRun(run.id) });
       qc.invalidateQueries({ queryKey: ["playbook-runs"] });
+      qc.invalidateQueries({ queryKey: qk.decisionInbox() });
+      qc.invalidateQueries({ queryKey: qk.runningJobs() });
+      qc.invalidateQueries({ queryKey: ["engagement-status"] });
     },
   });
 }
@@ -1444,6 +1472,9 @@ export function useRejectPlaybookRunMutation() {
     onSuccess: (run) => {
       qc.invalidateQueries({ queryKey: qk.playbookRun(run.id) });
       qc.invalidateQueries({ queryKey: ["playbook-runs"] });
+      qc.invalidateQueries({ queryKey: qk.decisionInbox() });
+      qc.invalidateQueries({ queryKey: qk.runningJobs() });
+      qc.invalidateQueries({ queryKey: ["engagement-status"] });
     },
   });
 }

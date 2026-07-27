@@ -172,6 +172,14 @@ def compute_group_key(
             return None
         return f"whois:{_apex_of(domain)}"
 
+    if tool == "dehashed":
+        email = str(data.get("email") or args.get("email") or "").strip()
+        domain = str(data.get("domain") or args.get("domain") or "").strip().lower()
+        target = email or domain
+        if not target:
+            return None
+        return f"dehashed:{target}"
+
     if tool == "reverse_dns":
         ip = str(data.get("ip") or args.get("ip") or "").strip()
         if not ip:
@@ -209,6 +217,13 @@ def compute_group_key(
             return None
         return f"wifi_networks:{lat:.1f}:{lon:.1f}"
 
+    if tool == "posture_check":
+        check = str(data.get("check") or "posture").strip().lower()
+        domain = str(data.get("domain") or args.get("domain") or "scope").strip().lower()
+        if check == "scope_hygiene":
+            return "posture:scope_hygiene:scope"
+        return f"posture:{check}:{domain}" if domain else None
+
     if tool == "httpx_probe":
         # One row per response bucket per apex — 200s under one row,
         # 4xx/5xx broken out. Lets the analyst scan the reachable
@@ -227,14 +242,13 @@ def compute_group_key(
         return f"portscan:{host}"
 
     if tool == "subnet_sweep":
-        # subnet_sweep fans out per-host findings that structurally
-        # mirror portscan's, so they SHARE the portscan group key.
-        # A per-host CIDR run then a follow-up portscan on the same
-        # host lands in one row.
+        # Per-host calls share portscan groups. A playbook sweep arrives as
+        # one aggregate candidate list and uses the CIDR as its stable group.
         host = str(data.get("host") or data.get("target") or "").strip()
-        if not host:
-            return None
-        return f"portscan:{host}"
+        if host:
+            return f"portscan:{host}"
+        cidr = str(data.get("cidr") or args.get("cidr") or "").strip()
+        return f"subnet_sweep:{cidr}" if cidr else None
 
     if tool == "service_detect":
         host = str(data.get("host") or data.get("target") or "").strip()
@@ -342,10 +356,13 @@ def extract_items(
                     "a": [v for v in (data.get("a") or []) if isinstance(v, str)],
                     "aaaa": [v for v in (data.get("aaaa") or []) if isinstance(v, str)],
                     "cname": [v for v in (data.get("cname") or []) if isinstance(v, str)],
+                    "mx": [v for v in (data.get("mx") or []) if isinstance(v, str)],
+                    "ns": [v for v in (data.get("ns") or []) if isinstance(v, str)],
+                    "txt": [v for v in (data.get("txt") or []) if isinstance(v, str)],
                 }
             ]
         items: list[dict[str, Any]] = []
-        for kind in ("a", "aaaa", "cname"):
+        for kind in ("a", "aaaa", "cname", "mx", "ns", "txt"):
             for value in data.get(kind) or []:
                 if isinstance(value, str) and value.strip():
                     items.append(
@@ -356,6 +373,10 @@ def extract_items(
                         }
                     )
         return items
+
+    if tool == "dehashed":
+        records = data.get("records") or []
+        return [dict(record) for record in records if isinstance(record, dict)]
 
     if tool == "reverse_dns":
         return [
@@ -384,6 +405,9 @@ def extract_items(
             return []
         return [dict(n) for n in nets if isinstance(n, dict) and n.get("bssid")]
 
+    if tool == "posture_check":
+        return [dict(item) for item in data.get("items") or [] if isinstance(item, dict)]
+
     if tool == "httpx_probe":
         return [
             {
@@ -396,8 +420,11 @@ def extract_items(
         ]
 
     if tool in ("portscan", "subnet_sweep"):
-        # These fan out to N per-(host, port) findings upstream — each
-        # arriving finding already carries a single port.
+        # Direct calls arrive one port at a time; playbook MCP calls preserve
+        # the full leased finding candidate list for one canonical upsert.
+        findings = data.get("findings")
+        if isinstance(findings, list):
+            return [dict(item) for item in findings if isinstance(item, dict)]
         return [
             {
                 "port": data.get("port"),
@@ -407,6 +434,9 @@ def extract_items(
         ]
 
     if tool == "service_detect":
+        findings = data.get("findings")
+        if isinstance(findings, list):
+            return [dict(item) for item in findings if isinstance(item, dict)]
         return [dict(data)]
 
     if tool == "whois_lookup":
@@ -489,6 +519,12 @@ def item_dedup_key(tool: str | None, item: Mapping[str, Any]) -> str:
         return str(item.get("subdomain") or "").lower()
     if tool == "dns_lookup":
         return f"{item.get('type')}={item.get('value')}"
+    if tool == "dehashed":
+        return str(
+            item.get("id")
+            or item.get("entity_id")
+            or f"{item.get('email')}@{item.get('database_name')}"
+        ).lower()
     if tool == "reverse_dns":
         return str(item.get("hostname") or "").lower()
     if tool == "freeipapi":
@@ -503,6 +539,11 @@ def item_dedup_key(tool: str | None, item: Mapping[str, Any]) -> str:
         # v2.24.0: BSSID uniquely identifies a wifi radio. Re-runs surface
         # the same BSSID → dedup; new BSSIDs → append.
         return str(item.get("bssid") or "").strip().lower()
+    if tool == "posture_check":
+        return str(
+            item.get("scope_item_id")
+            or f"{item.get('code')}:{item.get('target') or item.get('domain') or ''}"
+        ).lower()
     if tool == "httpx_probe":
         return str(item.get("url") or item.get("final_url") or "").lower()
     if tool in ("portscan", "subnet_sweep"):
@@ -549,6 +590,9 @@ def group_title(tool: str | None, group_key: str, data: Mapping[str, Any] | None
     if tool == "whois_lookup":
         apex = group_key.split(":", 1)[-1]
         return f"WHOIS record — {apex}"
+    if tool == "dehashed":
+        target = group_key.split(":", 1)[-1]
+        return f"DeHashed exposure records — {target}"
     if tool == "reverse_dns":
         ip = group_key.split(":", 1)[-1]
         return f"Reverse DNS — {ip}"
@@ -563,6 +607,19 @@ def group_title(tool: str | None, group_key: str, data: Mapping[str, Any] | None
         parts = group_key.split(":")
         coord = ",".join(parts[1:3]) if len(parts) >= 3 else "?"
         return f"Wifi networks near {coord}"
+    if tool == "posture_check":
+        labels = {
+            "scope_hygiene": "Scope hygiene review",
+            "dns_ownership_boundary": "DNS ownership boundary",
+            "dangling_dns_triage": "Dangling DNS triage",
+            "web_security_baseline": "Web security baseline",
+            "mail_auth_posture": "Mail authentication posture",
+            "cloud_edge_boundary": "Cloud/CDN edge boundary",
+        }
+        check = str(data.get("check") or "posture")
+        domain = str(data.get("domain") or "").strip()
+        label = labels.get(check, check.replace("_", " ").title())
+        return f"{label} — {domain}" if domain and domain != "scope" else label
     if tool == "httpx_probe":
         # httpx:<apex>:<bucket>
         parts = group_key.split(":", 2)
@@ -570,8 +627,12 @@ def group_title(tool: str | None, group_key: str, data: Mapping[str, Any] | None
         bucket = parts[2] if len(parts) > 2 else "?"
         return f"HTTP surface ({bucket}) — {apex}"
     if tool in ("portscan", "subnet_sweep"):
-        host = group_key.split(":", 1)[-1]
-        return f"Open ports — {host}"
+        target = group_key.split(":", 1)[-1]
+        return (
+            f"CIDR exposure survey — {target}"
+            if group_key.startswith("subnet_sweep:")
+            else f"Open ports — {target}"
+        )
     if tool == "service_detect":
         host = group_key.split(":", 1)[-1]
         return f"Service fingerprints — {host}"
@@ -897,6 +958,9 @@ def _representative_target(tool: str | None, group_key: str, data: Mapping[str, 
     if tool in ("subfinder", "crt_sh", "dns_lookup", "whois_lookup"):
         # The apex domain out of the group key.
         return group_key.split(":", 1)[-1]
+    if tool == "posture_check":
+        domain = str(data.get("domain") or "").strip()
+        return domain if domain and domain != "scope" else None
     if tool == "httpx_probe":
         parts = group_key.split(":", 2)
         return parts[1] if len(parts) > 1 else None

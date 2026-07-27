@@ -57,7 +57,7 @@ class ToolArgSpec(BaseModel):
     name: str = Field(min_length=1, max_length=60)
     type: Literal["string", "integer", "boolean", "enum"] = "string"
     required: bool = False
-    scope_kind: str | None = None  # 'domain' | 'ip' | 'cidr' | 'url' | None
+    scope_kind: str | None = None  # domain | ip | cidr | url | email | None
     values: list[str] = Field(default_factory=list)
     description: str | None = None
 

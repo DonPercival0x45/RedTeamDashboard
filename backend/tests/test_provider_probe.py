@@ -72,7 +72,7 @@ def test_moonshot_uses_kimi_model_list_route() -> None:
     ) as request:
         result = provider_probe.probe("moonshot", api_key="sk-kimi", endpoint=None)
     assert result.ok and result.models == ["kimi-k2-turbo-preview"]
-    assert request.call_args.args[0] == "https://api.moonshot.cn/v1/models"
+    assert request.call_args.args[0] == "https://api.kimi.com/coding/v1/models"
     assert request.call_args.kwargs["headers"]["Authorization"] == "Bearer sk-kimi"
 
 

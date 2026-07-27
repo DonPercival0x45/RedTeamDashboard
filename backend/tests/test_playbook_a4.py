@@ -25,11 +25,14 @@ from app.db.session import SessionLocal
 from app.main import app
 from app.models import (
     Engagement,
+    EngagementArchitecture,
     EngagementStatus,
     EngagementWorkState,
     PlaybookExecutorKind,
     PlaybookRun,
     PlaybookRunStatus,
+    ScopeItem,
+    ScopeKind,
     User,
     UserRole,
 )
@@ -41,11 +44,38 @@ from app.services.playbook import (
 )
 from app.services.playbook.executor import (
     MCPExecutor,
+    RoutedExecutor,
     StepResult,
     _coerce_response,
     _unwrap_content_parts,
 )
 from app.worker.playbook_worker import PlaybookWorkerThread
+
+
+class _RecordingExecutor:
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.calls: list[str] = []
+
+    def run_step(self, *, tool_slug, args_template, scope_context):
+        self.calls.append(tool_slug)
+        return StepResult(ok=True, data={"executor": self.name})
+
+
+def test_routed_executor_dispatches_each_step_by_server_affinity() -> None:
+    internal = _RecordingExecutor("internal")
+    mcp = _RecordingExecutor("mcp")
+    routed = RoutedExecutor({"internal": internal, "mcp": mcp})
+
+    assert routed.run_step(
+        tool_slug="whois", args_template={}, scope_context="example.com"
+    ).data["executor"] == "internal"
+    assert routed.run_step(
+        tool_slug="dns_lookup", args_template={}, scope_context="example.com"
+    ).data["executor"] == "mcp"
+    assert internal.calls == ["whois"]
+    assert mcp.calls == ["dns_lookup"]
+
 
 # ---------------------------------------------------------------------------
 # _coerce_response
@@ -146,7 +176,7 @@ def _prime_executor(ex: MCPExecutor, tools: list[_FakeMCPTool]) -> None:
     ex._tool_cache = {t.name: t for t in tools}  # noqa: SLF001
 
 
-def test_mcp_executor_substitutes_scope_and_returns_result() -> None:
+def test_mcp_executor_binds_validated_scope_and_returns_result() -> None:
     tool = _FakeMCPTool(
         "freeipapi",
         [{"type": "text", "text": json.dumps({"country": "US", "asn": 15169})}],
@@ -155,12 +185,30 @@ def test_mcp_executor_substitutes_scope_and_returns_result() -> None:
     _prime_executor(ex, [tool])
     result = ex.run_step(
         tool_slug="freeipapi",
-        args_template={"ip": "{{scope_item}}"},
+        args_template={"ip": "203.0.113.99"},
         scope_context="1.2.3.4",
     )
     assert result.ok is True
     assert result.data == {"country": "US", "asn": 15169}
     assert tool.calls == [{"ip": "1.2.3.4"}]
+
+
+def test_mcp_executor_maps_catalog_alias_and_binds_scope() -> None:
+    tool = _FakeMCPTool(
+        "port_scan",
+        [{"type": "text", "text": json.dumps({"open_ports": [443]})}],
+    )
+    ex = MCPExecutor(base_url="http://x/mcp/sse", api_key="tk")
+    _prime_executor(ex, [tool])
+
+    result = ex.run_step(
+        tool_slug="mcp_port_scan",
+        args_template={"target": "198.51.100.9", "ports": "80,443"},
+        scope_context="203.0.113.7",
+    )
+
+    assert result.ok is True
+    assert tool.calls == [{"target": "203.0.113.7", "ports": "80,443"}]
 
 
 def test_mcp_executor_unknown_tool_yields_failure() -> None:
@@ -220,8 +268,15 @@ def engagement(db: Session) -> Engagement:
         slug=f"a4-{uuid.uuid4().hex[:8]}",
         status=EngagementStatus.active,
         work_state=EngagementWorkState.active,
+        intelligence_architecture=EngagementArchitecture.v3,
     )
     db.add(eng)
+    db.flush()
+    # POST /playbook-runs now enforces in-scope-only; seed the IP the HTTP
+    # tests submit so they exercise the happy path.
+    db.add(
+        ScopeItem(engagement_id=eng.id, kind=ScopeKind.ip, value="1.2.3.4")
+    )
     db.flush()
     meth.load_seed_catalog(db)
     meth.select_for_engagement(
@@ -320,6 +375,21 @@ def _headers(u: User) -> dict[str, str]:
     return {"X-User-Id": u.email}
 
 
+def test_catalog_declares_server_owned_executor_affinity(
+    client: TestClient,
+    user: User,
+    enrichment_playbook,
+) -> None:
+    response = client.get("/playbooks", headers=_headers(user))
+
+    assert response.status_code == 200
+    enrichment = next(
+        item for item in response.json() if item["slug"] == "osint-enrichment"
+    )
+    assert enrichment["required_executor"] == "mcp"
+    assert enrichment["required_credentials"] == ["freeipapi", "ipinfo"]
+
+
 def test_post_accepts_executor_mcp_and_persists_it(
     db: Session,
     client: TestClient,
@@ -342,7 +412,7 @@ def test_post_accepts_executor_mcp_and_persists_it(
     assert body["status"] == PlaybookRunStatus.pending.value
 
 
-def test_post_defaults_executor_to_internal(
+def test_post_selects_catalog_required_executor_when_omitted(
     db: Session,
     client: TestClient,
     user: User,
@@ -358,7 +428,27 @@ def test_post_defaults_executor_to_internal(
         },
     )
     assert resp.status_code == 202
-    assert resp.json()["executor"] == "internal"
+    assert resp.json()["executor"] == "mcp"
+
+
+def test_post_rejects_incompatible_executor_before_queueing(
+    client: TestClient,
+    user: User,
+    engagement: Engagement,
+    enrichment_playbook,
+) -> None:
+    response = client.post(
+        f"/engagements/{engagement.slug}/playbook-runs",
+        headers=_headers(user),
+        json={
+            "playbook_slug": "osint-enrichment",
+            "scope_subset": ["1.2.3.4"],
+            "executor": "internal",
+        },
+    )
+
+    assert response.status_code == 422
+    assert "requires executor 'mcp'" in response.json()["detail"]
 
 
 def test_post_rejects_unknown_executor_422(
@@ -398,7 +488,7 @@ def test_osint_enrichment_targets_ip_asset_class(
 ) -> None:
     assert enrichment_playbook.applies_to_asset_class == "ip"
     tools = {s.tool_slug for s in enrichment_playbook.steps}
-    assert tools == {"freeipapi", "ipinfo"}
+    assert tools == {"mcp_reverse_dns", "freeipapi", "ipinfo"}
 
 
 def test_step_result_is_frozen() -> None:

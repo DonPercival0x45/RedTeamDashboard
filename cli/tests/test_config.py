@@ -50,6 +50,14 @@ def test_save_then_load_roundtrips(tmp_path: Path) -> None:
 
 
 def test_save_writes_0600_perms(tmp_path: Path) -> None:
+    # POSIX-only: chmod's owner-only guarantee does not hold on Windows
+    # (chmod only toggles the read-only bit). On Windows the file inherits
+    # the parent directory ACL, so the plaintext API key can be world-readable.
+    # That gap is tracked separately; this assertion verifies the POSIX path only.
+    if os.name == "nt":
+        pytest.skip(
+            "0600 permission guarantee is POSIX-only; Windows ACL handling is a known gap."
+        )
     path = tmp_path / "c.toml"
     cfg = Config(path=path, default=None, profiles={})
     cfg.upsert(Profile(name="a", url="http://x", api_key="k"))

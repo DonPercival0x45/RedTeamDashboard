@@ -8,12 +8,12 @@
 //
 // Polls via usePlaybookRun so status transitions land promptly.
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import {
   Dialog,
-  DialogClose,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -21,6 +21,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { QueryState } from "@/components/query-state";
 import {
   useApprovePlaybookRunMutation,
   useCancelPlaybookRunMutation,
@@ -59,12 +60,16 @@ function fieldRow(label: string, value: React.ReactNode) {
   );
 }
 
-export function RunDetailModal({
+export function RunDetailPanel({
   runId,
   onClose,
+  canWrite = true,
+  className,
 }: {
   runId: string;
   onClose: () => void;
+  canWrite?: boolean;
+  className?: string;
 }) {
   const query = usePlaybookRun(runId);
   const approve = useApprovePlaybookRunMutation();
@@ -72,7 +77,7 @@ export function RunDetailModal({
   const cancel = useCancelPlaybookRunMutation();
   const [rejectionReason, setRejectionReason] = useState("");
   const [approvalReason, setApprovalReason] = useState("");
-  const [mode, setMode] = useState<"view" | "reject">("view");
+  const [mode, setMode] = useState<"view" | "reject" | "cancel">("view");
   const [error, setError] = useState<string | null>(null);
 
   const run = query.data;
@@ -111,27 +116,42 @@ export function RunDetailModal({
 
   const doCancel = async () => {
     if (!run) return;
-    if (!confirm("Cancel this run?")) return;
     setError(null);
     try {
       await cancel.mutateAsync(run.id);
+      setMode("view");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to cancel.");
     }
   };
 
   return (
-    <Dialog open onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="max-w-xl">
-        <DialogHeader>
-          <DialogTitle>Playbook run</DialogTitle>
-        </DialogHeader>
-        {query.isLoading || !run ? (
-          <p className="text-sm text-muted-foreground flex items-center gap-2">
-            <Loader2 className="h-3 w-3 animate-spin" /> Loading run…
-          </p>
+    <div className={cn("space-y-4", className)}>
+      <div>
+        <h2 className="text-lg font-semibold leading-none tracking-tight">Manage run</h2>
+        <p className="mt-1.5 text-sm text-muted-foreground">
+          Review lifecycle, findings, targets, and any required decision.
+        </p>
+      </div>
+        {!run ? (
+          <QueryState
+            isLoading={query.isLoading}
+            error={query.error}
+            loadingLabel="Loading run…"
+            errorLabel="Could not load this playbook run."
+            onRetry={() => void query.refetch()}
+            isRetrying={query.isFetching}
+          />
         ) : (
           <div className="space-y-4">
+            <QueryState
+              isLoading={false}
+              error={query.error}
+              hasData
+              compact
+              onRetry={() => void query.refetch()}
+              isRetrying={query.isFetching}
+            />
             <div className="flex items-center gap-3">
               <Badge
                 variant="outline"
@@ -229,6 +249,13 @@ export function RunDetailModal({
                 />
               </div>
             ) : null}
+            {(run.status === "pending" || run.status === "running") &&
+            mode === "cancel" ? (
+              <p className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                Cancel this playbook run? Completed steps and persisted findings
+                remain available; unfinished steps will not run.
+              </p>
+            ) : null}
 
             {error ? (
               <p className="text-xs text-rose-600 dark:text-rose-400">
@@ -238,7 +265,7 @@ export function RunDetailModal({
           </div>
         )}
         <DialogFooter>
-          {run && run.status === "awaiting_approval" ? (
+          {run && canWrite && run.status === "awaiting_approval" ? (
             mode === "reject" ? (
               <>
                 <Button
@@ -265,11 +292,9 @@ export function RunDetailModal({
               </>
             ) : (
               <>
-                <DialogClose asChild>
-                  <Button variant="outline" size="sm">
-                    Close
-                  </Button>
-                </DialogClose>
+                <Button variant="outline" size="sm" onClick={onClose}>
+                  Close
+                </Button>
                 <Button
                   variant="destructive"
                   size="sm"
@@ -293,31 +318,92 @@ export function RunDetailModal({
               </>
             )
           ) : run &&
+            canWrite &&
             (run.status === "pending" || run.status === "running") ? (
-            <>
-              <DialogClose asChild>
-                <Button variant="outline" size="sm">
+            mode === "cancel" ? (
+              <>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setMode("view");
+                    setError(null);
+                  }}
+                >
+                  Back
+                </Button>
+                <Button
+                  autoFocus
+                  variant="destructive"
+                  size="sm"
+                  onClick={doCancel}
+                  disabled={cancel.isPending}
+                >
+                  {cancel.isPending ? (
+                    <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                  ) : null}
+                  Confirm cancel
+                </Button>
+              </>
+            ) : (
+              <>
+                <Button variant="outline" size="sm" onClick={onClose}>
                   Close
                 </Button>
-              </DialogClose>
-              <Button
-                variant="destructive"
-                size="sm"
-                onClick={doCancel}
-                disabled={cancel.isPending}
-              >
-                {cancel.isPending ? (
-                  <Loader2 className="mr-1 h-3 w-3 animate-spin" />
-                ) : null}
-                Cancel run
-              </Button>
-            </>
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={() => {
+                    setMode("cancel");
+                    setError(null);
+                  }}
+                >
+                  Cancel run
+                </Button>
+              </>
+            )
           ) : (
-            <DialogClose asChild>
-              <Button size="sm">Close</Button>
-            </DialogClose>
+            <Button size="sm" onClick={onClose}>Close</Button>
           )}
         </DialogFooter>
+    </div>
+  );
+}
+
+export function RunDetailModal({
+  runId,
+  onClose,
+  returnFocus,
+  canWrite = true,
+}: {
+  runId: string;
+  onClose: () => void;
+  returnFocus?: () => void;
+  canWrite?: boolean;
+}) {
+  const openerRef = useRef<HTMLElement | null>(
+    typeof document === "undefined"
+      ? null
+      : (document.activeElement as HTMLElement | null),
+  );
+
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent
+        className="max-w-xl"
+        onCloseAutoFocus={(event) => {
+          event.preventDefault();
+          if (returnFocus) returnFocus();
+          else openerRef.current?.focus();
+        }}
+      >
+        <DialogHeader className="sr-only">
+          <DialogTitle>Manage playbook run</DialogTitle>
+          <DialogDescription>
+            Review lifecycle, findings, targets, and any required decision.
+          </DialogDescription>
+        </DialogHeader>
+        <RunDetailPanel runId={runId} onClose={onClose} canWrite={canWrite} />
       </DialogContent>
     </Dialog>
   );

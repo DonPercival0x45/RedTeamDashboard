@@ -22,18 +22,30 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable
+from typing import Any
 
 import structlog
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.models import PlaybookExecutorKind
+from app.models import (
+    Engagement,
+    PlaybookExecutorKind,
+    PlaybookRun,
+    PlaybookRunStatus,
+)
 from app.services.playbook import (
     InternalExecutor,
+    RoutedExecutor,
     claim_next_pending,
     execute_pending_run,
 )
-from app.services.playbook.executor import MCPExecutor, PlaybookExecutor
+from app.services.playbook.executor import (
+    MCPExecutor,
+    PlaybookExecutor,
+    executor_for_tool_slug,
+    executor_kinds_for_tools,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -48,11 +60,20 @@ class PlaybookWorkerThread:
         *,
         session_factory: SessionFactory,
         poll_interval_seconds: float = 2.0,
+        redis_client: Any | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._poll = poll_interval_seconds
+        self._redis = redis_client
 
-    def _build_executor(self, kind: PlaybookExecutorKind) -> PlaybookExecutor:
+    def _build_executor(
+        self,
+        kind: PlaybookExecutorKind,
+        *,
+        lease_token: str | None = None,
+        engagement_slug: str | None = None,
+        tool_secrets: dict[str, str] | None = None,
+    ) -> PlaybookExecutor:
         """Instantiate the right executor for this run.
 
         MCPExecutor lazily opens its client on first ``run_step`` — building
@@ -65,6 +86,9 @@ class PlaybookWorkerThread:
             return MCPExecutor(
                 base_url=base_url,
                 api_key=settings.worker_mcp_api_key,
+                lease_token=lease_token,
+                engagement_slug=engagement_slug,
+                tool_secrets=tool_secrets,
             )
         return InternalExecutor()
 
@@ -113,12 +137,106 @@ class PlaybookWorkerThread:
             logger.exception("playbook_worker.execute_session_unavailable")
             return
         try:
-            executor = self._build_executor(kind)
-            execute_pending_run(
-                session,
-                run_id=_uuid.UUID(run_id_str),
-                executor=executor,
+            run_id = _uuid.UUID(run_id_str)
+            lease_id = None
+            executor: PlaybookExecutor
+            run = session.get(PlaybookRun, run_id)
+            if run is None:
+                raise RuntimeError(f"playbook run {run_id} not found")
+            engagement = session.get(Engagement, run.engagement_id)
+            if engagement is None:
+                raise RuntimeError("playbook engagement not found")
+            required_kinds = executor_kinds_for_tools(
+                step.tool_slug for step in run.playbook.steps
             )
+            delegates: dict[str, PlaybookExecutor] = {}
+            if "internal" in required_kinds:
+                from app.services.playbook.tools.breach_lookup import run_from_store
+                from app.services.playbook.tools.scope_hygiene import (
+                    run_scope_hygiene,
+                )
+
+                internal = InternalExecutor()
+                internal.register(
+                    "breach-lookup",
+                    lambda scope, args: run_from_store(
+                        session,
+                        engagement_id=engagement.id,
+                        scope_context=scope,
+                        args=args,
+                    ),
+                )
+                internal.register(
+                    "scope-hygiene",
+                    lambda scope, _args: run_scope_hygiene(
+                        session,
+                        engagement_id=engagement.id,
+                        scope_context=scope,
+                    ),
+                )
+                delegates["internal"] = internal
+
+            if "mcp" in required_kinds:
+                from app.services.mcp_lease import mint_for_engagement, release
+                from app.worker.runner import _resolve_tool_secrets
+
+                tool_slugs = []
+                for step in run.playbook.steps:
+                    if executor_for_tool_slug(step.tool_slug) != "mcp":
+                        continue
+                    tool_name = step.tool_slug.removeprefix("mcp_")
+                    if tool_name == "port_scan":
+                        tool_name = "portscan"
+                    tool_slugs.append(tool_name)
+                lease = mint_for_engagement(
+                    session,
+                    engagement_id=engagement.id,
+                    thread_id=run.id,
+                    allowed_tools=tool_slugs,
+                    context={
+                        "engagement": {"slug": engagement.slug},
+                        "acting_user_id": (
+                            str(run.requested_by) if run.requested_by else None
+                        ),
+                        "playbook_run_id": str(run.id),
+                        "playbook_approved_by": (
+                            str(run.approved_by) if run.approved_by else None
+                        ),
+                        "playbook_approved_at": (
+                            run.approved_at.isoformat() if run.approved_at else None
+                        ),
+                    },
+                    prompt_keys=[],
+                )
+                lease_id = lease.id
+                # The MCP server uses its own database session and must see the
+                # lease before the first tool invocation.
+                session.commit()
+                secrets = (
+                    _resolve_tool_secrets(self._redis, str(run.requested_by))
+                    if self._redis is not None and run.requested_by is not None
+                    else {}
+                )
+                delegates["mcp"] = self._build_executor(
+                    PlaybookExecutorKind.mcp,
+                    lease_token=str(lease.id),
+                    engagement_slug=engagement.slug,
+                    tool_secrets=secrets,
+                )
+
+            executor = (
+                next(iter(delegates.values()))
+                if len(delegates) == 1
+                else RoutedExecutor(delegates)
+            )
+
+            execute_pending_run(session, run_id=run_id, executor=executor)
+            if lease_id is not None:
+                release(
+                    session,
+                    lease_id=lease_id,
+                    reason="playbook run completed",
+                )
             session.commit()
         except Exception:
             session.rollback()
@@ -133,8 +251,6 @@ class PlaybookWorkerThread:
                 return
             try:
                 from datetime import UTC, datetime
-
-                from app.models import PlaybookRun, PlaybookRunStatus
 
                 row = s2.get(PlaybookRun, _uuid.UUID(run_id_str))
                 if row is not None and row.status is PlaybookRunStatus.running:

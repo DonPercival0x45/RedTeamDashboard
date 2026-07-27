@@ -23,10 +23,11 @@ import {
   useDeleteScopeItemMutation,
   useScope,
 } from "@/lib/hooks";
+import { ConfirmDialog } from "@/components/confirm-dialog";
 import { ScopeImporter } from "@/components/scope-importer";
-import type { ScopeKind } from "@/lib/types";
+import type { ScopeItem, ScopeKind } from "@/lib/types";
 
-const KINDS: ScopeKind[] = ["domain", "cidr", "ip", "url"];
+const KINDS: ScopeKind[] = ["domain", "cidr", "ip", "url", "email"];
 
 export function ScopeEditor({
   slug,
@@ -48,6 +49,7 @@ export function ScopeEditor({
   const [isFound, setIsFound] = useState(false);
   const [note, setNote] = useState("");
   const [localError, setLocalError] = useState<string | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<ScopeItem | null>(null);
   const error =
     localError ??
     (queryError instanceof Error
@@ -78,19 +80,19 @@ export function ScopeEditor({
     }
   };
 
-  const onDelete = async (id: string) => {
-    if (!window.confirm("Delete this scope item?")) {
-      return;
-    }
+  const onDelete = async () => {
+    if (!pendingDelete) return;
     setLocalError(null);
     try {
-      await deleteMutation.mutateAsync(id);
+      await deleteMutation.mutateAsync(pendingDelete.id);
+      setPendingDelete(null);
     } catch (err) {
       setLocalError(err instanceof Error ? err.message : String(err));
     }
   };
 
   return (
+    <>
     <Card>
       <CardHeader>
         <CardTitle>Scope</CardTitle>
@@ -160,7 +162,9 @@ export function ScopeEditor({
                     ? "10.0.0.0/24"
                     : kind === "ip"
                       ? "10.0.0.5"
-                      : "https://acme.com/login"
+                      : kind === "email"
+                        ? "analyst@acme.com"
+                        : "https://acme.com/login"
               }
               required
             />
@@ -250,8 +254,8 @@ export function ScopeEditor({
                   <Button
                     variant="ghost"
                     size="icon"
-                    onClick={() => onDelete(item.id)}
-                    aria-label="Delete scope item"
+                    onClick={() => setPendingDelete(item)}
+                    aria-label={`Delete scope item ${item.value}`}
                   >
                     <Trash2 className="h-4 w-4" />
                   </Button>
@@ -263,5 +267,26 @@ export function ScopeEditor({
         )}
       </CardContent>
     </Card>
+    <ConfirmDialog
+      open={pendingDelete !== null}
+      title="Delete scope item?"
+      description={
+        <>
+          <p>
+            <span className="font-mono text-foreground">{pendingDelete?.value}</span>{" "}
+            will be removed from scope and from eligible targets for new playbook runs.
+          </p>
+          {pendingDelete?.is_exclusion ? (
+            <p className="mt-2 text-amber-700 dark:text-amber-300">
+              This is an exclusion. Removing it may authorize targets covered by a broader include.
+            </p>
+          ) : null}
+        </>
+      }
+      busy={deleteMutation.isPending}
+      onConfirm={onDelete}
+      onOpenChange={(open) => !open && setPendingDelete(null)}
+    />
+    </>
   );
 }

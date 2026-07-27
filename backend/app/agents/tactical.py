@@ -42,6 +42,7 @@ from app.orchestrator.tools import get_tool
 from app.runs.streams import inbound_stream, run_model_key, store_run_model
 from app.services.agent_model_resolver import resolve_agent_model
 from app.services.command_outbox import enqueue_command
+from app.services.ephemeral_provider_key import resolve_for_user_with_fallback
 
 logger = structlog.get_logger(__name__)
 
@@ -208,6 +209,16 @@ class TacticalAgent:
                 provider = default_provider
         else:
             provider, model_name = default_provider_model()
+
+        # Saved role/user/process configuration is a preference, not a binding
+        # one-shot choice. Normalize it before writing any durable attribution;
+        # the worker then resolves this exact provider strictly on replay.
+        provider, model_name, credential = resolve_for_user_with_fallback(
+            self._redis,
+            user_id=acting_user_id,
+            preferred_provider=provider,
+            preferred_model=model_name,
+        )
         thread_id = uuid.uuid4()
 
         # Stage 1 of per-task MCP composition: mint a lease for this dispatch
@@ -250,6 +261,7 @@ class TacticalAgent:
                 provider=provider,
                 model_name=model_name,
                 acting_user_id=acting_user_id,
+                key_id=credential.row_id,
             )
         except Exception:  # noqa: BLE001 - durable lineage is in the command
             logger.warning(
@@ -318,7 +330,11 @@ class TacticalAgent:
             "type": "run.start",
             "thread_id": str(thread_id),
             "prompt": prompt,
-            "model": {"provider": provider, "name": model_name},
+            "model": {
+                "provider": provider,
+                "name": model_name,
+                "key_id": str(credential.row_id),
+            },
             "mcp_url": mcp_url,
             "lease_token": str(lease.id),
             # The worker resolves the BYO key off this id at run time.

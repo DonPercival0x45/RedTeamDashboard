@@ -1,29 +1,4 @@
-"""v3.0.3 — direct playbook-tool execution endpoint.
-
-The Scope-tab "Current tools" list used to drop an example prompt into
-a free-text textarea for an analyst to dispatch through the LangGraph /
-Tactical stack (LLM plan → tool dispatch → persist). v3 replaces that
-loop for the collection plane: the analyst clicks the tool button and
-we execute the tool function directly against a scope target, then
-persist the finding via the same grouping helper the playbook runner
-uses.
-
-Design:
-
-* **No LangGraph, no LLM.** This endpoint calls ``services/playbook/
-  tools/{slug}.run`` synchronously. Deterministic collection, no
-  strategist / tactical / correlate.
-* **v3-friendly.** Bypasses the C6a ``enforce_v3_playbook_only`` gate
-  because this IS the v3-native path — no LangGraph agent runs.
-* **Same finding surface.** Uses ``finding_bridge.bridge_step_to_finding``
-  so a Scope-tab click and a playbook run write to the same rows
-  (subdomains:apex, whois:apex, dns_records:apex, …) and dedup
-  cleanly across re-runs.
-* **Audit-logged.** Every tool click is one ``tool.run.direct``
-  audit_log row so the Costs / Attribution tabs can still trace who
-  ran what. No AgentExecution row (there's no agent) but the audit
-  entry carries the same actor + outcome shape.
-"""
+"""Deterministic, analyst-triggered v3 passive tool execution."""
 from __future__ import annotations
 
 import uuid
@@ -35,39 +10,36 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import CurrentNonGuestUser, DbSession
-from app.models import ActorType, AuditLog, Engagement, ScopeItem
-from app.services.playbook.executor import StepResult
-from app.services.playbook.finding_bridge import (
-    TOOL_ALIASES,
-    bridge_step_to_finding,
+from app.models import (
+    ActorType,
+    AuditLog,
+    Engagement,
+    EngagementArchitecture,
+    EngagementStatus,
+    EngagementWorkState,
+    ScopeItem,
+    ScopeKind,
 )
+from app.services.playbook.executor import StepResult
+from app.services.playbook.finding_bridge import TOOL_ALIASES, bridge_step_to_finding
+from app.services.scope_matcher import evaluate_scope_candidates, infer_scope_kind
 
 router = APIRouter()
 
+# This synchronous surface is intentionally passive-only. Adding an active or
+# destructive tool requires a durable approval/queue design, not another entry
+# here. The authenticated analyst click is the explicit authorization for these
+# passive lookups; every call is scope-checked and audit-logged.
+_DIRECT_PASSIVE_TOOLS = frozenset({"whois", "dns_inventory", "dns-inventory"})
+_TARGET_ARG_KEYS = frozenset({"domain", "target", "host", "hostname", "ip", "url"})
+
 
 class ToolRunRequest(BaseModel):
-    """Body for a direct tool click. All fields optional.
-
-    * ``scope`` — target the tool runs against (a domain, IP, or URL).
-      When omitted, the endpoint picks the engagement's first in-scope
-      (non-exclusion) item. Explicit values must be in-scope; the
-      matcher accepts the raw string against ScopeItem.value for the
-      engagement.
-    * ``args`` — extra kwargs to hand the tool (e.g. ``{"nameservers":
-      ["8.8.8.8"]}`` for dns_inventory). The tool's ``run(scope, args)``
-      contract accepts arbitrary dict; unknown keys are ignored by the
-      tool.
-    """
-
     scope: str | None = Field(default=None, max_length=500)
     args: dict[str, Any] = Field(default_factory=dict)
 
 
 class ToolRunResponse(BaseModel):
-    """One-shot direct execution result. Mirrors StepResult + adds the
-    finding_id the bridge minted so the frontend can navigate directly
-    to the row."""
-
     ok: bool
     tool: str
     scope: str
@@ -80,68 +52,95 @@ class ToolRunResponse(BaseModel):
 
 
 def _load_tool(slug: str):
-    """Import the playbook tool module for ``slug``. Returns its ``run``
-    callable. 404 if the slug isn't a registered playbook tool."""
-    # Only tools with a bridge alias are exposed on this endpoint. That
-    # keeps the surface honest — a tool without a grouping vocab entry
-    # would run but drop its output on the floor.
-    if slug not in TOOL_ALIASES:
+    if slug not in TOOL_ALIASES or slug not in _DIRECT_PASSIVE_TOOLS:
         raise HTTPException(
             status_code=404,
-            detail=(
-                f"tool '{slug}' is not a bridgeable playbook tool. "
-                f"Known: {sorted(TOOL_ALIASES.keys())}"
-            ),
+            detail=f"passive direct tool {slug!r} is not available",
         )
+    module_slug = slug.replace("-", "_")
     try:
         module = __import__(
-            f"app.services.playbook.tools.{slug}", fromlist=["run"]
+            f"app.services.playbook.tools.{module_slug}", fromlist=["run"]
         )
     except ImportError as exc:
         raise HTTPException(
-            status_code=404, detail=f"tool module '{slug}' not importable: {exc}"
+            status_code=404, detail=f"tool module {module_slug!r} not importable"
         ) from exc
     fn = getattr(module, "run", None)
-    if fn is None or not callable(fn):
-        raise HTTPException(
-            status_code=500,
-            detail=f"tool '{slug}' module has no run() callable",
-        )
+    if not callable(fn):
+        raise HTTPException(status_code=500, detail=f"tool {slug!r} has no run()")
     return fn
 
 
-def _default_scope(session: Session, engagement_id: uuid.UUID) -> str | None:
-    row = session.execute(
-        select(ScopeItem)
-        .where(
-            ScopeItem.engagement_id == engagement_id,
-            ScopeItem.is_exclusion.is_(False),
-        )
-        .order_by(ScopeItem.created_at)
-        .limit(1)
-    ).scalar_one_or_none()
-    return row.value if row is not None else None
+def _scope_items(session: Session, engagement_id: uuid.UUID) -> list[ScopeItem]:
+    return list(
+        session.execute(
+            select(ScopeItem)
+            .where(ScopeItem.engagement_id == engagement_id)
+            .order_by(ScopeItem.created_at)
+        ).scalars()
+    )
 
 
-def _validate_scope_in_bounds(
-    session: Session, engagement_id: uuid.UUID, scope: str
-) -> None:
-    """Best-effort in-scope check. Rejects ONLY when the value matches an
-    explicit exclusion — permissive on the include side so the analyst
-    can experiment with subdomains they haven't yet added.
-    """
-    hit = session.execute(
-        select(ScopeItem).where(
-            ScopeItem.engagement_id == engagement_id,
-            ScopeItem.is_exclusion.is_(True),
-            ScopeItem.value == scope,
+def _resolve_scope(
+    session: Session,
+    engagement_id: uuid.UUID,
+    requested: str | None,
+) -> str:
+    items = _scope_items(session, engagement_id)
+    value = (requested or "").strip()
+    if not value:
+        first = next(
+            (
+                item.value
+                for item in items
+                if not item.is_exclusion and item.kind == ScopeKind.domain
+            ),
+            None,
         )
-    ).scalar_one_or_none()
-    if hit is not None:
+        value = str(first or "").strip()
+    if not value:
         raise HTTPException(
-            status_code=400,
-            detail=f"'{scope}' is on the engagement's exclusion list",
+            status_code=422,
+            detail="Add an in-scope target before running a tool.",
         )
+    kind = infer_scope_kind(value)
+    if kind != ScopeKind.domain:
+        raise HTTPException(
+            status_code=422,
+            detail="WHOIS and DNS direct tools require an in-scope domain target.",
+        )
+    decision = evaluate_scope_candidates([(value, kind)], items)
+    if not decision.allowed:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Target {value!r} is not authorized by engagement scope "
+                f"({decision.reason}). Add it to Scope first."
+            ),
+        )
+    return value
+
+
+def _safe_tool_args(scope: str, supplied: dict[str, Any]) -> dict[str, Any]:
+    args = dict(supplied or {})
+    conflicts = [
+        key
+        for key in _TARGET_ARG_KEYS
+        if key in args and str(args[key]).strip() not in {"", scope}
+    ]
+    if conflicts:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Tool target arguments must match the validated scope target. "
+                f"Conflicting keys: {', '.join(sorted(conflicts))}."
+            ),
+        )
+    # The bridgeable direct tools are domain-shaped. Validated scope is always
+    # authoritative, preventing args.domain from smuggling another target.
+    args["domain"] = scope
+    return args
 
 
 @router.post(
@@ -156,60 +155,47 @@ def run_tool_direct(
     session: DbSession,
     user: CurrentNonGuestUser,
 ) -> ToolRunResponse:
-    """Execute a playbook tool once against ``body.scope`` and persist
-    its output as a Finding. Deterministic, LLM-free, agent-free.
-
-    * 404 if the engagement doesn't exist or the tool isn't a
-      bridgeable playbook tool.
-    * 400 if the target scope resolves to nothing (no default in-scope
-      item to fall back to) or hits an explicit exclusion.
-    * 200 with the StepResult + finding_id otherwise. ``ok=False``
-      inside a 200 means the tool ran but reported a functional failure
-      (e.g. NXDOMAIN) — same shape the playbook runner uses.
-    """
     engagement = session.execute(
         select(Engagement).where(Engagement.slug == slug)
     ).scalar_one_or_none()
     if engagement is None:
-        raise HTTPException(status_code=404, detail=f"engagement '{slug}' not found")
+        raise HTTPException(status_code=404, detail=f"engagement {slug!r} not found")
+    if engagement.intelligence_architecture != EngagementArchitecture.v3:
+        raise HTTPException(status_code=409, detail="direct tools require a v3 engagement")
+    if (
+        engagement.status != EngagementStatus.active
+        or engagement.work_state == EngagementWorkState.completed
+    ):
+        raise HTTPException(status_code=409, detail="engagement is read-only")
 
     tool_fn = _load_tool(tool_slug)
+    scope = _resolve_scope(session, engagement.id, body.scope)
+    tool_args = _safe_tool_args(scope, body.args)
+    operation_id = uuid.uuid4()
 
-    scope = (body.scope or "").strip() or _default_scope(session, engagement.id)
-    if not scope:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "no target scope provided and engagement has no default "
-                "in-scope item — add one on the Scope tab first"
-            ),
-        )
-    _validate_scope_in_bounds(session, engagement.id, scope)
-
-    # Execute the tool. Exceptions become StepResult(ok=False) — same
-    # contract the playbook runner uses in _run_one.
     try:
-        result: StepResult = tool_fn(scope, body.args or {})
-    except Exception as exc:  # noqa: BLE001 - untrusted tool code
-        result = StepResult(
-            ok=False, error=f"{type(exc).__name__}: {exc}"
+        result: StepResult = tool_fn(scope, tool_args)
+    except Exception as exc:  # noqa: BLE001 - tool code is untrusted
+        result = StepResult(ok=False, error=f"{type(exc).__name__}: {exc}")
+
+    bridge = None
+    if result.ok and not getattr(result, "stub", False):
+        bridge = bridge_step_to_finding(
+            session,
+            engagement_id=engagement.id,
+            playbook_tool=tool_slug,
+            scope_item=scope,
+            args_template=tool_args,
+            data=result.data,
+            thread_id=None,
+            acting_user_id=user.id,
+            operation_id=operation_id,
+            source="tool.run.direct",
         )
 
-    finding_id: uuid.UUID | None = None
-    if result.ok and not getattr(result, "stub", False):
-        try:
-            finding_id = bridge_step_to_finding(
-                session,
-                engagement_id=engagement.id,
-                playbook_tool=tool_slug,
-                scope_item=scope,
-                args_template={"domain": scope, **(body.args or {})},
-                data=result.data,
-                thread_id=None,
-            )
-        except Exception:  # noqa: BLE001 - bridge is best-effort
-            finding_id = None
-
+    finding_id = bridge.finding_id if bridge else None
+    findings_new = bridge.items_added if bridge else 0
+    findings_total = bridge.items_total if bridge else 0
     session.add(
         AuditLog(
             engagement_id=engagement.id,
@@ -217,11 +203,12 @@ def run_tool_direct(
             actor_id=str(user.id),
             event_type="tool.run.direct",
             payload={
+                "operation_id": str(operation_id),
                 "tool_slug": tool_slug,
                 "scope": scope,
                 "ok": bool(result.ok),
-                "findings_new": int(result.findings_new),
-                "findings_total": int(result.findings_total),
+                "findings_new": findings_new,
+                "findings_total": findings_total,
                 "stub": bool(getattr(result, "stub", False)),
                 "finding_id": str(finding_id) if finding_id else None,
                 "error": result.error,
@@ -234,8 +221,8 @@ def run_tool_direct(
         ok=bool(result.ok),
         tool=tool_slug,
         scope=scope,
-        findings_new=int(result.findings_new),
-        findings_total=int(result.findings_total),
+        findings_new=findings_new,
+        findings_total=findings_total,
         finding_id=finding_id,
         stub=bool(getattr(result, "stub", False)),
         error=result.error,

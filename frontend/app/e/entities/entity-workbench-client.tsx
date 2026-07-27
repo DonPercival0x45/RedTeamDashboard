@@ -1,19 +1,42 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { ArrowLeft, Boxes, Clipboard, Network, RefreshCcw, ShieldCheck } from "lucide-react";
+import {
+  ArrowLeft,
+  Ban,
+  Boxes,
+  Clipboard,
+  ListPlus,
+  Loader2,
+  Network,
+  RefreshCcw,
+  ShieldCheck,
+} from "lucide-react";
 import { DateTime } from "@/components/date-time";
+import { QueryState } from "@/components/query-state";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { CopyJsonButton } from "@/components/copy-json-button";
 import {
+  deleteScopeItem,
+  importScope,
   listEntities,
   listFindings,
   listScope,
   listStoredEntities,
   listTasks,
 } from "@/lib/api";
+import { scopeActionState, scopeTargetForEntity } from "@/lib/entity-scope";
+import { useMe } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
 import type { Entity, Finding, ScopeItem, Severity, StoredEntity, Task } from "@/lib/types";
 
@@ -79,6 +102,8 @@ const ACTIONS: Record<string, ToolAction[]> = {
 
 export function EntityWorkbenchPage() {
   const params = useSearchParams();
+  const { data: me } = useMe();
+  const canWrite = Boolean(me && me.role !== "guest");
   const slug = params.get("slug") ?? "";
   const type = params.get("type") ?? "";
   const value = params.get("value") ?? "";
@@ -95,10 +120,26 @@ export function EntityWorkbenchPage() {
   const [tasks, setTasks] = useState<Task[] | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [fetchError, setFetchError] = useState<string | null>(null);
+  const [loadComplete, setLoadComplete] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [scopeSaving, setScopeSaving] = useState(false);
+  const [scopeMessage, setScopeMessage] = useState<string | null>(null);
+  const [scopeError, setScopeError] = useState<string | null>(null);
+  const loadedSlugRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!slug) return;
+    if (loadedSlugRef.current !== slug) {
+      loadedSlugRef.current = slug;
+      setEntities(null);
+      setStored(null);
+      setFindings(null);
+      setScope(null);
+      setTasks(null);
+      setLoadComplete(false);
+    }
     setFetchError(null);
+    setIsRefreshing(true);
     let active = true;
     Promise.allSettled([
       listEntities(slug),
@@ -109,12 +150,19 @@ export function EntityWorkbenchPage() {
     ]).then(([e, s, f, sc, t]) => {
       if (!active) return;
       const errs: string[] = [];
-      setEntities(pick(e, errs, "entities"));
-      setStored(pick(s, errs, "imports"));
-      setFindings(pick(f, errs, "findings"));
-      setScope(pick(sc, errs, "scope"));
-      setTasks(pick(t, errs, "tasks"));
+      if (e.status === "fulfilled") setEntities(e.value);
+      else errs.push("entities");
+      if (s.status === "fulfilled") setStored(s.value);
+      else errs.push("imports");
+      if (f.status === "fulfilled") setFindings(f.value);
+      else errs.push("findings");
+      if (sc.status === "fulfilled") setScope(sc.value);
+      else errs.push("scope");
+      if (t.status === "fulfilled") setTasks(t.value);
+      else errs.push("tasks");
       setFetchError(errs.length ? `Failed to load: ${errs.join(", ")}` : null);
+      setLoadComplete(true);
+      setIsRefreshing(false);
     });
     return () => {
       active = false;
@@ -124,32 +172,99 @@ export function EntityWorkbenchPage() {
   const refresh = useCallback(() => setRefreshKey((k) => k + 1), []);
 
   const entity = useMemo(
-    () => (entities ?? []).find((e) => e.type === type && e.value === value) ?? null,
+    () =>
+      (entities ?? []).find((candidate) =>
+        sameEntityIdentity(candidate.type, candidate.value, type, value),
+      ) ?? null,
     [entities, type, value],
   );
   const storedMatches = useMemo(
-    () => (stored ?? []).filter((e) => e.type === type && e.value === value),
+    () =>
+      (stored ?? []).filter((candidate) =>
+        sameEntityIdentity(candidate.type, candidate.value, type, value),
+      ),
     [stored, type, value],
   );
   const relatedFindings = useMemo(
-    () => relatedForEntity(value, entity, storedMatches, findings ?? []),
-    [entity, findings, storedMatches, value],
+    () => relatedForEntity(type, value, entity, storedMatches, findings ?? []),
+    [entity, findings, storedMatches, type, value],
   );
   const relatedTasks = useMemo(
-    () => (tasks ?? []).filter((t) => taskTouchesEntity(t, value)),
-    [tasks, value],
+    () => (tasks ?? []).filter((task) => taskTouchesEntity(task, type, value)),
+    [tasks, type, value],
   );
   const scopeMatches = useMemo(
-    () => (scope ?? []).filter((s) => scopeMatchesValue(s, value)),
-    [scope, value],
+    () =>
+      (scope ?? []).filter((item) => scopeMatchesEntity(item, type, value)),
+    [scope, type, value],
   );
   const actionCount = (ACTIONS[type] ?? []).length;
+  const scopeTarget = scopeTargetForEntity({ type, value });
+  const {
+    rules: exactRules,
+    exactIncludes,
+    exactExclusions,
+    canAdd,
+    canExclude,
+    isIncluded,
+  } = scopeActionState(
+    { type, value, scope_status: entity?.scope_status ?? "oos" },
+    scope ?? [],
+  );
+
+  const assignScope = async (disposition: "include" | "exclude") => {
+    if (!canWrite || !scopeTarget || scopeSaving) return;
+    setScopeSaving(true);
+    setScopeError(null);
+    setScopeMessage(null);
+    try {
+      const result = await importScope(
+        slug,
+        `${disposition === "exclude" ? "!" : ""}${value}`,
+        "found",
+      );
+      if (result.errors.length > 0) {
+        throw new Error(result.errors.map((item) => item.reason).join("; "));
+      }
+      setScopeMessage(
+        disposition === "include"
+          ? "Entity added to scope."
+          : "Entity excluded from scope.",
+      );
+      refresh();
+    } catch (err) {
+      setScopeError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setScopeSaving(false);
+    }
+  };
+
+  const removeRules = async (items: ScopeItem[]) => {
+    if (!canWrite || items.length === 0 || scopeSaving) return;
+    setScopeSaving(true);
+    setScopeError(null);
+    setScopeMessage(null);
+    try {
+      await Promise.all(items.map((item) => deleteScopeItem(slug, item.id)));
+      setScopeMessage(
+        `${items.length} exact scope ${items.length === 1 ? "rule" : "rules"} removed.`,
+      );
+      refresh();
+    } catch (err) {
+      setScopeError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setScopeSaving(false);
+    }
+  };
 
   if (!slug || !type || !value) {
     return <p className="px-6 py-10 text-sm text-destructive">Missing entity route parameters.</p>;
   }
 
-  const loading = entities === null || findings === null;
+  const loading = !loadComplete;
+  const hasAnyData = [entities, stored, findings, scope, tasks].some(
+    (value) => value !== null,
+  );
 
   return (
     <div className="mx-auto max-w-7xl px-4 py-6">
@@ -180,6 +295,97 @@ export function EntityWorkbenchPage() {
         <p className="mt-2 text-sm text-muted-foreground">
           Entity workbench: provenance, related findings, scope status, and next actions.
         </p>
+
+        <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-border pt-4">
+          <span className="mr-auto text-xs text-muted-foreground">
+            {scopeTarget
+              ? exactExclusions.length > 0
+                ? "Explicitly excluded"
+                : entity?.scope_status === "live"
+                  ? "Currently in scope"
+                  : entity?.scope_status === "legacy"
+                    ? "Legacy scope reference"
+                    : "Currently out of scope"
+              : `${TYPE_LABEL[type] ?? type} entities cannot be scope targets`}
+          </span>
+          {scopeTarget && canWrite ? (
+            exactExclusions.length > 0 ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => void removeRules(exactExclusions)}
+                disabled={scopeSaving}
+              >
+                Remove exclusion
+              </Button>
+            ) : exactIncludes.length > 0 ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => void removeRules(exactIncludes)}
+                disabled={scopeSaving}
+              >
+                Remove from scope
+              </Button>
+            ) : (
+              <>
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => void assignScope("include")}
+                  disabled={!canAdd || scopeSaving}
+                  title={isIncluded ? "Already included by current scope." : undefined}
+                >
+                  {scopeSaving ? (
+                    <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <ListPlus className="mr-1.5 h-3.5 w-3.5" />
+                  )}
+                  {isIncluded ? "In scope" : "Add to scope"}
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => void assignScope("exclude")}
+                  disabled={!canExclude || scopeSaving}
+                >
+                  <Ban className="mr-1.5 h-3.5 w-3.5" />
+                  Exclude
+                </Button>
+              </>
+            )
+          ) : !canWrite ? (
+            <Badge variant="outline">Read-only</Badge>
+          ) : null}
+        </div>
+
+        {exactRules.length > 0 && (
+          <div className="mt-3 space-y-2 rounded-md border border-border bg-background/60 p-3 text-xs">
+            {exactIncludes.length > 0 && (
+              <div className="flex items-center justify-between gap-3">
+                <span>In scope · {exactIncludes.length} exact {exactIncludes.length === 1 ? "rule" : "rules"}</span>
+              </div>
+            )}
+            {exactExclusions.length > 0 && (
+              <div className="flex items-center justify-between gap-3">
+                <span>Excluded · {exactExclusions.length} exact {exactExclusions.length === 1 ? "rule" : "rules"}</span>
+              </div>
+            )}
+          </div>
+        )}
+        {scopeMessage && (
+          <p className="mt-3 text-xs text-emerald-700 dark:text-emerald-300" role="status">
+            {scopeMessage}
+          </p>
+        )}
+        {scopeError && (
+          <p className="mt-3 text-xs text-destructive" role="alert">
+            {scopeError}
+          </p>
+        )}
       </header>
 
       <section className="mt-5 overflow-hidden rounded-lg border border-border bg-card/40">
@@ -195,14 +401,25 @@ export function EntityWorkbenchPage() {
         </div>
 
         <div className="p-4">
-          {fetchError && (
-            <p className="mb-3 rounded-md border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-700 dark:text-rose-200">
-              {fetchError}
-            </p>
-          )}
+          {fetchError ? (
+            <QueryState
+              isLoading={false}
+              error={new Error(fetchError)}
+              hasData={hasAnyData}
+              compact={hasAnyData}
+              errorLabel="Some entity context could not be refreshed."
+              onRetry={refresh}
+              isRetrying={isRefreshing}
+            />
+          ) : null}
           {loading ? (
-            <p className="text-sm text-muted-foreground">Loading entity context…</p>
-          ) : tab === "overview" ? (
+            <QueryState
+              isLoading
+              error={null}
+              hasData={false}
+              loadingLabel="Loading entity context…"
+            />
+          ) : !hasAnyData ? null : tab === "overview" ? (
             <OverviewPanel entity={entity} value={value} scopeMatches={scopeMatches} storedMatches={storedMatches} relatedFindings={relatedFindings} relatedTasks={relatedTasks} slug={slug} />
           ) : tab === "findings" ? (
             <FindingsPanel findings={relatedFindings} slug={slug} />
@@ -393,32 +610,189 @@ function ActionHistory({ tasks, slug }: { tasks: Task[]; slug: string }) {
   );
 }
 
-function pick<T>(
-  r: PromiseSettledResult<T[]>,
-  errs: string[],
-  label: string,
-): T[] {
-  if (r.status === "fulfilled") return r.value;
-  errs.push(label);
-  return [];
+function normalizeIdentityType(type: string): string {
+  const aliases: Record<string, string> = {
+    fqdn: "domain",
+    hostname: "host",
+    email_address: "email",
+    mailbox: "email",
+    ip_address: "ip",
+    ipv4: "ip",
+    ipv6: "ip",
+    network: "cidr",
+    netblock: "cidr",
+    uri: "url",
+    website: "url",
+  };
+  const raw = type.trim().toLowerCase();
+  return aliases[raw] ?? raw;
 }
 
-function relatedForEntity(value: string, entity: Entity | null, storedMatches: StoredEntity[], findings: Finding[]) {
-  const ids = new Set([
+function normalizeIp(value: string): string {
+  if (value.includes(":")) {
+    try {
+      const hostname = new URL(`http://[${value}]/`).hostname;
+      return hostname.slice(1, -1);
+    } catch {
+      return value;
+    }
+  }
+  const octets = value.split(".");
+  if (
+    octets.length === 4 &&
+    octets.every((octet) => /^\d+$/.test(octet) && Number(octet) <= 255)
+  ) {
+    return octets.map((octet) => String(Number(octet))).join(".");
+  }
+  return value;
+}
+
+function normalizeCidr(value: string): string {
+  const [address, prefixText, ...rest] = value.split("/");
+  const prefix = Number(prefixText);
+  if (rest.length || !Number.isInteger(prefix)) return value;
+  const normalizedAddress = normalizeIp(address);
+  if (!normalizedAddress.includes(":")) {
+    if (prefix < 0 || prefix > 32) return value;
+    const octets = normalizedAddress.split(".").map(Number);
+    if (octets.length !== 4 || octets.some(Number.isNaN)) return value;
+    const numeric =
+      (((octets[0] << 24) >>> 0) +
+        (octets[1] << 16) +
+        (octets[2] << 8) +
+        octets[3]) >>>
+      0;
+    const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
+    const network = (numeric & mask) >>> 0;
+    return `${[
+      network >>> 24,
+      (network >>> 16) & 255,
+      (network >>> 8) & 255,
+      network & 255,
+    ].join(".")}/${prefix}`;
+  }
+  return prefix >= 0 && prefix <= 128
+    ? `${normalizedAddress}/${prefix}`
+    : value;
+}
+
+export function normalizeIdentityValue(type: string, value: string): string {
+  const kind = normalizeIdentityType(type);
+  const trimmed = value.trim();
+  if (["domain", "subdomain", "host"].includes(kind)) {
+    return trimmed.toLowerCase().replace(/\.$/, "");
+  }
+  if (kind === "email") {
+    const separator = trimmed.lastIndexOf("@");
+    if (separator <= 0 || separator === trimmed.length - 1) return trimmed;
+    return `${trimmed.slice(0, separator)}@${trimmed
+      .slice(separator + 1)
+      .toLowerCase()
+      .replace(/\.$/, "")}`;
+  }
+  if (kind === "url") {
+    try {
+      const parsed = new URL(trimmed);
+      if (!["http:", "https:"].includes(parsed.protocol) || parsed.username) {
+        return trimmed;
+      }
+      parsed.hostname = parsed.hostname.toLowerCase().replace(/\.$/, "");
+      parsed.hash = "";
+      return parsed.toString();
+    } catch {
+      return trimmed;
+    }
+  }
+  if (["hash", "md5", "sha1", "sha256", "sha512"].includes(kind)) {
+    return /^[0-9a-f]+$/i.test(trimmed) && [32, 40, 64, 128].includes(trimmed.length)
+      ? trimmed.toLowerCase()
+      : trimmed;
+  }
+  if (kind === "asn") {
+    const match = /^(?:AS)?0*(\d+)$/i.exec(trimmed);
+    return match ? `AS${Number(match[1])}` : trimmed;
+  }
+  if (kind === "ip") return normalizeIp(trimmed.toLowerCase());
+  if (kind === "cidr") return normalizeCidr(trimmed.toLowerCase());
+  return trimmed;
+}
+
+export function sameEntityIdentity(
+  leftType: string,
+  leftValue: string,
+  rightType: string,
+  rightValue: string,
+): boolean {
+  return (
+    normalizeIdentityType(leftType) === normalizeIdentityType(rightType) &&
+    normalizeIdentityValue(leftType, leftValue) ===
+      normalizeIdentityValue(rightType, rightValue)
+  );
+}
+
+function relatedForEntity(
+  type: string,
+  value: string,
+  entity: Entity | null,
+  storedMatches: StoredEntity[],
+  findings: Finding[],
+): Finding[] {
+  const authoritativeIds = new Set([
     ...(entity?.findings ?? []).map((finding) => finding.id),
-    ...storedMatches.flatMap((stored) => stored.finding_refs.map((finding) => finding.id)),
+    ...storedMatches.flatMap((stored) =>
+      stored.finding_refs.map((finding) => finding.id),
+    ),
   ]);
-  const lower = value.toLowerCase();
-  return findings.filter((f) => ids.has(f.id) || JSON.stringify({ target: f.target, title: f.title, summary: f.summary, data: f.data }).toLowerCase().includes(lower));
+  return findings.filter(
+    (finding) =>
+      authoritativeIds.has(finding.id) ||
+      (finding.target != null &&
+        normalizeIdentityValue(type, finding.target) ===
+          normalizeIdentityValue(type, value)),
+  );
 }
 
-function taskTouchesEntity(task: Task, value: string): boolean {
-  const lower = value.toLowerCase();
-  return JSON.stringify(task.payload).toLowerCase().includes(lower) || task.title.toLowerCase().includes(lower);
+function taskTouchesEntity(task: Task, type: string, value: string): boolean {
+  const wanted = normalizeIdentityValue(type, value);
+  const candidateKeys = new Set([
+    "target",
+    "scope_item",
+    "domain",
+    "hostname",
+    "host",
+    "ip",
+    "cidr",
+    "url",
+    "email",
+  ]);
+  const visit = (candidate: unknown): boolean => {
+    if (!candidate || typeof candidate !== "object") return false;
+    return Object.entries(candidate).some(([key, nested]) => {
+      if (candidateKeys.has(key) && typeof nested === "string") {
+        return normalizeIdentityValue(type, nested) === wanted;
+      }
+      return key === "args" && visit(nested);
+    });
+  };
+  return visit(task.payload);
 }
 
-function scopeMatchesValue(scope: ScopeItem, value: string): boolean {
-  const a = scope.value.toLowerCase();
-  const b = value.toLowerCase();
-  return a === b || a.includes(b) || b.includes(a);
+function scopeMatchesEntity(
+  scope: ScopeItem,
+  entityType: string,
+  entityValue: string,
+): boolean {
+  const scopeType = String(scope.kind);
+  const scopeValue = normalizeIdentityValue(scopeType, scope.value).replace(
+    /^\*\./,
+    "",
+  );
+  const value = normalizeIdentityValue(entityType, entityValue);
+  if (
+    scopeType === "domain" &&
+    ["domain", "subdomain", "host"].includes(entityType)
+  ) {
+    return value === scopeValue || value.endsWith(`.${scopeValue}`);
+  }
+  return sameEntityIdentity(scopeType, scopeValue, entityType, value);
 }

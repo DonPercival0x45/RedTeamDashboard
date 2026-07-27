@@ -23,10 +23,14 @@ from sqlalchemy.orm import Session
 from app.main import app
 from app.models import (
     Engagement,
+    EngagementArchitecture,
     EngagementStatus,
     EngagementWorkState,
+    Entity,
     PlaybookRun,
     PlaybookRunStatus,
+    ScopeItem,
+    ScopeKind,
     User,
     UserRole,
 )
@@ -78,6 +82,52 @@ def test_executor_dispatches_by_slug() -> None:
     assert calls == [{"scope": "foo.com", "args": {"domain": "foo.com"}}]
 
 
+def test_executor_builtin_target_cannot_override_validated_scope() -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_whois(scope: str, args: dict[str, Any]) -> StepResult:
+        calls.append({"scope": scope, "args": args})
+        return StepResult(ok=True)
+
+    ex = InternalExecutor(registry={"whois": fake_whois})
+    result = ex.run_step(
+        tool_slug="whois",
+        args_template={"domain": "other.example", "timeout": 5},
+        scope_context="foo.example",
+    )
+
+    assert result.ok is True
+    assert calls == [
+        {
+            "scope": "foo.example",
+            "args": {"domain": "foo.example", "timeout": 5},
+        }
+    ]
+
+
+def test_executor_binds_email_breach_lookup_to_validated_mailbox() -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_lookup(scope: str, args: dict[str, Any]) -> StepResult:
+        calls.append({"scope": scope, "args": args})
+        return StepResult(ok=True, stub=True)
+
+    ex = InternalExecutor(registry={"breach-lookup": fake_lookup})
+    result = ex.run_step(
+        tool_slug="breach-lookup",
+        args_template={"email": "redirect@example.net"},
+        scope_context="Analyst@example.com",
+    )
+
+    assert result.ok is True
+    assert calls == [
+        {
+            "scope": "Analyst@example.com",
+            "args": {"email": "Analyst@example.com"},
+        }
+    ]
+
+
 def test_executor_register_replaces_tool() -> None:
     ex = InternalExecutor(registry={"a": lambda *_: StepResult(ok=False, error="old")})
     ex.register("a", lambda *_: StepResult(ok=True, findings_total=1))
@@ -122,6 +172,50 @@ def test_stub_tools_return_success_with_note(tool_module) -> None:
     assert "stub" in (result.data.get("note") or "").lower()
 
 
+def test_dehashed_imported_evidence_drives_exact_email_lookup(
+    db: Session, engagement: Engagement
+) -> None:
+    db.add_all(
+        [
+            Entity(
+                engagement_id=engagement.id,
+                type="breach_record",
+                value="Analyst@example.com@Example breach",
+                properties={
+                    "email": "Analyst@example.com",
+                    "database_name": "Example breach",
+                },
+                source_tool="darkweb_import",
+                source_attribution="dehashed.json",
+            ),
+            Entity(
+                engagement_id=engagement.id,
+                type="breach_record",
+                value="other@example.com@Other breach",
+                properties={
+                    "email": "other@example.com",
+                    "database_name": "Other breach",
+                },
+                source_tool="darkweb_import",
+                source_attribution="dehashed.json",
+            ),
+        ]
+    )
+    db.commit()
+
+    result = breach_lookup.run_from_store(
+        db,
+        engagement_id=engagement.id,
+        scope_context="Analyst@example.com",
+        args={"email": "Analyst@example.com"},
+    )
+
+    assert result.ok is True
+    assert result.stub is False
+    assert result.findings_total == 1
+    assert result.data["records"][0]["database_name"] == "Example breach"
+
+
 # ---------------------------------------------------------------------------
 # Real tools — behavior via monkeypatch (no live network in tests)
 # ---------------------------------------------------------------------------
@@ -145,6 +239,7 @@ def test_dns_inventory_counts_answers(monkeypatch: pytest.MonkeyPatch) -> None:
             table = {
                 "A": ["1.2.3.4"],
                 "AAAA": ["2001:db8::1"],
+                "CNAME": ["alias.foo.com."],
                 "MX": ["10 mail.foo.com."],
                 "TXT": ["v=spf1 -all"],
                 "NS": ["ns1.foo.com.", "ns2.foo.com."],
@@ -158,8 +253,8 @@ def test_dns_inventory_counts_answers(monkeypatch: pytest.MonkeyPatch) -> None:
 
     result = dns_inventory.run("foo.com", {"domain": "foo.com"})
     assert result.ok is True
-    # 1 A + 1 AAAA + 1 MX + 1 TXT + 2 NS = 6.
-    assert result.findings_total == 6
+    # 1 A + 1 AAAA + 1 CNAME + 1 MX + 1 TXT + 2 NS = 7.
+    assert result.findings_total == 7
     assert result.data["records"]["A"] == ["1.2.3.4"]
 
 
@@ -272,8 +367,17 @@ def engagement(db: Session) -> Engagement:
         slug=f"a3b-{uuid.uuid4().hex[:8]}",
         status=EngagementStatus.active,
         work_state=EngagementWorkState.active,
+        intelligence_architecture=EngagementArchitecture.v3,
     )
     db.add(eng)
+    db.commit()
+    # POST /playbook-runs now enforces the in-scope-only invariant; seed the
+    # target the HTTP tests use so they exercise the happy path.
+    db.add(
+        ScopeItem(
+            engagement_id=eng.id, kind=ScopeKind.domain, value="foo.example"
+        )
+    )
     db.commit()
     meth.load_seed_catalog(db)
     meth.select_for_engagement(
@@ -296,7 +400,34 @@ def test_list_playbooks_installs_seeds_on_first_call(
     resp = client.get("/playbooks", headers=_headers(user))
     assert resp.status_code == 200
     slugs = {p["slug"] for p in resp.json()}
-    assert {"osint-passive-domain", "ptes-passive-recon"} <= slugs
+    assert {
+        "osint-passive-domain",
+        "ptes-passive-recon",
+        "email-exposure-triage",
+        "domain-web-surface",
+        "host-service-validation",
+        "cidr-exposure-survey",
+        "mail-dns-posture",
+    } <= slugs
+
+
+def test_new_operational_playbooks_declare_safe_execution_paths(
+    client: TestClient, user: User
+) -> None:
+    response = client.get("/playbooks", headers=_headers(user))
+    assert response.status_code == 200, response.text
+    by_slug = {item["slug"]: item for item in response.json()}
+
+    assert by_slug["domain-web-surface"]["required_executor"] == "mcp"
+    assert by_slug["domain-web-surface"]["active"] is False
+    assert by_slug["host-service-validation"]["required_executor"] == "mcp"
+    assert by_slug["host-service-validation"]["active"] is True
+    assert by_slug["cidr-exposure-survey"]["active"] is True
+    assert by_slug["osint-enrichment"]["version"] == 2
+    assert by_slug["osint-enrichment"]["required_credentials"] == [
+        "freeipapi",
+        "ipinfo",
+    ]
 
 
 def test_get_playbook_detail_returns_steps(
@@ -361,6 +492,89 @@ def test_create_playbook_run_guest_blocked(
     assert resp.status_code == 403
 
 
+def test_create_playbook_run_rejects_legacy_or_archived_engagement(
+    db: Session, client: TestClient, user: User, engagement: Engagement
+) -> None:
+    load_seed_playbooks(db)
+    engagement.intelligence_architecture = EngagementArchitecture.legacy
+    db.commit()
+    legacy = client.post(
+        f"/engagements/{engagement.slug}/playbook-runs",
+        headers=_headers(user),
+        json={"playbook_slug": "osint-passive-domain", "scope_subset": ["foo.example"]},
+    )
+    assert legacy.status_code == 409
+
+    engagement.intelligence_architecture = EngagementArchitecture.v3
+    engagement.status = EngagementStatus.archived
+    db.commit()
+    archived = client.post(
+        f"/engagements/{engagement.slug}/playbook-runs",
+        headers=_headers(user),
+        json={"playbook_slug": "osint-passive-domain", "scope_subset": ["foo.example"]},
+    )
+    assert archived.status_code == 409
+
+
+def test_create_playbook_run_rejects_incompatible_scope_kind(
+    db: Session, client: TestClient, user: User, engagement: Engagement
+) -> None:
+    load_seed_playbooks(db)
+    db.add(
+        ScopeItem(
+            engagement_id=engagement.id,
+            kind=ScopeKind.ip,
+            value="203.0.113.10",
+        )
+    )
+    db.commit()
+    response = client.post(
+        f"/engagements/{engagement.slug}/playbook-runs",
+        headers=_headers(user),
+        json={
+            "playbook_slug": "osint-passive-domain",
+            "scope_subset": ["203.0.113.10"],
+        },
+    )
+    assert response.status_code == 422
+    assert "incompatible" in response.text
+
+
+def test_create_email_playbook_run_requires_exact_email_scope(
+    db: Session, client: TestClient, user: User, engagement: Engagement
+) -> None:
+    load_seed_playbooks(db)
+    db.add(
+        ScopeItem(
+            engagement_id=engagement.id,
+            kind=ScopeKind.email,
+            value="Analyst@example.com",
+        )
+    )
+    db.commit()
+
+    accepted = client.post(
+        f"/engagements/{engagement.slug}/playbook-runs",
+        headers=_headers(user),
+        json={
+            "playbook_slug": "email-exposure-triage",
+            "scope_subset": ["Analyst@EXAMPLE.COM"],
+        },
+    )
+    wrong_mailbox = client.post(
+        f"/engagements/{engagement.slug}/playbook-runs",
+        headers=_headers(user),
+        json={
+            "playbook_slug": "email-exposure-triage",
+            "scope_subset": ["analyst@example.com"],
+        },
+    )
+
+    assert accepted.status_code == 202, accepted.text
+    assert accepted.json()["steps_total"] == 1
+    assert wrong_mailbox.status_code == 422
+
+
 def test_create_playbook_run_unknown_playbook_404(
     db: Session, client: TestClient, user: User, engagement: Engagement
 ) -> None:
@@ -370,6 +584,99 @@ def test_create_playbook_run_unknown_playbook_404(
         json={"playbook_slug": "never", "scope_subset": ["x"]},
     )
     assert resp.status_code == 404
+
+
+def test_create_playbook_run_rejects_out_of_scope_target(
+    db: Session, client: TestClient, user: User, engagement: Engagement
+) -> None:
+    """Complaint 4b — arbitrary/out-of-scope targets must not be queued."""
+    load_seed_playbooks(db)
+    db.commit()
+    resp = client.post(
+        f"/engagements/{engagement.slug}/playbook-runs",
+        headers=_headers(user),
+        json={"playbook_slug": "osint-passive-domain", "scope_subset": ["other.example"]},
+    )
+    assert resp.status_code == 422
+    assert "other.example" in resp.text
+
+
+def test_create_playbook_run_allows_in_scope_subdomain(
+    db: Session, client: TestClient, user: User, engagement: Engagement
+) -> None:
+    """A subdomain of a declared domain include is in scope."""
+    load_seed_playbooks(db)
+    db.commit()
+    resp = client.post(
+        f"/engagements/{engagement.slug}/playbook-runs",
+        headers=_headers(user),
+        json={"playbook_slug": "osint-passive-domain", "scope_subset": ["api.foo.example"]},
+    )
+    assert resp.status_code == 202, resp.text
+
+
+def test_create_playbook_run_rejects_excluded_target(
+    db: Session, client: TestClient, user: User, engagement: Engagement
+) -> None:
+    """An exclusion wins even when it also matches an include."""
+    load_seed_playbooks(db)
+    db.add(
+        ScopeItem(
+            engagement_id=engagement.id,
+            kind=ScopeKind.domain,
+            value="secret.foo.example",
+            is_exclusion=True,
+        )
+    )
+    db.commit()
+    resp = client.post(
+        f"/engagements/{engagement.slug}/playbook-runs",
+        headers=_headers(user),
+        json={"playbook_slug": "osint-passive-domain", "scope_subset": ["secret.foo.example"]},
+    )
+    assert resp.status_code == 422
+    assert "secret.foo.example" in resp.text
+
+
+def test_deleted_scope_item_is_not_a_new_playbook_target(
+    db: Session, client: TestClient, user: User, engagement: Engagement
+) -> None:
+    load_seed_playbooks(db)
+    scope_item = db.execute(
+        select(ScopeItem).where(
+            ScopeItem.engagement_id == engagement.id,
+            ScopeItem.value == "foo.example",
+        )
+    ).scalar_one()
+    deleted = client.delete(
+        f"/engagements/{engagement.slug}/scope/{scope_item.id}",
+        headers=_headers(user),
+    )
+    assert deleted.status_code == 204, deleted.text
+
+    response = client.post(
+        f"/engagements/{engagement.slug}/playbook-runs",
+        headers=_headers(user),
+        json={
+            "playbook_slug": "osint-passive-domain",
+            "scope_subset": ["foo.example"],
+        },
+    )
+    assert response.status_code == 422
+    assert "foo.example" in response.text
+
+
+def test_create_playbook_run_rejects_empty_scope_subset(
+    db: Session, client: TestClient, user: User, engagement: Engagement
+) -> None:
+    load_seed_playbooks(db)
+    db.commit()
+    resp = client.post(
+        f"/engagements/{engagement.slug}/playbook-runs",
+        headers=_headers(user),
+        json={"playbook_slug": "osint-passive-domain", "scope_subset": []},
+    )
+    assert resp.status_code == 422
 
 
 def test_list_and_get_playbook_run_round_trip(

@@ -86,12 +86,15 @@ async def _extract_findings_via_llm(
     from pydantic import BaseModel, Field
 
     from app.agents.strategic import _make_chat_model
-    from app.orchestrator.llm import default_provider_model
-    from app.services.ephemeral_provider_key import resolve_for_user
+    from app.services.agent_model_resolver import resolve_user_row_model_with_default
+    from app.services.ephemeral_provider_key import resolve_for_user_with_fallback
 
-    provider, model_name = default_provider_model()
-    resolved = resolve_for_user(
-        redis, user_id=invoker.id, provider=provider
+    provider, model_name = resolve_user_row_model_with_default(invoker)
+    provider, model_name, resolved = resolve_for_user_with_fallback(
+        redis,
+        user_id=invoker.id,
+        preferred_provider=provider,
+        preferred_model=model_name,
     )
     chat = _make_chat_model(
         provider, model_name, api_key=resolved.api_key, endpoint=resolved.endpoint

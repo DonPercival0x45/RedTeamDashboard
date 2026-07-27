@@ -52,6 +52,8 @@ from app.worker.outbox_relay import CommandOutboxRelay
 from app.worker.runner import RunRunner
 from app.worker.strategic_consumer import StrategicConsumer
 
+pytestmark = pytest.mark.usefixtures("stub_tactical_provider_key")
+
 HDR = {"X-User-Id": "durability@example.com"}
 
 

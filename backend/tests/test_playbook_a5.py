@@ -31,11 +31,14 @@ from app.main import app
 from app.models import (
     CommandOutbox,
     Engagement,
+    EngagementArchitecture,
     EngagementStatus,
     EngagementWorkState,
     Playbook,
     PlaybookRun,
     PlaybookRunStatus,
+    ScopeItem,
+    ScopeKind,
     User,
     UserRole,
 )
@@ -76,8 +79,15 @@ def engagement(db: Session) -> Engagement:
         slug=f"a5-{uuid.uuid4().hex[:8]}",
         status=EngagementStatus.active,
         work_state=EngagementWorkState.active,
+        intelligence_architecture=EngagementArchitecture.v3,
     )
     db.add(eng)
+    db.flush()
+    # POST /playbook-runs enforces in-scope-only; seed the target the HTTP
+    # tests submit.
+    db.add(
+        ScopeItem(engagement_id=eng.id, kind=ScopeKind.domain, value="foo.com")
+    )
     db.flush()
     meth.load_seed_catalog(db)
     meth.select_for_engagement(

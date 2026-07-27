@@ -58,8 +58,8 @@ const STEPS: Step[] = [
   },
   {
     title: "Follow the run into Findings",
-    description: "Status explains what happened and whether findings were produced.",
-    detail: "Open the live run panel or Status tab, inspect its steps, then follow the finding count back to the Findings table.",
+    description: "Runs explains what happened and whether findings were produced.",
+    detail: "Open the Runs view, inspect its steps, then follow the finding count back to the Findings table.",
     href: "/",
     action: "Open dashboard",
     icon: ListChecks,

@@ -25,6 +25,7 @@ from app.services import ephemeral_provider_key as keys
 from app.services.ephemeral_provider_key import (
     NoProviderKeyError,
     resolve_for_user,
+    resolve_for_user_with_fallback,
 )
 from app.worker.runner import RunRunner
 
@@ -68,6 +69,7 @@ def _seed(
     endpoint: str | None = None,
     name: str | None = None,
     kind: str = "model_provider",
+    models: list[str] | None = None,
 ) -> dict[str, Any]:
     entry = {
         "id": str(uuid.uuid4()),
@@ -76,7 +78,7 @@ def _seed(
         "name": name or f"{provider}-{uuid.uuid4().hex[:6]}",
         "provider": provider,
         "is_local": is_local,
-        "models": [],
+        "models": models or [],
         "endpoint": endpoint,
         "api_key": api_key,
         "key_last4": (api_key[-4:] if api_key else None),
@@ -122,6 +124,186 @@ def test_resolver_no_row_raises(
     user = _make_user(db)
     with pytest.raises(NoProviderKeyError):
         resolve_for_user(redis_client, user_id=user.id, provider="anthropic")
+
+
+def test_fallback_resolver_preserves_preferred_provider_and_model(
+    db: Session, redis_client: redis_lib.Redis
+) -> None:
+    user = _make_user(db)
+    _seed(redis_client, user, provider="anthropic", api_key="sk-ant")
+    provider, model, resolved = resolve_for_user_with_fallback(
+        redis_client,
+        user_id=user.id,
+        preferred_provider="anthropic",
+        preferred_model="claude-custom",
+    )
+    assert (provider, model) == ("anthropic", "claude-custom")
+    assert resolved.api_key == "sk-ant"
+
+
+def test_fallback_resolver_uses_mru_provider_model(
+    db: Session, redis_client: redis_lib.Redis
+) -> None:
+    user = _make_user(db)
+    _seed(
+        redis_client,
+        user,
+        provider="openai",
+        api_key="sk-openai",
+        models=["gpt-user-selected"],
+    )
+    provider, model, resolved = resolve_for_user_with_fallback(
+        redis_client,
+        user_id=user.id,
+        preferred_provider="anthropic",
+        preferred_model="claude-custom",
+    )
+    assert (provider, model) == ("openai", "gpt-user-selected")
+    assert resolved.api_key == "sk-openai"
+
+
+def test_fallback_resolver_supports_local_provider(
+    db: Session, redis_client: redis_lib.Redis
+) -> None:
+    user = _make_user(db)
+    _seed(
+        redis_client,
+        user,
+        provider="ollama",
+        api_key=None,
+        is_local=True,
+        endpoint="http://localhost:11434",
+        models=["qwen-local"],
+    )
+    provider, model, resolved = resolve_for_user_with_fallback(
+        redis_client,
+        user_id=user.id,
+        preferred_provider="anthropic",
+        preferred_model="claude-custom",
+    )
+    assert (provider, model) == ("ollama", "qwen-local")
+    assert resolved.is_local is True
+    assert resolved.endpoint == "http://localhost:11434"
+
+
+def test_fallback_resolver_without_any_key_raises(
+    db: Session, redis_client: redis_lib.Redis
+) -> None:
+    user = _make_user(db)
+    with pytest.raises(NoProviderKeyError):
+        resolve_for_user_with_fallback(
+            redis_client,
+            user_id=user.id,
+            preferred_provider="anthropic",
+            preferred_model="claude-custom",
+        )
+
+
+def test_fallback_resolver_accepts_routable_custom_provider(
+    db: Session, redis_client: redis_lib.Redis
+) -> None:
+    user = _make_user(db)
+    _seed(
+        redis_client,
+        user,
+        provider="custom",
+        api_key="custom-key",
+        endpoint="https://custom.test/v1",
+        models=["custom-model"],
+    )
+
+    provider, model, resolved = resolve_for_user_with_fallback(
+        redis_client,
+        user_id=user.id,
+        preferred_provider="anthropic",
+        preferred_model="claude-custom",
+    )
+
+    assert (provider, model) == ("custom", "custom-model")
+    assert resolved.endpoint == "https://custom.test/v1"
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "models"),
+    [(None, ["custom-model"]), ("https://custom.test/v1", [])],
+)
+def test_fallback_resolver_rejects_incomplete_custom_provider(
+    db: Session,
+    redis_client: redis_lib.Redis,
+    endpoint: str | None,
+    models: list[str],
+) -> None:
+    user = _make_user(db)
+    _seed(
+        redis_client,
+        user,
+        provider="custom",
+        api_key="custom-key",
+        endpoint=endpoint,
+        models=models,
+    )
+    with pytest.raises(NoProviderKeyError):
+        resolve_for_user_with_fallback(
+            redis_client,
+            user_id=user.id,
+            preferred_provider="anthropic",
+            preferred_model="claude-custom",
+        )
+
+
+def test_fallback_resolver_rejects_unsupported_provider_slug(
+    db: Session, redis_client: redis_lib.Redis
+) -> None:
+    user = _make_user(db)
+    _seed(
+        redis_client,
+        user,
+        provider="custom-compatible",
+        api_key="custom-key",
+        endpoint="https://custom.test/v1",
+        models=["custom-model"],
+    )
+    with pytest.raises(NoProviderKeyError):
+        resolve_for_user_with_fallback(
+            redis_client,
+            user_id=user.id,
+            preferred_provider="anthropic",
+            preferred_model="claude-custom",
+        )
+
+
+def test_fallback_ignores_newer_unroutable_custom_provider(
+    db: Session, redis_client: redis_lib.Redis
+) -> None:
+    user = _make_user(db)
+    _seed(
+        redis_client,
+        user,
+        provider="openai",
+        api_key="sk-openai",
+        models=["gpt-4o-mini"],
+    )
+    _seed(
+        redis_client,
+        user,
+        provider="custom-compatible",
+        api_key="custom-key",
+        endpoint="https://custom.test/v1",
+        models=["custom-model"],
+    )
+
+    provider, model, resolved = resolve_for_user_with_fallback(
+        redis_client,
+        user_id=user.id,
+        preferred_provider="anthropic",
+        preferred_model="claude-custom",
+    )
+
+    assert (provider, model, resolved.api_key) == (
+        "openai",
+        "gpt-4o-mini",
+        "sk-openai",
+    )
 
 
 def test_resolver_picks_most_recent_when_multiple(
@@ -249,6 +431,52 @@ def test_runner_threads_user_key_into_graph_factory(
             "endpoint": None,
         }
     ]
+
+
+def test_runner_honors_explicit_non_mru_key_id(
+    db: Session, redis_client: redis_lib.Redis
+) -> None:
+    user = _make_user(db)
+    selected = _seed(
+        redis_client,
+        user,
+        provider="openai",
+        api_key="sk-selected-old",
+        name="selected",
+    )
+    _seed(
+        redis_client,
+        user,
+        provider="openai",
+        api_key="sk-new-mru",
+        name="new-mru",
+    )
+    factory = _CapturingFactory()
+    runner = RunRunner(
+        graph_factory=factory,
+        redis_client=redis_client,
+        session_factory=SessionLocal,
+    )
+
+    runner._resolve_graph(
+        {
+            "type": "run.start",
+            "thread_id": "explicit-key",
+            "model": {
+                "provider": "openai",
+                "name": "gpt-4o-mini",
+                "key_id": selected["id"],
+            },
+            "acting_user_id": str(user.id),
+        }
+    )
+
+    assert factory.calls[0] == {
+        "provider": "openai",
+        "name": "gpt-4o-mini",
+        "api_key": "sk-selected-old",
+        "endpoint": None,
+    }
 
 
 def test_runner_envelope_without_acting_user_raises(

@@ -1025,7 +1025,7 @@ export function StrategyView({
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h3 className="text-sm font-semibold">Work queue</h3>
-            <p className="text-xs text-muted-foreground">Committed analyst and agent-assisted coordination work. Tactical Tasks remain in Status.</p>
+            <p className="text-xs text-muted-foreground">Committed analyst and agent-assisted coordination work. Tactical Tasks remain in Runs.</p>
           </div>
           <div className="flex gap-2">
             <Input value={workQuery} onChange={(event) => setWorkQuery(event.target.value)} placeholder="Filter work" className="h-8 w-40 text-xs" />
@@ -1470,7 +1470,7 @@ function ResumeSection({ resume, slug }: { resume: ResumeBriefing; slug: string 
   const strategyRequired = Boolean(resume.current_focus.strategy_required);
   return (
     <section className="rounded-lg border border-sky-500/30 bg-sky-500/5 p-4">
-      <div className="flex items-center justify-between gap-3"><div><h3 className="text-sm font-semibold">Resume engagement</h3><p className="text-xs text-muted-foreground">Deterministic briefing · <DateTime value={resume.generated_at} /></p></div><Link href={`/e?slug=${encodeURIComponent(slug)}&view=status`} className="text-xs hover:underline">Open execution Status →</Link></div>
+      <div className="flex items-center justify-between gap-3"><div><h3 className="text-sm font-semibold">Resume engagement</h3><p className="text-xs text-muted-foreground">Deterministic briefing · <DateTime value={resume.generated_at} /></p></div><Link href={`/e?slug=${encodeURIComponent(slug)}&view=status`} className="text-xs hover:underline">Open Runs →</Link></div>
       {strategyRequired ? (
         <p className="mt-3 rounded border border-dashed border-sky-500/30 p-3 text-sm text-muted-foreground">Resume briefing is intentionally limited until an initial strategy is accepted.</p>
       ) : (

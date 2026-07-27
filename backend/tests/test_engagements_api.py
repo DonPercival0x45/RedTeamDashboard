@@ -585,6 +585,31 @@ def test_create_and_list_scope_items(
     assert values == {"acme.com", "10.0.0.0/24"}
     # v1.4.13: items created without a source default to "defined".
     assert {r["source"] for r in rows} == {"defined"}
+    assert all(r["is_effectively_in_scope"] for r in rows)
+
+
+def test_scope_listing_marks_includes_overridden_by_exclusions(
+    client: TestClient, cleanup_slugs: list[str]
+) -> None:
+    eng = _create(client, "Effective scope holder")
+    cleanup_slugs.append(eng["slug"])
+    for body in (
+        {"kind": "domain", "value": "app.acme.com"},
+        {"kind": "domain", "value": "acme.com", "is_exclusion": True},
+    ):
+        response = client.post(
+            f"/engagements/{eng['slug']}/scope",
+            json=body,
+            headers=_headers(),
+        )
+        assert response.status_code == 201, response.text
+
+    rows = client.get(
+        f"/engagements/{eng['slug']}/scope", headers=_headers()
+    ).json()
+    by_value = {row["value"]: row for row in rows}
+    assert by_value["app.acme.com"]["is_effectively_in_scope"] is False
+    assert by_value["acme.com"]["is_effectively_in_scope"] is False
 
 
 def test_scope_item_source_found_round_trips(
@@ -617,6 +642,32 @@ def test_scope_item_source_found_round_trips(
         headers=_headers(),
     )
     assert bad.status_code == 422
+
+
+def test_scope_import_preserves_found_provenance_and_deduplicates(
+    client: TestClient, cleanup_slugs: list[str]
+) -> None:
+    eng = _create(client, "Bulk discovered scope")
+    cleanup_slugs.append(eng["slug"])
+    body = {"text": "api.acme.com\n!old.acme.com", "source": "found"}
+
+    first = client.post(
+        f"/engagements/{eng['slug']}/scope/import",
+        json=body,
+        headers=_headers(),
+    )
+    second = client.post(
+        f"/engagements/{eng['slug']}/scope/import",
+        json=body,
+        headers=_headers(),
+    )
+
+    assert first.status_code == 200, first.text
+    assert len(first.json()["created"]) == 2
+    assert {item["source"] for item in first.json()["created"]} == {"found"}
+    assert second.status_code == 200, second.text
+    assert second.json()["created"] == []
+    assert len(second.json()["duplicates"]) == 2
 
 
 def test_engagement_read_carries_scope_counts(
@@ -1035,13 +1086,12 @@ def test_run_endpoint_defaults_model_when_body_omits(
     cleanup_slugs: list[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Body without model => response + envelope echo the settings default."""
-    # Pin the default to ollama so the seeded ollama key satisfies the
-    # BYO-key precheck regardless of host env (CI sets LLM_PROVIDER=ollama
-    # already; local hosts often don't). The "echo the settings default"
-    # semantic still holds — the assertions read settings.llm_provider.
-    monkeypatch.setattr(settings, "llm_provider", "ollama")
-    _seed_provider_key(client)
+    """An implicit unavailable default falls back before durable enqueue."""
+    # The process preference is Anthropic, but this analyst has only a local
+    # Ollama key. Saved/process configuration is soft; the response, cache, and
+    # durable envelope must all identify what will actually run.
+    monkeypatch.setattr(settings, "llm_provider", "anthropic")
+    _seed_provider_key(client, provider="ollama")
     eng = _create(client, "Default model")
     cleanup_slugs.append(eng["slug"])
 
@@ -1052,8 +1102,9 @@ def test_run_endpoint_defaults_model_when_body_omits(
     )
     assert response.status_code == 202, response.text
     body = response.json()
-    assert body["model"]["provider"] == settings.llm_provider
-    assert body["model"]["name"]  # non-empty
+    assert body["model"]["provider"] == "ollama"
+    assert body["model"]["name"] == "llama3.1:8b"
+    assert body["model"]["key_id"]
 
     queued = redis_client.xrange(inbound_stream(uuid.UUID(eng["id"])))
     payload = json.loads(queued[-1][1]["data"])
@@ -1061,6 +1112,11 @@ def test_run_endpoint_defaults_model_when_body_omits(
     # that matter, not exact-dict equality.
     assert payload["model"]["provider"] == body["model"]["provider"]
     assert payload["model"]["name"] == body["model"]["name"]
+    assert payload["model"]["key_id"] == body["model"]["key_id"]
+    cached = redis_client.hgetall(f"run:model:{body['thread_id']}")
+    assert cached["provider"] == "ollama"
+    assert cached["name"] == "llama3.1:8b"
+    assert cached["key_id"] == body["model"]["key_id"]
 
 
 def test_run_endpoint_passes_through_explicit_model(
@@ -1084,12 +1140,14 @@ def test_run_endpoint_passes_through_explicit_model(
     # v1.4.12: model now carries an optional key_id; compare fields.
     assert body["model"]["provider"] == chosen["provider"]
     assert body["model"]["name"] == chosen["name"]
+    assert body["model"]["key_id"]
 
     payload = json.loads(
         redis_client.xrange(inbound_stream(uuid.UUID(eng["id"])))[-1][1]["data"]
     )
     assert payload["model"]["provider"] == chosen["provider"]
     assert payload["model"]["name"] == chosen["name"]
+    assert payload["model"]["key_id"] == body["model"]["key_id"]
 
     cached = redis_client.hgetall(f"run:model:{body['thread_id']}")
     # The cache hash also stores acting_user_id so the approval-resume
@@ -1097,7 +1155,70 @@ def test_run_endpoint_passes_through_explicit_model(
     # only, not exact equality.
     assert cached["provider"] == chosen["provider"]
     assert cached["name"] == chosen["name"]
+    assert cached["key_id"] == body["model"]["key_id"]
     assert "acting_user_id" in cached
+
+
+def test_run_endpoint_keeps_explicit_key_id_in_durable_envelope(
+    client: TestClient,
+    redis_client: redis_lib.Redis,
+    cleanup_slugs: list[str],
+) -> None:
+    first = client.post(
+        "/me/provider-keys",
+        headers=_headers(),
+        json={
+            "name": f"openai-first-{uuid.uuid4().hex[:6]}",
+            "provider": "openai",
+            "kind": "model_provider",
+            "api_key": "sk-first-explicit",
+            "models": ["gpt-4o-mini"],
+        },
+    )
+    assert first.status_code == 201, first.text
+    second = client.post(
+        "/me/provider-keys",
+        headers=_headers(),
+        json={
+            "name": f"openai-second-{uuid.uuid4().hex[:6]}",
+            "provider": "openai",
+            "kind": "model_provider",
+            "api_key": "sk-second-mru",
+            "models": ["gpt-4o-mini"],
+        },
+    )
+    assert second.status_code == 201, second.text
+    chosen_key_id = first.json()["id"]
+    eng = _create(client, "Explicit provider key")
+    cleanup_slugs.append(eng["slug"])
+
+    response = client.post(
+        f"/engagements/{eng['slug']}/runs",
+        headers=_headers(),
+        json={
+            "prompt": "go",
+            "model": {
+                "provider": "openai",
+                "name": "gpt-4o-mini",
+                "key_id": chosen_key_id,
+            },
+        },
+    )
+
+    assert response.status_code == 202, response.text
+    assert response.json()["model"]["key_id"] == chosen_key_id
+    payload = json.loads(
+        redis_client.xrange(inbound_stream(uuid.UUID(eng["id"])))[-1][1]["data"]
+    )
+    assert payload["model"] == {
+        "provider": "openai",
+        "name": "gpt-4o-mini",
+        "key_id": chosen_key_id,
+    }
+    cached = redis_client.hgetall(
+        f"run:model:{response.json()['thread_id']}"
+    )
+    assert cached["key_id"] == chosen_key_id
 
 
 def test_run_endpoint_rejects_when_no_user_provider_key(

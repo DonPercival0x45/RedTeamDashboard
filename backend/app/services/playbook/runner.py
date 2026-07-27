@@ -33,6 +33,9 @@ from app.models import (
     CoverageNodeTier,
     CoverageRecordStatus,
     Engagement,
+    EngagementArchitecture,
+    EngagementStatus,
+    EngagementWorkState,
     Playbook,
     PlaybookExecutorKind,
     PlaybookRun,
@@ -42,7 +45,13 @@ from app.runs.streams import outbound_stream
 from app.services import coverage as cov
 from app.services import methodology as meth
 from app.services.command_outbox import enqueue_event
-from app.services.playbook.executor import PlaybookExecutor, StepResult
+from app.services.playbook.executor import (
+    InternalExecutor,
+    MCPExecutor,
+    PlaybookExecutor,
+    RoutedExecutor,
+    StepResult,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -155,6 +164,13 @@ class RunNotAwaitingApprovalError(Exception):
         )
 
 
+def _locked_run(session: Session, run_id: uuid.UUID) -> PlaybookRun | None:
+    """Serialize analyst lifecycle transitions for one playbook run."""
+    return session.execute(
+        select(PlaybookRun).where(PlaybookRun.id == run_id).with_for_update()
+    ).scalar_one_or_none()
+
+
 def approve_run(
     session: Session,
     *,
@@ -173,7 +189,7 @@ def approve_run(
     a second call finds the row already pending and no-ops. Terminal /
     running / already-cancelled → ``RunNotAwaitingApprovalError`` (409).
     """
-    run = session.get(PlaybookRun, run_id)
+    run = _locked_run(session, run_id)
     if run is None:
         raise KeyError(str(run_id))
     if run.status is PlaybookRunStatus.pending and run.approved_by is not None:
@@ -211,7 +227,7 @@ def reject_run(
     existing idempotency contract; terminal-but-not-cancelled →
     ``RunNotAwaitingApprovalError``.
     """
-    run = session.get(PlaybookRun, run_id)
+    run = _locked_run(session, run_id)
     if run is None:
         raise KeyError(str(run_id))
     if run.status is PlaybookRunStatus.cancelled and run.rejected_by is not None:
@@ -248,12 +264,17 @@ def cancel_run(
     Idempotent for the (pending/running) → cancelled transition: a second
     call on an already-cancelled run is a no-op.
     """
-    run = session.get(PlaybookRun, run_id)
+    run = _locked_run(session, run_id)
     if run is None:
         raise KeyError(str(run_id))
     if run.status is PlaybookRunStatus.cancelled:
         return run
-    if run.status in TERMINAL_STATUSES:
+    if run.status not in {
+        PlaybookRunStatus.pending,
+        PlaybookRunStatus.running,
+    }:
+        # awaiting_approval must go through reject_run so the analyst identity
+        # and required rejection reason are preserved in the audit trail.
         raise RunNotCancellableError(run_id, run.status)
     ts = _now(now)
     run.status = PlaybookRunStatus.cancelled
@@ -367,6 +388,16 @@ def execute_pending_run(
         run.last_error = "playbook or engagement missing"
         session.flush()
         return run
+    if (
+        engagement.intelligence_architecture != EngagementArchitecture.v3
+        or engagement.status != EngagementStatus.active
+        or engagement.work_state == EngagementWorkState.completed
+    ):
+        run.status = PlaybookRunStatus.failed
+        run.completed_at = _now(now)
+        run.last_error = "engagement is no longer an active writable v3 engagement"
+        session.flush()
+        return run
 
     started = run.started_at or _now(now)
     effective_actor_type, effective_actor_id = _effective_actor(
@@ -386,8 +417,15 @@ def execute_pending_run(
     from sqlalchemy import text as _text
 
     cancelled_mid = False
+    halted_on_error = False
+    discovered_domains: set[str] = set()
     for step in playbook.steps:
-        for scope_item in run.scope_subset:
+        target_source = (step.args_template or {}).get("__target_source")
+        step_targets = [str(item) for item in run.scope_subset]
+        if target_source == "discovered_domains":
+            step_targets = sorted({*step_targets, *discovered_domains})
+            run.steps_total += max(0, len(step_targets) - len(run.scope_subset))
+        for scope_item in step_targets:
             # Fresh read of status — a cancel_run committed from another
             # session flips the row and this loop must see it promptly.
             # Uses raw text so we bypass ORM caching + enum-coercion paths
@@ -400,7 +438,7 @@ def execute_pending_run(
                 run.status = PlaybookRunStatus.cancelled
                 cancelled_mid = True
                 break
-            _run_one(
+            result = _run_one(
                 session,
                 engagement=engagement,
                 playbook=playbook,
@@ -414,7 +452,18 @@ def execute_pending_run(
                 actor_type=effective_actor_type,
                 actor_id=effective_actor_id,
             )
-        if cancelled_mid:
+            if result.ok:
+                discovered_domains.update(
+                    _authorized_discovered_domains(
+                        session,
+                        engagement=engagement,
+                        result=result,
+                    )
+                )
+            elif (step.args_template or {}).get("__on_error") == "stop":
+                halted_on_error = True
+                break
+        if cancelled_mid or halted_on_error:
             break
 
     if cancelled_mid:
@@ -494,16 +543,21 @@ def _run_one(
     now: datetime,
     actor_type: ActorType,
     actor_id: str | None,
-) -> None:
+) -> StepResult:
     """Invoke one step against one scope item and write coverage records.
 
     Executor exceptions become ``StepResult(ok=False, error=...)`` — a
     thrown tool is a failed step, not a broken run. The tests exercise this.
     """
+    execution_args = {
+        key: value
+        for key, value in step_args_template.items()
+        if not str(key).startswith("__")
+    }
     try:
         result = executor.run_step(
             tool_slug=step_tool_slug,
-            args_template=step_args_template,
+            args_template=execution_args,
             scope_context=scope_item,
         )
     except Exception as exc:  # noqa: BLE001 - executor is untrusted; convert to step failure
@@ -515,42 +569,58 @@ def _run_one(
             scope_item=scope_item,
         )
 
+    # Every supported real playbook tool persists through the same canonical
+    # bridge, regardless of transport. MCP lease calls return raw data to this
+    # worker; they must not create a parallel server-owned finding path.
+    bridge = None
+    if result.ok and not getattr(result, "stub", False):
+        from app.services.playbook.finding_bridge import (
+            FindingBridgePersistenceError,
+            bridge_step_to_finding,
+        )
+
+        try:
+            actor_uuid = uuid.UUID(actor_id) if actor_id else None
+        except (ValueError, TypeError):
+            actor_uuid = None
+        try:
+            bridge = bridge_step_to_finding(
+                session,
+                engagement_id=engagement.id,
+                playbook_tool=step_tool_slug,
+                scope_item=scope_item,
+                args_template=execution_args,
+                data=result.data,
+                thread_id=run.id,
+                acting_user_id=actor_uuid,
+                operation_id=run.id,
+            )
+        except FindingBridgePersistenceError as exc:
+            result = StepResult(ok=False, error=str(exc))
+    if bridge is not None:
+        run.findings_new += bridge.items_added
+        # Multiple tools can enrich the same canonical group in one run.
+        # Count the group's latest total once, then only its growth.
+        seen_totals: dict[uuid.UUID, int] = getattr(
+            run, "_bridge_finding_totals", {}
+        )
+        previous = seen_totals.get(bridge.finding_id, 0)
+        run.findings_total += max(bridge.items_total - previous, 0)
+        seen_totals[bridge.finding_id] = max(previous, bridge.items_total)
+        run._bridge_finding_totals = seen_totals  # type: ignore[attr-defined]
+    elif not isinstance(executor, (InternalExecutor, MCPExecutor, RoutedExecutor)):
+        # Test/extension executors may own persistence and declare counts.
+        run.findings_new += result.findings_new
+        run.findings_total += result.findings_total
+        run.findings_unvalidated += result.findings_unvalidated
+        run.findings_high_severity += result.findings_high_severity
+
     if result.ok:
         run.steps_succeeded += 1
     else:
         run.steps_failed += 1
         if result.error and not run.last_error:
             run.last_error = result.error
-
-    run.findings_new += result.findings_new
-    run.findings_unvalidated += result.findings_unvalidated
-    run.findings_high_severity += result.findings_high_severity
-    run.findings_total += result.findings_total
-
-    # v3.0.3 — bridge tool output into a Finding row so the Findings
-    # tab actually reflects what the playbook found. Stubs skipped
-    # (they don't produce real content); non-bridgeable tools return
-    # None; the bridge itself swallows exceptions so a persistence
-    # failure never fails the run.
-    if result.ok and not getattr(result, "stub", False):
-        from app.services.playbook.finding_bridge import bridge_step_to_finding
-
-        try:
-            bridge_step_to_finding(
-                session,
-                engagement_id=engagement.id,
-                playbook_tool=step_tool_slug,
-                scope_item=scope_item,
-                args_template=step_args_template,
-                data=result.data,
-                thread_id=str(run.id),
-            )
-        except Exception:  # noqa: BLE001 - bridge is best-effort
-            logger.exception(
-                "playbook.finding_bridge.raised",
-                tool=step_tool_slug,
-                scope_item=scope_item,
-            )
 
     if getattr(result, "stub", False):
         status = CoverageRecordStatus.stub
@@ -579,6 +649,47 @@ def _run_one(
             now=now,
         )
     session.flush()
+    return result
+
+
+def _authorized_discovered_domains(
+    session: Session,
+    *,
+    engagement: Engagement,
+    result: StepResult,
+) -> set[str]:
+    """Extract prior-step domains and revalidate every one against scope."""
+    from app.models import ScopeItem, ScopeKind
+    from app.services.scope_matcher import evaluate_scope, normalize_domain
+
+    candidates: set[str] = set()
+    values = result.data.get("subdomains")
+    if isinstance(values, list):
+        candidates.update(
+            normalize_domain(value)
+            for value in values
+            if isinstance(value, str) and value.strip()
+        )
+    for item in result.data.get("lease_findings") or []:
+        if not isinstance(item, dict):
+            continue
+        target = item.get("target")
+        if isinstance(target, str) and target.strip():
+            candidates.add(normalize_domain(target))
+
+    if not candidates:
+        return set()
+    scope_rows = list(
+        session.execute(
+            select(ScopeItem).where(ScopeItem.engagement_id == engagement.id)
+        ).scalars()
+    )
+    return {
+        candidate
+        for candidate in sorted(candidates)[:500]
+        if candidate
+        and evaluate_scope(candidate, ScopeKind.domain, scope_rows).allowed
+    }
 
 
 def _scope_items_by_asset_class(

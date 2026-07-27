@@ -14,10 +14,10 @@ from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 StatusColor = Literal["active", "pending", "completed", "failed"]
-StatusKind = Literal["agent", "task", "approval"]
+StatusKind = Literal["agent", "task", "approval", "playbook"]
 # v1.2.0: sub-outcome nuance under the four colours. Only set on
 # terminal (color in {completed, failed}) entities — running/pending
 # rows leave it None. Rules:
@@ -116,3 +116,4 @@ class EngagementStatusResponse(BaseModel):
     agents: list[StatusEntity]
     tasks: list[StatusEntity]
     approvals: list[StatusEntity]
+    playbook_runs: list[StatusEntity] = Field(default_factory=list)
