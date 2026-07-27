@@ -1,14 +1,17 @@
 "use client";
 
 import Link from "next/link";
-import { Suspense, useMemo } from "react";
+import { Suspense, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { cn } from "@/lib/utils";
 import { ASCII_CAT_PLAYING, PlaceholderPage } from "@/components/placeholder-page";
+import { Plus } from "lucide-react";
 import { PlaybooksTab } from "@/components/playbooks/playbooks-tab";
+import { PlaybookEditorModal } from "@/components/playbooks/playbook-editor-modal";
+import { Button } from "@/components/ui/button";
 import { QueryState } from "@/components/query-state";
 import { ReportBuilder } from "@/components/report-builder";
-import { useEngagements, useRunningJobs } from "@/lib/hooks";
+import { useEngagements, useMe, useRunningJobs } from "@/lib/hooks";
 import type { RunningJob } from "@/lib/api";
 
 type AutomationTab =
@@ -106,6 +109,9 @@ function PlaybooksEngagementPicker({
   onSlugChange: (slug: string) => void;
 }) {
   const engagementsQuery = useEngagements();
+  const meQuery = useMe();
+  const canWrite = meQuery.data !== undefined && meQuery.data.role !== "guest";
+  const [creatingPlaybook, setCreatingPlaybook] = useState(false);
   const engagements = useMemo(
     () =>
       (engagementsQuery.data ?? []).filter((e) => e.status !== "flushed"),
@@ -113,20 +119,44 @@ function PlaybooksEngagementPicker({
   );
   const selected =
     engagements.find((e) => e.slug === requestedSlug) ?? null;
+  const catalogHeader = (
+    <section className="flex flex-wrap items-start justify-between gap-3 rounded-lg border border-border bg-card/30 p-4">
+      <div>
+        <h2 className="text-sm font-semibold">Shared playbook catalog</h2>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Recipes are available across engagements. Choose an engagement below only when planning or running one.
+        </p>
+      </div>
+      {canWrite ? (
+        <Button type="button" size="sm" onClick={() => setCreatingPlaybook(true)}>
+          <Plus className="mr-1.5 h-3.5 w-3.5" /> Add a playbook
+        </Button>
+      ) : null}
+    </section>
+  );
 
   if (
     engagementsQuery.data === undefined &&
     (engagementsQuery.isLoading || engagementsQuery.error)
   ) {
     return (
-      <QueryState
-        isLoading={engagementsQuery.isLoading}
-        error={engagementsQuery.error}
-        loadingLabel="Loading engagements…"
-        errorLabel="Could not load engagements for Playbooks."
-        onRetry={() => void engagementsQuery.refetch()}
-        isRetrying={engagementsQuery.isFetching}
-      />
+      <div className="space-y-4">
+        {catalogHeader}
+        <QueryState
+          isLoading={engagementsQuery.isLoading}
+          error={engagementsQuery.error}
+          loadingLabel="Loading engagement run contexts…"
+          errorLabel="Could not load engagement run contexts."
+          onRetry={() => void engagementsQuery.refetch()}
+          isRetrying={engagementsQuery.isFetching}
+        />
+        {creatingPlaybook ? (
+          <PlaybookEditorModal
+            playbook={null}
+            onClose={() => setCreatingPlaybook(false)}
+          />
+        ) : null}
+      </div>
     );
   }
 
@@ -140,8 +170,9 @@ function PlaybooksEngagementPicker({
         onRetry={() => void engagementsQuery.refetch()}
         isRetrying={engagementsQuery.isFetching}
       />
+      {catalogHeader}
       <label className="flex max-w-xl flex-col gap-1 text-xs">
-        <span className="text-muted-foreground">Engagement</span>
+        <span className="text-muted-foreground">Run in engagement</span>
         <select
           value={selected?.slug ?? ""}
           onChange={(event) => onSlugChange(event.target.value)}
@@ -152,15 +183,13 @@ function PlaybooksEngagementPicker({
           {engagements.map((engagement) => (
             <option key={engagement.slug} value={engagement.slug}>
               {engagement.name} · {engagement.slug}
-              {engagement.status !== "active"
-                ? ` (${engagement.status})`
-                : ""}
+              {engagement.status !== "active" ? ` (${engagement.status})` : ""}
             </option>
           ))}
         </select>
       </label>
       {selected ? (
-        <PlaybooksTab engagementSlug={selected.slug} />
+        <PlaybooksTab engagementSlug={selected.slug} showCreateAction={false} />
       ) : (
         <p className="rounded-lg border border-dashed border-border bg-card/20 p-6 text-sm text-muted-foreground">
           {engagementsQuery.isLoading
@@ -170,6 +199,12 @@ function PlaybooksEngagementPicker({
               : "Select an engagement to view + kick playbook runs."}
         </p>
       )}
+      {creatingPlaybook ? (
+        <PlaybookEditorModal
+          playbook={null}
+          onClose={() => setCreatingPlaybook(false)}
+        />
+      ) : null}
     </div>
   );
 }

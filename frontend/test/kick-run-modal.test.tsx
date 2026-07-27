@@ -69,6 +69,12 @@ const scopeItems: ScopeItem[] = [
 
 let mockScopeData: ScopeItem[] | undefined = scopeItems;
 let mockScopeError: Error | null = null;
+let mockProviderKeys: Array<{ id: string; provider: string }> | undefined = [
+  { id: "key-free", provider: "freeipapi" },
+  { id: "key-ipinfo", provider: "ipinfo" },
+];
+let mockProviderKeysError: Error | null = null;
+const mockProviderKeysRefetch = vi.fn();
 const mockScopeRefetch = vi.fn();
 const mockPlanRefetch = vi.fn();
 const mockUsePlan = vi.fn(
@@ -125,6 +131,13 @@ vi.mock("@/lib/hooks", () => ({
   useCreatePlaybookRunMutation: (slug: string) => mockCreate(slug),
   usePlaybookRunPlan: (slug: string, request: { scope_subset: string[] } | null) =>
     mockUsePlan(slug, request),
+  useProviderKeys: () => ({
+    data: mockProviderKeys,
+    isLoading: mockProviderKeys === undefined && mockProviderKeysError === null,
+    isFetching: false,
+    error: mockProviderKeysError,
+    refetch: mockProviderKeysRefetch,
+  }),
   useScope: (slug: string) => mockUseScope(slug),
 }));
 
@@ -155,6 +168,11 @@ beforeEach(() => {
   mockUsePlan.mockClear();
   mockScopeData = scopeItems;
   mockScopeError = null;
+  mockProviderKeysError = null;
+  mockProviderKeys = [
+    { id: "key-free", provider: "freeipapi" },
+    { id: "key-ipinfo", provider: "ipinfo" },
+  ];
 });
 
 afterEach(() => {
@@ -370,8 +388,10 @@ describe("KickRunModal", () => {
     expect(screen.getByText("Resolve PTR hostname.")).toBeInTheDocument();
     expect(screen.getByText(/select targets to generate/i)).toBeInTheDocument();
     await user.click(screen.getByText("foo.example"));
-    expect(screen.getByText(/minimum 5 tool calls/i)).toBeInTheDocument();
+    expect(screen.getByText(/5 initial calls; hard limit 500/i)).toBeInTheDocument();
     expect(screen.getByText(/authorized discoveries may add calls/i)).toBeInTheDocument();
+    expect(screen.getByText(/no additional approval gate/i)).toBeInTheDocument();
+    expect(screen.getByText("Every expanded target is checked.")).toBeInTheDocument();
     expect(screen.getByText(/plan aaaaaaaaaaaa/i)).toBeInTheDocument();
   });
 
@@ -384,11 +404,49 @@ describe("KickRunModal", () => {
       />,
     );
 
-    expect(screen.getByText("freeipapi, ipinfo")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /review keys/i })).toHaveAttribute(
-      "href",
-      "/settings/keys",
+    expect(
+      screen.getByRole("button", { name: "freeipapi: Configured" }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "ipinfo: Configured" }),
+    ).toBeDisabled();
+    expect(screen.getByText(/never persisted in the playbook or run/i)).toBeInTheDocument();
+  });
+
+  it("shows credential lookup failures instead of claiming keys are missing", async () => {
+    mockProviderKeys = undefined;
+    mockProviderKeysError = new Error("key service unavailable");
+    const user = userEvent.setup();
+    render(
+      <KickRunModal
+        engagementSlug="acme"
+        playbook={{ ...playbook, required_credentials: ["ipinfo"] }}
+        onClose={vi.fn()}
+      />,
     );
+
+    expect(screen.getByText(/could not check requester credentials/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "ipinfo: Unavailable" })).toBeDisabled();
+    await user.click(screen.getByRole("checkbox", { name: /foo\.example/i }));
+    expect(screen.getByRole("button", { name: "Kick run" })).toBeDisabled();
+  });
+
+  it("lets the requester add a missing dependency without leaving kickoff", async () => {
+    mockProviderKeys = [];
+    const user = userEvent.setup();
+    render(
+      <KickRunModal
+        engagementSlug="acme"
+        playbook={{ ...playbook, required_credentials: ["ipinfo"] }}
+        onClose={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("checkbox", { name: /foo\.example/i }));
+    expect(screen.getByRole("button", { name: "Kick run" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "ipinfo: Add key" }));
+    expect(screen.getByLabelText("Provider")).toHaveValue("ipinfo");
+    expect(screen.getByLabelText("API key")).toBeInTheDocument();
   });
 
   it("select-all picks every non-exclusion target", async () => {

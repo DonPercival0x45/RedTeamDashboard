@@ -138,6 +138,7 @@ def build_finding_activity(
     # 4. audit log rows referencing this finding
     for row in session.execute(
         select(AuditLog)
+        .where(AuditLog.payload["finding_id"].astext == str(finding_id))
         .order_by(AuditLog.created_at.desc())
         .limit(500)
     ).scalars():

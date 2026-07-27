@@ -9,6 +9,7 @@ Two layers:
 - HTTP layer — POST /engagements/{slug}/playbook-runs happy path,
   GET list + detail, 404s, auth (guest blocked from POST).
 """
+
 from __future__ import annotations
 
 import uuid
@@ -373,11 +374,7 @@ def engagement(db: Session) -> Engagement:
     db.commit()
     # POST /playbook-runs now enforces the in-scope-only invariant; seed the
     # target the HTTP tests use so they exercise the happy path.
-    db.add(
-        ScopeItem(
-            engagement_id=eng.id, kind=ScopeKind.domain, value="foo.example"
-        )
-    )
+    db.add(ScopeItem(engagement_id=eng.id, kind=ScopeKind.domain, value="foo.example"))
     db.commit()
     meth.load_seed_catalog(db)
     meth.select_for_engagement(
@@ -392,6 +389,26 @@ def engagement(db: Session) -> Engagement:
 
 def _headers(user: User) -> dict[str, str]:
     return {"X-User-Id": user.email}
+
+
+def _post_reviewed_run(
+    client: TestClient,
+    *,
+    engagement_slug: str,
+    user: User,
+    payload: dict,
+):
+    plan = client.post(
+        f"/engagements/{engagement_slug}/playbook-runs/plan",
+        headers=_headers(user),
+        json=payload,
+    )
+    assert plan.status_code == 200, plan.text
+    return client.post(
+        f"/engagements/{engagement_slug}/playbook-runs",
+        headers=_headers(user),
+        json={**payload, "plan_sha256": plan.json()["plan_sha256"]},
+    )
 
 
 def test_list_playbooks_installs_seeds_on_first_call(
@@ -430,9 +447,7 @@ def test_new_operational_playbooks_declare_safe_execution_paths(
     ]
 
 
-def test_get_playbook_detail_returns_steps(
-    db: Session, client: TestClient, user: User
-) -> None:
+def test_get_playbook_detail_returns_steps(db: Session, client: TestClient, user: User) -> None:
     load_seed_playbooks(db)
     db.commit()
     resp = client.get("/playbooks/osint-passive-domain", headers=_headers(user))
@@ -442,9 +457,7 @@ def test_get_playbook_detail_returns_steps(
     assert step_tools == {"subfinder", "dns-inventory", "crtsh", "whois", "breach-lookup"}
 
 
-def test_get_playbook_unknown_slug_404(
-    db: Session, client: TestClient, user: User
-) -> None:
+def test_get_playbook_unknown_slug_404(db: Session, client: TestClient, user: User) -> None:
     resp = client.get("/playbooks/never", headers=_headers(user))
     assert resp.status_code == 404
 
@@ -459,10 +472,11 @@ def test_create_playbook_run_enqueues_and_returns_202(
     202 + a pending row."""
     load_seed_playbooks(db)
     db.commit()
-    resp = client.post(
-        f"/engagements/{engagement.slug}/playbook-runs",
-        headers=_headers(user),
-        json={
+    resp = _post_reviewed_run(
+        client,
+        engagement_slug=engagement.slug,
+        user=user,
+        payload={
             "playbook_slug": "osint-passive-domain",
             "scope_subset": ["foo.example"],
         },
@@ -553,10 +567,11 @@ def test_create_email_playbook_run_requires_exact_email_scope(
     )
     db.commit()
 
-    accepted = client.post(
-        f"/engagements/{engagement.slug}/playbook-runs",
-        headers=_headers(user),
-        json={
+    accepted = _post_reviewed_run(
+        client,
+        engagement_slug=engagement.slug,
+        user=user,
+        payload={
             "playbook_slug": "email-exposure-triage",
             "scope_subset": ["Analyst@EXAMPLE.COM"],
         },
@@ -607,10 +622,14 @@ def test_create_playbook_run_allows_in_scope_subdomain(
     """A subdomain of a declared domain include is in scope."""
     load_seed_playbooks(db)
     db.commit()
-    resp = client.post(
-        f"/engagements/{engagement.slug}/playbook-runs",
-        headers=_headers(user),
-        json={"playbook_slug": "osint-passive-domain", "scope_subset": ["api.foo.example"]},
+    resp = _post_reviewed_run(
+        client,
+        engagement_slug=engagement.slug,
+        user=user,
+        payload={
+            "playbook_slug": "osint-passive-domain",
+            "scope_subset": ["api.foo.example"],
+        },
     )
     assert resp.status_code == 202, resp.text
 
@@ -684,17 +703,19 @@ def test_list_and_get_playbook_run_round_trip(
 ) -> None:
     load_seed_playbooks(db)
     db.commit()
-    post = client.post(
-        f"/engagements/{engagement.slug}/playbook-runs",
-        headers=_headers(user),
-        json={"playbook_slug": "osint-passive-domain", "scope_subset": ["foo.example"]},
+    post = _post_reviewed_run(
+        client,
+        engagement_slug=engagement.slug,
+        user=user,
+        payload={
+            "playbook_slug": "osint-passive-domain",
+            "scope_subset": ["foo.example"],
+        },
     )
     assert post.status_code == 202
     run_id = post.json()["id"]
 
-    listing = client.get(
-        f"/engagements/{engagement.slug}/playbook-runs", headers=_headers(user)
-    )
+    listing = client.get(f"/engagements/{engagement.slug}/playbook-runs", headers=_headers(user))
     assert listing.status_code == 200
     assert any(r["id"] == run_id for r in listing.json())
 

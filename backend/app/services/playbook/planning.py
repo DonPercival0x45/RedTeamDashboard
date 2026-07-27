@@ -8,6 +8,7 @@ from typing import Any
 
 from app.models import Playbook
 from app.services.playbook.executor import executor_for_tool_slug
+from app.services.playbook.policy import MAX_PLAYBOOK_CALLS, recipe_requires_approval
 
 _CREDENTIAL_TOOL = {
     "freeipapi": "freeipapi",
@@ -78,13 +79,20 @@ def build_execution_plan(
             }
         )
 
+    try:
+        approval_required = playbook.active or recipe_requires_approval(
+            step.tool_slug for step in playbook.steps
+        )
+    except ValueError:
+        approval_required = playbook.active
+
     plan: dict[str, Any] = {
         "format_version": 1,
         "playbook_id": str(playbook.id),
         "playbook_slug": playbook.slug,
         "playbook_version": playbook.version,
         "playbook_name": playbook.name,
-        "approval_required": playbook.active,
+        "approval_required": approval_required,
         "required_executor": required_executor,
         "execution_paths": [
             _PATH_LABEL[kind] for kind in ("internal", "mcp") if kind in transports
@@ -92,6 +100,7 @@ def build_execution_plan(
         "required_credentials": sorted(credentials),
         "scope_subset": targets,
         "minimum_calls": minimum_calls,
+        "maximum_calls": MAX_PLAYBOOK_CALLS if dynamic else minimum_calls,
         "dynamic_expansion": dynamic,
         "steps": steps,
         "safety_notes": [
@@ -107,7 +116,7 @@ def build_execution_plan(
             ),
             *(
                 ["This plan remains blocked until an analyst approves the run."]
-                if playbook.active
+                if approval_required
                 else []
             ),
         ],

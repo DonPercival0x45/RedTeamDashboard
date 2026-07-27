@@ -1366,7 +1366,7 @@ function coerceFloat(value: unknown): number | null {
   return null;
 }
 
-function EntitySlideOver({
+export function EntitySlideOver({
   entity,
   slug,
   onClose,

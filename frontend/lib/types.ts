@@ -260,6 +260,111 @@ export interface FindingCreate {
   tags?: string[];
 }
 
+export type FindingWorkspaceView =
+  | "focus"
+  | "needs_review"
+  | "actionable"
+  | "inventory"
+  | "resolved_excluded";
+
+export type FindingWorkspaceBucket = Exclude<FindingWorkspaceView, "focus">;
+
+export interface FindingHierarchyFindingRef {
+  id: string;
+  title: string;
+  tool: string | null;
+  target: string | null;
+  severity: Severity;
+  phase: FindingPhase;
+  status: FindingValidationStatus;
+  exclusion: FindingExclusion | null;
+  observed_at: string | null;
+  created_at: string;
+  bucket: FindingWorkspaceBucket;
+}
+
+export interface FindingHierarchyRollup {
+  max_severity: Severity;
+  needs_review: number;
+  actionable: number;
+  inventory: number;
+  resolved_excluded: number;
+  distinct_findings: number;
+  latest_at: string | null;
+}
+
+export type FindingHierarchyItemKind =
+  | "ip"
+  | "domain"
+  | "service"
+  | "subdomain"
+  | "web_surface"
+  | "finding"
+  | "other";
+
+export interface FindingHierarchyItem {
+  id: string;
+  kind: FindingHierarchyItemKind;
+  canonical_key: string;
+  label: string;
+  value: string | null;
+  ip: string | null;
+  hostname: string | null;
+  protocol: string | null;
+  port: number | null;
+  service: string | null;
+  url: string | null;
+  finding_refs: FindingHierarchyFindingRef[];
+  children: FindingHierarchyItem[];
+  rollup: FindingHierarchyRollup;
+  create_finding_allowed: boolean;
+  suggested_title: string | null;
+  suggested_target: string | null;
+}
+
+export interface FindingHierarchyResponse {
+  assets: FindingHierarchyItem[];
+  ungrouped: FindingHierarchyItem[];
+  counts: Record<FindingWorkspaceView, number> & { distinct_findings: number };
+  generated_at: string;
+  projection_version: string;
+}
+
+export interface FindingDuplicateCandidate {
+  id: string;
+  title: string;
+  target: string | null;
+  severity: Severity;
+  status: FindingValidationStatus;
+  exclusion: FindingExclusion | null;
+  match_reason: string;
+}
+
+export interface FindingFromHierarchyItemCreate {
+  item_id: string;
+  title: string;
+  summary?: string | null;
+  severity: Severity;
+  phase: FindingPhase;
+  target?: string | null;
+  observed_at?: string | null;
+  duplicate_decision: "review" | "create_anyway";
+  reviewed_duplicate_ids: string[];
+  idempotency_key: string;
+}
+
+export type FindingFromHierarchyItemResponse =
+  | {
+      state: "duplicate_warning";
+      candidates: FindingDuplicateCandidate[];
+      finding: null;
+    }
+  | {
+      state: "created";
+      candidates: FindingDuplicateCandidate[];
+      finding: Finding;
+    };
+
 // v1.4.0: one cluster proposed by the CorrelateAgent. `finding_ids` first
 // entry is the proposed parent (survives the merge); rest are children.
 export interface CorrelateGroup {
@@ -830,6 +935,7 @@ export interface EntityReviewPreview {
   findings: EntityReviewFindingImpactItem[];
   finding_ids: string[];
   exact_include_conflicts: number;
+  includes_to_create: number;
   exclusions_to_create: number;
   managed_exclusions_to_remove: number;
   findings_to_mark_out_of_scope: number;
@@ -839,6 +945,7 @@ export interface EntityReviewPreview {
 
 export interface EntityReviewApplyResult {
   reviewed: number;
+  includes_created: number;
   exclusions_created: number;
   exact_includes_removed: number;
   managed_exclusions_removed: number;
@@ -1631,8 +1738,18 @@ export type PlaybookRunStatus =
   | "cancelled";
 
 export type PlaybookExecutorKind = "internal" | "mcp";
+export type PlaybookCategory =
+  | "discovery"
+  | "enumeration"
+  | "posture"
+  | "exposure"
+  | "validation"
+  | "scope_review"
+  | "other";
+export type PlaybookOrigin = "system" | "custom";
 
 export interface PlaybookStepRead {
+  id: string;
   sort_order: number;
   tool_slug: string;
   args_template: Record<string, unknown>;
@@ -1647,6 +1764,13 @@ export interface PlaybookRead {
   name: string;
   description: string | null;
   applies_to_asset_class: string;
+  applicable_entity_types?: string[];
+  category?: PlaybookCategory;
+  origin?: PlaybookOrigin;
+  created_by?: string | null;
+  supersedes_id?: string | null;
+  can_edit?: boolean;
+  has_runs?: boolean;
   active: boolean;
   step_count: number;
   required_executor: PlaybookExecutorKind;
@@ -1659,6 +1783,43 @@ export interface PlaybookRead {
 export interface PlaybookDetail extends PlaybookRead {
   steps: PlaybookStepRead[];
 }
+
+export interface PlaybookToolRead {
+  slug: string;
+  name: string;
+  description: string;
+  target_kinds: string[];
+  transport: PlaybookExecutorKind;
+  risk: "passive" | "active";
+  credential: string | null;
+}
+
+export interface PlaybookCatalogOptions {
+  categories: PlaybookCategory[];
+  entity_types: string[];
+  tools: PlaybookToolRead[];
+}
+
+export interface PlaybookStepDraft {
+  tool_slug: string;
+  source_step_id?: string | null;
+  description?: string | null;
+}
+
+export interface PlaybookCreate {
+  slug: string;
+  name: string;
+  description?: string | null;
+  category: PlaybookCategory;
+  applicable_entity_types: string[];
+  active: boolean;
+  steps: PlaybookStepDraft[];
+}
+
+export type PlaybookNewVersion = Omit<PlaybookCreate, "slug"> & {
+  expected_supersedes_id: string;
+  expected_version: number;
+};
 
 export type PlaybookStepExecutionStatus =
   | "running"
@@ -1733,6 +1894,7 @@ export interface PlaybookExecutionPlanRead {
   required_credentials: string[];
   scope_subset: string[];
   minimum_calls: number;
+  maximum_calls?: number;
   dynamic_expansion: boolean;
   steps: PlaybookExecutionPlanStepRead[];
   safety_notes: string[];

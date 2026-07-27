@@ -45,6 +45,9 @@ import type {
   FindingSummaryEntry,
   FindingActivityEntry,
   FindingFollowUp,
+  FindingFromHierarchyItemCreate,
+  FindingFromHierarchyItemResponse,
+  FindingHierarchyResponse,
   FindingRemediationStatus,
   FindingRemediationUpdate,
   FindingRetest,
@@ -87,8 +90,11 @@ import type {
   ToolStatus,
   ToolInvocationRead,
   OrchestratorTool,
+  PlaybookCatalogOptions,
+  PlaybookCreate,
   PlaybookDetail,
   PlaybookExecutionPlanRead,
+  PlaybookNewVersion,
   PlaybookRead,
   PlaybookRunCreate,
   PlaybookRunRead,
@@ -353,6 +359,24 @@ export function importScope(
 // ---------------------------------------------------------------------------
 // Findings
 // ---------------------------------------------------------------------------
+
+export function getFindingHierarchy(
+  slug: string,
+): Promise<FindingHierarchyResponse> {
+  return request<FindingHierarchyResponse>(
+    `/engagements/${slug}/findings/hierarchy`,
+  );
+}
+
+export function createFindingFromHierarchyItem(
+  slug: string,
+  body: FindingFromHierarchyItemCreate,
+): Promise<FindingFromHierarchyItemResponse> {
+  return request<FindingFromHierarchyItemResponse>(
+    `/engagements/${slug}/findings/from-item`,
+    { method: "POST", body: JSON.stringify(body) },
+  );
+}
 
 export function listFindings(
   slug: string,
@@ -2098,6 +2122,27 @@ export function listPlaybooks(): Promise<PlaybookRead[]> {
 
 export function getPlaybook(slug: string): Promise<PlaybookDetail> {
   return request<PlaybookDetail>(`/playbooks/${slug}`);
+}
+
+export function getPlaybookCatalogOptions(): Promise<PlaybookCatalogOptions> {
+  return request<PlaybookCatalogOptions>("/playbook-catalog/options");
+}
+
+export function createPlaybook(body: PlaybookCreate): Promise<PlaybookDetail> {
+  return request<PlaybookDetail>("/playbooks", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function createPlaybookVersion(
+  slug: string,
+  body: PlaybookNewVersion,
+): Promise<PlaybookDetail> {
+  return request<PlaybookDetail>(`/playbooks/${encodeURIComponent(slug)}/versions`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
 }
 
 export function listPlaybookRuns(

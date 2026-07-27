@@ -194,6 +194,7 @@ class EntityReviewPreviewRead(BaseModel):
     findings: list[EntityReviewFindingImpactItem]
     finding_ids: list[uuid.UUID]
     exact_include_conflicts: int
+    includes_to_create: int
     exclusions_to_create: int
     managed_exclusions_to_remove: int
     findings_to_mark_out_of_scope: int
@@ -216,6 +217,7 @@ class EntityReviewApplyRequest(EntityReviewPreviewRequest):
 
 class EntityReviewApplyRead(BaseModel):
     reviewed: int
+    includes_created: int
     exclusions_created: int
     exact_includes_removed: int
     managed_exclusions_removed: int
@@ -640,6 +642,15 @@ def _review_preview_read(
         if body.action == "exclude"
         else 0
     )
+    includes_to_create = len(
+        {
+            target
+            for row in impact.entities
+            if body.action == "keep"
+            and not row.exact_include_ids
+            and (target := scope_target(row.entity_type, row.value)) is not None
+        }
+    )
     exclusions_to_create = len(
         {
             target
@@ -650,7 +661,9 @@ def _review_preview_read(
         }
     )
     affected_review_ids = {row.id for row in reviews_by_key.values()}
-    affected_scope_ids = {row.scope_item_id for row in active_scope_links}
+    affected_scope_ids = {
+        uuid.UUID(scope_id) for row in impact.entities for scope_id in row.managed_exclusion_ids
+    }
     scope_ids_with_other_owners = {
         row.scope_item_id
         for row in all_scope_links
@@ -721,6 +734,7 @@ def _review_preview_read(
         findings=list(finding_items.values()),
         finding_ids=[row.id for row in finding_items.values()],
         exact_include_conflicts=conflicts,
+        includes_to_create=includes_to_create,
         exclusions_to_create=exclusions_to_create,
         managed_exclusions_to_remove=managed_to_remove,
         findings_to_mark_out_of_scope=findings_to_mark,
@@ -803,6 +817,8 @@ def apply_entity_review(
 
     managed_removed = 0
     removed_managed_ids: list[str] = []
+    includes_created = 0
+    created_include_ids: list[str] = []
     exclusions_created = 0
     created_exclusion_ids: list[str] = []
     disposition = (
@@ -903,6 +919,9 @@ def apply_entity_review(
             if row.entity_review_id not in affected_review_ids
         }
         for link in active_scope_links:
+            linked_item = scope_by_id.get(link.scope_item_id)
+            if linked_item is None or not linked_item.is_exclusion:
+                continue
             link.released_at = now
             link.released_by_user_id = user.id
             link.release_reason = body.reason
@@ -932,6 +951,51 @@ def apply_entity_review(
             session.delete(item)
             removed_managed_ids.append(str(item.id))
             managed_removed += 1
+
+        exact_includes_by_target = {
+            (row.kind, row.value): row for row in scope_items if not row.is_exclusion
+        }
+        for row in impact.entities:
+            target = scope_target(row.entity_type, row.value)
+            review = reviews_by_key.get(ReviewTarget(row.entity_type, row.value).key)
+            if target is None or review is None or target in exact_includes_by_target:
+                continue
+            include = ScopeItem(
+                engagement_id=engagement.id,
+                kind=target[0],
+                value=target[1],
+                is_exclusion=False,
+                note=f"Entity review keep: {body.reason}"[:500],
+                source="entity_review_keep",
+            )
+            session.add(include)
+            session.flush()
+            exact_includes_by_target[target] = include
+            scope_by_id[include.id] = include
+            created_include_ids.append(str(include.id))
+            includes_created += 1
+            session.add(
+                EntityReviewScopeLink(
+                    entity_review_id=review.id,
+                    scope_item_id=include.id,
+                )
+            )
+            session.add(
+                AuditLog(
+                    engagement_id=engagement.id,
+                    actor_type=ActorType.user,
+                    actor_id=str(user.id),
+                    event_type="scope.item.created",
+                    payload={
+                        "scope_id": str(include.id),
+                        "kind": include.kind.value,
+                        "value": include.value,
+                        "is_exclusion": False,
+                        "source": include.source,
+                        "reason": body.reason,
+                    },
+                )
+            )
 
     findings_by_id = {str(row.id): row for row in findings}
     active_link_keys = {(row.entity_review_id, row.finding_id) for row in active_links}
@@ -998,6 +1062,7 @@ def apply_entity_review(
                 "entities": entity_identities,
                 "finding_ids_marked_out_of_scope": marked_finding_ids,
                 "finding_ids_restored": restored_finding_ids,
+                "scope_include_ids_created": created_include_ids,
                 "scope_exclusion_ids_created": created_exclusion_ids,
                 "scope_exclusion_ids_removed": removed_managed_ids,
                 "scope_include_ids_removed": removed_include_ids,
@@ -1009,6 +1074,7 @@ def apply_entity_review(
     session.commit()
     return EntityReviewApplyRead(
         reviewed=len(impact.entities),
+        includes_created=includes_created,
         exclusions_created=exclusions_created,
         exact_includes_removed=includes_removed,
         managed_exclusions_removed=managed_removed,

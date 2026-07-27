@@ -24,6 +24,7 @@ truth for the same event. If per-step audit ever needs richer fields than a
 CoverageRecord carries, that's a separate model — for A3a the coverage log
 suffices.
 """
+
 from __future__ import annotations
 
 import enum
@@ -112,6 +113,26 @@ class Playbook(Base, TimestampMixin):
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
     applies_to_asset_class: Mapped[str] = mapped_column(String(80), nullable=False)
+    category: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="other", server_default="other", index=True
+    )
+    applicable_entity_types: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default="[]"
+    )
+    origin: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="custom", server_default="custom", index=True
+    )
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    supersedes_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("playbooks.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )
@@ -140,9 +161,7 @@ class PlaybookStep(Base, TimestampMixin):
     """
 
     __tablename__ = "playbook_steps"
-    __table_args__ = (
-        Index("ix_playbook_steps_playbook", "playbook_id"),
-    )
+    __table_args__ = (Index("ix_playbook_steps_playbook", "playbook_id"),)
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid7)
     playbook_id: Mapped[uuid.UUID] = mapped_column(
@@ -150,17 +169,11 @@ class PlaybookStep(Base, TimestampMixin):
         ForeignKey("playbooks.id", ondelete="CASCADE"),
         nullable=False,
     )
-    sort_order: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=0, server_default="0"
-    )
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     tool_slug: Mapped[str] = mapped_column(String(120), nullable=False)
-    args_template: Mapped[dict[str, Any]] = mapped_column(
-        JSONB, nullable=False, default=dict
-    )
+    args_template: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     # JSONB list of methodology node_ids this step satisfies on success.
-    satisfies_node_ids: Mapped[list[str]] = mapped_column(
-        JSONB, nullable=False, default=list
-    )
+    satisfies_node_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
     description: Mapped[str | None] = mapped_column(Text)
 
     playbook: Mapped[Playbook] = relationship("Playbook", back_populates="steps")
@@ -182,9 +195,7 @@ class PlaybookRun(Base, TimestampMixin):
     __tablename__ = "playbook_runs"
     __table_args__ = (
         Index("ix_playbook_runs_engagement", "engagement_id"),
-        Index(
-            "ix_playbook_runs_engagement_status", "engagement_id", "status"
-        ),
+        Index("ix_playbook_runs_engagement_status", "engagement_id", "status"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid7)
@@ -214,9 +225,7 @@ class PlaybookRun(Base, TimestampMixin):
         default=PlaybookRunStatus.pending,
         server_default="pending",
     )
-    scope_subset: Mapped[list[Any]] = mapped_column(
-        JSONB, nullable=False, default=list
-    )
+    scope_subset: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # Worker ownership is a recoverability lease, not authorization. A separate
@@ -232,9 +241,7 @@ class PlaybookRun(Base, TimestampMixin):
     plan_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     plan_sha256: Mapped[str | None] = mapped_column(String(64), index=True)
     planned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    steps_total: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=0, server_default="0"
-    )
+    steps_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     steps_succeeded: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default="0"
     )

@@ -8,16 +8,36 @@
 //      pills + action affordances (approve/reject/cancel/view). Polls every
 //      3s while anything is running/pending/awaiting; 15s otherwise.
 
-import { useState } from "react";
-import { Play } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { Pencil, Play, Plus, Search } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "@/components/ui/tabs";
 import { KickRunModal } from "@/components/playbooks/kick-run-modal";
+import { PlaybookEditorModal } from "@/components/playbooks/playbook-editor-modal";
 import { RunDetailModal } from "@/components/playbooks/run-detail-modal";
 import { QueryState } from "@/components/query-state";
-import { usePlaybooks, usePlaybookRuns } from "@/lib/hooks";
+import { useMe, usePlaybooks, usePlaybookRuns } from "@/lib/hooks";
+import {
+  isPlaybookApplicable,
+  PLAYBOOK_CATEGORY_LABEL,
+  PLAYBOOK_CATEGORY_ORDER,
+  sortPlaybooks,
+  type PlaybookSort,
+} from "@/lib/playbook-catalog";
 import { cn } from "@/lib/utils";
-import type { PlaybookRead, PlaybookRunRead, PlaybookRunStatus } from "@/lib/types";
+import type {
+  PlaybookCategory,
+  PlaybookRead,
+  PlaybookRunRead,
+  PlaybookRunStatus,
+} from "@/lib/types";
 
 const STATUS_BADGE: Record<PlaybookRunStatus, string> = {
   awaiting_approval: "border-amber-500/40 text-amber-700 dark:text-amber-300",
@@ -50,9 +70,13 @@ function StatusBadge({ status }: { status: PlaybookRunStatus }) {
 function PlaybookCard({
   playbook,
   onKick,
+  onEdit,
+  canRun,
 }: {
   playbook: PlaybookRead;
   onKick: (pb: PlaybookRead) => void;
+  onEdit?: (pb: PlaybookRead) => void;
+  canRun: boolean;
 }) {
   return (
     <div className="rounded-lg border border-border bg-card p-4 flex flex-col gap-3">
@@ -63,6 +87,11 @@ function PlaybookCard({
             <span className="text-xs text-muted-foreground">
               v{playbook.version}
             </span>
+            {playbook.origin === "custom" ? (
+              <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
+                Custom
+              </Badge>
+            ) : null}
             {playbook.active ? (
               <Badge
                 variant="outline"
@@ -77,14 +106,42 @@ function PlaybookCard({
           </p>
         </div>
       </div>
-      <div className="flex items-center justify-between text-xs text-muted-foreground">
+      <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
         <span>
-          {playbook.step_count} steps · {playbook.applies_to_asset_class}
+          {playbook.step_count} steps · {PLAYBOOK_CATEGORY_LABEL[playbook.category ?? "other"]} ·{" "}
+          {(playbook.applicable_entity_types?.length
+            ? playbook.applicable_entity_types
+            : [playbook.applies_to_asset_class]
+          ).join(", ")}
         </span>
-        <Button size="sm" onClick={() => onKick(playbook)}>
-          <Play className="mr-1 h-3 w-3" />
-          Kick run
-        </Button>
+        <div className="flex items-center gap-1">
+          {onEdit ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              aria-label={`Edit ${playbook.name}`}
+              onClick={() => onEdit(playbook)}
+            >
+              <Pencil className="mr-1 h-3 w-3" /> Edit
+            </Button>
+          ) : null}
+          {canRun ? (
+            <Button
+              size="sm"
+              aria-label={`Run ${playbook.name}`}
+              disabled={playbook.step_count === 0}
+              onClick={() => onKick(playbook)}
+            >
+              <Play className="mr-1 h-3 w-3" />
+              Run
+            </Button>
+          ) : (
+            <span title="Guest accounts can review recipes but cannot start runs">
+              Read-only
+            </span>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -149,17 +206,83 @@ export function PlaybooksTab({
   engagementSlug,
   initialTarget,
   onTargetConsumed,
+  showCreateAction = true,
 }: {
   engagementSlug: string;
   initialTarget?: { type: string; value: string } | null;
   onTargetConsumed?: () => void;
+  showCreateAction?: boolean;
 }) {
   const playbooksQuery = usePlaybooks();
   const runsQuery = usePlaybookRuns(engagementSlug);
+  const meQuery = useMe();
+  const canWrite = meQuery.data !== undefined && meQuery.data.role !== "guest";
   const [kickPlaybook, setKickPlaybook] = useState<PlaybookRead | null>(null);
+  const [editPlaybook, setEditPlaybook] = useState<PlaybookRead | null | undefined>(
+    undefined,
+  );
   const [openRun, setOpenRun] = useState<PlaybookRunRead | null>(null);
+  const [search, setSearch] = useState("");
+  const [category, setCategory] = useState<"all" | PlaybookCategory>("all");
+  const targetType = initialTarget?.type ?? null;
+  const targetValue = initialTarget?.value ?? null;
+  const hasTarget = targetType !== null && targetValue !== null;
+  const [sort, setSort] = useState<PlaybookSort>(
+    hasTarget ? "recommended" : "name",
+  );
+  const [showIncompatible, setShowIncompatible] = useState(!hasTarget);
 
-  const catalog = playbooksQuery.data ?? [];
+  useEffect(() => {
+    setCategory("all");
+    setSort(hasTarget ? "recommended" : "name");
+    setShowIncompatible(!hasTarget);
+  }, [hasTarget, targetType, targetValue]);
+
+  const catalog = useMemo(() => playbooksQuery.data ?? [], [playbooksQuery.data]);
+  const targetFiltered = useMemo(
+    () =>
+      initialTarget && !showIncompatible
+        ? catalog.filter((playbook) =>
+            isPlaybookApplicable(playbook, initialTarget.type),
+          )
+        : catalog,
+    [catalog, initialTarget, showIncompatible],
+  );
+  const query = search.trim().toLowerCase();
+  const searched = useMemo(
+    () =>
+      targetFiltered.filter(
+        (playbook) =>
+          !query ||
+          playbook.name.toLowerCase().includes(query) ||
+          playbook.slug.toLowerCase().includes(query) ||
+          (playbook.description ?? "").toLowerCase().includes(query),
+      ),
+    [query, targetFiltered],
+  );
+  const categoryCounts = useMemo(
+    () =>
+      new Map(
+        PLAYBOOK_CATEGORY_ORDER.map((value) => [
+          value,
+          searched.filter((playbook) => (playbook.category ?? "other") === value)
+            .length,
+        ]),
+      ),
+    [searched],
+  );
+  const visibleCatalog = useMemo(
+    () =>
+      sortPlaybooks(
+        searched.filter(
+          (playbook) =>
+            category === "all" || (playbook.category ?? "other") === category,
+        ),
+        sort,
+        initialTarget?.type,
+      ),
+    [category, initialTarget?.type, searched, sort],
+  );
   const runs = runsQuery.data ?? [];
   const awaiting = runs.filter((r) => r.status === "awaiting_approval");
 
@@ -179,13 +302,25 @@ export function PlaybooksTab({
 
       <section>
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-          <h3 className="text-sm font-semibold">Catalog</h3>
-          {initialTarget ? (
-            <p className="rounded-md border border-primary/30 bg-primary/5 px-2.5 py-1 text-xs">
-              Choose a {initialTarget.type} playbook for{" "}
-              <span className="font-mono">{initialTarget.value}</span>
+          <div>
+            <h3 className="text-sm font-semibold">Playbook catalog</h3>
+            <p className="text-xs text-muted-foreground">
+              Browse by purpose, target compatibility, and ordered execution steps.
             </p>
-          ) : null}
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {initialTarget ? (
+              <p className="rounded-md border border-primary/30 bg-primary/5 px-2.5 py-1 text-xs">
+                Target context · {initialTarget.type}:{" "}
+                <span className="font-mono">{initialTarget.value}</span>
+              </p>
+            ) : null}
+            {canWrite && showCreateAction ? (
+              <Button type="button" size="sm" onClick={() => setEditPlaybook(null)}>
+                <Plus className="mr-1 h-3.5 w-3.5" /> New playbook
+              </Button>
+            ) : null}
+          </div>
         </div>
         {playbooksQuery.data === undefined &&
         (playbooksQuery.isLoading || playbooksQuery.error) ? (
@@ -212,17 +347,72 @@ export function PlaybooksTab({
                 No playbooks in the catalog yet.
               </p>
             ) : (
-              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                {[...catalog]
-                  .sort((a, b) =>
-                    initialTarget
-                      ? Number(b.applies_to_asset_class === initialTarget.type) -
-                        Number(a.applies_to_asset_class === initialTarget.type)
-                      : 0,
-                  )
-                  .map((pb) => (
-                    <PlaybookCard key={pb.id} playbook={pb} onKick={setKickPlaybook} />
-                  ))}
+              <div className="space-y-3">
+                <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_12rem_auto]">
+                  <div className="relative">
+                    <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                    <Input
+                      aria-label="Search playbooks"
+                      value={search}
+                      onChange={(event) => setSearch(event.target.value)}
+                      placeholder="Search playbooks…"
+                      className="pl-9"
+                    />
+                  </div>
+                  <select
+                    aria-label="Sort playbooks"
+                    value={sort}
+                    onChange={(event) => setSort(event.target.value as PlaybookSort)}
+                    className="h-10 rounded-md border border-input bg-background px-3 text-sm"
+                  >
+                    {initialTarget ? <option value="recommended">Best match</option> : null}
+                    <option value="name">Name A–Z</option>
+                    <option value="steps_desc">Most steps</option>
+                    <option value="steps_asc">Fewest steps</option>
+                  </select>
+                  {initialTarget ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => setShowIncompatible((current) => !current)}
+                    >
+                      {showIncompatible ? "Applicable only" : "Show all playbooks"}
+                    </Button>
+                  ) : null}
+                </div>
+                <Tabs value={category} onValueChange={(value) => setCategory(value as "all" | PlaybookCategory)}>
+                  <TabsList>
+                    <TabsTrigger value="all">All ({searched.length})</TabsTrigger>
+                    {PLAYBOOK_CATEGORY_ORDER.map((value) => (
+                      <TabsTrigger key={value} value={value}>
+                        {PLAYBOOK_CATEGORY_LABEL[value]} ({categoryCounts.get(value) ?? 0})
+                      </TabsTrigger>
+                    ))}
+                  </TabsList>
+                  <TabsContent value={category} className="pt-3">
+                    {visibleCatalog.length === 0 ? (
+                      <p className="rounded-md border border-dashed border-border p-4 text-sm text-muted-foreground">
+                        No playbooks match this category, target, and search.
+                      </p>
+                    ) : (
+                      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3" aria-live="polite">
+                        {visibleCatalog.map((playbook) => (
+                          <PlaybookCard
+                            key={playbook.id}
+                            playbook={playbook}
+                            onKick={setKickPlaybook}
+                            canRun={canWrite}
+                            onEdit={
+                              canWrite && playbook.can_edit !== false
+                                ? setEditPlaybook
+                                : undefined
+                            }
+                          />
+                        ))}
+                      </div>
+                    )}
+                  </TabsContent>
+                </Tabs>
               </div>
             )}
           </>
@@ -255,7 +445,7 @@ export function PlaybooksTab({
                 No playbook runs on this engagement yet.
               </p>
             ) : (
-              <div className="overflow-hidden rounded-lg border border-border">
+              <div className="overflow-x-auto rounded-lg border border-border">
                 <table className="w-full text-left">
                   <thead className="bg-muted/50 text-xs uppercase tracking-wide text-muted-foreground">
                     <tr>
@@ -285,7 +475,7 @@ export function PlaybooksTab({
           engagementSlug={engagementSlug}
           playbook={kickPlaybook}
           initialTarget={
-            initialTarget?.type === kickPlaybook.applies_to_asset_class
+            initialTarget && isPlaybookApplicable(kickPlaybook, initialTarget.type)
               ? initialTarget
               : null
           }
@@ -293,9 +483,16 @@ export function PlaybooksTab({
           onClose={() => setKickPlaybook(null)}
         />
       ) : null}
+      {editPlaybook !== undefined ? (
+        <PlaybookEditorModal
+          playbook={editPlaybook}
+          onClose={() => setEditPlaybook(undefined)}
+        />
+      ) : null}
       {openRun ? (
         <RunDetailModal
           runId={openRun.id}
+          canWrite={canWrite}
           onClose={() => setOpenRun(null)}
         />
       ) : null}

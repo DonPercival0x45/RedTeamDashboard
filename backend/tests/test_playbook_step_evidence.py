@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fastapi.testclient import TestClient
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
 from app.db.session import SessionLocal
@@ -24,6 +24,7 @@ from app.models import (
     Playbook,
     PlaybookRun,
     PlaybookRunStatus,
+    PlaybookStep,
     PlaybookStepExecution,
     PlaybookStepExecutionStatus,
     ScopeItem,
@@ -49,6 +50,7 @@ from app.services.playbook.evidence import (
     redact_text,
 )
 from app.services.playbook.executor import substitute_scope
+from app.services.playbook.planning import build_execution_plan
 
 
 class ReceiptExecutor:
@@ -367,6 +369,13 @@ def test_authoritative_plan_hash_is_persisted_and_stale_preview_rejected(
     first_step.args_template = original_args
     db.commit()
 
+    missing_review = client.post(
+        f"/engagements/{engagement.slug}/playbook-runs",
+        headers=headers,
+        json=payload,
+    )
+    assert missing_review.status_code == 428
+
     created = client.post(
         f"/engagements/{engagement.slug}/playbook-runs",
         headers=headers,
@@ -377,6 +386,29 @@ def test_authoritative_plan_hash_is_persisted_and_stale_preview_rejected(
     run = db.get(PlaybookRun, uuid.UUID(created.json()["id"]))
     assert run is not None
     assert run.plan_snapshot == plan
+
+    # A privileged/out-of-band recipe change after enqueue must fail closed.
+    run_id = run.id
+    db.execute(
+        update(PlaybookStep)
+        .where(PlaybookStep.id == first_step.id)
+        .values(description=f"tampered-{uuid.uuid4()}")
+    )
+    db.commit()
+    db.expire_all()
+    refreshed_playbook = db.get(Playbook, playbook.id)
+    assert refreshed_playbook is not None
+    current_plan = build_execution_plan(
+        playbook=refreshed_playbook,
+        scope_subset=["example.com"],
+        required_executor="internal",
+    )
+    assert current_plan["plan_sha256"] != plan["plan_sha256"]
+    executor = ReceiptExecutor()
+    executed = execute_pending_run(db, run_id=run_id, executor=executor)
+    assert executed.status is PlaybookRunStatus.failed
+    assert executor.calls == []
+    assert "no longer matches" in (executed.last_error or "")
 
     stale = client.post(
         f"/engagements/{engagement.slug}/playbook-runs",

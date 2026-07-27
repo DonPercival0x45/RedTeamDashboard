@@ -5,6 +5,7 @@ Unknown/free-form identities remain case-sensitive. Raw legacy rows are never
 rewritten automatically; callers may use :func:`entity_identity_key` to surface
 ambiguous existing collisions for analyst grouping.
 """
+
 from __future__ import annotations
 
 import ipaddress
@@ -19,7 +20,6 @@ _CIDR_TYPES = {"cidr", "network", "netblock"}
 _URL_TYPES = {"url", "uri", "website"}
 _HASH_LENGTHS = {32, 40, 64, 128}
 _HEX_RE = re.compile(r"^[0-9a-fA-F]+$")
-_ASN_RE = re.compile(r"^(?:AS)?0*(\d+)$", re.IGNORECASE)
 _TYPE_ALIASES = {
     "fqdn": "domain",
     "hostname": "host",
@@ -72,8 +72,10 @@ def normalize_entity_value(entity_type: object, value: object) -> str:
     if kind in _URL_TYPES:
         return _normalize_url(normalized)
     if kind == "asn":
-        match = _ASN_RE.fullmatch(normalized)
-        return f"AS{int(match.group(1))}" if match else normalized
+        digits = normalized[2:] if normalized[:2].casefold() == "as" else normalized
+        if digits.isascii() and digits.isdecimal():
+            return f"AS{int(digits)}"
+        return normalized
     if (
         kind in {"hash", "md5", "sha1", "sha256", "sha512"}
         and len(normalized) in _HASH_LENGTHS

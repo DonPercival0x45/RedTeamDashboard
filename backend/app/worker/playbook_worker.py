@@ -18,6 +18,7 @@ Cancellation is handled inside ``execute_pending_run`` — a mid-run
 steps. No signal-handling here beyond the standard ``stop_event`` from
 ``worker/main.py``.
 """
+
 from __future__ import annotations
 
 import threading
@@ -202,8 +203,7 @@ class PlaybookWorkerThread:
         try:
             recovered = recover_abandoned_runs(
                 session,
-                stale_before=datetime.now(tz=UTC)
-                - timedelta(seconds=self._stale_after),
+                stale_before=datetime.now(tz=UTC) - timedelta(seconds=self._stale_after),
             )
             session.commit()
             for run in recovered:
@@ -252,9 +252,7 @@ class PlaybookWorkerThread:
                 daemon=True,
             )
             heartbeat_thread.start()
-            required_kinds = executor_kinds_for_tools(
-                step.tool_slug for step in run.playbook.steps
-            )
+            required_kinds = executor_kinds_for_tools(step.tool_slug for step in run.playbook.steps)
             delegates: dict[str, PlaybookExecutor] = {}
             if "internal" in required_kinds:
                 from app.services.playbook.tools.breach_lookup import run_from_store
@@ -302,12 +300,15 @@ class PlaybookWorkerThread:
                     context={
                         "engagement": {"slug": engagement.slug},
                         "acting_user_id": (
+                            str(run.approved_by or run.requested_by)
+                            if (run.approved_by or run.requested_by)
+                            else None
+                        ),
+                        "credential_owner_id": (
                             str(run.requested_by) if run.requested_by else None
                         ),
                         "playbook_run_id": str(run.id),
-                        "playbook_approved_by": (
-                            str(run.approved_by) if run.approved_by else None
-                        ),
+                        "playbook_approved_by": (str(run.approved_by) if run.approved_by else None),
                         "playbook_approved_at": (
                             run.approved_at.isoformat() if run.approved_at else None
                         ),
@@ -331,9 +332,7 @@ class PlaybookWorkerThread:
                 )
 
             executor = (
-                next(iter(delegates.values()))
-                if len(delegates) == 1
-                else RoutedExecutor(delegates)
+                next(iter(delegates.values())) if len(delegates) == 1 else RoutedExecutor(delegates)
             )
 
             def commit_progress(phase: str) -> bool:
@@ -355,10 +354,7 @@ class PlaybookWorkerThread:
                     return True
 
                 state = session.execute(
-                    text(
-                        "SELECT status, worker_id FROM playbook_runs "
-                        "WHERE id = :run_id"
-                    ),
+                    text("SELECT status, worker_id FROM playbook_runs WHERE id = :run_id"),
                     {"run_id": str(run.id)},
                 ).one()
                 if state.status == PlaybookRunStatus.cancelled.value:
@@ -374,9 +370,7 @@ class PlaybookWorkerThread:
                     return True
 
                 session.rollback()
-                raise RuntimeError(
-                    "playbook worker lease lost; execution stopped without retry"
-                )
+                raise RuntimeError("playbook worker lease lost; execution stopped without retry")
 
             execute_pending_run(
                 session,
@@ -422,10 +416,8 @@ class PlaybookWorkerThread:
                     row.worker_heartbeat_at = None
                 interrupted = list(
                     s2.query(PlaybookStepExecution).filter(
-                        PlaybookStepExecution.playbook_run_id
-                        == uuid.UUID(run_id_str),
-                        PlaybookStepExecution.status
-                        == PlaybookStepExecutionStatus.running,
+                        PlaybookStepExecution.playbook_run_id == uuid.UUID(run_id_str),
+                        PlaybookStepExecution.status == PlaybookStepExecutionStatus.running,
                     )
                 )
                 for receipt in interrupted:
@@ -454,9 +446,7 @@ class PlaybookWorkerThread:
             if heartbeat_stop is not None:
                 heartbeat_stop.set()
             if heartbeat_thread is not None:
-                heartbeat_thread.join(
-                    timeout=max(1.0, self._heartbeat_interval + 1.0)
-                )
+                heartbeat_thread.join(timeout=max(1.0, self._heartbeat_interval + 1.0))
             session.close()
 
     def run_once(self) -> bool:

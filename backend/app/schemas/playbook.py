@@ -5,14 +5,19 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.models.playbook_execution import PlaybookStepExecutionStatus
+from app.services.playbook.policy import (
+    normalize_entity_types,
+    validate_category,
+)
 
 
 class PlaybookStepRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
+    id: uuid.UUID
     sort_order: int
     tool_slug: str
     args_template: dict
@@ -31,6 +36,13 @@ class PlaybookRead(BaseModel):
     name: str
     description: str | None = None
     applies_to_asset_class: str
+    applicable_entity_types: list[str] = Field(default_factory=list)
+    category: str = "other"
+    origin: str = "system"
+    created_by: uuid.UUID | None = None
+    supersedes_id: uuid.UUID | None = None
+    can_edit: bool = False
+    has_runs: bool = False
     active: bool
     step_count: int = 0
     required_executor: str = "internal"
@@ -46,20 +58,18 @@ class PlaybookDetail(PlaybookRead):
     steps: list[PlaybookStepRead] = Field(default_factory=list)
 
 
-class PlaybookRunPayload(BaseModel):
-    """Request body for POST /engagements/{slug}/playbook-runs.
-
-    ``playbook_version`` is optional — omit to pin to latest at start.
-    ``scope_subset`` = analyst-declared scope_item_ids the run targets.
-    ``executor`` may echo the catalog's server-owned ``required_executor``.
-    When omitted, the server selects the compatible executor. An incompatible
-    explicit value is rejected before the run is queued.
-    """
+class PlaybookPlanPayload(BaseModel):
+    """Targets used to generate an authoritative execution plan."""
 
     playbook_slug: str
     playbook_version: int | None = None
-    scope_subset: list[str] = Field(default_factory=list)
+    scope_subset: list[str] = Field(default_factory=list, max_length=100)
     executor: str | None = None
+
+
+class PlaybookRunPayload(PlaybookPlanPayload):
+    """A run request must prove review of the current server plan."""
+
     plan_sha256: str | None = Field(default=None, min_length=64, max_length=64)
 
 
@@ -92,6 +102,7 @@ class PlaybookExecutionPlanRead(BaseModel):
     required_credentials: list[str] = Field(default_factory=list)
     scope_subset: list[str] = Field(default_factory=list)
     minimum_calls: int
+    maximum_calls: int
     dynamic_expansion: bool
     steps: list[PlaybookExecutionPlanStepRead] = Field(default_factory=list)
     safety_notes: list[str] = Field(default_factory=list)
@@ -192,34 +203,109 @@ class PlaybookApprovalPayload(BaseModel):
     reason: str | None = None
 
 
-class PlaybookCreatePayload(BaseModel):
-    """Request body for POST /playbooks — analyst-authored catalog entry."""
+class PlaybookStepCreatePayload(BaseModel):
+    """One analyst-authored step.
 
-    slug: str = Field(min_length=1, max_length=120)
+    Arguments and coverage are accepted for compatibility with older clients,
+    but authoring endpoints replace them with server-owned safe templates and
+    empty coverage mappings.
+    """
+
+    tool_slug: str = Field(min_length=1, max_length=120)
+    source_step_id: uuid.UUID | None = None
+    args_template: dict = Field(default_factory=dict)
+    satisfies_node_ids: list[str] = Field(default_factory=list)
+    sort_order: int | None = Field(default=None, ge=0, le=10_000)
+    description: str | None = Field(default=None, max_length=500)
+
+
+class PlaybookCreatePayload(BaseModel):
+    """Request body for an analyst-authored catalog entry."""
+
+    slug: str = Field(pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$", max_length=120)
     name: str = Field(min_length=1, max_length=200)
-    applies_to_asset_class: str = Field(min_length=1, max_length=80)
-    description: str | None = None
+    applies_to_asset_class: str | None = Field(default=None, max_length=80)
+    applicable_entity_types: list[str] = Field(default_factory=list, max_length=8)
+    category: str = "other"
+    description: str | None = Field(default=None, max_length=4_000)
     active: bool = False
+    steps: list[PlaybookStepCreatePayload] = Field(default_factory=list, max_length=20)
+
+    @model_validator(mode="after")
+    def validate_catalog_metadata(self) -> PlaybookCreatePayload:
+        values = self.applicable_entity_types or (
+            [self.applies_to_asset_class] if self.applies_to_asset_class else []
+        )
+        try:
+            self.applicable_entity_types = normalize_entity_types(values)
+            self.category = validate_category(self.category)
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
+        self.applies_to_asset_class = self.applicable_entity_types[0]
+        return self
+
+
+class PlaybookNewVersionPayload(BaseModel):
+    """Complete replacement recipe used to edit through immutable versions."""
+
+    expected_supersedes_id: uuid.UUID
+    expected_version: int = Field(ge=1)
+    name: str = Field(min_length=1, max_length=200)
+    applicable_entity_types: list[str] = Field(min_length=1, max_length=8)
+    category: str = "other"
+    description: str | None = Field(default=None, max_length=4_000)
+    active: bool = False
+    steps: list[PlaybookStepCreatePayload] = Field(min_length=1, max_length=20)
+
+    @model_validator(mode="after")
+    def validate_catalog_metadata(self) -> PlaybookNewVersionPayload:
+        try:
+            self.applicable_entity_types = normalize_entity_types(self.applicable_entity_types)
+            self.category = validate_category(self.category)
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
+        return self
 
 
 class PlaybookPatchPayload(BaseModel):
-    """Request body for PATCH /playbooks/{slug}. All fields optional so
-    partial updates carry only what changed."""
+    """Legacy in-place metadata patch for a never-run custom recipe."""
 
     name: str | None = Field(default=None, min_length=1, max_length=200)
-    description: str | None = None
-    applies_to_asset_class: str | None = Field(default=None, min_length=1, max_length=80)
+    description: str | None = Field(default=None, max_length=4_000)
+    applies_to_asset_class: str | None = Field(default=None, max_length=80)
+    applicable_entity_types: list[str] | None = Field(default=None, max_length=8)
+    category: str | None = None
     active: bool | None = None
 
+    @model_validator(mode="after")
+    def validate_catalog_metadata(self) -> PlaybookPatchPayload:
+        if self.applicable_entity_types is not None:
+            try:
+                self.applicable_entity_types = normalize_entity_types(self.applicable_entity_types)
+            except ValueError as exc:
+                raise ValueError(str(exc)) from exc
+        if self.category is not None:
+            try:
+                self.category = validate_category(self.category)
+            except ValueError as exc:
+                raise ValueError(str(exc)) from exc
+        return self
 
-class PlaybookStepCreatePayload(BaseModel):
-    """Request body for POST /playbooks/{slug}/steps."""
 
-    tool_slug: str = Field(min_length=1, max_length=120)
-    args_template: dict = Field(default_factory=dict)
-    satisfies_node_ids: list[str] = Field(default_factory=list)
-    sort_order: int | None = None
-    description: str | None = None
+class PlaybookToolRead(BaseModel):
+    slug: str
+    name: str
+    description: str
+    target_kinds: list[str]
+    transport: str
+    risk: str
+    credential: str | None = None
+
+
+class PlaybookCatalogOptionsRead(BaseModel):
+    categories: list[str]
+    entity_types: list[str]
+    tools: list[PlaybookToolRead]
 
 
 class PlaybookStepPatchPayload(BaseModel):

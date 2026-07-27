@@ -352,9 +352,63 @@ def test_cascade_exclusion_persists_review_and_marks_related_findings(
     restored_scope = list(
         db.execute(select(ScopeItem).where(ScopeItem.engagement_id == engagement.id)).scalars()
     )
-    assert len(restored_scope) == 1
-    assert restored_scope[0].value == "target.example"
-    assert restored_scope[0].is_exclusion is False
+    assert len(restored_scope) == 3
+    assert all(row.is_exclusion is False for row in restored_scope)
+    assert {row.value for row in restored_scope} == {
+        "target.example",
+        "203.0.113.10",
+        "203.0.113.11",
+    }
+
+
+def test_keep_adds_include_without_removing_independent_exclusion(
+    client: TestClient, db: Session, engagement: Engagement
+) -> None:
+    independent = ScopeItem(
+        engagement_id=engagement.id,
+        kind=ScopeKind.domain,
+        value="blocked.example",
+        is_exclusion=True,
+        source="manual",
+    )
+    db.add(independent)
+    db.commit()
+    request = {
+        "targets": [{"type": "domain", "value": "blocked.example"}],
+        "action": "keep",
+        "cascade": False,
+    }
+    preview = client.post(
+        f"/engagements/{engagement.slug}/entity-reviews/preview",
+        headers={"X-User-Id": "ent@example.com"},
+        json=request,
+    )
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["includes_to_create"] == 1
+    applied = client.post(
+        f"/engagements/{engagement.slug}/entity-reviews/apply",
+        headers={"X-User-Id": "ent@example.com"},
+        json={
+            **request,
+            "reason": "Confirmed engagement identity",
+            "preview_sha256": preview.json()["preview_sha256"],
+        },
+    )
+    assert applied.status_code == 200, applied.text
+    assert applied.json()["includes_created"] == 1
+    db.expire_all()
+    rules = list(
+        db.scalars(
+            select(ScopeItem).where(
+                ScopeItem.engagement_id == engagement.id,
+                ScopeItem.kind == ScopeKind.domain,
+                ScopeItem.value == "blocked.example",
+            )
+        )
+    )
+    assert len(rules) == 2
+    assert next(row for row in rules if row.is_exclusion).source == "manual"
+    assert next(row for row in rules if not row.is_exclusion).source == "entity_review_keep"
 
 
 def test_entity_review_does_not_capture_incidental_or_downgrade_outside_roe(
@@ -518,6 +572,7 @@ def test_colliding_entity_types_share_managed_exclusion_ownership(
         json=keep_domain,
     ).json()
     assert keep_preview["managed_exclusions_to_remove"] == 0
+    assert keep_preview["includes_to_create"] == 1
 
     keep_host = {
         "targets": [{"type": "host", "value": "shared.example"}],
@@ -530,6 +585,7 @@ def test_colliding_entity_types_share_managed_exclusion_ownership(
         json=keep_host,
     ).json()
     assert host_preview["managed_exclusions_to_remove"] == 0
+    assert host_preview["includes_to_create"] == 1
     host_kept = client.post(
         f"/engagements/{engagement.slug}/entity-reviews/apply",
         headers={"X-User-Id": "ent@example.com"},
@@ -540,6 +596,7 @@ def test_colliding_entity_types_share_managed_exclusion_ownership(
         },
     )
     assert host_kept.status_code == 200, host_kept.text
+    assert host_kept.json()["includes_created"] == 1
     stale_domain = client.post(
         f"/engagements/{engagement.slug}/entity-reviews/apply",
         headers={"X-User-Id": "ent@example.com"},
@@ -568,12 +625,13 @@ def test_colliding_entity_types_share_managed_exclusion_ownership(
     )
     assert kept.status_code == 200, kept.text
     db.expire_all()
-    assert (
-        db.execute(
-            select(ScopeItem).where(ScopeItem.engagement_id == engagement.id)
-        ).scalar_one_or_none()
-        is None
-    )
+    remaining_scope = db.execute(
+        select(ScopeItem).where(ScopeItem.engagement_id == engagement.id)
+    ).scalar_one()
+    assert remaining_scope.is_exclusion is False
+    assert remaining_scope.kind is ScopeKind.domain
+    assert remaining_scope.value == "shared.example"
+    assert remaining_scope.source == "entity_review_keep"
 
 
 def test_email_target_is_directly_included_in_entity_review(

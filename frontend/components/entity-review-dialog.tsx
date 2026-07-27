@@ -96,7 +96,7 @@ export function EntityReviewDialog({
           <DialogDescription>
             {action === "exclude"
               ? "Preview the authorization and Finding impact before applying exclusions."
-              : "Keep marks identities reviewed. It only reverses exclusions previously created by entity review; separately defined scope rules remain authoritative."}
+              : "Keep marks identities reviewed and adds exact include rules for scope-compatible identities. It also reverses exclusions previously created by entity review; separately defined exclusions remain authoritative."}
           </DialogDescription>
         </DialogHeader>
 
@@ -124,7 +124,7 @@ export function EntityReviewDialog({
                 <span className="mt-1 block text-xs text-muted-foreground">
                   {action === "exclude"
                     ? "Follow findings targeted directly at each selected entity, create exact exclusions for their downstream discoveries, and mark those direct Findings out of scope."
-                    : "Follow the same bounded discovery relationships and reverse entity-review-managed exclusions and Finding changes. Independently created exclusions are preserved."}
+                    : "Follow the same bounded discovery relationships, add exact include rules, and reverse entity-review-managed exclusions and Finding changes. Independently created exclusions are preserved."}
                 </span>
               </span>
             </label>
@@ -151,18 +151,28 @@ export function EntityReviewDialog({
             </Button>
           ) : (
             <section className="space-y-3 rounded-lg border border-border p-4">
-              <div className="grid gap-2 sm:grid-cols-3">
+              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
                 <div><p className="text-xl font-semibold">{preview.entities.length}</p><p className="text-xs text-muted-foreground">Entity dispositions</p></div>
                 <div>
                   <p className="text-xl font-semibold">
                     {action === "exclude"
                       ? preview.exclusions_to_create
-                      : preview.managed_exclusions_to_remove}
+                      : preview.includes_to_create}
                   </p>
                   <p className="text-xs text-muted-foreground">
-                    {action === "exclude" ? "Exclusions to create" : "Managed exclusions to restore"}
+                    {action === "exclude" ? "Exclusions to create" : "Scope includes to create"}
                   </p>
                 </div>
+                {action === "keep" ? (
+                  <div>
+                    <p className="text-xl font-semibold">
+                      {preview.managed_exclusions_to_remove}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      Managed exclusions to restore
+                    </p>
+                  </div>
+                ) : null}
                 <div>
                   <p className="text-xl font-semibold">
                     {action === "exclude"

@@ -22,6 +22,7 @@ Covers the runner's core contract:
 
 Uses a ``MockExecutor`` so we don't need real tools wired (that's A3b).
 """
+
 from __future__ import annotations
 
 import json
@@ -37,6 +38,7 @@ from sqlalchemy.orm import Session
 
 from app.engagement import milestones as ms
 from app.models import (
+    AuditLog,
     CommandOutbox,
     CoverageNodeTier,
     CoverageRecord,
@@ -187,14 +189,59 @@ def test_discovered_domains_expand_later_steps_with_scope_revalidation(
     )
 
     http_targets = [
-        call["scope_context"]
-        for call in executor.calls
-        if call["tool_slug"] == "mcp_httpx_probe"
+        call["scope_context"] for call in executor.calls if call["tool_slug"] == "mcp_httpx_probe"
     ]
     assert http_targets == ["api.foo.com", "foo.com"]
     assert all("__target_source" not in call["args"] for call in executor.calls)
     assert run.steps_total == 6
     assert run.steps_succeeded == 6
+
+
+def test_dynamic_expansion_stops_at_the_hard_call_budget(
+    db: Session, engagement_with_methodology: Engagement
+) -> None:
+    db.add(
+        ScopeItem(
+            engagement_id=engagement_with_methodology.id,
+            kind=ScopeKind.domain,
+            value="foo.com",
+        )
+    )
+    load_seed_playbooks(db)
+    playbook = catalog.get_by_slug(db, "domain-web-surface")
+    assert playbook is not None
+    executor = MockExecutor(
+        results={
+            "mcp_subfinder": StepResult(
+                ok=True,
+                data={
+                    "subdomains": [f"host-{index}.foo.com" for index in range(600)],
+                },
+            ),
+        },
+        default=StepResult(ok=True),
+    )
+
+    run = start_run(
+        db,
+        engagement=engagement_with_methodology,
+        playbook=playbook,
+        scope_subset=["foo.com"],
+        executor=executor,
+    )
+
+    assert len(executor.calls) == 500
+    assert run.status is PlaybookRunStatus.partial
+    assert run.steps_failed == 1
+    audit = db.scalar(
+        select(AuditLog).where(
+            AuditLog.event_type == "playbook_run.call_budget_exhausted",
+            AuditLog.engagement_id == engagement_with_methodology.id,
+        )
+    )
+    assert audit is not None
+    assert audit.payload["maximum_calls"] == 500
+    assert audit.payload["invocation_count"] == 500
 
 
 def test_stop_on_error_prevents_dependent_active_step(
@@ -257,11 +304,11 @@ def test_happy_path_completes_and_writes_coverage(
     assert run.findings_new == 10  # 5 steps × 2
     assert run.findings_total == 15
     # One CoverageRecord per satisfies_node per scope item.
-    records = db.execute(
-        select(CoverageRecord).where(
-            CoverageRecord.playbook_run_id == run.id
-        )
-    ).scalars().all()
+    records = (
+        db.execute(select(CoverageRecord).where(CoverageRecord.playbook_run_id == run.id))
+        .scalars()
+        .all()
+    )
     assert len(records) == 5
     for rec in records:
         assert rec.status is CoverageRecordStatus.satisfied
@@ -346,9 +393,7 @@ def test_happy_path_emits_collection_completed_milestone(
     envelope = json.loads(entry.encoded_payload["data"])
     assert envelope["type"] == ms.COLLECTION_JOB_COMPLETED
     assert envelope["playbook_run_id"] == str(run.id)
-    assert envelope["methodology_id"] == str(
-        engagement_with_methodology.methodology_id
-    )
+    assert envelope["methodology_id"] == str(engagement_with_methodology.methodology_id)
     assert envelope["asset_class"] == "domain"
     assert envelope["scope_subset"] == ["foo.com", "bar.com"]
     # node_ids across all steps, deduped + sorted.
@@ -404,12 +449,16 @@ def test_partial_status_when_some_steps_fail(
     assert whois_rec.status is CoverageRecordStatus.failed
     assert whois_rec.notes == "whois timeout"
     # Other four coverage records are satisfied.
-    satisfied = db.execute(
-        select(CoverageRecord).where(
-            CoverageRecord.playbook_run_id == run.id,
-            CoverageRecord.status == CoverageRecordStatus.satisfied,
+    satisfied = (
+        db.execute(
+            select(CoverageRecord).where(
+                CoverageRecord.playbook_run_id == run.id,
+                CoverageRecord.status == CoverageRecordStatus.satisfied,
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert len(satisfied) == 4
 
 
@@ -484,9 +533,7 @@ def test_empty_scope_subset_yields_failed_run(
     assert ex.calls == []
 
 
-def test_no_methodology_skips_milestone(
-    db: Session, osint_playbook: Playbook
-) -> None:
+def test_no_methodology_skips_milestone(db: Session, osint_playbook: Playbook) -> None:
     """When the engagement has no methodology selected, we don't emit
     ``collection.job.completed`` — B3's milestone payload requires a
     methodology_id."""
@@ -509,11 +556,11 @@ def test_no_methodology_skips_milestone(
         now=datetime(2026, 7, 23, tzinfo=UTC),
     )
     # Coverage records still get written — they don't require methodology_id.
-    records = db.execute(
-        select(CoverageRecord).where(
-            CoverageRecord.playbook_run_id == run.id
-        )
-    ).scalars().all()
+    records = (
+        db.execute(select(CoverageRecord).where(CoverageRecord.playbook_run_id == run.id))
+        .scalars()
+        .all()
+    )
     assert records != []
     # No milestone in the outbox.
     entry = db.execute(
@@ -641,9 +688,7 @@ def test_run_auto_detects_baseline_complete_and_transitions_phase(
     assert eng.baseline_completed_at is not None
     # baseline.completed milestone landed in the durable outbox.
     baseline_entry = db.execute(
-        select(CommandOutbox).where(
-            CommandOutbox.idempotency_key == f"baseline.completed:{eng.id}"
-        )
+        select(CommandOutbox).where(CommandOutbox.idempotency_key == f"baseline.completed:{eng.id}")
     ).scalar_one_or_none()
     assert baseline_entry is not None
     envelope = json.loads(baseline_entry.encoded_payload["data"])
@@ -687,11 +732,15 @@ def test_run_emits_coverage_gap_for_unsatisfied_nodes(
     # Phase NOT flipped (baseline incomplete).
     assert eng.phase is EngagementPhase.baseline
     # At least one coverage-gap signal emitted (one per failed node).
-    gap_entries = db.execute(
-        select(CommandOutbox).where(
-            CommandOutbox.idempotency_key.like(f"coverage.gap.opened:{eng.id}:%")
+    gap_entries = (
+        db.execute(
+            select(CommandOutbox).where(
+                CommandOutbox.idempotency_key.like(f"coverage.gap.opened:{eng.id}:%")
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert len(gap_entries) >= 1
     for entry in gap_entries:
         envelope = json.loads(entry.encoded_payload["data"])

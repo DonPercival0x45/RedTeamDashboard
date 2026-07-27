@@ -547,6 +547,26 @@ def _headers(u: User) -> dict[str, str]:
     return {"X-User-Id": u.email}
 
 
+def _post_reviewed_run(
+    client: TestClient,
+    *,
+    engagement_slug: str,
+    user: User,
+    payload: dict,
+):
+    plan = client.post(
+        f"/engagements/{engagement_slug}/playbook-runs/plan",
+        headers=_headers(user),
+        json=payload,
+    )
+    assert plan.status_code == 200, plan.text
+    return client.post(
+        f"/engagements/{engagement_slug}/playbook-runs",
+        headers=_headers(user),
+        json={**payload, "plan_sha256": plan.json()["plan_sha256"]},
+    )
+
+
 def test_execute_without_requester_omits_acting_user(
     db: Session, engagement: Engagement, playbook
 ) -> None:
@@ -581,10 +601,11 @@ def test_post_returns_202_with_pending_row(
     engagement: Engagement,
     playbook,
 ) -> None:
-    resp = client.post(
-        f"/engagements/{engagement.slug}/playbook-runs",
-        headers=_headers(user),
-        json={"playbook_slug": "osint-passive-domain", "scope_subset": ["foo.example"]},
+    resp = _post_reviewed_run(
+        client,
+        engagement_slug=engagement.slug,
+        user=user,
+        payload={"playbook_slug": "osint-passive-domain", "scope_subset": ["foo.example"]},
     )
     assert resp.status_code == 202
     body = resp.json()
@@ -600,10 +621,11 @@ def test_cancel_endpoint_transitions_pending_to_cancelled(
     engagement: Engagement,
     playbook,
 ) -> None:
-    post = client.post(
-        f"/engagements/{engagement.slug}/playbook-runs",
-        headers=_headers(user),
-        json={"playbook_slug": "osint-passive-domain", "scope_subset": ["foo.example"]},
+    post = _post_reviewed_run(
+        client,
+        engagement_slug=engagement.slug,
+        user=user,
+        payload={"playbook_slug": "osint-passive-domain", "scope_subset": ["foo.example"]},
     )
     run_id = post.json()["id"]
     cancel = client.post(f"/playbook-runs/{run_id}/cancel", headers=_headers(user))
@@ -644,10 +666,11 @@ def test_cancel_endpoint_guest_blocked(
     engagement: Engagement,
     playbook,
 ) -> None:
-    post = client.post(
-        f"/engagements/{engagement.slug}/playbook-runs",
-        headers=_headers(user),
-        json={"playbook_slug": "osint-passive-domain", "scope_subset": ["foo.example"]},
+    post = _post_reviewed_run(
+        client,
+        engagement_slug=engagement.slug,
+        user=user,
+        payload={"playbook_slug": "osint-passive-domain", "scope_subset": ["foo.example"]},
     )
     run_id = post.json()["id"]
     resp = client.post(f"/playbook-runs/{run_id}/cancel", headers=_headers(guest))

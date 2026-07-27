@@ -12,6 +12,7 @@
 // section per geo bucket; inner table lists SSID / BSSID / enc / channel.
 
 import { useMemo, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import {
@@ -37,6 +38,8 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { EntityReviewDialog } from "@/components/entity-review-dialog";
+import { EntitySlideOver } from "@/components/entities-view";
+import { ConfirmDialog } from "@/components/confirm-dialog";
 import {
   Tabs,
   TabsContent,
@@ -47,8 +50,11 @@ import {
   useEngagement,
   useEntities,
   useFindings,
+  qk,
+  useMe,
   useObservations,
   usePlaybookRuns,
+  useScope,
   useStoredEntities,
 } from "@/lib/hooks";
 import type {
@@ -56,10 +62,13 @@ import type {
   Finding,
   Observation,
   PlaybookRunRead,
+  ScopeItem,
   StoredEntity,
 } from "@/lib/types";
 import type { MapPoint } from "@/components/leaflet-map";
 import { effectiveScopeState } from "@/lib/effective-scope";
+import { deleteScopeItem, importScope } from "@/lib/api";
+import { scopeTargetForEntity } from "@/lib/entity-scope";
 import { engagementEntityHref } from "@/lib/engagement-links";
 import {
   buildDossierTimeline,
@@ -355,16 +364,21 @@ function relationshipVerb(kind: string): string {
 }
 
 export function DossierView({ slug }: { slug: string }) {
+  const qc = useQueryClient();
   const engagementQuery = useEngagement(slug);
   const findingsQuery = useFindings(slug);
   const entitiesQuery = useEntities(slug);
   const storedEntitiesQuery = useStoredEntities(slug);
+  const scopeQuery = useScope(slug);
+  const meQuery = useMe();
   const observationsQuery = useObservations(slug);
   const runsQuery = usePlaybookRuns(slug);
   const engagement = engagementQuery.data;
   const findings = findingsQuery.data ?? EMPTY_FINDINGS;
   const entities = entitiesQuery.data ?? EMPTY_ENTITIES;
   const storedEntities = storedEntitiesQuery.data ?? EMPTY_STORED_ENTITIES;
+  const scopeItems = scopeQuery.data ?? [];
+  const canWrite = meQuery.data !== undefined && meQuery.data.role !== "guest";
   const observations = observationsQuery.data ?? EMPTY_OBSERVATIONS;
   const runs = runsQuery.data ?? EMPTY_RUNS;
   const dossierQueries = [
@@ -386,6 +400,11 @@ export function DossierView({ slug }: { slug: string }) {
   const [timelineQuery, setTimelineQuery] = useState("");
   const [selectedEntityKeys, setSelectedEntityKeys] = useState<Set<string>>(new Set());
   const [reviewAction, setReviewAction] = useState<"keep" | "exclude" | null>(null);
+  const [selectedEntity, setSelectedEntity] = useState<Entity | null>(null);
+  const [scopeSaving, setScopeSaving] = useState(false);
+  const [scopeMessage, setScopeMessage] = useState<string | null>(null);
+  const [scopeError, setScopeError] = useState<string | null>(null);
+  const [pendingScopeRemoval, setPendingScopeRemoval] = useState<ScopeItem[]>([]);
 
   const entries = useMemo(() => {
     const map = new Map<string, DossierEntry>();
@@ -522,6 +541,69 @@ export function DossierView({ slug }: { slug: string }) {
   const validatedFindings = findings.filter(
     (finding) => finding.status === "validated",
   ).length;
+  const currentSelectedEntity = selectedEntity
+    ? entities.find(
+        (entity) =>
+          entity.type === selectedEntity.type && entity.value === selectedEntity.value,
+      ) ?? selectedEntity
+    : null;
+
+  const refreshEntityScope = async () => {
+    await Promise.all([
+      qc.invalidateQueries({ queryKey: qk.scope(slug) }),
+      qc.invalidateQueries({ queryKey: qk.entities(slug) }),
+      qc.invalidateQueries({ queryKey: qk.storedEntities(slug) }),
+      qc.invalidateQueries({ queryKey: qk.engagements() }),
+    ]);
+  };
+
+  const assignSelectedEntityScope = async (disposition: "include" | "exclude") => {
+    if (!selectedEntity || !canWrite || scopeSaving) return;
+    const target = scopeTargetForEntity(selectedEntity);
+    if (!target) return;
+    setScopeSaving(true);
+    setScopeMessage(null);
+    setScopeError(null);
+    try {
+      const result = await importScope(
+        slug,
+        `${disposition === "exclude" ? "!" : ""}${target.value}`,
+        "found",
+      );
+      if (result.errors.length > 0) {
+        throw new Error("This entity could not be converted into an exact scope rule.");
+      }
+      setScopeMessage(
+        disposition === "include" ? "Entity added to scope." : "Entity excluded from scope.",
+      );
+    } catch (error) {
+      setScopeError(error instanceof Error ? error.message : String(error));
+    } finally {
+      await refreshEntityScope();
+      setScopeSaving(false);
+    }
+  };
+
+  const removeSelectedScopeRules = async () => {
+    if (!canWrite || pendingScopeRemoval.length === 0 || scopeSaving) return;
+    setScopeSaving(true);
+    setScopeMessage(null);
+    setScopeError(null);
+    try {
+      await Promise.all(
+        pendingScopeRemoval.map((item) => deleteScopeItem(slug, item.id)),
+      );
+      setScopeMessage(
+        `${pendingScopeRemoval.length} exact scope ${pendingScopeRemoval.length === 1 ? "rule" : "rules"} removed.`,
+      );
+      setPendingScopeRemoval([]);
+    } catch (error) {
+      setScopeError(error instanceof Error ? error.message : String(error));
+    } finally {
+      await refreshEntityScope();
+      setScopeSaving(false);
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -832,9 +914,16 @@ export function DossierView({ slug }: { slug: string }) {
                   }}
                   className="absolute left-3 top-3 z-[1]"
                 />
-                <Link
-                  href={engagementEntityHref(slug, entity)}
-                  className="block p-3 pl-9 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                <button
+                  type="button"
+                  aria-haspopup="dialog"
+                  aria-label={`Open ${entity.type} ${entity.value}`}
+                  onClick={() => {
+                    setScopeMessage(null);
+                    setScopeError(null);
+                    setSelectedEntity(entity);
+                  }}
+                  className="block w-full p-3 pl-9 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
@@ -884,7 +973,7 @@ export function DossierView({ slug }: { slug: string }) {
                 <p className="mt-2 text-[10px] text-muted-foreground">
                   First seen {formatDateTime(entity.first_seen)} · Last seen {formatDateTime(entity.last_seen)}
                 </p>
-                </Link>
+                </button>
               </div>
               );
             })}
@@ -1211,6 +1300,36 @@ export function DossierView({ slug }: { slug: string }) {
       </TabsContent>
         </Tabs>
       )}
+      {currentSelectedEntity ? (
+        <EntitySlideOver
+          entity={currentSelectedEntity}
+          slug={slug}
+          onClose={() => setSelectedEntity(null)}
+          canWrite={canWrite}
+          scopeItems={scopeItems}
+          scopeSaving={scopeSaving}
+          scopeMessage={scopeMessage}
+          scopeError={scopeError}
+          onAssignScope={(disposition) => void assignSelectedEntityScope(disposition)}
+          onRemoveScopeRules={setPendingScopeRemoval}
+          doneTools={
+            new Set(
+              currentSelectedEntity.findings
+                .map((finding) => finding.tool)
+                .filter((tool): tool is string => Boolean(tool)),
+            )
+          }
+        />
+      ) : null}
+      <ConfirmDialog
+        open={pendingScopeRemoval.length > 0}
+        title={`Remove exact scope ${pendingScopeRemoval.length === 1 ? "rule" : "rules"}?`}
+        description="Removing an exact rule changes future authorization but preserves all findings and evidence."
+        confirmLabel="Remove rule"
+        busy={scopeSaving}
+        onConfirm={() => void removeSelectedScopeRules()}
+        onOpenChange={(open) => !open && !scopeSaving && setPendingScopeRemoval([])}
+      />
       {reviewAction && (
         <EntityReviewDialog
           slug={slug}

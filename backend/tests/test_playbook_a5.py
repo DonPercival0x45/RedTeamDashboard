@@ -15,6 +15,7 @@ Covers:
 - List endpoint honors ``?status=awaiting_approval`` filter for the
   approval queue view.
 """
+
 from __future__ import annotations
 
 import json
@@ -23,12 +24,13 @@ from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.db.session import SessionLocal
 from app.main import app
 from app.models import (
+    AuditLog,
     CommandOutbox,
     Engagement,
     EngagementArchitecture,
@@ -85,13 +87,13 @@ def engagement(db: Session) -> Engagement:
     db.flush()
     # POST /playbook-runs enforces in-scope-only; seed the target the HTTP
     # tests submit.
-    db.add(
-        ScopeItem(engagement_id=eng.id, kind=ScopeKind.domain, value="foo.com")
-    )
+    db.add(ScopeItem(engagement_id=eng.id, kind=ScopeKind.domain, value="foo.com"))
     db.flush()
     meth.load_seed_catalog(db)
     meth.select_for_engagement(
-        db, engagement_id=eng.id, slug="osint-minimal",
+        db,
+        engagement_id=eng.id,
+        slug="osint-minimal",
         now=datetime(2026, 7, 23, tzinfo=UTC),
     )
     db.commit()
@@ -147,7 +149,10 @@ def test_enqueue_active_playbook_yields_awaiting_approval(
     db: Session, engagement: Engagement, active_playbook: Playbook
 ) -> None:
     run = enqueue_run(
-        db, engagement=engagement, playbook=active_playbook, scope_subset=["foo.com"],
+        db,
+        engagement=engagement,
+        playbook=active_playbook,
+        scope_subset=["foo.com"],
     )
     db.flush()
     assert run.status is PlaybookRunStatus.awaiting_approval
@@ -159,7 +164,10 @@ def test_enqueue_inactive_playbook_yields_pending(
     db: Session, engagement: Engagement, inactive_playbook: Playbook
 ) -> None:
     run = enqueue_run(
-        db, engagement=engagement, playbook=inactive_playbook, scope_subset=["foo.com"],
+        db,
+        engagement=engagement,
+        playbook=inactive_playbook,
+        scope_subset=["foo.com"],
     )
     db.flush()
     assert run.status is PlaybookRunStatus.pending
@@ -176,7 +184,10 @@ def test_worker_claim_skips_awaiting_approval(
     """``claim_next_pending`` only sees ``status='pending'`` rows so a
     gated run sits until an analyst approves it."""
     enqueue_run(
-        db, engagement=engagement, playbook=active_playbook, scope_subset=["foo.com"],
+        db,
+        engagement=engagement,
+        playbook=active_playbook,
+        scope_subset=["foo.com"],
     )
     db.commit()
     assert claim_next_pending(db) is None
@@ -205,11 +216,16 @@ def test_approve_flips_to_pending_and_stamps_attribution(
     db: Session, engagement: Engagement, active_playbook: Playbook, approver: User
 ) -> None:
     run = enqueue_run(
-        db, engagement=engagement, playbook=active_playbook, scope_subset=["foo.com"],
+        db,
+        engagement=engagement,
+        playbook=active_playbook,
+        scope_subset=["foo.com"],
     )
     db.commit()
     result = approve_run(
-        db, run_id=run.id, approver_id=approver.id,
+        db,
+        run_id=run.id,
+        approver_id=approver.id,
         reason="analyst signed off",
         now=datetime(2026, 7, 23, tzinfo=UTC),
     )
@@ -245,9 +261,11 @@ def test_approved_run_milestone_uses_approver_identity(
     execute_pending_run(db, run_id=run.id, executor=_SuccessExecutor())
     db.flush()
 
-    entry = db.query(CommandOutbox).filter_by(
-        idempotency_key=f"collection.job.completed:{run.id}"
-    ).one()
+    entry = (
+        db.query(CommandOutbox)
+        .filter_by(idempotency_key=f"collection.job.completed:{run.id}")
+        .one()
+    )
     envelope = json.loads(entry.encoded_payload["data"])
     assert run.requested_by == requester.id
     assert run.approved_by == approver.id
@@ -260,14 +278,19 @@ def test_approve_is_idempotent_after_first_call(
     """A second approve on an already-approved run is a no-op — doesn't
     re-stamp timestamps, doesn't error."""
     run = enqueue_run(
-        db, engagement=engagement, playbook=active_playbook, scope_subset=["foo.com"],
+        db,
+        engagement=engagement,
+        playbook=active_playbook,
+        scope_subset=["foo.com"],
     )
     db.commit()
     first_ts = datetime(2026, 7, 23, tzinfo=UTC)
     approve_run(db, run_id=run.id, approver_id=approver.id, now=first_ts)
     db.commit()
     approve_run(
-        db, run_id=run.id, approver_id=approver.id,
+        db,
+        run_id=run.id,
+        approver_id=approver.id,
         now=datetime(2026, 7, 24, tzinfo=UTC),  # different time
     )
     db.commit()
@@ -281,7 +304,9 @@ def test_approve_non_awaiting_raises(
     """A pending run (not awaiting) can't be approved — it's already
     claimable."""
     run = enqueue_run(
-        db, engagement=engagement, playbook=inactive_playbook,
+        db,
+        engagement=engagement,
+        playbook=inactive_playbook,
         scope_subset=["foo.com"],
     )
     db.commit()
@@ -289,9 +314,7 @@ def test_approve_non_awaiting_raises(
         approve_run(db, run_id=run.id, approver_id=approver.id)
 
 
-def test_approve_unknown_raises_keyerror(
-    db: Session, approver: User
-) -> None:
+def test_approve_unknown_raises_keyerror(db: Session, approver: User) -> None:
     with pytest.raises(KeyError):
         approve_run(db, run_id=uuid.uuid4(), approver_id=approver.id)
 
@@ -305,11 +328,16 @@ def test_reject_flips_to_cancelled_and_stamps_attribution(
     db: Session, engagement: Engagement, active_playbook: Playbook, approver: User
 ) -> None:
     run = enqueue_run(
-        db, engagement=engagement, playbook=active_playbook, scope_subset=["foo.com"],
+        db,
+        engagement=engagement,
+        playbook=active_playbook,
+        scope_subset=["foo.com"],
     )
     db.commit()
     result = reject_run(
-        db, run_id=run.id, approver_id=approver.id,
+        db,
+        run_id=run.id,
+        approver_id=approver.id,
         reason="scope not covered",
         now=datetime(2026, 7, 23, tzinfo=UTC),
     )
@@ -326,7 +354,9 @@ def test_reject_non_awaiting_raises(
     db: Session, engagement: Engagement, inactive_playbook: Playbook, approver: User
 ) -> None:
     run = enqueue_run(
-        db, engagement=engagement, playbook=inactive_playbook,
+        db,
+        engagement=engagement,
+        playbook=inactive_playbook,
         scope_subset=["foo.com"],
     )
     db.commit()
@@ -362,18 +392,42 @@ def _headers(u: User) -> dict[str, str]:
     return {"X-User-Id": u.email}
 
 
+def _post_reviewed_run(
+    client: TestClient,
+    *,
+    engagement_slug: str,
+    user: User,
+    payload: dict,
+):
+    plan = client.post(
+        f"/engagements/{engagement_slug}/playbook-runs/plan",
+        headers=_headers(user),
+        json=payload,
+    )
+    assert plan.status_code == 200, plan.text
+    return client.post(
+        f"/engagements/{engagement_slug}/playbook-runs",
+        headers=_headers(user),
+        json={**payload, "plan_sha256": plan.json()["plan_sha256"]},
+    )
+
+
 def test_post_run_active_playbook_returns_awaiting(
-    db: Session, client: TestClient, engagement: Engagement,
-    active_playbook: Playbook, approver: User,
+    db: Session,
+    client: TestClient,
+    engagement: Engagement,
+    active_playbook: Playbook,
+    approver: User,
 ) -> None:
     """POST against an active playbook returns 202 with status=awaiting_approval,
     not pending."""
     # The catalog endpoint installs seeds by default; make sure our custom
     # gated playbook is visible by referencing it directly.
-    resp = client.post(
-        f"/engagements/{engagement.slug}/playbook-runs",
-        headers=_headers(approver),
-        json={
+    resp = _post_reviewed_run(
+        client,
+        engagement_slug=engagement.slug,
+        user=approver,
+        payload={
             "playbook_slug": active_playbook.slug,
             "scope_subset": ["foo.com"],
         },
@@ -383,13 +437,17 @@ def test_post_run_active_playbook_returns_awaiting(
 
 
 def test_approve_endpoint_flips_and_returns_attribution(
-    db: Session, client: TestClient, engagement: Engagement,
-    active_playbook: Playbook, approver: User,
+    db: Session,
+    client: TestClient,
+    engagement: Engagement,
+    active_playbook: Playbook,
+    approver: User,
 ) -> None:
-    post = client.post(
-        f"/engagements/{engagement.slug}/playbook-runs",
-        headers=_headers(approver),
-        json={"playbook_slug": active_playbook.slug, "scope_subset": ["foo.com"]},
+    post = _post_reviewed_run(
+        client,
+        engagement_slug=engagement.slug,
+        user=approver,
+        payload={"playbook_slug": active_playbook.slug, "scope_subset": ["foo.com"]},
     )
     run_id = post.json()["id"]
     resp = client.post(
@@ -402,11 +460,34 @@ def test_approve_endpoint_flips_and_returns_attribution(
     assert body["status"] == PlaybookRunStatus.pending.value
     assert body["approved_by"] == str(approver.id)
     assert body["approval_reason"] == "reviewed and signed off"
+    audit = db.scalar(
+        select(AuditLog).where(
+            AuditLog.event_type == "playbook.approved",
+            AuditLog.payload["playbook_run_id"].astext == str(run_id),
+        )
+    )
+    assert audit is not None
+    assert audit.actor_id == str(approver.id)
+    repeated = client.post(
+        f"/playbook-runs/{run_id}/approve",
+        headers=_headers(approver),
+        json={"reason": "duplicate click"},
+    )
+    assert repeated.status_code == 200
+    assert (
+        len(
+            db.scalars(
+                select(AuditLog).where(
+                    AuditLog.event_type == "playbook.approved",
+                    AuditLog.payload["playbook_run_id"].astext == str(run_id),
+                )
+            ).all()
+        )
+        == 1
+    )
 
 
-def test_approve_endpoint_unknown_404(
-    client: TestClient, approver: User
-) -> None:
+def test_approve_endpoint_unknown_404(client: TestClient, approver: User) -> None:
     resp = client.post(
         f"/playbook-runs/{uuid.uuid4()}/approve",
         headers=_headers(approver),
@@ -416,13 +497,17 @@ def test_approve_endpoint_unknown_404(
 
 
 def test_approve_endpoint_non_awaiting_409(
-    db: Session, client: TestClient, engagement: Engagement,
-    inactive_playbook: Playbook, approver: User,
+    db: Session,
+    client: TestClient,
+    engagement: Engagement,
+    inactive_playbook: Playbook,
+    approver: User,
 ) -> None:
-    post = client.post(
-        f"/engagements/{engagement.slug}/playbook-runs",
-        headers=_headers(approver),
-        json={"playbook_slug": "osint-passive-domain", "scope_subset": ["foo.com"]},
+    post = _post_reviewed_run(
+        client,
+        engagement_slug=engagement.slug,
+        user=approver,
+        payload={"playbook_slug": "osint-passive-domain", "scope_subset": ["foo.com"]},
     )
     run_id = post.json()["id"]
     resp = client.post(
@@ -434,13 +519,18 @@ def test_approve_endpoint_non_awaiting_409(
 
 
 def test_approve_endpoint_guest_blocked(
-    db: Session, client: TestClient, engagement: Engagement,
-    active_playbook: Playbook, approver: User, guest_user: User,
+    db: Session,
+    client: TestClient,
+    engagement: Engagement,
+    active_playbook: Playbook,
+    approver: User,
+    guest_user: User,
 ) -> None:
-    post = client.post(
-        f"/engagements/{engagement.slug}/playbook-runs",
-        headers=_headers(approver),
-        json={"playbook_slug": active_playbook.slug, "scope_subset": ["foo.com"]},
+    post = _post_reviewed_run(
+        client,
+        engagement_slug=engagement.slug,
+        user=approver,
+        payload={"playbook_slug": active_playbook.slug, "scope_subset": ["foo.com"]},
     )
     run_id = post.json()["id"]
     resp = client.post(
@@ -452,13 +542,17 @@ def test_approve_endpoint_guest_blocked(
 
 
 def test_reject_endpoint_flips_and_carries_reason(
-    db: Session, client: TestClient, engagement: Engagement,
-    active_playbook: Playbook, approver: User,
+    db: Session,
+    client: TestClient,
+    engagement: Engagement,
+    active_playbook: Playbook,
+    approver: User,
 ) -> None:
-    post = client.post(
-        f"/engagements/{engagement.slug}/playbook-runs",
-        headers=_headers(approver),
-        json={"playbook_slug": active_playbook.slug, "scope_subset": ["foo.com"]},
+    post = _post_reviewed_run(
+        client,
+        engagement_slug=engagement.slug,
+        user=approver,
+        payload={"playbook_slug": active_playbook.slug, "scope_subset": ["foo.com"]},
     )
     run_id = post.json()["id"]
     resp = client.post(
@@ -471,16 +565,45 @@ def test_reject_endpoint_flips_and_carries_reason(
     assert body["status"] == PlaybookRunStatus.cancelled.value
     assert body["rejection_reason"] == "wrong scope selection"
     assert body["rejected_by"] == str(approver.id)
+    audit = db.scalar(
+        select(AuditLog).where(
+            AuditLog.event_type == "playbook.rejected",
+            AuditLog.payload["playbook_run_id"].astext == str(run_id),
+        )
+    )
+    assert audit is not None
+    assert audit.payload["reason"] == "wrong scope selection"
+    repeated = client.post(
+        f"/playbook-runs/{run_id}/reject",
+        headers=_headers(approver),
+        json={"reason": "duplicate click"},
+    )
+    assert repeated.status_code == 200
+    assert (
+        len(
+            db.scalars(
+                select(AuditLog).where(
+                    AuditLog.event_type == "playbook.rejected",
+                    AuditLog.payload["playbook_run_id"].astext == str(run_id),
+                )
+            ).all()
+        )
+        == 1
+    )
 
 
 def test_reject_endpoint_requires_reason_422(
-    db: Session, client: TestClient, engagement: Engagement,
-    active_playbook: Playbook, approver: User,
+    db: Session,
+    client: TestClient,
+    engagement: Engagement,
+    active_playbook: Playbook,
+    approver: User,
 ) -> None:
-    post = client.post(
-        f"/engagements/{engagement.slug}/playbook-runs",
-        headers=_headers(approver),
-        json={"playbook_slug": active_playbook.slug, "scope_subset": ["foo.com"]},
+    post = _post_reviewed_run(
+        client,
+        engagement_slug=engagement.slug,
+        user=approver,
+        payload={"playbook_slug": active_playbook.slug, "scope_subset": ["foo.com"]},
     )
     run_id = post.json()["id"]
     resp = client.post(
@@ -497,19 +620,25 @@ def test_reject_endpoint_requires_reason_422(
 
 
 def test_list_runs_status_filter(
-    db: Session, client: TestClient, engagement: Engagement,
-    active_playbook: Playbook, inactive_playbook: Playbook, approver: User,
+    db: Session,
+    client: TestClient,
+    engagement: Engagement,
+    active_playbook: Playbook,
+    inactive_playbook: Playbook,
+    approver: User,
 ) -> None:
     # One awaiting_approval + one pending.
-    client.post(
-        f"/engagements/{engagement.slug}/playbook-runs",
-        headers=_headers(approver),
-        json={"playbook_slug": active_playbook.slug, "scope_subset": ["foo.com"]},
+    _post_reviewed_run(
+        client,
+        engagement_slug=engagement.slug,
+        user=approver,
+        payload={"playbook_slug": active_playbook.slug, "scope_subset": ["foo.com"]},
     )
-    client.post(
-        f"/engagements/{engagement.slug}/playbook-runs",
-        headers=_headers(approver),
-        json={"playbook_slug": "osint-passive-domain", "scope_subset": ["bar.com"]},
+    _post_reviewed_run(
+        client,
+        engagement_slug=engagement.slug,
+        user=approver,
+        payload={"playbook_slug": "osint-passive-domain", "scope_subset": ["foo.com"]},
     )
     resp = client.get(
         f"/engagements/{engagement.slug}/playbook-runs?status=awaiting_approval",
