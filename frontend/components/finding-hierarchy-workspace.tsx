@@ -15,6 +15,10 @@ import type { KeyboardEvent } from "react";
 
 import { createFindingFromHierarchyItem } from "@/lib/api";
 import {
+  FindingActionWizard,
+  FindingGroupsPanel,
+} from "@/components/finding-group-workspace";
+import {
   FINDING_WORKSPACE_VIEWS,
   filterHierarchy,
 } from "@/lib/finding-hierarchy";
@@ -338,6 +342,7 @@ export function FindingHierarchyWorkspace({
   onViewChange,
   onCreated,
   onUseClassic,
+  findings = [],
 }: {
   slug: string;
   canWrite: boolean;
@@ -345,12 +350,14 @@ export function FindingHierarchyWorkspace({
   onViewChange: (view: FindingWorkspaceView) => void;
   onCreated: (finding: Finding) => void;
   onUseClassic: () => void;
+  findings?: Finding[];
 }) {
   const query = useFindingHierarchy(slug);
   const [search, setSearch] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [selected, setSelected] = useState<FindingHierarchyItem | null>(null);
   const [creating, setCreating] = useState<FindingHierarchyItem | null>(null);
+  const [showActionWizard, setShowActionWizard] = useState(false);
   const visible = useMemo(
     () =>
       filterHierarchy(
@@ -389,8 +396,9 @@ export function FindingHierarchyWorkspace({
     <div className="space-y-4">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div><h2 className="flex items-center gap-2 text-base font-semibold"><Layers3 className="h-4 w-4" /> Entity-centred Findings</h2><p className="text-xs text-muted-foreground">Prioritized IP and domain bundles. Source Findings, evidence, and lifecycle remain independent.</p></div>
-        {canWrite && <Button type="button" size="sm" variant="outline" onClick={onUseClassic}>Classic table</Button>}
+        {canWrite ? <div className="flex gap-2"><Button type="button" size="sm" onClick={() => setShowActionWizard(true)}><Plus className="mr-1.5 h-4 w-4" />Create or group</Button><Button type="button" size="sm" variant="outline" onClick={onUseClassic}>Classic table</Button></div> : null}
       </div>
+      <FindingGroupsPanel slug={slug} findings={findings} canWrite={canWrite} />
       <div role="tablist" aria-label="Finding workspace views" className="flex flex-wrap gap-1 rounded-lg border border-border bg-muted/30 p-1">
         {FINDING_WORKSPACE_VIEWS.map((option, index) => (
           <button key={option.value} type="button" role="tab" aria-selected={view === option.value} aria-controls="finding-workspace-panel" tabIndex={view === option.value ? 0 : -1} onKeyDown={(event) => moveTabFocus(event, index)} onClick={() => onViewChange(option.value)} className={cn("rounded-md px-3 py-1.5 text-xs", view === option.value ? "bg-background font-medium shadow-sm" : "text-muted-foreground hover:text-foreground")}>
@@ -404,6 +412,7 @@ export function FindingHierarchyWorkspace({
       </div>
       {selected && <ItemDetail item={selected} slug={slug} onClose={() => setSelected(null)} onCreate={setCreating} canWrite={canWrite} view={view} />}
       {creating && <CreateFindingFromItemDialog slug={slug} item={creating} onClose={() => setCreating(null)} onCreated={onCreated} view={view} />}
+      {showActionWizard && <FindingActionWizard slug={slug} findings={findings} onClose={() => setShowActionWizard(false)} onFindingCreated={onCreated} />}
     </div>
   );
 }

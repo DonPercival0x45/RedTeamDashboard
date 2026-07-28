@@ -16,6 +16,7 @@ export function ConfirmDialog({
   title,
   description,
   confirmLabel = "Delete",
+  busyLabel = "Deleting…",
   busy = false,
   onConfirm,
   onOpenChange,
@@ -24,6 +25,7 @@ export function ConfirmDialog({
   title: string;
   description: React.ReactNode;
   confirmLabel?: string;
+  busyLabel?: string;
   busy?: boolean;
   onConfirm: () => void | Promise<void>;
   onOpenChange: (open: boolean) => void;
@@ -54,7 +56,7 @@ export function ConfirmDialog({
             onClick={() => void onConfirm()}
           >
             {busy ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : null}
-            {busy ? "Deleting…" : confirmLabel}
+            {busy ? busyLabel : confirmLabel}
           </Button>
         </DialogFooter>
       </DialogContent>

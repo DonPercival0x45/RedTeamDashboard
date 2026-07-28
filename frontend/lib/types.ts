@@ -260,6 +260,49 @@ export interface FindingCreate {
   tags?: string[];
 }
 
+export interface FindingGroupCreate {
+  name: string;
+  rationale: string;
+  finding_ids: string[];
+  idempotency_key: string;
+}
+
+export interface FindingGroupUpdate {
+  expected_row_version: number;
+  name: string;
+  rationale: string;
+  finding_ids: string[];
+}
+
+export interface FindingGroupMember {
+  finding_id: string;
+  sort_order: number;
+  available: boolean;
+  finding: Finding;
+}
+
+export interface FindingGroupRollup {
+  member_count: number;
+  available_members: number;
+  unavailable_members: number;
+  max_severity: Severity;
+  status_counts: Record<string, number>;
+  excluded_count: number;
+}
+
+export interface FindingGroup {
+  id: string;
+  engagement_id: string;
+  name: string;
+  rationale: string;
+  created_by_user_id: string | null;
+  row_version: number;
+  created_at: string;
+  updated_at: string;
+  members: FindingGroupMember[];
+  rollup: FindingGroupRollup;
+}
+
 export type FindingWorkspaceView =
   | "focus"
   | "needs_review"

@@ -169,6 +169,7 @@ function EngagementDetail({ slug }: { slug: string }) {
         qc.invalidateQueries({ queryKey: qk.reportReadiness(slug) }),
         qc.invalidateQueries({ queryKey: qk.findingActivity(finding.id) }),
         qc.invalidateQueries({ queryKey: qk.findingHierarchy(slug) }),
+        qc.invalidateQueries({ queryKey: qk.findingGroups(slug) }),
         qc.invalidateQueries({ queryKey: qk.entities(slug) }),
       ]);
     },
@@ -180,6 +181,7 @@ function EngagementDetail({ slug }: { slug: string }) {
       void Promise.all([
         qc.invalidateQueries({ queryKey: qk.reportReadiness(slug) }),
         qc.invalidateQueries({ queryKey: qk.findingHierarchy(slug) }),
+        qc.invalidateQueries({ queryKey: qk.findingGroups(slug) }),
         qc.invalidateQueries({ queryKey: qk.entities(slug) }),
       ]);
     },
@@ -232,6 +234,7 @@ function EngagementDetail({ slug }: { slug: string }) {
           void Promise.all([
             qc.invalidateQueries({ queryKey: qk.reportReadiness(slug) }),
             qc.invalidateQueries({ queryKey: qk.findingHierarchy(slug) }),
+            qc.invalidateQueries({ queryKey: qk.findingGroups(slug) }),
             qc.invalidateQueries({ queryKey: qk.entities(slug) }),
             qc.invalidateQueries({ queryKey: ["stored-entities", slug] }),
           ]);
@@ -242,6 +245,7 @@ function EngagementDetail({ slug }: { slug: string }) {
             qc.invalidateQueries({ queryKey: qk.findings(slug) }),
             qc.invalidateQueries({ queryKey: qk.reportReadiness(slug) }),
             qc.invalidateQueries({ queryKey: qk.findingHierarchy(slug) }),
+            qc.invalidateQueries({ queryKey: qk.findingGroups(slug) }),
             qc.invalidateQueries({ queryKey: qk.entities(slug) }),
             qc.invalidateQueries({ queryKey: ["stored-entities", slug] }),
           ]);
