@@ -67,6 +67,7 @@ from app.services.findings import (
     lock_active_finding_or_404,
 )
 from app.services.maltego_import import parse_mtgx
+from app.services.maltego_mtgl_import import looks_like_mtgl, parse_mtgl
 
 router = APIRouter()
 
@@ -1246,11 +1247,17 @@ def import_maltego(
     slug: str,
     session: DbSession,
     user: CurrentNonGuestUser,
-    file: Annotated[UploadFile, File(..., description="Maltego .mtgx export.")],
+    file: Annotated[UploadFile, File(..., description="Maltego .mtgl or .mtgx export.")],
 ) -> MaltegoImportResult:
-    """Import a Maltego ``.mtgx`` graph export into the stored entities table.
+    """Import a Maltego ``.mtgl`` (Maltego 4.11+) or ``.mtgx`` (legacy)
+    graph export into the stored entities table.
 
-    Each ``MaltegoEntity`` becomes an ``Entity`` with ``source_tool="maltego_import"``
+    Dispatches on internal structure, not filename: ``.mtgl`` archives
+    contain a Lucene index at ``Graphs/Graph1/DataEntities/`` and are
+    read by the Java sidecar; ``.mtgx`` archives contain
+    ``Graphs/*.graphml`` and are parsed inline.
+
+    Each entity becomes an ``Entity`` row with ``source_tool="maltego_import"``
     and ``source_attribution=<filename>``. Re-imports merge into existing
     rows via UPSERT on ``(engagement_id, type, value)`` — properties
     JSONB is concatenated so prior keys not in the new payload are
@@ -1261,9 +1268,16 @@ def import_maltego(
     raw = file.file.read()
     attribution = file.filename or "maltego.mtgx"
     try:
-        result = parse_mtgx(raw, source_attribution=attribution)
+        if looks_like_mtgl(raw):
+            result = parse_mtgl(raw, source_attribution=attribution)
+        else:
+            result = parse_mtgx(raw, source_attribution=attribution)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        # Sidecar JAR missing in the runtime image — surface a clear
+        # 500 to the analyst instead of a generic error.
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     try:
         inserted, merged = entity_store.persist_entities(

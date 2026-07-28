@@ -15,6 +15,17 @@ ENV CGO_ENABLED=0 \
     GOFLAGS=-trimpath
 RUN go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@${SUBFINDER_VERSION}
 
+# --- mtgl2json (Maltego .mtgl Lucene sidecar) builder ------------------------
+# v3.6.0: Maltego 4.11 replaced the GraphML-based .mtgx export with a
+# Lucene-indexed .mtgl archive. Reading it requires Apache Lucene, so we
+# build a tiny Java 17 CLI here and copy the shaded fat JAR into the
+# runtime image (~15 MB). Python shells to it via subprocess.
+FROM maven:3.9-eclipse-temurin-17 AS mtgl2json-builder
+WORKDIR /build
+COPY tools/mtgl2json/pom.xml ./pom.xml
+COPY tools/mtgl2json/src ./src
+RUN mvn -q -DskipTests package
+
 # --- docker CLI stage --------------------------------------------------------
 # v0.12.0: LocalDockerRunner spawns sibling containers via the mounted
 # docker socket. Debian's docker.io package ships only the daemon;
@@ -48,7 +59,12 @@ RUN apt-get update \
         libffi-dev \
         shared-mime-info \
         fonts-dejavu-core \
+        openjdk-21-jre-headless \
  && rm -rf /var/lib/apt/lists/*
+
+# v3.6.0: Maltego .mtgl (Lucene) sidecar. Python's maltego_mtgl_import
+# service shells to this JAR to parse .mtgl uploads.
+COPY --from=mtgl2json-builder /build/target/mtgl2json.jar /opt/mtgl2json/mtgl2json.jar
 
 # v0.12.0: docker CLI copied in from a dedicated stage above. Only the
 # client binary — the daemon is NOT running inside this container;

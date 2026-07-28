@@ -7,3 +7,6 @@ venv/
 .mypy_cache/
 .env
 .env.*
+# mtgl2json Java build artifacts — rebuilt inside the docker stage,
+# never used from the host tree at runtime.
+tools/mtgl2json/target/
