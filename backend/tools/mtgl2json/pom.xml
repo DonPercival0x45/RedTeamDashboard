@@ -15,7 +15,11 @@
         <maven.compiler.target>17</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <lucene.version>6.6.6</lucene.version>
-        <jackson.version>2.16.1</jackson.version>
+        <!-- jackson.version pinned to a fix for GHSA-r7wm-3cxj-wff9
+             (jackson-core async parser maxNumberLength bypass, HIGH).
+             We only use jackson-core's streaming JsonGenerator, but Trivy
+             flags the transitive dep regardless of usage. -->
+        <jackson.version>2.18.8</jackson.version>
     </properties>
 
     <dependencies>
@@ -31,7 +35,7 @@
         </dependency>
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
-            <artifactId>jackson-databind</artifactId>
+            <artifactId>jackson-core</artifactId>
             <version>${jackson.version}</version>
         </dependency>
     </dependencies>
