@@ -963,10 +963,10 @@ function ImportedEntitiesSection({
     setUploading(true);
     setUploadError(null);
     try {
-      // Route by extension. .mtgx → Maltego (zip-of-GraphML);
+      // Route by extension. .mtgl / .mtgx → Maltego (zip-of-GraphML);
       // .json/.csv → DarkWeb (Dehashed today, more sources later).
       const name = file.name.toLowerCase();
-      if (name.endsWith(".mtgx")) {
+      if (name.endsWith(".mtgl") || name.endsWith(".mtgx")) {
         const result = await importEntitiesMaltego(slug, file);
         setLastImport({ kind: "maltego", result });
         qc.setQueryData<StoredEntity[]>(
@@ -982,7 +982,7 @@ function ImportedEntitiesSection({
         );
       } else {
         setUploadError(
-          "Unrecognized file type — upload .mtgx (Maltego), .json or .csv (Dehashed).",
+          "Unrecognized file type — upload .mtgl / .mtgx (Maltego), .json or .csv (Dehashed).",
         );
         return;
       }
@@ -1001,7 +1001,8 @@ function ImportedEntitiesSection({
           <h2 className="text-base font-medium">Imported</h2>
           <p className="text-xs text-muted-foreground">
             Persistent entities from external sources. Accepts Maltego
-            graphs (<code className="font-mono">.mtgx</code>) and Dehashed /
+            graphs (<code className="font-mono">.mtgl</code> or{" "}
+            <code className="font-mono">.mtgx</code>) and Dehashed /
             DarkWeb exports (<code className="font-mono">.json</code> or{" "}
             <code className="font-mono">.csv</code>). Re-imports merge into
             existing rows.
@@ -1022,7 +1023,7 @@ function ImportedEntitiesSection({
             <input
               ref={fileRef}
               type="file"
-              accept=".mtgx,.json,.csv,application/zip,application/json,text/csv"
+              accept=".mtgl,.mtgx,.json,.csv,application/zip,application/json,text/csv"
               className="hidden"
               onChange={onFile}
             />
@@ -1180,7 +1181,7 @@ function ImportedEntitiesSection({
         )
       ) : visibleItems.length === 0 ? (
         <p className="text-sm text-muted-foreground">
-          No imported entities yet — upload a Maltego .mtgx to populate.
+          No imported entities yet — upload a Maltego .mtgl / .mtgx to populate.
         </p>
       ) : (
         <div className="overflow-x-auto rounded-lg border border-border">
